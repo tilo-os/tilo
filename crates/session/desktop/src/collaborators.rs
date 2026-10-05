@@ -10,6 +10,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
+use ui::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
+use ui::icons::Icon;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace};
@@ -1016,7 +1018,18 @@ impl CollaboratorsOverlay {
             ),
             None,
         );
-        for (rect, glyph) in [(self.previous_people, "‹"), (self.next_people, "›")] {
+        for (rect, icon, name) in [
+            (
+                self.previous_people,
+                Icon::ChevronLeft,
+                crate::i18n::t("people-panel-previous-page"),
+            ),
+            (
+                self.next_people,
+                Icon::ChevronRight,
+                crate::i18n::t("people-panel-next-page"),
+            ),
+        ] {
             if rect.area() <= 0.0 {
                 continue;
             }
@@ -1025,7 +1038,9 @@ impl CollaboratorsOverlay {
                 transform,
                 text_renderer,
                 theme,
-                &ButtonFace::new(rect, glyph)
+                &ButtonFace::new(rect, "")
+                    .icon(icon)
+                    .accessible_name(&name)
                     .radius(f64::from(theme.tokens.radii.sm))
                     .hovered(cursor.is_some_and(|point| rect.contains(point))),
             );
@@ -1142,26 +1157,33 @@ impl CollaboratorsOverlay {
                     (caret_x, self.status.y0 + 19.0),
                 ),
             );
-            text_renderer.draw_text(
+            Icon::CornerDownLeft.draw(
                 scene,
-                "↵",
-                theme.tokens.typography.scale.xs,
+                transform,
+                Rect::new(
+                    self.status.x1 - 21.0,
+                    self.status.y0 + 5.0,
+                    self.status.x1 - 8.0,
+                    self.status.y0 + 18.0,
+                ),
                 colors.accent[4],
-                transform.pre_translate((self.status.x1 - 20.0, self.status.y0 + 5.0).into()),
-                None,
             );
         }
-        text_renderer.draw_text(
+        if model.own_status_automatic {
+            Icon::Sparkles
+        } else {
+            Icon::Pencil
+        }
+        .draw(
             scene,
-            if model.own_status_automatic {
-                "✦"
-            } else {
-                "○"
-            },
-            theme.tokens.typography.scale.xs,
+            transform,
+            Rect::new(
+                self.status.x0 + 7.0,
+                self.status.y0 + 6.0,
+                self.status.x0 + 19.0,
+                self.status.y0 + 18.0,
+            ),
             colors.accent[5],
-            transform.pre_translate((self.status.x0 + 8.0, self.status.y0 + 6.0).into()),
-            None,
         );
         for (mode, rect) in &self.status_modes {
             let active = *mode == model.status_sharing;
@@ -1181,6 +1203,18 @@ impl CollaboratorsOverlay {
                 ui::StatusSharing::ManualOnly => "people-panel-sharing-manual",
                 ui::StatusSharing::Off => "people-panel-sharing-hidden",
             });
+            if *mode == ui::StatusSharing::Automatic {
+                Icon::Sparkles.draw(
+                    scene,
+                    transform,
+                    Rect::new(rect.x0 + 7.0, rect.y0 + 6.0, rect.x0 + 19.0, rect.y0 + 18.0),
+                    if active {
+                        colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+                    } else {
+                        colors.text_dim
+                    },
+                );
+            }
             text_renderer.draw_text(
                 scene,
                 &text,
@@ -1190,7 +1224,18 @@ impl CollaboratorsOverlay {
                 } else {
                     colors.text_dim
                 },
-                transform.pre_translate((rect.x0 + 8.0, rect.y0 + 5.0).into()),
+                transform.pre_translate(
+                    (
+                        rect.x0
+                            + if *mode == ui::StatusSharing::Automatic {
+                                23.0
+                            } else {
+                                8.0
+                            },
+                        rect.y0 + 5.0,
+                    )
+                        .into(),
+                ),
                 None,
             );
         }
@@ -1280,7 +1325,22 @@ impl CollaboratorsOverlay {
             center.x + 11.0,
             center.y + 11.0,
         );
-        if row.invited {
+        if row.is_agent {
+            draw_agent_identity_mark(
+                scene,
+                transform,
+                avatar_rect,
+                row.color,
+                theme,
+                if row.invited {
+                    AgentIdentityStyle::Outline {
+                        alpha: INVITED_ROW_ALPHA,
+                    }
+                } else {
+                    AgentIdentityStyle::Solid
+                },
+            );
+        } else if row.invited {
             let seat = vello::kurbo::Circle::new(center, 11.0);
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
@@ -1318,6 +1378,8 @@ impl CollaboratorsOverlay {
                 theme,
                 text_renderer,
             );
+        }
+        if !row.invited {
             // A live spark belongs on the identity itself: it reads as
             // "here now" without turning the row into a status report.
             let spark = vello::kurbo::Circle::new(Point::new(center.x + 8.0, center.y + 8.0), 3.5);
@@ -1356,15 +1418,32 @@ impl CollaboratorsOverlay {
                     partner_center.x + 6.0,
                     partner_center.y + 6.0,
                 );
-                ui::widget::Avatar::draw_at(
-                    scene,
-                    transform,
-                    partner_rect,
-                    &partner.initial.to_string(),
-                    partner.color,
-                    theme,
-                    text_renderer,
-                );
+                if partner.is_agent {
+                    draw_agent_identity_mark(
+                        scene,
+                        transform,
+                        partner_rect,
+                        partner.color,
+                        theme,
+                        if partner.invited {
+                            AgentIdentityStyle::Outline {
+                                alpha: INVITED_ROW_ALPHA,
+                            }
+                        } else {
+                            AgentIdentityStyle::Solid
+                        },
+                    );
+                } else {
+                    ui::widget::Avatar::draw_at(
+                        scene,
+                        transform,
+                        partner_rect,
+                        &partner.initial.to_string(),
+                        partner.color,
+                        theme,
+                        text_renderer,
+                    );
+                }
                 draw_direction_arrow(scene, transform, from, to, row.color.multiply_alpha(0.9));
             }
         }
@@ -1480,24 +1559,40 @@ impl CollaboratorsOverlay {
             } else {
                 self.panel.x1 - 12.0
             };
-            let prefix = if status.automatic { "✦  " } else { "↳  " };
-            let line = format!("{prefix}{}", status.text);
+            let icon = if status.automatic {
+                Icon::Sparkles
+            } else {
+                Icon::Pencil
+            };
+            let icon_rect = Rect::new(
+                text_x,
+                row_y + if has_activity { 45.0 } else { 29.0 },
+                text_x + 12.0,
+                row_y + if has_activity { 57.0 } else { 41.0 },
+            );
+            icon.draw(scene, transform, icon_rect, colors.accent[5]);
+            let status_text_x = text_x + 17.0;
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "the collaborator popover is only a few hundred logical pixels wide"
             )]
             let shown = text_renderer.elide_to_width(
-                &line,
+                &status.text,
                 tokens.typography.scale.xs,
-                (status_x1 - text_x).max(0.0) as f32,
+                (status_x1 - status_text_x).max(0.0) as f32,
             );
             text_renderer.draw_text(
                 scene,
                 &shown,
                 tokens.typography.scale.xs,
                 colors.accent[5],
-                transform
-                    .pre_translate((text_x, row_y + if has_activity { 45.0 } else { 29.0 }).into()),
+                transform.pre_translate(
+                    (
+                        status_text_x,
+                        row_y + if has_activity { 45.0 } else { 29.0 },
+                    )
+                        .into(),
+                ),
                 None,
             );
         }
@@ -1601,20 +1696,17 @@ impl CollaboratorsOverlay {
             ),
             None,
         );
-        let (width, height) = text_renderer.measure("\u{203a}", size, None);
-        text_renderer.draw_text(
+        let icon_size = 14.0;
+        Icon::ChevronRight.draw(
             scene,
-            "\u{203a}",
-            size,
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    self.activity.x1 - 12.0 - f64::from(width),
-                    self.activity.center().y - f64::from(height) / 2.0,
-                )
-                    .into(),
+            transform,
+            Rect::new(
+                self.activity.x1 - 12.0 - icon_size,
+                self.activity.center().y - icon_size / 2.0,
+                self.activity.x1 - 12.0,
+                self.activity.center().y + icon_size / 2.0,
             ),
-            None,
+            colors.text_dim,
         );
     }
 }
