@@ -218,10 +218,10 @@ pub fn estimate(
     settings: Settings,
 ) -> Result<u64, String> {
     let longest = region.width().max(region.height());
-    if !settings.format.raster() || longest * settings.scale <= SAMPLED {
+    if !settings.format.raster() || longest * settings.scale <= f64::from(SAMPLED) {
         return encode(renderer, text, art, region, settings).map(|bytes| bytes.len() as u64);
     }
-    let large = SAMPLED / longest;
+    let large = f64::from(SAMPLED) / longest;
     let small = large / 2.0;
     let at = |scale: f64, renderer: &mut Renderer, text: &mut TextRenderer| {
         encode(renderer, text, art, region, Settings { scale, ..settings })
@@ -234,7 +234,7 @@ pub fn estimate(
 }
 
 /// The longest side, in pixels, of a picture [`estimate`] makes whole.
-const SAMPLED: f64 = 512.0; // a sampling budget in pixels, not on-screen spacing
+const SAMPLED: u32 = 512; // a sampling budget in pixels, not on-screen spacing
 
 /// `art` as SVG markup: plain layers as vector art, painted layers as
 /// pictures; with its ground when `ground`, every text as outlines when
