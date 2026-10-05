@@ -298,7 +298,7 @@ pub enum StoreEffect {
         #[param("App identity")]
         app: String,
     },
-    /// Install flatpak first.
+    /// Flatpak unavailable.
     #[effect(job)]
     FlatpakSetup {
         #[param("App identity")]
@@ -314,6 +314,12 @@ pub enum StoreEffect {
         name: String,
         #[param("HTTPS repository URL")]
         url: String,
+    },
+    /// Use Flathub for my apps.
+    #[effect(job, permission = "admin")]
+    UseFlathubForAccount {
+        #[param("Enabled device Flathub repository identity")]
+        remote: String,
     },
     /// Remove remote.
     #[effect(job, destructive, permission = "admin")]

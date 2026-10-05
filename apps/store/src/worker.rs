@@ -106,6 +106,7 @@ pub struct Snapshot {
     pub detail: Option<StoreItem>,
     pub remotes: Vec<Remote>,
     pub flatpak_available: bool,
+    pub flatpak_error: Option<String>,
     pub operation_error: Option<String>,
 }
 
@@ -817,6 +818,7 @@ fn update_all(
             detail: None,
             remotes: state.remotes.clone(),
             flatpak_available: state.flatpak_available,
+            flatpak_error: state.flatpak_error.clone(),
             operation_error: None,
         };
         if !snapshots.progress(progress) {
@@ -883,6 +885,7 @@ fn send_tracked(
         detail,
         remotes: state.remotes.clone(),
         flatpak_available: state.flatpak_available,
+        flatpak_error: state.flatpak_error.clone(),
         operation_error: operation_error
             .or_else(|| state.catalogue_error.clone())
             .or_else(|| state.flatpak_error.clone()),
@@ -1164,6 +1167,32 @@ mod tests {
             directory,
             item_index: ui::search::ListIndex::default(),
         }
+    }
+
+    #[test]
+    fn flatpak_observation_failure_reaches_worker_snapshot_separately_from_missing() {
+        let mut state = state_with_items(Vec::new(), StoreDirectory::default());
+        state.flatpak_available = true;
+        refresh_flatpak(&mut state);
+        assert!(!state.flatpak_available);
+        assert!(
+            state
+                .flatpak_error
+                .as_deref()
+                .unwrap()
+                .contains("App service unavailable")
+        );
+        let (sender, received) = mpsc::channel();
+        let snapshots = Snapshots {
+            sender,
+            wake: WakeHandle::new(),
+            pending: Arc::new(AtomicUsize::new(0)),
+        };
+        assert!(send(&snapshots, &state, Vec::new(), "", None, None));
+        let snapshot = received.recv().unwrap();
+        assert_eq!(snapshot.flatpak_error, state.flatpak_error);
+        assert_eq!(snapshot.operation_error, state.flatpak_error);
+        assert!(!snapshot.flatpak_available);
     }
 
     /// LRU eviction, non-blocking requests and the authoritative action directory.
