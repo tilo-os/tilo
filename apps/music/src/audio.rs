@@ -1961,7 +1961,9 @@ mod tests {
             assert_eq!(unsafe { gstreamer::ffi::gst_is_initialized() }, 0);
             let mut app = crate::MusicApp::offline();
             let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
+            app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
+            app.sync(&state.doc, &state.root);
+            app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
             let mut engine = AudioEngine::new();
             engine.set_volume(0.3);
             engine.pause();

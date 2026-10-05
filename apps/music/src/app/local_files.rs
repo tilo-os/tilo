@@ -278,7 +278,9 @@ mod tests {
                 let mut app = MusicApp::without_profile();
                 app.disconnect();
                 let mut doc = automerge::AutoCommit::new();
-                app.sync(&mut doc, &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1000.0, 850.0);
                 let theme = ui::theme::Theme::dark().with_text_scale(scale);
                 let mut tree = taffy::TaffyTree::<()>::new();
@@ -328,7 +330,7 @@ mod tests {
                         &mut ui::widget::EventCtx {
                             scale_factor: 1.0,
                             modifiers: &winit::event::Modifiers::default(),
-                            state: &mut doc,
+                            state: ui::widget::Edits::lend(&mut doc),
                             path: &automerge::ROOT,
                             handled: &mut false,
                             focus_target: &mut None,
@@ -412,7 +414,9 @@ mod tests {
         for cancelled in [true, false] {
             let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             let before = doc.get_heads();
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
@@ -431,7 +435,9 @@ mod tests {
                 app.start_effect(tilo_actions::InvocationId::new(), &payload)
                     .is_err()
             );
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             let result = app.take_effect_result(invocation);
             if cancelled {
                 assert!(matches!(
@@ -567,7 +573,9 @@ mod tests {
             for route in ["row", "previous", "repeat-one", "canonical"] {
                 let mut app = MusicApp::without_profile();
                 let mut doc = automerge::AutoCommit::new();
-                app.sync(&mut doc, &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 let id = file.track.id.clone();
                 app.local_file = Some(file.clone());
                 app.pb.current = Some(id.clone());
@@ -576,8 +584,12 @@ mod tests {
                 app.playhead_ms = 1000.0;
                 let mut invocation = None;
                 match route {
-                    "row" => app.on_play(std::sync::Arc::new(vec![id.clone()]), 0, &mut doc),
-                    "previous" => app.on_prev(&mut doc),
+                    "row" => app.on_play(
+                        std::sync::Arc::new(vec![id.clone()]),
+                        0,
+                        &mut ui::widget::Edits::lend(&mut doc),
+                    ),
+                    "previous" => app.on_prev(&mut ui::widget::Edits::lend(&mut doc)),
                     "repeat-one" => {
                         app.pb.repeat = crate::model::RepeatMode::One;
                         app.pb.playing = true;
@@ -637,7 +649,9 @@ mod tests {
         app.disconnect();
         let mut doc = automerge::AutoCommit::new();
         crate::doc::seed(&mut doc, &crate::seed::sample_library());
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         let id = app.lib.tracks.keys().next().unwrap().clone();
         app.media_cache
             .install_bytes(&app.media_cache_root, &id, &bytes, 1_000_000)
@@ -704,7 +718,9 @@ mod tests {
         app.disconnect();
         let mut doc = automerge::AutoCommit::new();
         crate::doc::seed(&mut doc, &crate::seed::sample_library());
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         app.open_local_file(path.to_str().unwrap()).unwrap();
         wait_for_audio(&mut app);
         assert!(app.audio.frames_rendered() > 0);
@@ -760,7 +776,9 @@ mod tests {
         app.disconnect();
         let mut doc = automerge::AutoCommit::new();
         crate::doc::seed(&mut doc, &crate::seed::sample_library());
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         app.open_local_file(path.to_str().unwrap()).unwrap();
         wait_for_audio(&mut app);
         let old_id = app.pb.current.clone().unwrap();
@@ -783,7 +801,7 @@ mod tests {
                         }))
                         .unwrap(),
                     },
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 )
             );
@@ -926,7 +944,9 @@ mod tests {
             app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
             assert!(app.playback_error.is_none());
             let mut doc = automerge::AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.lib.tracks.is_empty());
             assert!(crate::doc::load_library(&doc).tracks.is_empty());
             assert_eq!(app.pb.queue.len(), 1);
@@ -950,7 +970,7 @@ mod tests {
             );
             let json = serde_json::to_string(&automerge::AutoSerde::from(&doc)).unwrap();
             assert!(!json.contains("local song"));
-            app.on_toggle_play(&mut doc);
+            app.on_toggle_play(&mut ui::widget::Edits::lend(&mut doc));
             assert!(!app.pb.playing);
             let paused_by = tilo_test_env::hang_deadline();
             while app.audio.is_playing_real() {
@@ -1008,7 +1028,9 @@ mod tests {
             wav(&path);
             let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             let before = doc.get_heads();
             let invocation = tilo_actions::InvocationId::new();
             let library = <crate::actions::MusicEffect as ui::tilo_resource::Effect>::specs();
@@ -1029,13 +1051,17 @@ mod tests {
                 ui::framework::Effected::Pending
             ));
             assert!(app.take_effect_result(invocation).is_none());
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             wait_for_audio(&mut app);
             assert!(matches!(
                 app.take_effect_result(invocation),
                 Some(tilo_actions::InvocationUpdate::Succeeded { .. })
             ));
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(doc.get_heads(), before);
             assert!(app.lib.tracks.is_empty());
             let profile = crate::storage::DeviceProfile {
@@ -1076,7 +1102,9 @@ mod tests {
                 app.local_file = restored.local_file;
                 app.pb = restored.playback;
                 let mut doc = automerge::AutoCommit::new();
-                app.sync(&mut doc, &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 let source = crate::app::MusicApp::publish_resource(
                     &app,
                     crate::actions::LOCAL_FILE_RESOURCE_ID,
@@ -1096,7 +1124,7 @@ mod tests {
                     assert!(!app.audio.has_stream());
                 } else {
                     assert!(matches!(started.unwrap(), ui::framework::Effected::Pending));
-                    app.persist_playback(&mut doc);
+                    app.persist_playback(&mut ui::widget::Edits::lend(&mut doc));
                     assert_eq!(
                         app.pb.position_ms, 1000,
                         "unknown duration cannot erase the resume point"
@@ -1119,7 +1147,9 @@ mod tests {
             wav(&path);
             let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             let request = app.open_local_file(path.to_str().unwrap()).unwrap();
             wait_for_audio(&mut app);
             let invocation = tilo_actions::InvocationId::new();
@@ -1141,7 +1171,9 @@ mod tests {
             std::fs::write(&path, b"not a WAV stream").unwrap();
             let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             let invocation = tilo_actions::InvocationId::new();
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
@@ -1153,7 +1185,9 @@ mod tests {
             ));
             let until = tilo_test_env::hang_deadline();
             loop {
-                app.sync(&mut doc, &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 app.tick();
                 if let Some(update) = app.take_effect_result(invocation) {
                     assert!(matches!(

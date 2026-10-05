@@ -871,7 +871,7 @@ impl Continuable for MusicApp {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
-        _state: &mut AutoCommit,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
         if metadata.schema_version != 1 {
@@ -936,7 +936,7 @@ impl Widget for MusicApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+        let (state, _) = ui::doc::document_ref(state, path);
         if self.playback_loaded {
             self.reload_library(state);
         } else {
@@ -944,13 +944,12 @@ impl Widget for MusicApp {
             self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
             self.playback_loaded = true;
         }
-        // Progress in-flight downloads and re-apply their device-local cache
-        // projection on top of the just-reloaded shared library.
+    }
+
+    fn settle(&mut self, state: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+        // External controls and completed effects enter the same authored
+        // action door as events, before the next read-only projection.
         self.advance_downloads(state);
-        // External media control (media keys / desktop widget) and a completed
-        // file-portal cover pick both mutate the document, so they run here
-        // where the CRDT handle is available. The portal conversion completion
-        // follows the pick; decode/resize work itself runs off-thread.
         self.drain_mpris(state);
         self.drain_cover_pick(state);
         self.drain_local_file_pick();
@@ -1059,7 +1058,7 @@ impl Widget for MusicApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.handled,
             );
             return;
@@ -1082,7 +1081,7 @@ impl Widget for MusicApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.handled,
                 );
             }
@@ -1091,7 +1090,7 @@ impl Widget for MusicApp {
                 button: MouseButton::Right,
                 ..
             } => {
-                self.on_right_click(ctx.state, ctx.handled);
+                self.on_right_click(&mut ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1102,7 +1101,7 @@ impl Widget for MusicApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.handled,
                 );
             }
@@ -1115,7 +1114,7 @@ impl Widget for MusicApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.handled,
                 );
             }
@@ -1138,7 +1137,7 @@ impl Widget for MusicApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.handled,
                 );
             }
@@ -1628,10 +1627,9 @@ impl Widget for MusicApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
+        state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
         if target == "music.search" {
             match action {
                 ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
@@ -2146,7 +2144,7 @@ impl MusicApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         // `new_leaf` on a fresh tree with a default `Style` cannot fail (see
@@ -2166,7 +2164,7 @@ impl MusicApp {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2195,7 +2193,7 @@ impl MusicApp {
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
         );
-        if self.drain_menu_selection(ctx.state) {
+        if self.drain_menu_selection(&mut ctx.state) {
             self.dirty = true;
             return true;
         }
@@ -2222,7 +2220,7 @@ impl MusicApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let WindowEvent::CursorMoved { position, .. } = event else {
@@ -2261,7 +2259,7 @@ impl MusicApp {
     }
 
     /// Right-click: open a track's context menu where one is registered.
-    fn on_right_click(&mut self, state: &mut AutoCommit, handled: &mut bool) {
+    fn on_right_click(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         if let Some(action) = self.row_menu_at(self.mouse) {
             self.dispatch(action, state);
             *handled = true;
@@ -2275,7 +2273,7 @@ impl MusicApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // A press inside the search field routes to the real TextInput
@@ -2359,7 +2357,7 @@ impl MusicApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // End an in-progress search-field selection drag on the widget.
@@ -2410,7 +2408,7 @@ impl MusicApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if self.search_input.is_focused() && self.name_prompt.is_none() {
@@ -2484,7 +2482,7 @@ impl MusicApp {
         key: &Key,
         _text: Option<&str>,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // The name-input overlay is modal and handled upstream in

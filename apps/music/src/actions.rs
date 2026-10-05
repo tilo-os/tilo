@@ -1829,7 +1829,7 @@ mod tests {
         let mut app = MusicApp::new();
         let mut doc = AutoCommit::new();
         crate::doc::seed(&mut doc, &crate::seed::sample_library());
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         (app, doc)
     }
 
