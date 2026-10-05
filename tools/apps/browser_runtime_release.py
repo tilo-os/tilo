@@ -134,6 +134,7 @@ def compile_engine(out, architecture, source):
     binaries.mkdir()
     for name, executable in tools.items():
         shutil.copy2(executable, binaries / name)
+    native_payload(binaries, architecture)
     platform = {'aarch64': 'linuxarm64', 'x86_64': 'linux64'}[architecture]
     subprocess.run([sys.executable, 'scripts/browser/build-host.py', '--platform', platform,
                     '--runtime', str(out / 'engine'), '--jobs', os.environ.get('CARGO_BUILD_JOBS', '2')],
