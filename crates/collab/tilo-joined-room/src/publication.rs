@@ -675,6 +675,11 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
         .workspace_memberships
         .values()
         .any(|receipt| receipt.receipt.binding == entry.binding)
+        && !view
+            .record
+            .effect_receipts
+            .values()
+            .any(|receipt| receipt.receipt.binding == entry.binding)
     {
         return Err("native governance checkpoint lacks its owner receipt".into());
     }

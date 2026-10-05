@@ -694,6 +694,7 @@ mod owner_commit_tests {
                 peer_id: 72,
                 tx,
                 update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                prepared_effect: Arc::default(),
                 last_sequence: 0,
                 actor: principal_id_for_root(f.owner.peer().authority().user_public_key),
                 cancellable: false,
@@ -1685,6 +1686,7 @@ mod owner_commit_tests {
                     peer_id: 72,
                     tx,
                     update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                    prepared_effect: Arc::default(),
                     last_sequence: 0,
                     actor: principal_id_for_root(f.owner.peer().authority().user_public_key),
                     cancellable: false,
@@ -1706,6 +1708,8 @@ mod owner_commit_tests {
                     invocation,
                     output: tilo_actions::ActionOutput::default(),
                 };
+                let retry_pending = pending.clone();
+                let retry_update = update.clone();
                 let state = f.state.clone();
                 let completion = tokio::task::spawn_local(async move {
                     state.commit_effect_before_terminal(&pending, &update).await
@@ -1720,7 +1724,78 @@ mod owner_commit_tests {
                 // An unavailable native operation must remain failure, never a legacy receipt.
                 drop(commit);
                 assert!(completion.await.unwrap().is_err());
+                assert_exact_effect_retry(retry_pending, retry_update).await;
             })
             .await;
+    }
+    async fn assert_exact_effect_retry(
+        mut pending: PendingInvocation,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        // The refusal above intentionally poisons that owner. A separate live
+        // owner checks identical prepared bytes and successful durable retries.
+        let root = canonical_tempdir();
+        let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
+        pending.cluster_id = f.route.cluster_id.clone();
+        pending.owner = InvocationOwner::Certified {
+            root: f.owner.peer().authority().user_public_key,
+            device: f.owner.peer().authority().device_public_key,
+        };
+        pending.actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
+        pending.prepared_effect = Arc::default();
+        let state = f.state.clone();
+        let retry_pending = pending.clone();
+        let retry_update = update.clone();
+        let retry = tokio::task::spawn_local(async move {
+            state
+                .commit_effect_before_terminal(&retry_pending, &retry_update)
+                .await
+        });
+        let commit = tilo_test_env::within(
+            "exact effect retry lost its owner barrier",
+            f.mailbox.recv(),
+        )
+        .await
+        .unwrap();
+        let first_request = prepared_effect_bytes(&pending);
+        commit.apply(&mut f.owner).unwrap();
+        assert!(retry.await.unwrap().is_ok());
+        let state = f.state.clone();
+        let replay_pending = pending.clone();
+        let replay_update = update.clone();
+        let replay = tokio::task::spawn_local(async move {
+            state
+                .commit_effect_before_terminal(&replay_pending, &replay_update)
+                .await
+        });
+        let commit = tilo_test_env::within(
+            "accepted effect retry must use the same owner",
+            f.mailbox.recv(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared_effect_bytes(&pending), first_request);
+        commit.apply(&mut f.owner).unwrap();
+        assert!(replay.await.unwrap().is_ok());
+        let changed = tilo_actions::InvocationUpdate::Cancelled {
+            invocation: update.invocation(),
+            message: Some("different terminal outcome".into()),
+        };
+        assert!(
+            f.state
+                .commit_effect_before_terminal(&pending, &changed)
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), f.mailbox.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    fn prepared_effect_bytes(pending: &PendingInvocation) -> Vec<u8> {
+        let prepared = pending.prepared_effect.lock().unwrap();
+        serde_json::to_vec(&prepared.as_ref().unwrap().request).unwrap()
     }
 }

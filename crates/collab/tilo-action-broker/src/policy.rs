@@ -263,6 +263,9 @@ pub fn redacted_effect_receipt(
     } else {
         format!("{} · {original_action}", status.label())
     };
+    // Arbitrary application facets may contain private argument summaries.
+    // Only broker-owned terminal identifiers enter this public audit.
+    context.facets.clear();
     context
         .facets
         .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));
@@ -319,6 +322,40 @@ mod retained_clock_tests {
                 101
             ),
             CapDecision::Allow
+        );
+    }
+}
+
+#[cfg(test)]
+mod effect_receipt_redaction_tests {
+    #[test]
+    fn only_broker_owned_terminal_facets_enter_public_receipts() {
+        let invocation = tilo_actions::InvocationId::new();
+        let context = tilo_actions::ActionContext {
+            facets: vec![
+                tilo_actions::ActionFacet::new("private.argument", "secret text"),
+                tilo_actions::ActionFacet::new("tilo.invocation", "forged"),
+                tilo_actions::ActionFacet::new("tilo.receipt", "forged"),
+            ],
+            ..Default::default()
+        };
+        let receipt = super::redacted_effect_receipt(
+            invocation,
+            "person",
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        );
+        assert_eq!(
+            receipt.context.facets,
+            vec![
+                tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
+                tilo_actions::ActionFacet::new("tilo.invocation", invocation.0.to_string()),
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&receipt)
+                .unwrap()
+                .contains("secret text")
         );
     }
 }

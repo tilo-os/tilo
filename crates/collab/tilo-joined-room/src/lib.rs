@@ -13,6 +13,7 @@ mod application_record;
 mod bootstrap;
 mod certified;
 mod document_read;
+mod effect_receipt;
 pub mod enroll;
 mod enrollment;
 mod file_store;

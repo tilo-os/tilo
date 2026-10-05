@@ -85,6 +85,7 @@ pub(crate) fn restore(
         record: record.clone(),
     };
     publication::validate(&view)?;
+    crate::effect_receipt::validate(&view)?;
     Ok(view)
 }
 impl NativeWorkspaceOwner {
@@ -401,6 +402,7 @@ impl NativeWorkspaceOwner {
             floor: None,
             publication: Some(publication::StoredPublication::default()),
             workspace_memberships: std::collections::BTreeMap::new(),
+            effect_receipts: std::collections::BTreeMap::new(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }

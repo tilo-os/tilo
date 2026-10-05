@@ -1164,6 +1164,7 @@ struct PendingInvocation {
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
     update: tilo_actions::InvocationUpdate,
+    prepared_effect: Arc<Mutex<Option<PreparedEffectCommit>>>,
     last_sequence: u64,
     actor: String,
     cancellable: bool,
@@ -1178,6 +1179,11 @@ struct PendingInvocation {
     last_activity: std::time::Instant,
     /// Starts the shorter acknowledgement deadline for cooperative cancel.
     cancellation_requested_at: Option<std::time::Instant>,
+}
+
+struct PreparedEffectCommit {
+    update: tilo_actions::InvocationUpdate,
+    request: tilo_peer_state::owner_commit::OwnerCommitRequest,
 }
 
 /// An opaque certified person admission. Its root/device are never accepted
@@ -3189,24 +3195,40 @@ impl CapnpBrokerState {
         }
         let status = tilo_actions::EffectReceiptStatus::from_terminal(update)
             .ok_or_else(|| capnp::Error::failed("nonterminal effect receipt".into()))?;
-        let receipt = crate::policy::redacted_effect_receipt(
-            update.invocation(),
-            &pending.actor,
-            pending.context.clone(),
-            status,
-        );
-        self.commit_owner_request(
-            tilo_peer_state::owner_commit::OwnerCommitRequest {
-                room: pending.cluster_id.clone(),
-                operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                    invocation: update.invocation().0,
-                    redacted: serde_json::to_vec(&receipt)
-                        .map_err(|e| capnp::Error::failed(e.to_string()))?,
-                },
-            },
-            None,
-        )
-        .await
+        let request = {
+            let mut prepared = pending.prepared_effect.lock().map_err(|_| {
+                capnp::Error::failed("effect receipt preparation unavailable".into())
+            })?;
+            if let Some(previous) = prepared.as_ref() {
+                if previous.update != *update {
+                    return Err(capnp::Error::failed(
+                        "effect terminal outcome changed".into(),
+                    ));
+                }
+                previous.request.clone()
+            } else {
+                let receipt = crate::policy::redacted_effect_receipt(
+                    update.invocation(),
+                    &pending.actor,
+                    pending.context.clone(),
+                    status,
+                );
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    room: pending.cluster_id.clone(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                        invocation: update.invocation().0,
+                        redacted: serde_json::to_vec(&receipt)
+                            .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                    },
+                };
+                *prepared = Some(PreparedEffectCommit {
+                    update: update.clone(),
+                    request: request.clone(),
+                });
+                request
+            }
+        };
+        self.commit_owner_request(request, None).await
     }
 
     fn record_effect_receipt(
@@ -4785,6 +4807,7 @@ impl CapnpBrokerState {
                 peer_id,
                 tx,
                 update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                prepared_effect: Arc::default(),
                 last_sequence: 0,
                 actor: actor.id.clone(),
                 cancellable: matches!(
@@ -14587,6 +14610,7 @@ pub mod tests {
             peer_id: 7,
             tx,
             update: tilo_actions::InvocationUpdate::Accepted { invocation },
+            prepared_effect: Arc::default(),
             last_sequence: 0,
             actor: "agent:Scribe".into(),
             cancellable: false,
