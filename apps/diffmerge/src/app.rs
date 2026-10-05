@@ -2134,7 +2134,7 @@ mod tests {
             &mut app.merge,
             &ui::a11y::Action::Activate,
             &[theirs_key],
-            &mut state.doc,
+            &mut ui::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert_eq!(selected_compact_source(app), "Show Theirs source");
@@ -2165,7 +2165,7 @@ mod tests {
             &mut *app,
             "diffmerge.toolbar.show-diff",
             &ui::a11y::Action::Activate,
-            &mut state.doc,
+            &mut ui::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert_eq!(app.mode, Mode::Diff);
@@ -2256,7 +2256,7 @@ mod tests {
             &mut *app,
             "diffmerge.diff-source:right",
             &ui::a11y::Action::Activate,
-            &mut state.doc,
+            &mut ui::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert!(app.diff.compact_showing_right());
@@ -2331,7 +2331,7 @@ mod tests {
             &mut *app,
             &target,
             &ui::a11y::Action::Activate,
-            &mut state.doc,
+            &mut ui::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert_eq!(

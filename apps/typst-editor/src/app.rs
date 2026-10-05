@@ -38,6 +38,7 @@ use std::sync::Arc;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1744,7 +1745,7 @@ impl Widget for TypstApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document(doc, path);
+        let (doc, _) = ui::doc::document_ref(doc, path);
         self.background_poll_deadline.set(None);
         if let Some(operation) = self.pending_resource_io.take() {
             let result = match operation {
@@ -1926,7 +1927,7 @@ impl Widget for TypstApp {
                 logical_key,
                 event,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.handled,
             );
             return;
@@ -1985,7 +1986,7 @@ impl Widget for TypstApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        doc: &mut AppModel,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let _ = (doc, path);
@@ -2127,7 +2128,7 @@ impl TypstApp {
         logical_key: &Key,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let mods = modifiers.state();
@@ -2444,7 +2445,7 @@ mod tests {
         doc.commit();
         let mut app = TypstApp::new();
         present(&mut app, &doc);
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
         (app, doc)
     }
 
@@ -2479,12 +2480,12 @@ mod tests {
         // Case `portal_cancel_is_silent`:
         // A cancelled chooser clears the in-flight dialog and changes nothing.
         {
-            let (mut app, mut doc) = fresh();
+            let (mut app, doc) = fresh();
             let before = shown_source(&app, &doc);
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Cancelled);
             ui::host::scoped(&services, || app.open());
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             assert!(app.io.is_none());
             assert_eq!(shown_source(&app, &doc), before, "cancel loads nothing");
         }
@@ -2521,7 +2522,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2578,11 +2579,11 @@ mod tests {
                     &Key::Character(key.into()),
                     &char_press(key),
                     Modifiers::from(ModifiersState::CONTROL),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &mut handled,
                 );
             }
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             assert_eq!(shown_source(&app, &doc), before);
             assert_eq!(doc.get_heads(), heads, "no switch, no write");
         }
@@ -2604,10 +2605,10 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "typst.source",
                 &ui::a11y::Action::SetValue("= Accessible edit".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             ));
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             assert_eq!(shown_source(&app, &doc), before);
             assert_eq!(app.editor.text(), before);
         }
@@ -2634,7 +2635,7 @@ mod tests {
         }
         // Case `pending_native_dialog_has_a_stable_non_animation_deadline`.
         {
-            let (mut app, mut doc) = fresh();
+            let (mut app, doc) = fresh();
             assert!(app.next_wake_deadline().is_none());
             let (services, _recorder) = ui::host::HostServices::recording();
             ui::host::scoped(&services, || app.open());
@@ -2646,7 +2647,7 @@ mod tests {
                 Some(deadline),
                 "queries must not keep postponing polling"
             );
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             assert!(app.io.is_none());
             assert!(app.next_wake_deadline().is_none());
         }
@@ -2958,7 +2959,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3043,7 +3044,7 @@ mod tests {
         {
             let (mut app, mut doc) = workspace(Some("errors"));
             app.stage_scenario(Some("errors"));
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
 
             let diags = app.diagnostics.diags().to_vec();
@@ -3172,7 +3173,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "typst.show-preview",
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
             assert!(
@@ -3182,7 +3183,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "typst.show-preview",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
             assert!(matches!(app.compact_view, CompactPane::Preview));
