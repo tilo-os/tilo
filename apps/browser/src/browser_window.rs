@@ -1286,12 +1286,13 @@ mod tests {
         let mut failures = Vec::new();
         for (name, events) in &scenarios {
             for split in SPLITS {
-                let (window, engine) = window();
-                let mut harness = ui::headless::FrameHarness::new(
-                    ui::state::State::new(),
-                    Box::new(window),
-                    (1000, 700),
-                );
+                // Browser runs in its own app host, which routes the address
+                // bar's typed navigate action to the page's engine.
+                let engine = PageEngine::new();
+                crate::browser_widget::test_window_engine::install(engine.clone());
+                let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::new()
+                    .expect("Browser opens");
+                let harness = app.harness();
                 for _ in 0..3 {
                     harness.relayout();
                 }
@@ -1303,7 +1304,7 @@ mod tests {
                     harness.relayout();
                 };
                 if split == 0 {
-                    emit(&mut harness);
+                    emit(harness);
                 }
                 harness.send_host_event(&WindowEvent::ModifiersChanged(
                     winit::keyboard::ModifiersState::CONTROL.into(),
@@ -1315,16 +1316,16 @@ mod tests {
                 harness.relayout();
                 for (at, ch) in URL.chars().enumerate() {
                     if split == at + 1 {
-                        emit(&mut harness);
+                        emit(harness);
                     }
                     harness.key(&ch.to_string());
                     harness.relayout();
                 }
                 if split == URL.len() + 1 {
-                    emit(&mut harness);
+                    emit(harness);
                 }
                 harness.key("Enter");
-                harness.relayout();
+                app.settle();
                 let commands = engine.commands.lock().unwrap().clone();
                 let navigated: Vec<_> = commands
                     .iter()

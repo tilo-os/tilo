@@ -4086,6 +4086,10 @@ pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:app/so.tilo.browser-engi
 /// instead of its pixels: what a web client of this host sees. Either way the
 /// session can share the page as that stream.
 fn default_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
+    #[cfg(test)]
+    if let Some(engine) = test_window_engine::take() {
+        return (engine, None);
+    }
     let (engine, problem) = native_engine(mode);
     if problem.is_some() {
         return (engine, problem);
@@ -4096,6 +4100,29 @@ fn default_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
     // Drawn from pixels here; captured as a display list only while the
     // session shares the window with someone watching (a web member).
     (ui::webview::paint::PaintEngine::streaming(engine), None)
+}
+
+/// The engine a test's next live window drives instead of the native one,
+/// so a test can run Browser in its real app host without starting a
+/// browser process.
+#[cfg(test)]
+pub(crate) mod test_window_engine {
+    use std::cell::RefCell;
+
+    use ui::webview::SharedEngine;
+
+    thread_local! {
+        static NEXT: RefCell<Option<SharedEngine>> = const { RefCell::new(None) };
+    }
+
+    /// The next live window on this thread drives `engine`.
+    pub(crate) fn install(engine: SharedEngine) {
+        NEXT.with_borrow_mut(|next| *next = Some(engine));
+    }
+
+    pub(super) fn take() -> Option<SharedEngine> {
+        NEXT.with_borrow_mut(Option::take)
+    }
 }
 
 /// Deterministic rendering is confined to `new_headless`.
