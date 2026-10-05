@@ -427,6 +427,9 @@ pub struct MusicApp {
     track_tables: Vec<TrackTableSlot>,
     /// How many of them this frame has drawn so far.
     track_tables_drawn: usize,
+    /// The page's cover grids, in the order this frame drew them.
+    media_grids: Vec<media_grid::MediaGridHost>,
+    media_grids_drawn: usize,
     /// The name of the row control under the pointer, for its tooltip.
     table_tooltip: Option<String>,
     drag: Option<Drag>,
@@ -770,6 +773,8 @@ impl MusicApp {
             body_hits: 0,
             track_tables: Vec::new(),
             track_tables_drawn: 0,
+            media_grids: Vec::new(),
+            media_grids_drawn: 0,
             table_tooltip: None,
             drag: None,
             bar_press: None,
@@ -4908,6 +4913,7 @@ fn image_fetcher() -> ui::Fetcher {
 }
 
 mod local_files;
+mod media_grid;
 mod render;
 mod track_table;
 
