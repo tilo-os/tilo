@@ -239,7 +239,7 @@ impl StatePeer {
             && coverage.app == route.app
             && coverage.record == route.record
             && coverage.author == self.core.authority.device_public_key
-            && !self.core.revocations.is_revoked(&coverage.author)
+            && !self.core.revocations.revokes(&self.core.authority)
             && accepted.heads == coverage.heads
             && accepted.payload_hash == coverage.payload_hash
             && coverage.watermarks.iter().all(|(author, sequence)| {

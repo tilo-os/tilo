@@ -281,7 +281,7 @@ impl StatePeer {
         let mut certificates = BTreeMap::new();
         for certificate in roster.into_iter().chain([authority.clone()]) {
             let certificate = VerifiedCertificate::new(certificate, now_ns(now))?;
-            if revocations.is_revoked(&certificate.device_public_key) {
+            if revocations.revokes(&certificate) {
                 return Err("device revoked".into());
             }
             certificates.insert(certificate.device_public_key, certificate);
@@ -331,7 +331,7 @@ impl StatePeer {
             return Err("enrollment root mismatch".into());
         }
         tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
+        if self.core.revocations.revokes(&cert) {
             return Err("device revoked".into());
         }
         if let Some(old) = self.core.certificates.get(&cert.device_public_key)
@@ -397,24 +397,48 @@ impl StatePeer {
         )?;
         Ok(outcome.changed || outcome.metadata_changed)
     }
-    /// Publish same-root, root-signed revocations into pinned governance.
-    /// Independent collaborator roots retain their own signed revocation scope.
+    /// Publish root-signed revocations into pinned governance: the authority
+    /// root's, and those of a member identity for its own devices the room
+    /// certifies, each signed by that member's own root. An entry lands in
+    /// the revoked device's governed row, or, for an authority device the
+    /// room has not certified, in the authority's row. Returns whether
+    /// governance changed.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, an entry is not signed by
-    /// the authority root, or governance cannot be updated.
+    /// Returns an error if `key` is not the governance writer, an entry is signed
+    /// neither by the authority root nor by a current member's root, does not verify,
+    /// revokes another identity's device or a member's device the room does not
+    /// certify, or governance cannot be updated.
     pub fn publish_governed_revocations(
         &mut self,
         entries: &[tilo_user_identity::RevocationEntry],
         key: &SigningKey,
         now: SystemTime,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         self.require_governance_writer(key, now)?;
+        let members = self.member_identities(now)?;
         let mut verified = self.core.revocations.clone();
         for entry in entries {
-            if entry.user_public_key != self.core.authority.user_public_key {
-                return Err("governed revocation root mismatch".into());
+            if entry.user_public_key != self.core.authority.user_public_key
+                && members.binary_search(&entry.user_public_key).is_err()
+            {
+                return Err("governed revocation is not signed by a member identity".into());
+            }
+            let target = self
+                .core
+                .certificates
+                .get(&entry.revoked_device_public_key)
+                .map(AsRef::as_ref);
+            if target.is_some_and(|cert: &DeviceCert| cert.user_public_key != entry.user_public_key)
+            {
+                return Err("governed revocation targets another identity's device".into());
+            }
+            // A member speaks only for its own devices the room certifies; a
+            // revocation of any other key would keep a device out that the
+            // member has no say over.
+            if entry.user_public_key != self.core.authority.user_public_key && target.is_none() {
+                return Err("governed revocation targets no device of that member here".into());
             }
             verified.insert(entry.clone()).map_err(err)?;
         }
@@ -432,19 +456,33 @@ impl StatePeer {
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
+        let rows = room::governance_of(Some(&doc))
+            .3
+            .into_iter()
+            .map(|(id, bytes)| {
+                serde_json::from_slice::<GovernedIdentity>(&bytes)
+                    .map(|identity| (id, bytes, identity))
+                    .map_err(err)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let governed = rows
+            .iter()
+            .map(|(_, _, identity)| identity.device_cert.device_public_key)
+            .collect::<std::collections::BTreeSet<_>>();
         let mut changed = false;
-        for (id, bytes) in room::governance_of(Some(&doc)).3 {
-            let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
-            if identity.device_cert.user_public_key != self.core.authority.user_public_key {
-                continue;
-            }
+        for (id, bytes, mut identity) in rows {
+            let root = identity.device_cert.user_public_key;
+            let device = identity.device_cert.device_public_key;
             let mut list = RevocationList::new();
             for entry in &identity.revocations {
                 list.insert(entry.clone()).map_err(err)?;
             }
+            let carries_unlisted = identity.device_cert == self.core.authority;
             for entry in verified.iter() {
-                if entry.revoked_device_public_key == identity.device_cert.device_public_key
-                    || identity.device_cert == self.core.authority
+                if entry.user_public_key == root
+                    && (entry.revoked_device_public_key == device
+                        || (carries_unlisted
+                            && !governed.contains(&entry.revoked_device_public_key)))
                 {
                     list.insert(entry.clone()).map_err(err)?;
                 }
@@ -465,7 +503,7 @@ impl StatePeer {
         } else {
             self.core.revocations = verified;
         }
-        Ok(())
+        Ok(changed)
     }
     /// Record a verified workspace delegation in pinned governance.
     ///
@@ -544,7 +582,7 @@ impl StatePeer {
             }
         }
         let cert = redemption.certificate();
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
+        if self.core.revocations.revokes(cert) {
             return Err("device revoked".into());
         }
         if let Some(old) = self.core.certificates.get(&cert.device_public_key)
@@ -819,7 +857,7 @@ impl StatePeer {
             let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
             let cert = identity.device_cert;
             if tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).is_err()
-                || self.core.revocations.is_revoked(&cert.device_public_key)
+                || self.core.revocations.revokes(&cert)
             {
                 continue;
             }
@@ -844,6 +882,40 @@ impl StatePeer {
             member_devices,
             member_user_roots,
         })
+    }
+
+    /// The identities governance currently gives a role in the room, whether
+    /// or not any of their devices may still act: an identity that revoked its
+    /// last device here is still the member whose revocation that is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if room governance is missing or malformed.
+    pub fn member_identities(&self, now: SystemTime) -> Result<Vec<[u8; 32]>, String> {
+        let policy = self
+            .core
+            .room_doc
+            .as_ref()
+            .ok_or("room governance missing")?
+            .policy();
+        let mut roots = Vec::new();
+        for bytes in policy.identities.values() {
+            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            let root = identity.device_cert.user_public_key;
+            if room::role_of(
+                policy.owner.as_deref(),
+                &policy.caps,
+                &hex::encode(root),
+                now_secs(now),
+            )
+            .is_some_and(|role| role != Role::Denied)
+            {
+                roots.push(root);
+            }
+        }
+        roots.sort_unstable();
+        roots.dedup();
+        Ok(roots)
     }
 
     /// Authority-authored collaborator projection. The structural owner is
@@ -897,7 +969,7 @@ impl StatePeer {
                 row.removed = false;
                 let cert = &identity.device_cert;
                 if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
-                    && !self.core.revocations.is_revoked(&cert.device_public_key)
+                    && !self.core.revocations.revokes(cert)
                 {
                     row.active_device_keys.push(cert.device_public_key);
                 }
@@ -1049,6 +1121,24 @@ impl StatePeer {
             .values()
             .map(|cert| cert.as_ref().clone())
             .collect()
+    }
+    /// The revocations the admitted governance carries, in every governed row.
+    pub fn governance_revocations(&self) -> Vec<tilo_user_identity::RevocationEntry> {
+        let mut entries = room::governance_of(self.core.room_doc.as_deref())
+            .3
+            .values()
+            .filter_map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).ok())
+            .flat_map(|identity| identity.revocations)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| {
+            (
+                entry.user_public_key,
+                entry.revoked_device_public_key,
+                entry.revoked_at_ns,
+            )
+        });
+        entries.dedup_by_key(|entry| (entry.user_public_key, entry.revoked_device_public_key));
+        entries
     }
     pub fn revocations(&self) -> Vec<tilo_user_identity::RevocationEntry> {
         let mut entries = self.core.revocations.iter().cloned().collect::<Vec<_>>();
@@ -1618,7 +1708,7 @@ impl StatePeer {
                     }
                     metadata_changed |= self.core.revocations.insert(entry).map_err(err)?;
                 }
-                if self.core.revocations.is_revoked(&source) {
+                if self.core.revocations.revokes(&cert) {
                     return Err("device revoked".into());
                 }
                 self.core.certificates.insert(source, verified);
@@ -3028,7 +3118,7 @@ impl StatePeer {
             || coverage.app != app
             || coverage.record != record
             || coverage.author != self.core.authority.device_public_key
-            || self.core.revocations.is_revoked(&coverage.author)
+            || self.core.revocations.revokes(&self.core.authority)
         {
             return Err("durable receipt authority/route mismatch".into());
         }
@@ -3252,7 +3342,7 @@ impl StatePeer {
             durable.revocations,
             &revocations,
             &peer.core.certificates,
-            peer.core.authority.device_public_key,
+            &peer.core.authority,
         )
         .map_err(err)?;
         peer.core.receipts = durable.receipts;
@@ -3301,11 +3391,7 @@ impl StatePeer {
             // governed certificate rows. Reuse the normal verified import and
             // retain historical certificates already validated during restore.
             peer.import_governed_certificates(&doc, now)?;
-            if peer
-                .core
-                .revocations
-                .is_revoked(&peer.core.authority.device_public_key)
-            {
+            if peer.core.revocations.revokes(&peer.core.authority) {
                 return Err("pinned authority device is revoked by governed policy".into());
             }
             // Room-first admission is durable even before its exact Chat

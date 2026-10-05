@@ -20,7 +20,7 @@ fn sealed_metadata_storage_lends_actual_verified_roster_and_revocation_union() {
         &[entry],
         &RevocationList::new(),
         &roster,
-        peer.authority().device_public_key,
+        peer.authority(),
     )
     .unwrap();
     let verified = BoundedNative::certificate(&roster, &member.device_public_key).unwrap();
@@ -29,14 +29,8 @@ fn sealed_metadata_storage_lends_actual_verified_roster_and_revocation_union() {
         verified.as_ref(),
         roster.certificate(&member.device_public_key).unwrap()
     ));
-    assert!(BoundedNative::is_revoked(
-        &revoked,
-        &member.device_public_key
-    ));
-    assert!(!BoundedNative::is_revoked(
-        &revoked,
-        &peer.authority().device_public_key
-    ));
+    assert!(BoundedNative::revokes(&revoked, &member));
+    assert!(!BoundedNative::revokes(&revoked, peer.authority()));
     assert!(BoundedNative::certificate(&roster, &[99; 32]).is_none());
 }
 

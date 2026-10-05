@@ -50,7 +50,7 @@ fn bounded_governed_import_matches_real_legacy_import_and_retains_fresh_certific
         &[],
         &RevocationList::new(),
         &certificates,
-        peer.authority().device_public_key,
+        peer.authority(),
     )
     .unwrap();
     let native = NativeBatch::new(8 * 1024 * 1024)
@@ -112,7 +112,7 @@ fn bounded_governed_import_ignores_legacy_malformed_identity_container() {
         &[],
         &RevocationList::new(),
         &certificates,
-        peer.authority().device_public_key,
+        peer.authority(),
     )
     .unwrap();
     let native = NativeBatch::new(8 * 1024 * 1024)
@@ -237,7 +237,7 @@ fn compare_case(
         &peer.revocations(),
         &RevocationList::new(),
         &certificates,
-        peer.authority().device_public_key,
+        peer.authority(),
     )
     .unwrap();
     let mut saved = room.clone();
@@ -491,7 +491,7 @@ fn governed_import_refuses_collection_and_certificate_limits() {
         &[],
         &RevocationList::new(),
         &certificates,
-        peer.authority().device_public_key,
+        peer.authority(),
     )
     .unwrap();
     let mut room = peer.admitted_room().unwrap().clone();

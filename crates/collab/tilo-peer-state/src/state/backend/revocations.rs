@@ -1,6 +1,6 @@
 //! Shared signed revocation restore.
 use super::{BTreeMap, RevocationList, VerifiedCertificate};
-use tilo_user_identity::{RevocationEntry, RevocationError};
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationError};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::state) enum RestoreRevocationsError {
@@ -41,10 +41,10 @@ fn verified_union(
 fn restore(
     entries: impl IntoIterator<Item = RevocationEntry>,
     root_for: impl Fn(&[u8; 32]) -> Option<[u8; 32]>,
-    authority: [u8; 32],
+    authority: &DeviceCert,
 ) -> Result<RevocationList, RestoreRevocationsError> {
     let revocations = verified_union(entries, root_for)?;
-    if revocations.is_revoked(&authority) {
+    if revocations.revokes(authority) {
         return Err(RestoreRevocationsError::AuthorityRevoked);
     }
     Ok(revocations)
@@ -54,7 +54,7 @@ pub(in crate::state) fn restore_legacy(
     stored: Vec<RevocationEntry>,
     enrollment: &RevocationList,
     certificates: &BTreeMap<[u8; 32], VerifiedCertificate>,
-    authority: [u8; 32],
+    authority: &DeviceCert,
 ) -> Result<RevocationList, RestoreRevocationsError> {
     restore(
         stored.into_iter().chain(enrollment.iter().cloned()),
@@ -90,7 +90,7 @@ impl BoundedRevocations {
         stored: &[RevocationEntry],
         enrollment: &RevocationList,
         certificates: &super::roster::BoundedRoster,
-        authority: [u8; 32],
+        authority: &DeviceCert,
     ) -> Result<Self, RestoreRevocationsError> {
         let entries = restore(
             stored.iter().chain(enrollment.iter()).cloned(),
@@ -103,8 +103,8 @@ impl BoundedRevocations {
         )?;
         Ok(Self { entries })
     }
-    pub(super) fn is_revoked(&self, key: &[u8; 32]) -> bool {
-        self.entries.is_revoked(key)
+    pub(super) fn revokes(&self, certificate: &DeviceCert) -> bool {
+        self.entries.revokes(certificate)
     }
     pub(super) fn iter(&self) -> impl Iterator<Item = &RevocationEntry> {
         self.entries.iter()

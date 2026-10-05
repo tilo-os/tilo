@@ -711,11 +711,19 @@ impl Rooms {
         operation: &'static str,
     ) -> Result<(), CollaborationError> {
         let host = &self.inner.host.cert;
-        let result = if device.user_public_key != host.user_public_key {
+        let result = if self
+            .revocations()
+            .revocation_of(&host.user_public_key, &host.device_public_key)
+            .is_some()
+        {
+            Err(CollaborationError::new(
+                "this relay's device is revoked: it no longer governs rooms",
+            ))
+        } else if device.user_public_key != host.user_public_key {
             Err(CollaborationError::new(
                 "room administration requires a device of the relay's user",
             ))
-        } else if self.revocations().is_revoked(&device.device_public_key) {
+        } else if self.revocations().revokes(device) {
             Err(CollaborationError::new("device revoked"))
         } else {
             tilo_user_identity::verify_device_cert_at(device, now)

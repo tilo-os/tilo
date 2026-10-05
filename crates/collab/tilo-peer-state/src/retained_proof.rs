@@ -279,7 +279,7 @@ fn identities(
                 .map_err(|_| ProofError::Unknown)?;
         }
     }
-    if revoked.is_revoked(&authority.governor().device_public_key) {
+    if revoked.revokes(authority.governor()) {
         return Err(ProofError::Unknown);
     }
     Ok(())

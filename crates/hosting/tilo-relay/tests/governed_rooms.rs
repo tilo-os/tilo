@@ -1,5 +1,7 @@
 //! A room this relay governs: another person is invited, joins, edits with
-//! the room's owner, sees their presence, and is removed again.
+//! the room's owner, sees their presence, and is removed again; a device the
+//! owner revokes leaves the room on every member, and so does one a
+//! collaborator revokes; a relay whose own device is revoked stops governing.
 
 #![allow(
     clippy::unwrap_used,
@@ -98,10 +100,116 @@ async fn receive_until(
     .await;
 }
 
+/// As [`receive_until`], for a replica that is sent messages it refuses:
+/// a refused message changes nothing and is skipped.
+async fn receive_refusing_until(
+    what: &str,
+    session: &RelayCoeditSession,
+    peer: &mut StatePeer,
+    mut done: impl FnMut(&StatePeer) -> bool,
+) {
+    tilo_test_env::within(what, async {
+        while !done(peer) {
+            if let Inbound::Delta { author, data } =
+                session.recv().await.expect("the session stays open")
+            {
+                let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
+                let origin = if author == peer.authority().device_public_key {
+                    TransportOrigin::RetainedRelayDelta(author)
+                } else {
+                    TransportOrigin::RelayDelta(author)
+                };
+                let _ = peer.receive_from(origin, message, SystemTime::now());
+            }
+        }
+    })
+    .await;
+}
+
+/// Invite `person` to `room` and redeem the invitation on `device`: the
+/// replica its bootstrap gives that device.
+async fn join(
+    admin: &RoomAdminClient,
+    address: &iroh::EndpointAddr,
+    room: &str,
+    person: &TestUser,
+    device: &TestDevice,
+    request: u8,
+) -> StatePeer {
+    let invitation = admin
+        .invite(
+            address.clone(),
+            room,
+            MemberRole::Editor,
+            Some(person.user_pk),
+            Duration::from_secs(600),
+        )
+        .await
+        .unwrap();
+    let verified = decode_and_verify_invitation(
+        &invitation.signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let bootstrap = WorkspaceJoinClient::new(device_endpoint(device).await)
+        .redeem_hint(
+            &verified.grant().transport[0],
+            invitation.signed_invitation.clone(),
+            device.cert.clone(),
+            &device.sk,
+            [request; 32],
+        )
+        .await
+        .unwrap()
+        .bootstrap;
+    let mut peer = StatePeer::new(
+        &bootstrap.room,
+        bootstrap.authority.clone(),
+        bootstrap.certified_roster.clone(),
+        RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    peer.select_admission_v5().unwrap();
+    for bytes in &bootstrap.governance_messages {
+        peer.receive_from(
+            TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
+            postcard::from_bytes(bytes).unwrap(),
+            SystemTime::now(),
+        )
+        .unwrap();
+    }
+    peer
+}
+
+fn revoke(person: &TestUser, device: [u8; 32]) -> tilo_user_identity::RevocationEntry {
+    let mut revocation = tilo_user_identity::RevocationEntry {
+        user_public_key: person.user_pk,
+        revoked_device_public_key: device,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revocation, &person.user_sk).unwrap();
+    revocation
+}
+
+fn hello(
+    device: &TestDevice,
+    revocations: Vec<tilo_user_identity::RevocationEntry>,
+) -> NeighbourMsg {
+    NeighbourMsg::IdentityHello {
+        cert: Box::new(device.cert.clone()),
+        revocations,
+    }
+}
+
 fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
-    let (channel, kind) = tilo_peer_state::transport::retention(message, false).unwrap();
+    let (channel, kind) = neighbour_wire::retention(message, false).unwrap();
     let body = postcard::to_stdvec(message).unwrap();
-    if kind == tilo_peer_state::transport::Retention::Checkpoint {
+    if kind == neighbour_wire::Retention::Checkpoint {
         session.publish_checkpoint(channel, body)
     } else {
         session.publish_retained_delta(channel, body)
@@ -130,6 +238,11 @@ fn text(peer: &StatePeer, key: &str) -> Option<String> {
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_string().ok())
+}
+
+fn member_device(peer: &StatePeer, device: [u8; 32]) -> bool {
+    peer.governed_access(SystemTime::now())
+        .is_ok_and(|access| access.member_devices.contains(&device))
 }
 
 fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
@@ -613,5 +726,575 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
         client.send(relay.node_addr(), command()).await.is_err(),
         "removal must refuse even a formerly successful retry"
     );
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_its_person_revokes_leaves_a_governed_room_on_every_member() {
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let tablet = alice.enrol("alice-tablet", DeviceCapabilities::joined());
+    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let address = relay.node_addr();
+
+    // Alice's laptop creates a room and enters it; her tablet enters too.
+    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
+    let room = admin.create(address.clone(), "Planning").await.unwrap();
+    for device in [&laptop, &tablet] {
+        let client = RoomAdminClient::new(device_endpoint(device).await, device.cert.clone());
+        assert!(matches!(
+            client
+                .send(
+                    address.clone(),
+                    RoomCommand::Enter {
+                        room: room.room.clone()
+                    }
+                )
+                .await
+                .unwrap(),
+            RoomReply::Entered { changed: true }
+        ));
+    }
+
+    // Bob is invited and joins as an editor.
+    let invitation = admin
+        .invite(
+            address.clone(),
+            &room.room,
+            MemberRole::Editor,
+            Some(bob.user_pk),
+            Duration::from_secs(600),
+        )
+        .await
+        .unwrap();
+    let verified = decode_and_verify_invitation(
+        &invitation.signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let bootstrap = WorkspaceJoinClient::new(device_endpoint(&phone).await)
+        .redeem_hint(
+            &verified.grant().transport[0],
+            invitation.signed_invitation.clone(),
+            phone.cert.clone(),
+            &phone.sk,
+            [8; 32],
+        )
+        .await
+        .unwrap()
+        .bootstrap;
+    let mut bob_peer = StatePeer::new(
+        &bootstrap.room,
+        bootstrap.authority.clone(),
+        bootstrap.certified_roster.clone(),
+        RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    bob_peer.select_admission_v5().unwrap();
+    for bytes in &bootstrap.governance_messages {
+        bob_peer
+            .receive_from(
+                TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
+                postcard::from_bytes(bytes).unwrap(),
+                SystemTime::now(),
+            )
+            .unwrap();
+    }
+    let mut alice_peer = StatePeer::new(
+        &room.room,
+        host.cert.clone(),
+        vec![host.cert.clone()],
+        RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    let alice_session = session(&relay, &laptop, room.workspace_id).await;
+    let bob_session = session(&relay, &phone, room.workspace_id).await;
+    let mut presence = Vec::new();
+
+    // Both members see the tablet as a member of the room.
+    receive_until(
+        "Alice's replica admits her tablet and Bob",
+        &alice_session,
+        &mut alice_peer,
+        &mut presence,
+        |peer, _| {
+            member_device(peer, tablet.device_pubkey())
+                && role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
+        },
+    )
+    .await;
+    assert!(member_device(&bob_peer, tablet.device_pubkey()));
+    assert_eq!(
+        role(&bob_peer, tablet.device_pubkey()),
+        Some(collab_types::Role::Owner)
+    );
+    crate::common::wait_until_subscribed(&relay, room.workspace_id, &phone.device_pubkey()).await;
+
+    // A record both members hold, and the tablet's copy of the room as it
+    // stood before it was revoked.
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "topic", "from Alice").unwrap();
+    doc.commit();
+    let message = alice_peer
+        .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
+        .unwrap();
+    publish(&alice_session, &message);
+    receive_until(
+        "Alice's record in Bob's replica",
+        &bob_session,
+        &mut bob_peer,
+        &mut presence,
+        |peer, _| text(peer, "topic").as_deref() == Some("from Alice"),
+    )
+    .await;
+    let mut tablet_copy = bob_peer.clone();
+
+    // Alice revokes the tablet; the relay learns it from its revocation log.
+    let mut revocation = tilo_user_identity::RevocationEntry {
+        user_public_key: alice.user_pk,
+        revoked_device_public_key: tablet.device_pubkey(),
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revocation, &alice.user_sk).unwrap();
+    tilo_relay::store::save_revocations(state.path(), std::slice::from_ref(&revocation)).unwrap();
+
+    // Every member's replica drops the tablet from the room's membership.
+    for (what, session, peer) in [
+        (
+            "Alice's replica drops the revoked tablet",
+            &alice_session,
+            &mut alice_peer,
+        ),
+        (
+            "Bob's replica drops the revoked tablet",
+            &bob_session,
+            &mut bob_peer,
+        ),
+    ] {
+        receive_until(what, session, peer, &mut presence, |peer, _| {
+            !member_device(peer, tablet.device_pubkey())
+        })
+        .await;
+        assert!(peer.revocations().contains(&revocation), "{what}");
+        assert_eq!(role(peer, tablet.device_pubkey()), None, "{what}");
+        assert!(
+            member_device(peer, laptop.device_pubkey()),
+            "Alice's laptop stays"
+        );
+        assert_eq!(
+            role(peer, phone.device_pubkey()),
+            Some(collab_types::Role::Editor),
+            "Bob stays"
+        );
+    }
+
+    // A write the tablet signs from its stale copy is refused.
+    let forged = write(&mut tablet_copy, "topic", "from the tablet", &tablet.sk);
+    assert!(
+        bob_peer
+            .receive_from(
+                TransportOrigin::RelayDelta(tablet.device_pubkey()),
+                forged,
+                SystemTime::now(),
+            )
+            .is_err(),
+        "a revoked device's write is refused"
+    );
+    assert_eq!(text(&bob_peer, "topic").as_deref(), Some("from Alice"));
+
+    // The revoked tablet can neither enter again nor return in a new room.
+    let refused = RoomAdminClient::new(device_endpoint(&tablet).await, tablet.cert.clone());
+    assert!(
+        refused
+            .send(
+                address.clone(),
+                RoomCommand::Enter {
+                    room: room.room.clone()
+                }
+            )
+            .await
+            .is_err()
+    );
+    let later = admin.create(address.clone(), "Later").await.unwrap();
+    admin
+        .send(
+            address.clone(),
+            RoomCommand::Enter {
+                room: later.room.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut later_peer = StatePeer::new(
+        &later.room,
+        host.cert.clone(),
+        vec![host.cert.clone()],
+        RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    let later_session = session(&relay, &laptop, later.workspace_id).await;
+    receive_until(
+        "a room created after the revocation carries it",
+        &later_session,
+        &mut later_peer,
+        &mut presence,
+        |peer, _| peer.revocations().contains(&revocation),
+    )
+    .await;
+    later_session.close().await;
+
+    // The room keeps the revocation across a restart of its relay.
+    alice_session.close().await;
+    bob_session.close().await;
+    relay.shutdown().await;
+    let relay = start(state.path(), &alice, &host).await;
+    let restored = relay.rooms().unwrap().list().await;
+    assert_eq!(restored.len(), 2);
+    let mut fresh = StatePeer::new(
+        &room.room,
+        host.cert.clone(),
+        vec![host.cert.clone()],
+        RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    let laptop_session = session(&relay, &laptop, room.workspace_id).await;
+    receive_until(
+        "a fresh replica learns the revocation from the room's history",
+        &laptop_session,
+        &mut fresh,
+        &mut presence,
+        |peer, _| peer.revocations().contains(&revocation),
+    )
+    .await;
+    assert!(!member_device(&fresh, tablet.device_pubkey()));
+    assert!(member_device(&fresh, laptop.device_pubkey()));
+    laptop_session.close().await;
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_its_collaborator_revokes_leaves_the_room_on_every_member() {
+    let alice = TestUser::fresh("Alice");
+    let carol = TestUser::fresh("Carol");
+    let dave = TestUser::fresh("Dave");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let phone = carol.enrol("carol-phone", DeviceCapabilities::member());
+    let tablet = carol.enrol("carol-tablet", DeviceCapabilities::member());
+    let stranger = dave.enrol("dave-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let address = relay.node_addr();
+
+    // Alice's relay governs the room; Carol joins it with two devices.
+    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
+    let room = admin.create(address.clone(), "Studio").await.unwrap();
+    admin
+        .send(
+            address.clone(),
+            RoomCommand::Enter {
+                room: room.room.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut carol_peer = join(&admin, &address, &room.room, &carol, &phone, 3).await;
+    join(&admin, &address, &room.room, &carol, &tablet, 4).await;
+    let mut alice_peer = StatePeer::new(
+        &room.room,
+        host.cert.clone(),
+        vec![host.cert.clone()],
+        RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    let alice_session = session(&relay, &laptop, room.workspace_id).await;
+    let carol_session = session(&relay, &phone, room.workspace_id).await;
+    receive_refusing_until(
+        "Alice's replica admits both of Carol's devices",
+        &alice_session,
+        &mut alice_peer,
+        |peer| {
+            member_device(peer, phone.device_pubkey())
+                && member_device(peer, tablet.device_pubkey())
+        },
+    )
+    .await;
+    receive_refusing_until(
+        "Carol's replica admits her tablet",
+        &carol_session,
+        &mut carol_peer,
+        |peer| member_device(peer, tablet.device_pubkey()),
+    )
+    .await;
+
+    // What the governor must not publish: a forged revocation, one signed
+    // by an identity that is not in the room, Carol's revocation of a key
+    // that is not hers, here Alice's phone before it enters, and of a key
+    // of hers the room does not know, carried by a member.
+    let alice_phone = alice.enrol("alice-phone", DeviceCapabilities::joined());
+    let mut forged = revoke(&carol, tablet.device_pubkey());
+    forged.signature = [7; 64];
+    let foreign = revoke(&dave, stranger.device_pubkey());
+    let overreach = revoke(&carol, alice_phone.device_pubkey());
+    let unknown = revoke(&carol, [42; 32]);
+    publish(&carol_session, &hello(&phone, vec![forged]));
+    publish(&carol_session, &hello(&phone, vec![foreign.clone()]));
+    publish(
+        &carol_session,
+        &hello(&phone, vec![overreach.clone(), unknown.clone()]),
+    );
+
+    // Carol revokes her tablet; her phone says so as it says who it is.
+    let revocation = revoke(&carol, tablet.device_pubkey());
+    publish(&carol_session, &hello(&phone, vec![revocation.clone()]));
+
+    // Every member's replica takes the revocation from the room's
+    // governance and drops the tablet; Carol's phone and Alice stay.
+    for (what, session, peer) in [
+        ("Alice's replica", &alice_session, &mut alice_peer),
+        ("Carol's replica", &carol_session, &mut carol_peer),
+    ] {
+        receive_refusing_until(what, session, peer, |peer| {
+            peer.governance_revocations().contains(&revocation)
+        })
+        .await;
+        assert!(!member_device(peer, tablet.device_pubkey()), "{what}");
+        assert!(member_device(peer, phone.device_pubkey()), "{what}");
+        assert!(member_device(peer, laptop.device_pubkey()), "{what}");
+        assert_eq!(
+            peer.governance_revocations(),
+            vec![revocation.clone()],
+            "{what}: neither the forged nor the foreign revocation is published"
+        );
+    }
+    assert!(
+        !alice_peer.governance_revocations().contains(&foreign),
+        "a non-member identity's revocation is not published"
+    );
+
+    // Alice's phone, which Carol tried to revoke, still enters the room.
+    let phone_admin = RoomAdminClient::new(
+        device_endpoint(&alice_phone).await,
+        alice_phone.cert.clone(),
+    );
+    assert!(matches!(
+        phone_admin
+            .send(
+                address.clone(),
+                RoomCommand::Enter {
+                    room: room.room.clone(),
+                },
+            )
+            .await
+            .unwrap(),
+        RoomReply::Entered { changed: true }
+    ));
+
+    // Carol's root revoking a key of Alice's counts for no one: a replica
+    // that holds Carol's validly signed revocation of Alice's phone still
+    // counts the phone a member and takes its writes.
+    alice_peer
+        .receive_from(
+            TransportOrigin::RelayDelta(phone.device_pubkey()),
+            hello(&phone, vec![overreach.clone()]),
+            SystemTime::now(),
+        )
+        .unwrap();
+    assert!(alice_peer.revocations().contains(&overreach));
+    receive_refusing_until(
+        "Alice's replica admits her phone",
+        &alice_session,
+        &mut alice_peer,
+        |peer| member_device(peer, alice_phone.device_pubkey()),
+    )
+    .await;
+    assert_eq!(
+        role(&alice_peer, alice_phone.device_pubkey()),
+        Some(collab_types::Role::Owner)
+    );
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "topic", "from Alice's phone").unwrap();
+    doc.commit();
+    let mut phone_copy = alice_peer.clone();
+    let write = phone_copy
+        .publish_incremental(
+            APP,
+            "",
+            doc.save_after(&[]),
+            &alice_phone.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    let taken = alice_peer
+        .receive_from(
+            TransportOrigin::RelayDelta(alice_phone.device_pubkey()),
+            write,
+            SystemTime::now(),
+        )
+        .unwrap();
+    assert_eq!(taken.rejected, 0, "Alice's phone's write is taken");
+
+    // The relay no longer admits the tablet to the room.
+    let refused = async {
+        let client = RelayClient::connect_to_pinned_host(
+            device_endpoint(&tablet).await,
+            relay.node_addr(),
+            tablet.cert.clone(),
+            tablet.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .ok()?;
+        client
+            .send(Envelope::Subscribe {
+                workspace_id: room.workspace_id,
+            })
+            .ok()?;
+        tilo_test_env::within("the relay answers a revoked member", client.recv()).await
+    }
+    .await;
+    assert!(
+        !matches!(refused, Some(Envelope::Ready { .. })),
+        "a revoked collaborator device is not admitted: {refused:?}"
+    );
+    alice_session.close().await;
+    carol_session.close().await;
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relay_whose_device_is_revoked_stops_governing() {
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let tablet = alice.enrol("alice-tablet", DeviceCapabilities::joined());
+    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let address = relay.node_addr();
+    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
+    let room = admin.create(address.clone(), "Ledger").await.unwrap();
+    admin
+        .send(
+            address.clone(),
+            RoomCommand::Enter {
+                room: room.room.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut bob_peer = join(&admin, &address, &room.room, &bob, &phone, 5).await;
+    assert_eq!(
+        role(&bob_peer, phone.device_pubkey()),
+        Some(collab_types::Role::Editor)
+    );
+
+    // What the relay's key would publish to remove Bob, signed before and
+    // sent after the revocation.
+    let mut governor = bob_peer.clone();
+    governor
+        .remove_member(bob.user_pk, &host.sk, SystemTime::now())
+        .unwrap();
+    let removal = governor
+        .durable_mutation_messages(&bob_peer, &host.sk, SystemTime::now(), 1_000)
+        .unwrap();
+
+    // Alice revokes her relay's device; the relay learns it from its log.
+    let revocation = revoke(&alice, host.device_pubkey());
+    tilo_relay::store::save_revocations(state.path(), std::slice::from_ref(&revocation)).unwrap();
+
+    // It no longer governs: it neither admits nor changes anything.
+    let tablet_admin = RoomAdminClient::new(device_endpoint(&tablet).await, tablet.cert.clone());
+    let enter = async |address: iroh::EndpointAddr| {
+        tablet_admin
+            .send(
+                address,
+                RoomCommand::Enter {
+                    room: room.room.clone(),
+                },
+            )
+            .await
+    };
+    tilo_test_env::within("the relay refuses to admit once revoked", async {
+        while enter(address.clone()).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        admin
+            .send(
+                address.clone(),
+                RoomCommand::Remove {
+                    room: room.room.clone(),
+                    request: RemoveMemberRequest {
+                        request_id: [10; 32],
+                        user_public_key: bob.user_pk,
+                    },
+                },
+            )
+            .await
+            .is_err(),
+        "a revoked governor changes no governance"
+    );
+    assert!(
+        admin
+            .invite(
+                address.clone(),
+                &room.room,
+                MemberRole::Viewer,
+                None,
+                Duration::from_secs(600),
+            )
+            .await
+            .is_err(),
+        "a revoked governor issues no invitations"
+    );
+    assert!(
+        admin.create(address.clone(), "After").await.is_err(),
+        "a revoked governor creates no rooms"
+    );
+
+    // Bob learns the revocation from Alice's laptop, as members do, and
+    // refuses what the revoked relay signs from then on.
+    bob_peer
+        .receive_from(
+            TransportOrigin::RelayDelta(laptop.device_pubkey()),
+            hello(&laptop, vec![revocation]),
+            SystemTime::now(),
+        )
+        .unwrap();
+    for message in removal {
+        let _ = bob_peer.receive_from(
+            TransportOrigin::RetainedRelayDelta(host.device_pubkey()),
+            message,
+            SystemTime::now(),
+        );
+    }
+    assert_eq!(
+        role(&bob_peer, phone.device_pubkey()),
+        Some(collab_types::Role::Editor),
+        "Bob's replica refuses the revoked governor's removal"
+    );
+
+    // Restarted, the relay still hosts the room without governing it.
+    relay.shutdown().await;
+    let relay = start(state.path(), &alice, &host).await;
+    assert_eq!(relay.rooms().unwrap().list().await.len(), 1);
+    assert!(enter(relay.node_addr()).await.is_err());
     relay.shutdown().await;
 }

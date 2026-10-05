@@ -679,10 +679,39 @@ fn room_media_verified_independent_revocation_denies_before_promotion() {
     )
     .unwrap();
     assert!(peer.validated_media_policy().is_err());
+    let mut forged = revoked.clone();
+    forged.revoked_at_ns = 1;
+    assert!(
+        peer.publish_governed_revocations(&[forged], &key, now)
+            .is_err(),
+        "an entry its root did not sign is not published"
+    );
+    let mut stranger = tilo_user_identity::RevocationEntry {
+        user_public_key: SigningKey::from_bytes(&[77; 32]).verifying_key().to_bytes(),
+        ..revoked.clone()
+    };
+    tilo_user_identity::sign_revocation_entry(&mut stranger, &SigningKey::from_bytes(&[77; 32]))
+        .unwrap();
+    assert!(
+        peer.publish_governed_revocations(&[stranger], &key, now)
+            .is_err(),
+        "a non-member identity's revocation is not published"
+    );
     assert!(
         peer.publish_governed_revocations(&[revoked.clone()], &key, now)
             .is_err(),
-        "same-root public restriction remains"
+        "a member's revocation of a key the room does not certify is not published"
+    );
+    let mut overreach = tilo_user_identity::RevocationEntry {
+        revoked_device_public_key: members[1].1.device_public_key,
+        ..revoked.clone()
+    };
+    tilo_user_identity::sign_revocation_entry(&mut overreach, &SigningKey::from_bytes(&[110; 32]))
+        .unwrap();
+    assert!(
+        peer.publish_governed_revocations(&[overreach], &key, now)
+            .is_err(),
+        "a member cannot revoke another identity's device"
     );
     let old = peer.admitted_room().unwrap().clone();
     let mut room = old.clone();

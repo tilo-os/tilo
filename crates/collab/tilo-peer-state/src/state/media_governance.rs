@@ -398,7 +398,7 @@ impl StatePeer {
             return Err("enrollment/delegation certificate mismatch".into());
         }
         tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
+        if self.core.revocations.revokes(&cert) {
             return Err("device revoked".into());
         }
         if self

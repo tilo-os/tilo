@@ -41,13 +41,8 @@ fn bounded_revocations_preserves_independent_verified_union_and_earliest_floor()
     enrollment
         .insert(signed(member.device_public_key, 20, &root))
         .unwrap();
-    let union = BoundedRevocations::restore(
-        &stored,
-        &enrollment,
-        &roster,
-        peer.authority().device_public_key,
-    )
-    .unwrap();
+    let union =
+        BoundedRevocations::restore(&stored, &enrollment, &roster, peer.authority()).unwrap();
     drop(stored);
     drop(enrollment);
     assert_eq!(union.iter().count(), 2);
@@ -88,12 +83,7 @@ fn bounded_revocations_rejects_mismatched_root_signature_and_pinned_authority() 
         ),
         (&revoked[..], RestoreRevocationsError::AuthorityRevoked),
     ] {
-        let result = BoundedRevocations::restore(
-            entries,
-            &empty,
-            &roster,
-            peer.authority().device_public_key,
-        );
+        let result = BoundedRevocations::restore(entries, &empty, &roster, peer.authority());
         assert!(matches!(result, Err(error) if error == expected));
     }
 }
@@ -112,13 +102,9 @@ fn bounded_revocations_restores_growing_real_tables() {
         .collect::<Vec<_>>();
     let empty = RevocationList::new();
     for count in [0, 1, 3, 4, 7, 8, 14, 15, 28, 29, 128, 129] {
-        let value = BoundedRevocations::restore(
-            &entries[..count],
-            &empty,
-            &roster,
-            peer.authority().device_public_key,
-        )
-        .unwrap();
+        let value =
+            BoundedRevocations::restore(&entries[..count], &empty, &roster, peer.authority())
+                .unwrap();
         assert_eq!(value.iter().count(), count);
     }
 }

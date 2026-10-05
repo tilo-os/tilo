@@ -37,7 +37,7 @@ pub(super) trait Storage: sealed::Sealed {
         roster: &'a Self::CertificateRoster,
         key: &[u8; 32],
     ) -> Option<&'a VerifiedCertificate>;
-    fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool;
+    fn revokes(revocations: &Self::RevocationUnion, certificate: &DeviceCert) -> bool;
 }
 pub(super) struct LegacyNative;
 pub(super) struct BoundedNative;
@@ -57,8 +57,8 @@ impl Storage for LegacyNative {
     ) -> Option<&'a VerifiedCertificate> {
         roster.get(key)
     }
-    fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool {
-        revocations.is_revoked(key)
+    fn revokes(revocations: &Self::RevocationUnion, certificate: &DeviceCert) -> bool {
+        revocations.revokes(certificate)
     }
 }
 impl Storage for BoundedNative {
@@ -75,8 +75,8 @@ impl Storage for BoundedNative {
     ) -> Option<&'a VerifiedCertificate> {
         roster.verified(key)
     }
-    fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool {
-        revocations.is_revoked(key)
+    fn revokes(revocations: &Self::RevocationUnion, certificate: &DeviceCert) -> bool {
+        revocations.revokes(certificate)
     }
 }
 
@@ -180,7 +180,7 @@ impl<S: Storage> PeerCore<S> {
             .ok_or(CertificateLookupError::Missing)?
             .current_typed(now_ns(now))
             .map_err(CertificateLookupError::Validity)?;
-        if S::is_revoked(&self.revocations, source) {
+        if S::revokes(&self.revocations, certificate) {
             return Err(CertificateLookupError::Revoked);
         }
         Ok(certificate)

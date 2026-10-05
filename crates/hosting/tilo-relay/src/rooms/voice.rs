@@ -662,6 +662,7 @@ impl Rooms {
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
         let (workspace_id, epoch, directions) = {
             let governed = governed.lock().await;
+            governed.governing()?;
             let (epoch, directions) = current(
                 &Policy::read(governed.peer())?,
                 peer.device_public_key,

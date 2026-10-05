@@ -97,7 +97,7 @@ pub(in crate::state) fn restore(
         &stored_revocations,
         revocations,
         &certificates,
-        authority.device_public_key,
+        authority,
     )
     .map_err(|error| revocation_error(&error))?;
     let room_doc = room_bytes
@@ -213,10 +213,7 @@ pub(in crate::state) fn restore(
             .map_err(|error| governance_error(&error))?;
             core.certificates = imported.certificates;
             core.revocations = imported.revocations;
-            if core
-                .revocations
-                .is_revoked(&core.authority.device_public_key)
-            {
+            if core.revocations.revokes(&core.authority) {
                 return Err(invalid(BoundedPeerInvalid::AuthorityRevoked));
             }
             // Shared partial-binding semantics preserve data restore when an

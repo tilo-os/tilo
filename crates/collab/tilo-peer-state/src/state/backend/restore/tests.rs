@@ -402,7 +402,9 @@ fn complete_bounded_restore_preserves_local_revocation_union_and_rejects_governe
         restored
             .core
             .revocations
-            .is_revoked(&entry.revoked_device_public_key)
+            .list()
+            .revocation_of(&entry.user_public_key, &entry.revoked_device_public_key)
+            .is_some()
     );
     let legacy = StatePeer::restore(
         &local_bytes,

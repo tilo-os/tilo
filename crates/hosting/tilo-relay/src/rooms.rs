@@ -21,6 +21,7 @@ mod admissions;
 mod applications;
 mod collaboration;
 mod pages;
+mod revocations;
 mod stewardship;
 #[cfg(test)]
 mod tests;
@@ -119,6 +120,9 @@ struct GovernedRoom {
     stewardship: Option<stewardship::Stewardship>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
+    /// The relay's live revocations. Once they revoke the governing device,
+    /// the room takes no further governance from it.
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
 }
 
 impl RoomRecord {
@@ -136,6 +140,7 @@ impl GovernedRoom {
         name: &str,
         authority: &DeviceCert,
         key: &SigningKey,
+        revocations: &Arc<std::sync::RwLock<RevocationList>>,
         now: SystemTime,
     ) -> Result<Self, String> {
         let name = name.trim();
@@ -177,12 +182,19 @@ impl GovernedRoom {
             stewardship: stewardship(dir, &room, authority, key),
             record,
             peer,
+            revocations: Arc::clone(revocations),
         };
+        this.governing()?;
         this.persist()?;
         Ok(this)
     }
 
-    fn open(path: PathBuf, authority: &DeviceCert, key: &SigningKey) -> Result<Self, String> {
+    fn open(
+        path: PathBuf,
+        authority: &DeviceCert,
+        key: &SigningKey,
+        revocations: &Arc<std::sync::RwLock<RevocationList>>,
+    ) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
         let record: RoomRecord = postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
         if record.version != RECORD_VERSION {
@@ -216,7 +228,29 @@ impl GovernedRoom {
             peer,
             path,
             stewardship,
+            revocations: Arc::clone(revocations),
         })
+    }
+
+    /// Refuse when the identity has revoked the governing device: governance
+    /// belongs to the identity, and a revoked device no longer acts for it,
+    /// so it neither changes, publishes nor admits anything here.
+    fn governing(&self) -> Result<(), String> {
+        let authority = self.peer.authority();
+        let revoked = self
+            .revocations
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revocation_of(&authority.user_public_key, &authority.device_public_key)
+            .is_some()
+            || self.peer.revocations().iter().any(|entry| {
+                (entry.user_public_key, entry.revoked_device_public_key)
+                    == (authority.user_public_key, authority.device_public_key)
+            });
+        if revoked {
+            return Err("this relay's device is revoked: it no longer governs the room".into());
+        }
+        Ok(())
     }
 
     fn persist(&self) -> Result<(), String> {
@@ -228,26 +262,49 @@ impl GovernedRoom {
         &self.peer
     }
 
-    /// Take a member's write to a record the governor has into its copy.
-    /// Not persisted: the relay retains the write, and opening the room
-    /// replays it.
-    fn follow(&mut self, author: [u8; 32], message: tilo_peer_state::NeighbourMsg) {
-        let tilo_peer_state::NeighbourMsg::AppDocument {
-            app_id, record_id, ..
-        } = &message
-        else {
-            return;
-        };
-        if self.peer.document(app_id, record_id).is_none() {
-            return;
+    /// Whether committed governance waits to be published.
+    fn unpublished(&self) -> bool {
+        self.record.published < self.record.outgoing.len()
+    }
+
+    /// Take a member's write to a record the governor has, or a member
+    /// device's identity with the revocations its identity signed, into the
+    /// governor's copy. Not persisted: the relay retains both, and opening
+    /// the room replays them. The copy verifies an identity as any member
+    /// does: the device must be in the governed roster and each revocation
+    /// signed by that device's own root.
+    ///
+    /// Returns whether the copy learned a revocation. A device's identity
+    /// speaks here only for its own devices the room certifies: a revocation
+    /// of any other key is dropped before the copy sees it, so a member
+    /// cannot keep another identity's device, or one not yet in the room,
+    /// out of it.
+    fn follow(&mut self, author: [u8; 32], mut message: tilo_peer_state::NeighbourMsg) -> bool {
+        match &mut message {
+            tilo_peer_state::NeighbourMsg::AppDocument {
+                app_id, record_id, ..
+            } if self.peer.document(app_id, record_id).is_some() => {}
+            tilo_peer_state::NeighbourMsg::IdentityHello { cert, revocations } => {
+                let certified = self.peer.certificates();
+                revocations.retain(|entry| {
+                    entry.user_public_key == cert.user_public_key
+                        && certified.iter().any(|known| {
+                            (known.user_public_key, known.device_public_key)
+                                == (cert.user_public_key, entry.revoked_device_public_key)
+                        })
+                });
+            }
+            _ => return false,
         }
+        let before = self.peer.revocations();
         if let Err(error) = self.peer.receive_from(
             tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
             message,
             SystemTime::now(),
         ) {
-            tracing::debug!(room = %self.record.room, %error, "governor did not take in a record write");
+            tracing::debug!(room = %self.record.room, %error, "governor did not take in a member's message");
         }
+        self.peer.revocations() != before
     }
 
     fn room(&self) -> &str {
@@ -265,6 +322,7 @@ impl GovernedRoom {
     /// Record `state` alone: challenges, invitations, receipts. Governance and
     /// its publication are unchanged.
     fn commit_state(&mut self, state: collaboration::CollaborationState) -> Result<(), String> {
+        self.governing()?;
         let prior = std::mem::replace(&mut self.record.collaboration, state);
         if let Err(error) = self.persist() {
             self.record.collaboration = prior;
@@ -284,6 +342,7 @@ impl GovernedRoom {
         now: SystemTime,
         state: impl FnOnce(&RoomRecord, &StatePeer) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
+        self.governing()?;
         if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
             return Err("a room change cannot replace the room".into());
         }
@@ -449,6 +508,9 @@ struct RoomsInner {
     rooms: AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedRoom>>>>,
     calls: Arc<voice::Calls>,
     page_joins: std::sync::Mutex<pages::PageJoins>,
+    /// A room may lack a revocation or hold an unpublished change: the
+    /// revocation watcher revisits every room.
+    revocations_pending: std::sync::atomic::AtomicBool,
 }
 
 /// The authority governing one room, as the room's workspace refers to it.
@@ -491,7 +553,7 @@ impl Rooms {
             if path.extension().is_none_or(|extension| extension != "room") {
                 continue;
             }
-            let room = GovernedRoom::open(path.clone(), &host.cert, &host.key)
+            let room = GovernedRoom::open(path.clone(), &host.cert, &host.key, &host.revocations)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             rooms.insert(room.room().to_owned(), Arc::new(AsyncMutex::new(room)));
         }
@@ -502,6 +564,7 @@ impl Rooms {
                 rooms: AsyncMutex::new(rooms),
                 calls: Arc::default(),
                 page_joins: std::sync::Mutex::default(),
+                revocations_pending: std::sync::atomic::AtomicBool::new(false),
             }),
         };
         let rooms = this
@@ -515,10 +578,31 @@ impl Rooms {
         for room in rooms {
             let mut room = room.lock().await;
             this.bind(&room).await?;
+            if let Err(error) = room.governing() {
+                tracing::warn!(room = %room.room(), %error, "governed room is not governed here");
+                this.recall(&mut room).await?;
+                // The room's members stay readers of its history, less any
+                // device revoked since its governance last changed.
+                let access = room.peer().governed_access(SystemTime::now())?;
+                this.inner
+                    .host
+                    .access
+                    .replace(room.workspace_id(), true, access)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
             this.settle(&mut room).await?;
             this.recall(&mut room).await?;
+            if let Err(error) = this.carry_revocations(&mut room).await {
+                tracing::warn!(room = %room.room(), %error, "governed room did not take a revocation");
+                this.inner
+                    .revocations_pending
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
         }
         this.watch_calls();
+        this.watch_revocations();
         Ok(this)
     }
 
@@ -534,17 +618,26 @@ impl Rooms {
             name,
             &host.cert,
             &host.key,
+            &host.revocations,
             SystemTime::now(),
         )?;
         self.bind(&room).await?;
-        let summary = room.summary();
+        let id = room.room().to_owned();
         let room = Arc::new(AsyncMutex::new(room));
-        self.inner
-            .rooms
-            .lock()
-            .await
-            .insert(summary.room.clone(), Arc::clone(&room));
-        self.settle(&mut *room.lock().await).await?;
+        self.inner.rooms.lock().await.insert(id, Arc::clone(&room));
+        let mut room = room.lock().await;
+        let settled = match self.settle(&mut room).await {
+            Ok(()) => self.carry_revocations(&mut room).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = settled {
+            self.inner
+                .revocations_pending
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Err(error);
+        }
+        let summary = room.summary();
+        drop(room);
         tracing::info!(room = %summary.room, workspace_id = summary.workspace_id, "governed room created");
         Ok(summary)
     }
@@ -708,6 +801,14 @@ impl Rooms {
                 request,
                 ..
             } if named == room => return self.steward_request(room, author, *request).await,
+            tilo_peer_state::NeighbourMsg::IdentityHello { .. } => {
+                let governed = self.room(room).await.map_err(|error| error.to_string())?;
+                let mut governed = governed.lock().await;
+                if governed.follow(author, message) {
+                    return self.carry_revocations(&mut governed).await;
+                }
+                return Ok(());
+            }
             tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
                 room: named, ack, ..
             } if named == room => {
@@ -790,6 +891,7 @@ impl Rooms {
     ) -> Result<(), String> {
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
         let mut governed = governed.lock().await;
+        governed.governing()?;
         let workspace_id = governed.workspace_id();
         let readers = readers(&governed.peer().governed_access(SystemTime::now())?);
         let Some(stewardship) = governed.stewardship.as_mut() else {
@@ -851,6 +953,7 @@ impl Rooms {
     /// published, then re-derive its calls' participants. Runs after each
     /// decision, before the decision is answered.
     async fn settle(&self, room: &mut GovernedRoom) -> Result<(), String> {
+        room.governing()?;
         let host = &self.inner.host;
         let access: GovernedAccess = room.peer().governed_access(SystemTime::now())?;
         let readers = readers(&access);

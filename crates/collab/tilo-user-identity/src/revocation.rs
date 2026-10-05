@@ -222,6 +222,14 @@ impl RevocationList {
         self.entries.get(&(*user_public_key, *device_public_key))
     }
 
+    /// True if `certificate`'s own identity root revoked its device. Another
+    /// identity's entry for the same key does not count: only the identity
+    /// that certified a device can revoke it.
+    pub fn revokes(&self, certificate: &crate::DeviceCert) -> bool {
+        self.revocation_of(&certificate.user_public_key, &certificate.device_public_key)
+            .is_some()
+    }
+
     /// Iterate over the revocation entries currently held.
     pub fn iter(&self) -> impl Iterator<Item = &RevocationEntry> {
         self.entries.values()

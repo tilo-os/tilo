@@ -577,6 +577,7 @@ impl Rooms {
         let proof_digest = super::collaboration::request_digest(&proof)?;
         let room = self.room(&room_id).await?;
         let mut room = room.lock().await;
+        room.governing().map_err(CollaborationError::new)?;
         if let Some(prior) = self.page_joins().find(&room_id, request_id) {
             if prior.proof_digest != proof_digest {
                 return Err(CollaborationError::new(

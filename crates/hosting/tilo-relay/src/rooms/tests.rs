@@ -264,10 +264,18 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
 fn a_created_room_restores_with_its_governance_and_publication() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let created = GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
+    let created = GovernedRoom::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        &Arc::default(),
+        SystemTime::now(),
+    )
+    .unwrap();
     assert!(!created.record.outgoing.is_empty());
     assert!(created.record.outgoing.iter().all(|entry| entry.checkpoint));
-    let restored = GovernedRoom::open(created.path.clone(), &cert, &key).unwrap();
+    let restored = GovernedRoom::open(created.path.clone(), &cert, &key, &Arc::default()).unwrap();
     assert_eq!(restored.record.room, created.record.room);
     assert_eq!(restored.record.generation, 1);
     assert_eq!(restored.summary().name, "Team");
@@ -278,10 +286,18 @@ fn a_created_room_restores_with_its_governance_and_publication() {
 fn a_room_is_only_restored_by_its_governor() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let created = GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
+    let created = GovernedRoom::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        &Arc::default(),
+        SystemTime::now(),
+    )
+    .unwrap();
     let mut other = cert;
     other.device_label = "someone else".into();
-    assert!(GovernedRoom::open(created.path, &other, &key).is_err());
+    assert!(GovernedRoom::open(created.path, &other, &key, &Arc::default()).is_err());
 }
 
 #[test]
@@ -289,7 +305,17 @@ fn a_workspace_name_must_be_printable_and_short() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     for name in ["", "   ", "a\u{7}b", &"x".repeat(81)] {
-        assert!(GovernedRoom::create(dir.path(), name, &cert, &key, SystemTime::now()).is_err());
+        assert!(
+            GovernedRoom::create(
+                dir.path(),
+                name,
+                &cert,
+                &key,
+                &Arc::default(),
+                SystemTime::now()
+            )
+            .is_err()
+        );
     }
 }
 
@@ -297,8 +323,15 @@ fn a_workspace_name_must_be_printable_and_short() {
 fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let mut room =
-        GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
+    let mut room = GovernedRoom::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        &Arc::default(),
+        SystemTime::now(),
+    )
+    .unwrap();
     room.record.published = room.record.outgoing.len();
     for index in 0..=MAX_PUBLICATION_TAIL {
         room.record.outgoing.push(Publication {
