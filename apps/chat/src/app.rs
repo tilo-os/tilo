@@ -567,6 +567,9 @@ pub struct ChatApp {
     /// history. The renderer owns its exact bounds because wrapping and media
     /// cards determine them.
     pub(crate) scroll: f64,
+    /// Independent, top-origin thread offset and production paint metrics.
+    pub(crate) thread_scroll: ui::widget::Scrollable,
+    pub(crate) thread_body: Rect,
     /// A durable read watermark is only advanced while the reader can actually
     /// see the newest edge. This flag is local presentation state, refreshed
     /// from the measured timeline during paint.
@@ -742,6 +745,9 @@ pub struct ChatApp {
     /// `--shots` only: seed the real minimal starter instead of the demo, so
     /// the honest first-run empty state can be captured.
     shot_starter: bool,
+    /// `--shots` only: stage one canonical Chat summons and its agent-owned
+    /// work record through the same actions live peers use.
+    shot_agent_work: bool,
     /// `--shots` only: a draft to stage into the main composer so a screenshot
     /// can show the composer mid-compose (caret + wrapped text). `None` in every
     /// live/interactive path, so production is unaffected.
@@ -903,6 +909,8 @@ impl ChatApp {
             active_channel: "c_crit".into(),
             focus: Focus::Main,
             scroll: 0.0,
+            thread_scroll: ui::widget::Scrollable::new_vertical().always_visible(),
+            thread_body: Rect::ZERO,
             timeline_at_end: true,
             presented: false,
             read_on_present: false,
@@ -981,6 +989,7 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             shot_starter: false,
+            shot_agent_work: false,
             shot_composer_draft: None,
             is_live: false,
             remote_frames: HashMap::new(),
@@ -1275,6 +1284,12 @@ impl ChatApp {
                 self.right_flap.snap(true);
                 self.call = CallState::default();
             }
+            "agent-work" => {
+                self.thread_open = Some("m_agent_request".into());
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+                self.shot_agent_work = true;
+            }
             "thread-narrow" => {
                 self.thread_open = Some("m_concept".into());
                 self.right_flap.snap(true);
@@ -1421,6 +1436,83 @@ impl ChatApp {
                 self.call = CallState::default();
             }
         }
+    }
+
+    /// Build the `agent-work` visual fixture through Chat's ordinary action
+    /// path. The card is therefore a projection of durable conversation state,
+    /// not screenshot-only paint data.
+    fn stage_agent_work_shot(&mut self, doc: &mut AutoCommit) {
+        use crate::model::{
+            AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
+        };
+
+        const AGENT: &str = "agent-task:11111111-1111-4111-8111-111111111111";
+        self.perform_action(
+            doc,
+            &actions::ChatAction::EnsureUser {
+                id: AGENT.into(),
+                name: "Tide".into(),
+                initials: "TI".into(),
+                color_idx: 6,
+                status: model::Presence::Online.as_str().into(),
+            },
+        );
+        self.perform_action(
+            doc,
+            &actions::send_message_action(
+                "c_crit",
+                "m_agent_request",
+                "u_me",
+                crate::doc::NOW - 120,
+                "@Tide add the revenue curve to Calculator and keep the current bounds.",
+                None,
+                None,
+                vec![crate::mention::Mention {
+                    user: AGENT.into(),
+                    start: 0,
+                    len: "@Tide".len(),
+                    is_agent: true,
+                }],
+            ),
+        );
+        self.perform_action(
+            doc,
+            &actions::ChatAction::AgentAuthored {
+                name: "Tide".into(),
+                send: Box::new(actions::send_message_action(
+                    "c_crit",
+                    "m_agent_reply",
+                    AGENT,
+                    crate::doc::NOW - 115,
+                    "",
+                    Some("m_agent_request".into()),
+                    None,
+                    Vec::new(),
+                )),
+            },
+        );
+        let work = AgentWork::new(
+            AgentWorkState::Doing {
+                did: "Add function".into(),
+                about: "Revenue curve, preserving the current graph bounds".into(),
+            },
+            crate::doc::NOW - 110,
+        )
+        .because(AgentReasoning {
+            route: AgentRoute::Model,
+            why: "Calculator offers the requested graph operation and no bounds change is needed."
+                .into(),
+        })
+        .with_trace(vec![AgentStep::authored(
+            "calculator.workspace",
+            "Add function",
+            AgentStepOutcome::Asked,
+            0,
+        )]);
+        self.perform_action(
+            doc,
+            &actions::set_agent_work_action("c_crit", "m_agent_reply", work, None),
+        );
     }
 
     /// Headless visual-review hook for the real shell → app call handoff.
@@ -2557,7 +2649,7 @@ impl ChatApp {
                     }
                     Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
                     Hit::OpenThread(_) => ("Open message thread".into(), Role::Button, false),
-                    Hit::CloseThread => ("Close thread".into(), Role::Button, false),
+                    Hit::CloseThread => (crate::i18n::t("chat-thread-close"), Role::Button, false),
                     Hit::Reaction { msg, emoji } => {
                         let mine = self
                             .message(msg)
@@ -3196,6 +3288,15 @@ impl Widget for ChatApp {
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        if self.thread_open.is_some()
+            && (self.right_mode == FlapMode::Overlay || matches!(self.focus, Focus::Thread))
+        {
+            return Some(ui::widget::PrimaryScrollRegion {
+                key: "thread",
+                owner_generation: None,
+                metrics: self.thread_scroll.primary_vertical_scroll()?.metrics,
+            });
+        }
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",
             owner_generation: None,
@@ -3227,8 +3328,12 @@ impl Widget for ChatApp {
         if next == region.metrics.offset {
             return PrimaryScrollResult::Unchanged(region);
         }
-        self.scroll = region.metrics.max_scroll() - next;
-        self.timeline_at_end = self.scroll <= 0.5;
+        if region.key == "thread" {
+            self.thread_scroll.set_offset_y(ui::num::f32_of_f64(next));
+        } else {
+            self.scroll = region.metrics.max_scroll() - next;
+            self.timeline_at_end = self.scroll <= 0.5;
+        }
         self.canonical_dirty = true;
         self.primary_vertical_scroll().map_or(
             PrimaryScrollResult::Unsupported,
@@ -3265,6 +3370,9 @@ impl Widget for ChatApp {
     }
 
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        if self.thread_open.is_some() {
+            self.thread_scroll.sync(doc, path);
+        }
         let (doc, _) = ui::doc::document(doc, path);
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
@@ -3307,6 +3415,10 @@ impl Widget for ChatApp {
         } else if !self.canonical {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
+        }
+        if !self.canonical && self.shot_agent_work {
+            self.stage_agent_work_shot(doc);
+            self.shot_agent_work = false;
         }
         self.settle_attachment_picker();
         self.settle_attachment_import(doc);
@@ -3495,26 +3607,22 @@ impl Widget for ChatApp {
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let c = &theme.tokens.colors;
+        let pushed_thread = self.right_mode == FlapMode::Overlay && self.thread_open.is_some();
 
         // Base canvas.
         crate::paint::fill_rect(scene, tf, self.rect, c.surfaces.base);
 
         // Header + conversation occupy the centre column.
-        self.draw_header(scene, tf, tr, theme, &mut hits);
-        let msg_area = self.messages_rect(tr);
-        crate::paint::push_clip(scene, tf, msg_area);
-        self.draw_messages(
-            ui::paint::PaintCtx::new(scene, tf, tr, theme),
-            presence,
-            msg_area,
-            &mut hits,
-        );
-        scene.pop_layer();
-        self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
+        if !pushed_thread {
+            self.draw_conversation(scene, tf, tr, theme, presence, &mut hits);
+        }
 
         // Right flap (members / thread). In overlay mode a scrim dims the
         // content behind the floating panel.
-        if self.right_mode == FlapMode::Overlay && self.right_flap.reveal() > 0.001 {
+        if !pushed_thread
+            && self.right_mode == FlapMode::Overlay
+            && self.right_flap.reveal() > 0.001
+        {
             let a = (self.right_flap.reveal() * 0.55) as f32;
             crate::paint::fill_rect(
                 scene,
@@ -3536,7 +3644,8 @@ impl Widget for ChatApp {
         }
 
         // Left flap (rail + channel sidebar). Overlay scrim first.
-        if self.left_mode == FlapMode::Overlay && self.left_flap.reveal() > 0.001 {
+        if !pushed_thread && self.left_mode == FlapMode::Overlay && self.left_flap.reveal() > 0.001
+        {
             let a = (self.left_flap.reveal() * 0.55) as f32;
             crate::paint::fill_rect(
                 scene,
@@ -3546,7 +3655,11 @@ impl Widget for ChatApp {
             );
             ChatApp::push_hit(&mut hits, self.rect, Hit::Dismiss);
         }
-        if self.left_flap_open() || self.left_flap.reveal() > 0.001 {
+        // A narrow thread is a pushed detail view that owns the whole app
+        // rect. Painting the docked navigation after it would cover the
+        // thread's identity, Back control and leading text even though all
+        // three remain hit-testable underneath.
+        if !pushed_thread && (self.left_flap_open() || self.left_flap.reveal() > 0.001) {
             self.draw_rail(scene, tf, tr, theme, &mut hits);
             self.draw_sidebar(scene, tf, tr, theme, presence, &mut hits);
         }
@@ -3707,14 +3820,28 @@ impl Widget for ChatApp {
         let conversation = self
             .messages
             .iter()
-            .filter(|message| message.parent.is_none())
+            .filter(|message| {
+                if self.right_mode == FlapMode::Overlay && self.thread_open.is_some() {
+                    Some(&message.id) == self.thread_open.as_ref()
+                        || message.parent.as_ref() == self.thread_open.as_ref()
+                } else {
+                    message.parent.is_none() || message.parent.as_ref() == self.thread_open.as_ref()
+                }
+            })
             .map(|message| {
                 let author = self
                     .user(&message.author)
                     .map_or("Unknown person", |user| user.name.as_str());
-                AccessNode::new(Role::ListItem)
+                let node = AccessNode::new(Role::ListItem)
                     .with_name(format!("{author}: {}", message.text))
-                    .with_hashed_key((&message.id, "message"))
+                    .with_hashed_key((&message.id, "message"));
+                if let Some(work) = &message.work {
+                    node.with_description(crate::render_chat::agent_work_accessible_description(
+                        work,
+                    ))
+                } else {
+                    node
+                }
             })
             .collect();
         let conversation = AccessNode::new(Role::List)
@@ -3954,6 +4081,7 @@ impl Widget for ChatApp {
 
     fn needs_animation_frame(&self) -> bool {
         self.read_on_present
+            || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
             || self.flap_animating
             || self.call_chrome_motion.animating
             || self.call.placement.is_dragging()
@@ -3964,15 +4092,22 @@ impl Widget for ChatApp {
 
     fn wants_pointer_capture(&self) -> bool {
         self.call.placement.is_dragging()
+            || (self.thread_open.is_some() && self.thread_scroll.wants_pointer_capture())
     }
 
     fn needs_redraw(&self) -> bool {
-        !self.canonical || self.canonical_dirty
+        !self.canonical
+            || self.canonical_dirty
+            || self
+                .thread_open
+                .as_ref()
+                .is_some_and(|_| self.thread_scroll.needs_redraw())
     }
     fn mark_drawn(&mut self) {
         self.canonical_dirty = false;
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
+        self.thread_scroll.mark_drawn();
     }
 }
 

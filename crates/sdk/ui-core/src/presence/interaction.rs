@@ -18,7 +18,7 @@ use crate::time::{Duration, Instant};
 use tilo_actions::{InteractionActorKind, InteractionPhase, InvocationId, SemanticInteraction};
 use vello::{
     Scene,
-    kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke},
+    kurbo::{Affine, Point, Rect, RoundedRect, Stroke},
     peniko::{Color, Fill},
 };
 
@@ -385,14 +385,20 @@ impl PresenceCtx {
         let is_agent = interaction.actor.kind == InteractionActorKind::Agent;
         let glyph_center = Point::new(rect.x0 + 15.0, rect.y0 + 16.0);
         let glyph_outline = theme.on_surface(actor_color).ink;
-        draw_actor_glyph(
-            scene,
-            transform,
-            glyph_center,
-            actor_color,
-            glyph_outline,
-            is_agent,
-        );
+        if is_agent {
+            crate::agent_identity::draw_agent_identity_mark(
+                scene,
+                transform,
+                Rect::from_center_size(glyph_center, (10.0, 10.0)),
+                actor_color,
+                theme,
+                crate::agent_identity::AgentIdentityStyle::Solid,
+            );
+        } else {
+            let dot = vello::kurbo::Circle::new(glyph_center, 4.5);
+            scene.fill(Fill::NonZero, transform, actor_color, None, &dot);
+            scene.stroke(&Stroke::new(1.2), transform, glyph_outline, None, &dot);
+        }
         let actor_label = actor_label(self, &user, is_agent);
         let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let first = tr.elide_to_width(&actor_label, size, (rect.width() - 40.0) as f32);
@@ -493,31 +499,6 @@ fn phase_color(phase: &InteractionPhase, theme: &Theme, actor: Color) -> Color {
         InteractionPhase::Locating
         | InteractionPhase::Applying
         | InteractionPhase::Progress { .. } => actor,
-    }
-}
-
-fn draw_actor_glyph(
-    scene: &mut Scene,
-    transform: Affine,
-    center: Point,
-    color: Color,
-    outline: Color,
-    is_agent: bool,
-) {
-    if is_agent {
-        let radius = 5.0;
-        let mut diamond = BezPath::new();
-        diamond.move_to((center.x, center.y - radius));
-        diamond.line_to((center.x + radius, center.y));
-        diamond.line_to((center.x, center.y + radius));
-        diamond.line_to((center.x - radius, center.y));
-        diamond.close_path();
-        scene.fill(Fill::NonZero, transform, color, None, &diamond);
-        scene.stroke(&Stroke::new(1.2), transform, outline, None, &diamond);
-    } else {
-        let dot = vello::kurbo::Circle::new(center, 4.5);
-        scene.fill(Fill::NonZero, transform, color, None, &dot);
-        scene.stroke(&Stroke::new(1.2), transform, outline, None, &dot);
     }
 }
 
