@@ -278,7 +278,7 @@ fn surface() -> UiDocument {
                 id: "save".into(),
                 label: "Save".into(),
                 accessible_name: None,
-                tooltip: Some("Record a save request in the document".into()),
+                tooltip: Some("Report a save request to the app".into()),
                 on_click_path: Some("save-requested".into()),
                 click_value: Some("yes".into()),
                 navigate: None,

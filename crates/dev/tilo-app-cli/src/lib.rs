@@ -3059,17 +3059,16 @@ mod tests {{
             expanded: vec![1, 2],
             ..{type_name}Config::default()
         }};
+        let activated = ui::LocalState::new(None::<String>);
+        let rows_activated = activated.clone();
         let tree = {module_name}("example-tree", model, &config)
-            .with_row_delegate(|model, id, _depth| {{
+            .with_row_delegate(move |model, id, _depth| {{
                 let label = model.label(id).unwrap_or_default();
+                let activated = rows_activated.clone();
                 Box::new(ui::row![
                     Text::new(label),
-                    Button::new(
-                        &format!("more-{{id}}"),
-                        "More",
-                        Some("row-action-requested"),
-                    )
-                    .with_click_value(id.to_string()),
+                    Button::new(&format!("more-{{id}}"), "More", None)
+                        .on_view(move || activated.set(Some(id.to_string()))),
                 ])
             }})
             .reorderable();
@@ -3094,7 +3093,7 @@ mod tests {{
         .expect("selected row semantics");
         app.perform_named("more-3", &Action::Activate)
             .expect("delegated control remains independently interactive");
-        assert!(app.dump_json().contains("row-action-requested"));
+        assert_eq!(activated.get().as_deref(), Some("3"));
     }}
 }}
 "#
@@ -3201,21 +3200,21 @@ mod tests {{
             selection,
             ..{type_name}Config::default()
         }};
+        let activated = ui::LocalState::new(None::<String>);
+        let rows_activated = activated.clone();
         let list = {module_name}(
             "example-list",
             SparseItems {{ count: ITEM_COUNT }},
             &config,
-            |_model, index, key, _state| {{
+            move |_model, index, key, _state| {{
                 let height = if index % 5 == 0 {{ 72.0 }} else {{ 44.0 }};
+                let activated = rows_activated.clone();
+                let key = key.to_string();
                 Box::new(Container::new().with_height(height).with_child(Box::new(
                     ui::row![
                         Text::new(&format!("Item {{index}}")),
-                        Button::new(
-                            &format!("open-{{key}}"),
-                            "Open",
-                            Some("open-requested"),
-                        )
-                        .with_click_value(key.to_string()),
+                        Button::new(&format!("open-{{key}}"), "Open", None)
+                            .on_view(move || activated.set(Some(key.clone()))),
                     ],
                 )))
             }},
@@ -3246,7 +3245,7 @@ mod tests {{
         let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
         let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
         assert!((first - second).abs() > 1.0, "delegate heights drive geometry");
-        assert!(app.dump_json().contains("open-requested"));
+        assert_eq!(activated.get().as_deref(), Some("0"));
     }}
 }}
 "#
@@ -3360,19 +3359,18 @@ mod tests {{
     #[test]
     fn component_keeps_sparse_variable_interactive_table_rows() {{
         const ROW_COUNT: usize = 100_000_000;
+        let activated = ui::LocalState::new(None::<String>);
+        let cells_activated = activated.clone();
         let columns = vec![
             ColumnDef::<Row>::new("name", "Name", ColumnWidth::Flex(1.0))
                 .with_text(|row| row.name.clone()),
             ColumnDef::<Row>::new("actions", "Actions", ColumnWidth::Fixed(112.0))
-                .with_widget(|_row, index| {{
+                .with_widget(move |_row, index| {{
+                    let activated = cells_activated.clone();
                     Box::new(
-                        Button::new(
-                            &format!("open-{{index}}"),
-                            "Open",
-                            Some("open-requested"),
-                        )
-                        .with_click_value(index.to_string())
-                        .fit_content(if index == 0 {{ 56.0 }} else {{ 28.0 }}),
+                        Button::new(&format!("open-{{index}}"), "Open", None)
+                            .on_view(move || activated.set(Some(index.to_string())))
+                            .fit_content(if index == 0 {{ 56.0 }} else {{ 28.0 }}),
                     )
                 }}),
         ];
@@ -3416,7 +3414,7 @@ mod tests {{
         let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
         let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
         assert!((first - second).abs() > 1.0, "measured rows drive geometry");
-        assert!(app.dump_json().contains("open-requested"));
+        assert_eq!(activated.get().as_deref(), Some("3"));
     }}
 }}
 "#
