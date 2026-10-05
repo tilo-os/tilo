@@ -1,0 +1,383 @@
+//! One person-owned directory shared by Contacts and messaging applications.
+//! Names are labels. Only explicit, confirmed endpoint associations resolve
+//! identity; concurrent conflicting confirmations remain ambiguous and refuse
+//! routing rather than choosing a winner. No credentials or histories live here.
+
+use tilo_resource::{Collection, Id, Json, Model, Refusal, SharedRecord, resource};
+
+#[cfg(test)]
+mod tests;
+
+pub mod routing;
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct ContactDirectory {
+    pub people: Collection<Person>,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Person {
+    /// Stable Contacts UUID, also the collection key. Never derived from name.
+    pub label: String,
+    pub removed: bool,
+    /// International phone hints: candidate discovery only, never proof.
+    pub phones: Json<Vec<String>>,
+    pub endpoints: Collection<Endpoint>,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Endpoint {
+    pub service: String,
+    pub recipient: String,
+    /// Provider namespace; empty only for the compatibility endpoint API.
+    pub scope: String,
+    /// Provider identity-key fingerprint or assignment generation.
+    pub revision: String,
+    /// Retained tombstone; the association id must never be reassigned.
+    pub removed: bool,
+}
+
+#[resource(kind = "tilo.contacts.identities", label = "Contact identities")]
+impl ContactDirectory {
+    /// Update the label of a Contacts identity, without merging similar names
+    /// or reviving an identity that was deleted.
+    #[action(external)]
+    pub fn project_contact(&mut self, person: Id, label: String) -> Result<(), Refusal> {
+        validate_person(&person)?;
+        if label.len() > 4096 {
+            return Err(refused());
+        }
+        if let Some(existing) = self.people.get_mut(&person) {
+            if !existing.removed {
+                existing.label = label;
+            }
+        } else {
+            self.people.push(
+                person,
+                Person {
+                    label,
+                    ..Person::default()
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Tombstone a removed Contacts identity. Delayed projections cannot
+    /// recreate it and its endpoints cannot be used for sending.
+    #[action(external)]
+    pub fn remove_contact(&mut self, person: Id) -> Result<(), Refusal> {
+        validate_person(&person)?;
+        if let Some(existing) = self.people.get_mut(&person) {
+            existing.removed = true;
+        } else {
+            self.people.push(
+                person,
+                Person {
+                    removed: true,
+                    ..Person::default()
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Explicitly confirm that this service recipient belongs to this person.
+    /// An uncertain candidate never becomes an association merely by appearing
+    /// in a contact search or having a matching name/phone number.
+    #[action(destructive)]
+    pub fn confirm_endpoint(
+        &mut self,
+        person: Id,
+        endpoint: Id,
+        service: String,
+        recipient: String,
+    ) -> Result<(), Refusal> {
+        self.associate(
+            &person,
+            endpoint,
+            service,
+            String::new(),
+            recipient,
+            String::new(),
+        )
+    }
+
+    /// Confirm the exact provider-scoped account and observed identity revision.
+    /// This is an address-book decision, not cryptographic proof or permission.
+    #[action(destructive)]
+    pub fn confirm_account(
+        &mut self,
+        person: Id,
+        endpoint: Id,
+        service: String,
+        scope: String,
+        recipient: String,
+        revision: String,
+    ) -> Result<(), Refusal> {
+        if scope.is_empty() || revision.is_empty() {
+            return Err(refused());
+        }
+        self.associate(&person, endpoint, service, scope, recipient, revision)
+    }
+
+    /// Project phone hints from Contacts. These can suggest candidates only.
+    #[action(external)]
+    pub fn project_phones(&mut self, person: Id, phones: Vec<String>) -> Result<(), Refusal> {
+        if phones.len() > 128 || phones.iter().any(|phone| phone.len() > 512) {
+            return Err(refused());
+        }
+        let selected = self
+            .people
+            .get_mut(&person)
+            .filter(|person| !person.removed)
+            .ok_or_else(refused)?;
+        selected.phones = Json(phones);
+        Ok(())
+    }
+
+    /// Remove a reviewed association. No implicit transfer to another person.
+    #[action(destructive)]
+    pub fn forget_endpoint(&mut self, person: Id, endpoint: Id) -> Result<(), Refusal> {
+        let person = self
+            .people
+            .get_mut(&person)
+            .filter(|person| !person.removed)
+            .ok_or_else(refused)?;
+        person
+            .endpoints
+            .get_mut(&endpoint)
+            .ok_or_else(refused)?
+            .removed = true;
+        Ok(())
+    }
+}
+
+impl ContactDirectory {
+    fn associate(
+        &mut self,
+        person: &Id,
+        endpoint: Id,
+        service: String,
+        scope: String,
+        recipient: String,
+        revision: String,
+    ) -> Result<(), Refusal> {
+        validate_endpoint(&service, &recipient)?;
+        if endpoint.as_str().trim().is_empty()
+            || endpoint.as_str().len() > 512
+            || !valid_metadata(&scope)
+            || !valid_metadata(&revision)
+            || scope.is_empty() != revision.is_empty()
+        {
+            return Err(refused());
+        }
+        if self.people.iter().any(|(id, candidate)| {
+            candidate.endpoints.iter().any(|(key, value)| {
+                (key == &endpoint && (id != person || value.removed || candidate.removed))
+                    || (!candidate.removed
+                        && id != person
+                        && !value.removed
+                        && value.service == service
+                        && value.scope == scope
+                        && value.recipient == recipient)
+            })
+        }) {
+            return Err(Refusal::from(
+                "this account association already exists; review and revoke it first",
+            ));
+        }
+        let selected = self
+            .people
+            .get_mut(person)
+            .filter(|person| !person.removed)
+            .ok_or_else(refused)?;
+        if let Some(existing) = selected.endpoints.get(&endpoint) {
+            if existing.removed
+                || existing.service != service
+                || existing.scope != scope
+                || existing.recipient != recipient
+                || existing.revision != revision
+            {
+                return Err(refused());
+            }
+            return Ok(());
+        }
+        if selected.endpoints.values().any(|value| {
+            !value.removed
+                && value.service == service
+                && value.scope == scope
+                && value.recipient == recipient
+        }) {
+            return Err(Refusal::from(
+                "revoke the previous identity revision before confirming another",
+            ));
+        }
+        selected.endpoints.push(
+            endpoint,
+            Endpoint {
+                service,
+                scope,
+                recipient,
+                revision,
+                removed: false,
+            },
+        );
+        Ok(())
+    }
+}
+
+impl ContactDirectory {
+    /// Resolve one exact endpoint only if all replicas currently agree on its
+    /// unique person. This recheck belongs immediately before freezing a send.
+    ///
+    /// # Errors
+    /// Refuses missing/deleted identities or conflicting confirmations.
+    pub fn resolve(&self, service: &str, recipient: &str) -> Result<Id, Refusal> {
+        validate_endpoint(service, recipient)?;
+        let mut matches = self
+            .people
+            .iter()
+            .filter(|(_, person)| {
+                !person.removed
+                    && person.endpoints.values().any(|endpoint| {
+                        !endpoint.removed
+                            && endpoint.scope.is_empty()
+                            && endpoint.revision.is_empty()
+                            && endpoint.service == service
+                            && endpoint.recipient == recipient
+                    })
+            })
+            .map(|(id, _)| id.clone());
+        let person = matches.next().ok_or_else(refused)?;
+        if matches.next().is_some() {
+            return Err(Refusal::from(
+                "conflicting contact associations require review",
+            ));
+        }
+        Ok(person)
+    }
+
+    /// Revision-aware resolver for provider adapters. Never silently downgrades
+    /// a versioned association to the compatibility endpoint API.
+    ///
+    /// # Errors
+    /// Refuses malformed, missing, revoked, ambiguous or changed identities.
+    pub fn resolve_account(
+        &self,
+        service: &str,
+        scope: &str,
+        recipient: &str,
+        revision: &str,
+    ) -> Result<Id, Refusal> {
+        validate_endpoint(service, recipient)?;
+        if scope.is_empty()
+            || revision.is_empty()
+            || !valid_metadata(scope)
+            || !valid_metadata(revision)
+        {
+            return Err(refused());
+        }
+        let mut matching = self
+            .people
+            .iter()
+            .filter(|(_, person)| !person.removed)
+            .flat_map(|(id, person)| {
+                person
+                    .endpoints
+                    .values()
+                    .filter(move |endpoint| {
+                        !endpoint.removed
+                            && endpoint.service == service
+                            && endpoint.scope == scope
+                            && endpoint.recipient == recipient
+                    })
+                    .map(move |endpoint| (id, endpoint))
+            });
+        let (person, endpoint) = matching.next().ok_or_else(refused)?;
+        if endpoint.revision != revision
+            || matching.any(|(id, endpoint)| id != person || endpoint.revision != revision)
+        {
+            return Err(Refusal::from(
+                "account identity changed or associations conflict; confirm again",
+            ));
+        }
+        Ok(person.clone())
+    }
+
+    /// Phone matches always remain candidates, including a unique match.
+    pub fn phone_candidates(&self, phone: &str) -> Vec<Id> {
+        let Some(phone) = canonical_phone(phone) else {
+            return Vec::new();
+        };
+        let mut candidates = self
+            .people
+            .iter()
+            .filter(|(_, person)| {
+                !person.removed
+                    && person
+                        .phones
+                        .0
+                        .iter()
+                        .any(|value| canonical_phone(value).as_ref() == Some(&phone))
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        candidates
+    }
+}
+
+impl SharedRecord for ContactDirectory {
+    const OWNER: &'static str = "so.tilo.contacts";
+    const EDITORS: &'static [&'static str] = &["so.tilo.messages"];
+}
+
+fn validate_person(person: &Id) -> Result<(), Refusal> {
+    let id = uuid::Uuid::parse_str(person.as_str()).map_err(|_| refused())?;
+    if id.is_nil() {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+fn refused() -> Refusal {
+    Refusal::from("contact identity or recipient is unavailable")
+}
+
+fn validate_endpoint(service: &str, recipient: &str) -> Result<(), Refusal> {
+    if !["tilo", "whatsapp", "signal", "sms"].contains(&service)
+        || recipient.is_empty()
+        || recipient.len() > 512
+        || recipient
+            .chars()
+            .any(|value| value.is_control() || value.is_whitespace())
+    {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+fn valid_metadata(value: &str) -> bool {
+    value.len() <= 512
+        && !value.chars().any(char::is_control)
+        && (value.is_empty() || !value.trim().is_empty())
+}
+
+/// Strict international spelling only; no country or extension guessing.
+pub fn canonical_phone(value: &str) -> Option<String> {
+    let value = value.trim();
+    if !value.starts_with('+') || value.len() > 64 {
+        return None;
+    }
+    let mut digits = String::new();
+    for c in value.chars().skip(1) {
+        if c.is_ascii_digit() {
+            digits.push(c);
+        } else if !matches!(c, ' ' | '-' | '(' | ')' | '.') {
+            return None;
+        }
+    }
+    (digits.len() >= 2 && digits.len() <= 15 && !digits.starts_with('0'))
+        .then(|| format!("+{digits}"))
+}

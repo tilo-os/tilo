@@ -1314,6 +1314,8 @@ pub struct ContactsApp {
     /// The surface's own jobs: an export of the contacts chosen in the
     /// export dialog runs here.
     pub(crate) jobs: Option<ui::framework::Jobs<Contacts>>,
+    pub(crate) identity_directory:
+        Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
     /// The form of the last save, until the book presents it: a save the
     /// door refuses reopens it with the person's text intact.
     unconfirmed_save: Option<EditForm>,
@@ -1384,6 +1386,7 @@ impl ContactsApp {
             pending_conflict_resolution: None,
             dispatcher: None,
             jobs: None,
+            identity_directory: None,
             unconfirmed_save: None,
         }
     }
