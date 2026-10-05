@@ -1085,16 +1085,10 @@ fn reconcile_capability_topology(
 impl DrmDispatchState {
     /// Keep the cursor planes' offset in step with the image they show.
     fn sync_cursor_hotspot(&mut self) {
-        let hotspot = self
-            .pointer_image
-            .bitmap(self.accessibility.effective_cursor_size())
-            .map_or((0, 0), |bitmap| {
-                (
-                    i32::try_from(bitmap.hotspot.0).unwrap_or(0),
-                    i32::try_from(bitmap.hotspot.1).unwrap_or(0),
-                )
-            });
-        self.hw_cursor.set_hotspot(hotspot);
+        self.hw_cursor.set_image_hotspot(
+            &self.pointer_image,
+            self.accessibility.effective_cursor_size(),
+        );
     }
 
     /// Build the initial dispatch state from everything [`DrmRuntime::new`]
@@ -6342,6 +6336,47 @@ mod tests {
                     .failed_card_close_paths
                     .contains(Path::new("/dev/dri/card0")),
                 "the original path stays diagnostic, but unknown new paths are blocked too"
+            );
+        }
+    }
+
+    #[test]
+    fn client_cursor_hotspot_is_not_scaled_twice_by_the_cursor_plane() {
+        use crate::compositor::cursor::{CursorBitmap, CursorShape, PointerImage};
+        for scale in [1.0, 1.5, 2.0] {
+            let client =
+                CursorBitmap::from_client(&vec![255; 32 * 32 * 4], 32, 32, (4, 6), 2, scale)
+                    .expect("a valid client cursor buffer");
+            let expected = (
+                i32::try_from(client.hotspot.0).unwrap(),
+                i32::try_from(client.hotspot.1).unwrap(),
+            );
+            let mut state = DrmDispatchState {
+                pointer_image: PointerImage::Client(std::sync::Arc::new(client)),
+                ..Default::default()
+            };
+            state.sync_cursor_hotspot();
+            assert_eq!(
+                state.hw_cursor.hotspot_pixels(scale),
+                expected,
+                "the plane must honor the client bitmap's actual pixel hotspot at {scale}x"
+            );
+            state.pointer_image = PointerImage::Shape(CursorShape::Text);
+            state.sync_cursor_hotspot();
+            let named = crate::compositor::cursor::bitmap(
+                CursorShape::Text,
+                crate::compositor::cursor::pixel_size(
+                    state.accessibility.effective_cursor_size(),
+                    scale,
+                ),
+            );
+            assert_eq!(
+                state.hw_cursor.hotspot_pixels(scale),
+                (
+                    i32::try_from(named.hotspot.0).unwrap(),
+                    i32::try_from(named.hotspot.1).unwrap(),
+                ),
+                "named cursors must still follow the output density"
             );
         }
     }
