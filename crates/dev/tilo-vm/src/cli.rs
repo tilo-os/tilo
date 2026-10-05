@@ -674,6 +674,14 @@ pub enum GamepadCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum VmCommand {
+    /// Carry the canonical semantic action operations over the owner's authenticated device route.
+    Actions {
+        /// The registered device (default: the one this worktree uses).
+        #[arg(long = "device")]
+        name: Option<String>,
+        #[command(subcommand)]
+        command: DeviceActionCommand,
+    },
     /// List registered VMs and which one this worktree uses.
     #[command(after_help = "Examples:\n  tilo-vm vm list")]
     List,
@@ -839,6 +847,20 @@ pub enum VmCommand {
         /// Arguments for the hypervisor's control tool.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
+    },
+}
+
+/// Transport-only spelling of the existing console semantic operations.
+#[derive(Debug, Subcommand)]
+pub enum DeviceActionCommand {
+    /// List the device's declared actions and typed arguments.
+    List { query: Option<String> },
+    /// Invoke a declared action; private arguments come only from stdin.
+    Invoke {
+        provider: String,
+        id: String,
+        #[arg(long, required = true)]
+        args_stdin: bool,
     },
 }
 
