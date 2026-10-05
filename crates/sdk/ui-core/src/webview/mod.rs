@@ -135,6 +135,33 @@ impl NavigationDirection {
     }
 }
 
+/// An owned main-frame navigation. Its final URL may differ after redirects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavigationCommand {
+    Navigate { url: String },
+    Back,
+    Forward,
+    Reload,
+    HistoryEntry { history_request_id: u32, id: u32 },
+}
+
+impl NavigationCommand {
+    pub(crate) fn valid(&self) -> bool {
+        match self {
+            Self::Navigate { url } => !url.is_empty() && url.len() <= 8192,
+            Self::HistoryEntry {
+                history_request_id,
+                id,
+            } => navigation_request_id(*history_request_id) && navigation_request_id(*id),
+            Self::Back | Self::Forward | Self::Reload => true,
+        }
+    }
+}
+
+pub(crate) fn navigation_request_id(id: u32) -> bool {
+    id > 0 && i32::try_from(id).is_ok()
+}
+
 /// Bounded snapshot for one committed top-level origin and document generation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SiteStatus {
@@ -172,6 +199,15 @@ pub enum WebViewCommand {
     },
     /// Load the given (already normalised) URL.
     Navigate(String),
+    /// Transport representation only: use `WebViewEngine::navigate_owned`
+    /// to observe admission before relying on an owned outcome.
+    ScopedNavigation {
+        request_id: u32,
+        command: NavigationCommand,
+    },
+    CancelScopedNavigation {
+        request_id: u32,
+    },
     RequestNavigationHistory {
         request_id: u32,
         direction: NavigationDirection,
@@ -423,6 +459,12 @@ pub enum WebViewEvent {
     /// Load progress in `0.0..=1.0`.
     LoadProgress(f64),
     LoadFinished,
+    /// A terminal outcome for an admitted request, independent of visual load events.
+    NavigationOutcome {
+        request_id: u32,
+        uri: String,
+        error: Option<String>,
+    },
     /// Completion tagged with its document URL, so stale startup loads can be ignored.
     LoadFinishedAt {
         uri: String,
@@ -522,6 +564,23 @@ pub trait WebViewEngine: Send + Sync {
 
     /// Enqueue a command. Must never block on engine work.
     fn send(&self, cmd: WebViewCommand);
+
+    /// Admit a navigation and reserve its terminal outcome. IDs must increase
+    /// strictly within this engine's lifetime and fit a positive CEF signed integer.
+    ///
+    /// # Errors
+    /// Returns an error without admission if the backend, request or capacity
+    /// cannot support the operation. A successful admission completes only with
+    /// the matching `NavigationOutcome`, or is invalidated by cancellation.
+    fn navigate_owned(&self, request_id: u32, command: NavigationCommand) -> Result<(), String> {
+        if !navigation_request_id(request_id) || !command.valid() {
+            return Err("Invalid owned navigation request".into());
+        }
+        if let Some(engine) = self.wrapped() {
+            return engine.navigate_owned(request_id, command);
+        }
+        Err("This engine does not support owned navigation".into())
+    }
 
     fn frames(&self) -> FrameSlot;
 
