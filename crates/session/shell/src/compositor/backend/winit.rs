@@ -596,10 +596,13 @@ impl ApplicationHandler for Inner {
             | WindowEvent::MouseWheel { .. }) => {
                 // A nested window sees one host keyboard and pointer, so
                 // the event class is all it can report about the devices.
-                self.event_buffer.push(BackendEvent::InputUsed(match ev {
-                    WindowEvent::KeyboardInput { .. } => ui::InputModality::Keyboard,
-                    _ => ui::InputModality::Pointer,
-                }));
+                self.event_buffer.push(match ev {
+                    WindowEvent::CursorMoved { .. } => BackendEvent::PointerMotionUsed,
+                    WindowEvent::KeyboardInput { .. } => {
+                        BackendEvent::InputUsed(ui::InputModality::Keyboard)
+                    }
+                    _ => BackendEvent::InputUsed(ui::InputModality::Pointer),
+                });
                 // Carried whole so `compositor::native::run` can dispatch
                 // via `FrameBuilder::dispatch_event` — same wire scripted
                 // input uses.
