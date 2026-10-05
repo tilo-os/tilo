@@ -7132,7 +7132,11 @@ impl ShellOverlayHost {
     /// App cards resolve through the production Applications provider so an
     /// available-but-not-yet-installed app follows the same acquisition path
     /// as the command palette. Chrome cards use their existing overlays.
-    fn harvest_empty_workspace_launchpad(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
+    fn harvest_empty_workspace_launchpad(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &ObjId,
+    ) -> bool {
         use tilo_desktop::launchpad::LaunchpadAction;
 
         if tilo_desktop::launchpad::take_open_app(doc, root) {
@@ -7188,7 +7192,7 @@ impl ShellOverlayHost {
     /// the person a pre-filled launcher to confirm.
     fn open_launchpad_app(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         app_id: &'static str,
         display_name: &'static str,
@@ -7217,7 +7221,7 @@ impl ShellOverlayHost {
     /// an action host still opens the app.
     fn invoke_launchpad_app_action(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         target: tilo_desktop::launchpad::LaunchpadAppAction,
         title: String,
@@ -7306,7 +7310,7 @@ impl ShellOverlayHost {
     /// Retry a launchpad app card the Applications index could not resolve
     /// yet. Past [`LAUNCHPAD_APP_RESOLVE_WINDOW`] the app is genuinely absent
     /// from this catalogue, so the launcher opens filtered to it instead.
-    fn retry_pending_launchpad_app(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+    fn retry_pending_launchpad_app(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
         let Some(pending) = self.pending_launchpad_app.take() else {
             return;
         };
@@ -7330,7 +7334,7 @@ impl ShellOverlayHost {
     /// `false` while neither address resolves.
     fn invoke_launchpad_app(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         app_id: &str,
         display_name: &str,
@@ -8062,7 +8066,7 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "Argument validation, action dispatch, and one Automerge transaction must stay in their visible order to keep palette actions atomic."
     )]
-    fn activate_selected_result(&mut self, doc: &mut automerge::AutoCommit, root: &ObjId) {
+    fn activate_selected_result(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
         if let Some(result) = self.pending_palette_action.take() {
             let parsed = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
                 self.palette.query(),
@@ -15413,7 +15417,7 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
         palette_child: Option<NodeId>,
     ) -> bool {
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         if !self.palette_visible {
             return false;
         }
@@ -15497,7 +15501,7 @@ impl ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -15526,7 +15530,7 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
         children: &[NodeId],
     ) {
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         // First dibs so wheel-content precedes the desktop underneath.
         // Gated on the sidebar's rect for pointer events — otherwise it can
         // overlap the topbar band and swallow the overview-toggle click.
@@ -15546,7 +15550,7 @@ impl ShellOverlayHost {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: ctx.modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -15595,7 +15599,7 @@ impl ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -16035,7 +16039,7 @@ impl Widget for ShellOverlayHost {
     }
 
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
-        let (s, p) = ui::doc::document(s, p);
+        let (s, p) = ui::doc::document_ref(s, p);
         let open_desktop_tour = self.onboarding.is_none()
             && self
                 .chrome
@@ -16067,7 +16071,6 @@ impl Widget for ShellOverlayHost {
             return;
         }
         self.content.sync(s, p);
-        self.harvest_empty_workspace_launchpad(s, p);
         if let Some(sidebar) = self.sidebar.as_mut() {
             sidebar.sync(s, p);
         }
@@ -16081,12 +16084,22 @@ impl Widget for ShellOverlayHost {
         }
     }
 
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+        if self.onboarding.is_none() {
+            self.harvest_empty_workspace_launchpad(edits, path);
+            self.retry_pending_launchpad_app(edits, path);
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the compositor tick is deliberately ordered in one place so source refreshes precede palette input and every frame-side effect remains visible"
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
-        let (doc, path) = ui::doc::document(doc, path);
+        let (doc, path) = ui::doc::document_ref(doc, path);
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
             // secrets) are raised by the system on behalf of the person in
@@ -16139,7 +16152,6 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
-        self.retry_pending_launchpad_app(doc, path);
         self.poll_pending_launchpad_actions();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
@@ -16749,7 +16761,7 @@ impl Widget for ShellOverlayHost {
         reason = "event routing stays linear so modal gates retain their security-sensitive order"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         // MouseInput carries no coordinates. Keep the host's pointer cache
         // current before any modal can return early, because onboarding and
         // the other compositor-owned gates hit-test the following button edge
@@ -16775,7 +16787,7 @@ impl Widget for ShellOverlayHost {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: ctx.modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -16802,7 +16814,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -16824,7 +16836,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -16846,7 +16858,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
@@ -16870,7 +16882,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -17008,7 +17020,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -17031,7 +17043,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
@@ -17048,7 +17060,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17065,7 +17077,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17087,7 +17099,7 @@ impl Widget for ShellOverlayHost {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: ctx.modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -17108,7 +17120,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17127,7 +17139,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17142,7 +17154,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17173,7 +17185,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
@@ -17192,7 +17204,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17244,7 +17256,7 @@ impl Widget for ShellOverlayHost {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
@@ -17326,7 +17338,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -17348,7 +17360,7 @@ impl Widget for ShellOverlayHost {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -18251,7 +18263,7 @@ impl Widget for ShellOverlayHost {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         // The palette is published inside this host's tree (see
@@ -18265,7 +18277,7 @@ impl Widget for ShellOverlayHost {
                 .perform_semantic_action(target, action, state, path);
             if handled && self.palette.query() != before && self.pending_palette_action.is_none() {
                 let (doc, root) = ui::doc::document(state, path);
-                self.refresh_search_results(doc, root);
+                self.refresh_search_results(doc.doc(), root);
             }
             return handled;
         }

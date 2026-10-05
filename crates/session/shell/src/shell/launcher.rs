@@ -6095,7 +6095,7 @@ mod tests {
         catalog
             .select(&ResourceRef::new("desktop-windows", id))
             .unwrap_or_else(|| panic!("{id} must stay a visible action"))
-            .invoke(doc, &ROOT, chrome, [])
+            .invoke(&mut ui::widget::Edits::lend(doc), &ROOT, chrome, [])
             .unwrap_or_else(|err| panic!("{id} failed: {err}"));
     }
 

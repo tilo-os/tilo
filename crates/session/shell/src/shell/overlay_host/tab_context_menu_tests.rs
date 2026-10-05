@@ -191,7 +191,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -609,7 +609,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         assert!(!h.host.perform_semantic_action(
             "tabmenu:split-right",
             &ui::a11y::Action::Activate,
-            &mut h.doc,
+            &mut ui::widget::Edits::lend(&mut h.doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -841,7 +841,7 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
         let performed = h.host.perform_semantic_action(
             "tabmenu:new-group",
             &ui::a11y::Action::Activate,
-            &mut h.doc,
+            &mut ui::widget::Edits::lend(&mut h.doc),
             &automerge::ROOT,
         );
         assert!(performed, "an offered row activates");
@@ -855,7 +855,7 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
         assert!(!h.host.perform_semantic_action(
             "tabmenu:close",
             &ui::a11y::Action::Activate,
-            &mut h.doc,
+            &mut ui::widget::Edits::lend(&mut h.doc),
             &automerge::ROOT,
         ));
     }

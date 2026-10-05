@@ -228,7 +228,7 @@ impl Rig {
         self.fb.dispatch_event(
             event,
             &Modifiers::default(),
-            &mut self.doc,
+            &mut ui::widget::Edits::lend(&mut self.doc),
             &ROOT,
             &mut self.focus,
         );

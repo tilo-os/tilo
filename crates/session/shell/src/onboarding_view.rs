@@ -3029,7 +3029,7 @@ impl Widget for OnboardingView {
         reason = "one ordered reducer owns all modal OOBE actions and secret cleanup transitions"
     )]
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
+        let (state, root) = ui::doc::document_ref(state, root);
         let before = self.flow.screen();
         let tour_before = self.tour_page;
         let ready_before = self.identity_ready_page;
@@ -3754,7 +3754,7 @@ impl Widget for OnboardingView {
         self.rect
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Background work (nearby pairing, the codecs worker) changes the
         // page from `sync` with no input behind it. The compositor presents
         // only what `update` reports, so a page that is not yet laid out is
@@ -3991,26 +3991,26 @@ mod tests {
             .expect("spawn helper"),
         );
         view.nearby_status_path = Some(status);
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         // The page as it was laid out when pairing started.
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         let _ = view.take_structure_dirty();
-        assert!(!view.update(&mut doc, &automerge::ROOT), "nothing new yet");
+        assert!(!view.update(&doc, &automerge::ROOT), "nothing new yet");
 
         std::fs::write(&report_code, b"").expect("let the helper show its code");
         let deadline = tilo_test_env::hang_deadline();
         while view.nearby_code.is_none() {
             assert!(Instant::now() < deadline, "the code never arrived");
             std::thread::sleep(Duration::from_millis(20));
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
         }
         assert!(
-            view.update(&mut doc, &automerge::ROOT),
+            view.update(&doc, &automerge::ROOT),
             "the verification code is presented"
         );
         assert!(view.take_structure_dirty());
         assert!(
-            !view.update(&mut doc, &automerge::ROOT),
+            !view.update(&doc, &automerge::ROOT),
             "a laid-out page is not presented again"
         );
 
@@ -4018,7 +4018,7 @@ mod tests {
         while view.nearby.is_some() {
             assert!(Instant::now() < deadline, "the failure never arrived");
             std::thread::sleep(Duration::from_millis(20));
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
         }
         assert!(
             view.error()
@@ -4027,7 +4027,7 @@ mod tests {
             view.error()
         );
         assert!(
-            view.update(&mut doc, &automerge::ROOT),
+            view.update(&doc, &automerge::ROOT),
             "the failure and its Try again are presented"
         );
         let composition = view.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
@@ -4117,7 +4117,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: document,
+                state: ui::widget::Edits::lend(document),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -4265,7 +4265,7 @@ mod tests {
             // button. A stale or malicious document action cannot silently skip
             // the only recovery decision.
             press(&view, &mut document, KEY_BACKUP_CONTINUE);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert!(
                 !view.identity_ready_page,
                 "continuing without a backup requires an explicit acknowledgement"
@@ -4276,15 +4276,15 @@ mod tests {
             );
 
             press(&view, &mut document, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             press(&view, &mut document, KEY_BACKUP_CONTINUE);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(
                 load_progress(&identity_dir).expect("load progress"),
                 Some(PersistedStage::ReadyToEnter)
             );
             press(&view, &mut document, KEY_FINISH);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert!(view.finished());
             assert!(!has_pending_progress(&identity_dir));
         }
@@ -4349,7 +4349,7 @@ mod tests {
 
             let mut document = AutoCommit::new();
             press(&done, &mut document, KEY_TOUR_START);
-            done.sync(&mut document, &automerge::ROOT);
+            done.sync(&document, &automerge::ROOT);
             assert_eq!(done.tour_page, Some(TourPage::Navigate));
             assert!(
                 done.presents_desktop_context(),
@@ -4363,25 +4363,25 @@ mod tests {
             let mut navigate_restart = OnboardingView::new(directory.path().to_path_buf());
             assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
             press(&navigate_restart, &mut document, KEY_TOUR_NEXT);
-            navigate_restart.sync(&mut document, &automerge::ROOT);
+            navigate_restart.sync(&document, &automerge::ROOT);
             assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
 
             let mut organise_restart = OnboardingView::new(directory.path().to_path_buf());
             assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
             press(&organise_restart, &mut document, KEY_TOUR_NEXT);
-            organise_restart.sync(&mut document, &automerge::ROOT);
+            organise_restart.sync(&document, &automerge::ROOT);
             assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
 
             let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
             assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
             press(&collaborate_restart, &mut document, KEY_TOUR_NEXT);
-            collaborate_restart.sync(&mut document, &automerge::ROOT);
+            collaborate_restart.sync(&document, &automerge::ROOT);
             assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
 
             let mut start_restart = OnboardingView::new(directory.path().to_path_buf());
             assert_eq!(start_restart.tour_page, Some(TourPage::Start));
             press(&start_restart, &mut document, KEY_FINISH);
-            start_restart.sync(&mut document, &automerge::ROOT);
+            start_restart.sync(&document, &automerge::ROOT);
             assert!(start_restart.finished());
             assert!(!has_pending_progress(directory.path()));
 
@@ -4435,7 +4435,7 @@ mod tests {
             let mut document = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
                 press(&view, &mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                view.sync(&document, &automerge::ROOT);
             }
 
             assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -4466,11 +4466,11 @@ mod tests {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
             press(&v, &mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.flow().screen(), Screen::NoRecovery);
 
             press(&v, &mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(calls.load(Ordering::SeqCst), 0, "no key was minted");
             assert_eq!(v.flow().screen(), Screen::NoRecovery, "still on the gate");
         }
@@ -4479,14 +4479,14 @@ mod tests {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
             press(&v, &mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_UNDERSTOOD);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert!(v.flow().can_create());
             press(&v, &mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             // A second sync must not re-fire — the key is consumed.
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             assert_eq!(v.flow().screen(), Screen::Done);
             assert!(v.flow().is_done());
@@ -4496,18 +4496,18 @@ mod tests {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
             press(&v, &mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_UNDERSTOOD);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             let _ = doc.put(
                 &automerge::ROOT,
                 KEY_UNDERSTOOD,
                 ScalarValue::Boolean(false),
             );
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert!(!v.flow().can_create());
             press(&v, &mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         }
         // Phase `a_failed_mint_is_surfaced_rather_than_hidden`.
@@ -4516,11 +4516,11 @@ mod tests {
             let mut v = OnboardingView::with_minter(Box::new(|| Err("disk full".to_string())));
             let mut doc = AutoCommit::new();
             press(&v, &mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_UNDERSTOOD);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.error(), Some("disk full"));
             assert_eq!(
                 v.flow().screen(),
@@ -4529,7 +4529,7 @@ mod tests {
             );
             assert!(!v.flow().is_done());
             press(&v, &mut doc, KEY_FINISH);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert!(!v.finished(), "failure must not release the desktop");
         }
         // Phase `finishing_releases_the_desktop`.
@@ -4538,17 +4538,17 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(!v.finished());
             press(&v, &mut doc, KEY_BEGIN);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_UNDERSTOOD);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_CREATE);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_BACKUP_CONTINUE);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_FINISH);
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert!(v.finished());
         }
     }
@@ -4564,53 +4564,53 @@ mod tests {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
             press(&view, &mut doc, KEY_BEGIN);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_UNDERSTOOD);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_CREATE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
 
             press(&view, &mut doc, KEY_TOUR_START);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Navigate));
             assert!(!view.finished());
 
             press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Organise));
             press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Collaborate));
 
             press(&view, &mut doc, KEY_FINISH);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(
                 !view.finished(),
                 "the tour cannot finish before its hand-off page"
             );
 
             press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Start));
 
             press(&view, &mut doc, KEY_TOUR_BACK);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Collaborate));
             press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_FINISH);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.finished());
         }
         // Phase `every_tour_page_exposes_an_explicit_skip_action`.
         {
             let mut view = OnboardingView::new_tour();
             let mut doc = AutoCommit::new();
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
 
             for page in [
                 TourPage::Navigate,
@@ -4624,12 +4624,12 @@ mod tests {
                 assert_eq!(node.name.as_deref(), Some("Skip tour"));
                 if page != TourPage::Collaborate {
                     press(&view, &mut doc, KEY_TOUR_NEXT);
-                    view.sync(&mut doc, &automerge::ROOT);
+                    view.sync(&doc, &automerge::ROOT);
                 }
             }
 
             press(&view, &mut doc, KEY_TOUR_SKIP);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.finished(), "Skip tour dismisses a reopened tour");
         }
         // Phase `first_use_skip_works_on_every_tour_page_and_clears_progress`.
@@ -4648,7 +4648,7 @@ mod tests {
 
                 assert_eq!(view.tour_page, Some(page));
                 press(&view, &mut document, KEY_TOUR_SKIP);
-                view.sync(&mut document, &automerge::ROOT);
+                view.sync(&document, &automerge::ROOT);
 
                 assert!(view.finished(), "Skip tour must work from {page:?}");
                 assert!(
@@ -4664,11 +4664,11 @@ mod tests {
                 let mut document = AutoCommit::new();
                 for _ in 0..next_presses {
                     press(&view, &mut document, KEY_TOUR_NEXT);
-                    view.sync(&mut document, &automerge::ROOT);
+                    view.sync(&document, &automerge::ROOT);
                 }
 
                 assert!(dispatch_escape(&mut view, &mut document));
-                view.sync(&mut document, &automerge::ROOT);
+                view.sync(&document, &automerge::ROOT);
                 assert!(
                     view.finished(),
                     "Escape must close a reopened tour after {next_presses} advances"
@@ -4686,7 +4686,7 @@ mod tests {
             );
 
             press(&view, &mut doc, KEY_TOUR_BACK);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(
                 view.finished(),
                 "Back on the first page closes a reopened tour"
@@ -4694,13 +4694,13 @@ mod tests {
 
             let mut view = OnboardingView::new_tour();
             press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_FINISH);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.finished(), "Done closes the reopened tour");
         }
         // Phase `resumed_tour_preserves_focus_reset_and_reduced_motion_navigation`.
@@ -4730,7 +4730,7 @@ mod tests {
 
             let mut document = AutoCommit::new();
             press(&view, &mut document, KEY_TOUR_NEXT);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.tour_page, Some(TourPage::Collaborate));
             assert_eq!(
                 load_progress(directory.path()).expect("updated tour journal"),
@@ -4943,14 +4943,14 @@ mod tests {
         // Phase `screen_transitions_track_forward_and_back_direction`.
         {
             let (mut view, _) = view();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            view.sync(&mut doc, &root);
+            view.sync(&doc, &root);
             view.pressed.press(KEY_BEGIN);
-            view.sync(&mut doc, &root);
+            view.sync(&doc, &root);
             assert_eq!(view.transition_direction, 1.0);
             view.pressed.press(KEY_BACK);
-            view.sync(&mut doc, &root);
+            view.sync(&doc, &root);
             assert_eq!(view.transition_direction, -1.0);
         }
         // Phase `escape_follows_back_on_reversible_identity_steps_only`.
@@ -4963,27 +4963,27 @@ mod tests {
                 "intro must not be dismissible before an identity exists"
             );
             press(&view, &mut document, KEY_EXISTING);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
             press(&view, &mut document, KEY_CHOOSE_RESTORE);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Restore);
             assert!(dispatch_escape(&mut view, &mut document));
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(
                 view.flow.screen(),
                 Screen::Existing,
                 "escape leaves a flow for the choice it was opened from"
             );
             assert!(dispatch_escape(&mut view, &mut document));
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Intro);
 
             press(&view, &mut document, KEY_BEGIN);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::NoRecovery);
             assert!(dispatch_escape(&mut view, &mut document));
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Intro);
         }
         // Phase `reduced_motion_does_not_request_transition_frames`.
@@ -5002,13 +5002,13 @@ mod tests {
             assert_eq!(recovery.flow.screen(), Screen::Existing);
             let mut document = AutoCommit::new();
             press(&recovery, &mut document, KEY_BACK);
-            recovery.sync(&mut document, &automerge::ROOT);
+            recovery.sync(&document, &automerge::ROOT);
             assert_eq!(recovery.flow.screen(), Screen::Existing);
             press(&recovery, &mut document, KEY_CHOOSE_RESTORE);
-            recovery.sync(&mut document, &automerge::ROOT);
+            recovery.sync(&document, &automerge::ROOT);
             assert_eq!(recovery.flow.screen(), Screen::Restore);
             press(&recovery, &mut document, KEY_BACK);
-            recovery.sync(&mut document, &automerge::ROOT);
+            recovery.sync(&document, &automerge::ROOT);
             assert_eq!(
                 recovery.flow.screen(),
                 Screen::Existing,
@@ -5050,10 +5050,10 @@ mod tests {
             press(&view, &mut doc, KEY_EXISTING);
             press(&view, &mut doc, KEY_CHOOSE_RESTORE);
             view.connect_path.set("/media/backup/primary.json".into());
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.flow().screen(), Screen::Restore);
             press(&view, &mut doc, KEY_IMPORT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(imported.load(Ordering::SeqCst), 1);
             assert_eq!(view.flow().screen(), Screen::Done);
             assert!(view.flow().is_done());
@@ -5087,9 +5087,9 @@ mod tests {
             press(&view, &mut document, KEY_EXISTING);
             press(&view, &mut document, KEY_CHOOSE_RESTORE);
             view.connect_path.set("/media/backup/primary.json".into());
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             press(&view, &mut document, KEY_IMPORT);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
 
             assert!(
                 observed_precommit.load(Ordering::SeqCst),
@@ -5110,11 +5110,11 @@ mod tests {
             let mut doc = AutoCommit::new();
             press(&view, &mut doc, KEY_EXISTING);
             press(&view, &mut doc, KEY_CHOOSE_RESTORE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             view.connect_path
                 .set("/media/identity.tilo-identity".into());
             press(&view, &mut doc, KEY_IMPORT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.flow().screen(), Screen::Restore);
             assert_eq!(view.error(), Some("not a Tilo identity"));
         }
@@ -5127,7 +5127,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             press(&view, &mut doc, KEY_EXISTING);
             press(&view, &mut doc, KEY_CHOOSE_RESTORE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             let theme = Theme::dark();
             let disabled = accessibility_for_id(
                 &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
@@ -5139,7 +5139,7 @@ mod tests {
                 "restore must be visibly and semantically disabled without a selected source"
             );
             press(&view, &mut doc, KEY_IMPORT);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(view.flow().screen(), Screen::Restore);
             assert_eq!(
                 view.error(),
@@ -5148,7 +5148,7 @@ mod tests {
 
             view.connect_path
                 .set("/media/identity.tilo-identity".into());
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             let enabled = accessibility_for_id(
                 &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
                 "onboarding.import.button",
@@ -5165,13 +5165,13 @@ mod tests {
             let mut doc = AutoCommit::new();
             press(&view, &mut doc, KEY_EXISTING);
             press(&view, &mut doc, KEY_CHOOSE_RESTORE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_CONNECT_BROWSE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.picker.is_some());
 
             view.picker.as_mut().expect("picker").1.click_cancel();
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.picker.is_none());
             assert_eq!(view.flow().screen(), Screen::Restore);
         }
@@ -5214,7 +5214,7 @@ mod tests {
             *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
             *view.backup_confirmation.lock().unwrap() = "does not match".into();
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.picker.is_none());
             assert!(
                 view.backup_error
@@ -5225,16 +5225,16 @@ mod tests {
 
             *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             view.picker.as_mut().expect("save picker").1.click_cancel();
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.picker.is_none());
             assert_eq!(exports.load(Ordering::SeqCst), 0);
 
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             view.picker.as_mut().expect("save picker").1.click_open();
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert_eq!(exports.load(Ordering::SeqCst), 1);
             assert!(view.backup_saved.is_some());
             assert!(view.backup_error.is_none());
@@ -5246,7 +5246,7 @@ mod tests {
             assert!(view.backup_confirmation.lock().unwrap().is_empty());
 
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             assert!(view.identity_ready_page);
             assert_eq!(
                 load_progress(progress.path()).expect("ready progress"),
@@ -5296,7 +5296,7 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
 
             assert!(view.finished());
             assert!(!view.identity_ready_page);
@@ -5314,7 +5314,7 @@ mod tests {
 
             let mut document = AutoCommit::new();
             press(&view, &mut document, KEY_BACKUP_ANOTHER);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
 
             assert!(
                 view.backup_copy_form_open,
@@ -5416,7 +5416,7 @@ mod tests {
         // The step blocks neither the tour nor finishing only by accident:
         // both wait until the person chose.
         press(&view, &mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert!(!view.finished());
         assert!(view.codec_page_visible());
     }
@@ -5432,9 +5432,9 @@ mod tests {
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
         press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         view.wait_for_codec_install();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert_eq!(fake.runs(), vec![CodecAction::Install]);
         assert_eq!(view.codec_status().state, PackState::Installed);
         layout(&mut view);
@@ -5448,12 +5448,12 @@ mod tests {
         );
         assert_eq!(lines.last().map(String::as_str), Some("Continue"));
         press(&view, &mut doc, KEY_CODECS_CONTINUE);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert!(!view.codec_page_visible());
         layout(&mut view);
         assert_eq!(stage_label(&view).as_deref(), Some("Step 5 of 5"));
         press(&view, &mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert!(view.finished());
     }
 
@@ -5465,11 +5465,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
         press(&view, &mut doc, KEY_CODECS_SKIP);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert!(!view.codec_page_visible());
         assert!(fake.runs().is_empty());
         press(&view, &mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert!(view.finished());
     }
 
@@ -5495,7 +5495,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
         press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         // Nothing wakes the compositor for the worker, so the view does.
         let limit = Instant::now().checked_add(BACKGROUND_POLL).unwrap();
         assert!(
@@ -5510,7 +5510,7 @@ mod tests {
             view.needs_animation_frame(),
             "a status change asks for a frame"
         );
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
         assert_eq!(view.codec_status().state, PackState::Installing);
         assert!(lines.contains(&"Installing media codecs".to_string()));
@@ -5521,13 +5521,13 @@ mod tests {
         );
         assert_eq!(lines.last().map(String::as_str), Some("Continue"));
         press(&view, &mut doc, KEY_CODECS_CONTINUE);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert!(
             !view.codec_page_visible(),
             "the download does not hold setup"
         );
         press(&view, &mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         assert!(view.finished());
         release.send(()).unwrap();
     }
@@ -5542,9 +5542,9 @@ mod tests {
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
         press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         view.wait_for_codec_install();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
         assert!(lines.contains(&"Media codecs will install once you are online".to_string()));
         assert!(
@@ -5567,16 +5567,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         walk_to_codecs(&mut view, &mut doc);
         press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         view.wait_for_codec_install();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
         assert!(lines.contains(&"Media codecs could not be installed".to_string()));
         assert!(lines.contains(&"Access denied: not an administrator".to_string()));
         assert_eq!(&lines[lines.len() - 2..], ["Skip", "Try again"]);
         layout(&mut view);
         press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         view.wait_for_codec_install();
         assert_eq!(
             fake.runs(),
@@ -5633,7 +5633,7 @@ mod tests {
             ] {
                 if let Some(k) = step {
                     press(&v, &mut doc, k);
-                    v.sync(&mut doc, &automerge::ROOT);
+                    v.sync(&doc, &automerge::ROOT);
                 }
                 let theme = Theme::dark();
                 let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -5808,7 +5808,7 @@ mod tests {
                 let mut document = AutoCommit::new();
                 for key in keys {
                     press(&view, &mut document, key);
-                    view.sync(&mut document, &automerge::ROOT);
+                    view.sync(&document, &automerge::ROOT);
                 }
                 if error_state {
                     view.error =
@@ -6079,7 +6079,7 @@ mod tests {
                 let mut document = AutoCommit::new();
                 for key in keys {
                     press(&view, &mut document, key);
-                    view.sync(&mut document, &automerge::ROOT);
+                    view.sync(&document, &automerge::ROOT);
                 }
                 let mut text = ui::text_render::TextRenderer::new();
                 let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -6148,7 +6148,7 @@ mod tests {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
             press(&view, &mut document, KEY_EXISTING);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
             let theme = Theme::dark();
             let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
@@ -6158,7 +6158,7 @@ mod tests {
             );
 
             press(&view, &mut document, KEY_CHOOSE_RESTORE);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Restore);
             let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
             assert!(accessibility_for_id(&*composition, "onboarding.connect.path.field").is_some());
@@ -6167,13 +6167,13 @@ mod tests {
                 "restore does not carry the nearby flow"
             );
             press(&view, &mut document, KEY_BACK);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
 
             // Without an identity directory the helper cannot start; the
             // nearby screen still opens and reports why, with a retry.
             press(&view, &mut document, KEY_CHOOSE_NEARBY);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Nearby);
             assert_eq!(
                 view.error(),
@@ -6190,14 +6190,14 @@ mod tests {
                 "a failed start offers Try again"
             );
             press(&view, &mut document, KEY_BACK);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
             assert!(
                 view.error().is_none(),
                 "back leaves the flow's error behind"
             );
             press(&view, &mut document, KEY_BACK);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Intro);
         }
         // Phase `nearby_shows_cancel_while_pairing_runs`.
@@ -6237,7 +6237,7 @@ mod tests {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
             press(&view, &mut document, KEY_BEGIN);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
 
             let theme = Theme::dark();
             let mut text = ui::text_render::TextRenderer::new();
@@ -6283,7 +6283,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut document,
+                        state: ui::widget::Edits::lend(&mut document),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -6301,7 +6301,7 @@ mod tests {
             let mut document = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
                 press(&view, &mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                view.sync(&document, &automerge::ROOT);
             }
             document
                 .put(
@@ -6310,7 +6310,7 @@ mod tests {
                     ScalarValue::Boolean(true),
                 )
                 .expect("acknowledge backup risk");
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
 
             let theme = Theme::dark();
             let mut text = ui::text_render::TextRenderer::new();
@@ -6359,7 +6359,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut document,
+                        state: ui::widget::Edits::lend(&mut document),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -6374,7 +6374,7 @@ mod tests {
                     );
                 }
             }
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
             assert!(
                 view.identity_ready_page,
                 "pointer activation must reach Ready"
@@ -6633,13 +6633,13 @@ mod tests {
             let mut doc = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
                 press(&view, &mut doc, key);
-                view.sync(&mut doc, &automerge::ROOT);
+                view.sync(&doc, &automerge::ROOT);
             }
             assert_eq!(view.flow().screen(), Screen::Done);
             press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&mut doc, &automerge::ROOT);
+            view.sync(&doc, &automerge::ROOT);
 
             let theme = Theme::dark().with_text_scale(1.3);
             let mut text = ui::text_render::TextRenderer::new();
@@ -6694,7 +6694,7 @@ mod tests {
             let mut document = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
                 press(&view, &mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                view.sync(&document, &automerge::ROOT);
             }
             assert_eq!(view.flow().screen(), Screen::Done);
 
@@ -6753,11 +6753,11 @@ mod tests {
                     KEY_TOUR_START,
                 ] {
                     press(&view, &mut doc, key);
-                    view.sync(&mut doc, &automerge::ROOT);
+                    view.sync(&doc, &automerge::ROOT);
                 }
                 for _ in 0..next_presses {
                     press(&view, &mut doc, KEY_TOUR_NEXT);
-                    view.sync(&mut doc, &automerge::ROOT);
+                    view.sync(&doc, &automerge::ROOT);
                 }
 
                 let theme = Theme::dark().with_text_scale(1.3);

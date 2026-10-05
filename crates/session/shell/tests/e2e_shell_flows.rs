@@ -261,7 +261,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &self.modifiers,
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &self.doc_root,
                 handled: &mut handled,
                 focus_target: &mut self.focus,
@@ -648,7 +648,7 @@ impl DragCtx<'_> {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: self.modifiers,
-                state: self.doc,
+                state: ui::widget::Edits::lend(self.doc),
                 path: self.doc_root,
                 handled: &mut handled,
                 focus_target: self.focus,
@@ -1382,7 +1382,7 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &doc_root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1695,7 +1695,7 @@ fn pump_host(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus_target,

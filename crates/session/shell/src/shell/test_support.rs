@@ -115,21 +115,21 @@ pub(crate) fn dispatch_populated_fixture_click(
     let _ = frame.dispatch_event(
         &cursor,
         &Modifiers::default(),
-        document,
+        &mut ui::widget::Edits::lend(document),
         &automerge::ROOT,
         focus,
     );
     let pressed = frame.dispatch_event(
         &press,
         &Modifiers::default(),
-        document,
+        &mut ui::widget::Edits::lend(document),
         &automerge::ROOT,
         focus,
     );
     let released = frame.dispatch_event(
         &release,
         &Modifiers::default(),
-        document,
+        &mut ui::widget::Edits::lend(document),
         &automerge::ROOT,
         focus,
     );
@@ -183,7 +183,7 @@ pub(crate) fn with_scratch_event_ctx<R>(f: impl FnOnce(&mut ui::widget::EventCtx
     f(&mut ui::widget::EventCtx {
         scale_factor: 1.0,
         modifiers: &modifiers,
-        state: &mut document,
+        state: ui::widget::Edits::lend(&mut document),
         path: &automerge::ROOT,
         handled: &mut handled,
         focus_target: &mut focus,

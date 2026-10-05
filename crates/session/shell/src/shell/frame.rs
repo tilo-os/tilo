@@ -14,7 +14,7 @@ use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, transaction::Transactable as _};
 use taffy::prelude::*;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
@@ -1321,7 +1321,16 @@ impl FrameBuilder {
         let records_done = std::time::Instant::now();
         self.pump_room_contents();
         let rooms_done = std::time::Instant::now();
+        let before_settle = (doc.get_heads(), doc.pending_ops());
+        self.host.settle(&mut ui::widget::Edits::lend(doc), root);
+        let mut settled = before_settle != (doc.get_heads(), doc.pending_ops());
         self.host.sync(doc, root);
+        let before_settle = (doc.get_heads(), doc.pending_ops());
+        self.host.settle(&mut ui::widget::Edits::lend(doc), root);
+        if before_settle != (doc.get_heads(), doc.pending_ops()) {
+            settled = true;
+            self.host.sync(doc, root);
+        }
         // First-login setup gives the session its identity mid-session; that
         // principal is "me" too, or the owner sees presence over their windows.
         {
@@ -1332,6 +1341,12 @@ impl FrameBuilder {
         }
         let sync_done = std::time::Instant::now();
         let changed = self.host.update(doc, root);
+        let before_settle = (doc.get_heads(), doc.pending_ops());
+        self.host.settle(&mut ui::widget::Edits::lend(doc), root);
+        if before_settle != (doc.get_heads(), doc.pending_ops()) {
+            settled = true;
+            self.host.sync(doc, root);
+        }
         let update_done = std::time::Instant::now();
         let total = update_done.duration_since(started);
         if total >= std::time::Duration::from_millis(50) {
@@ -1345,7 +1360,7 @@ impl FrameBuilder {
                 "widget app pump stalled compositor input"
             );
         }
-        changed
+        changed || settled
     }
 
     /// Turn "a peer's changes landed in the tree" into "the widget tree is
@@ -3103,7 +3118,7 @@ impl FrameBuilder {
         &mut self,
         target: ui::accesskit::NodeId,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root_obj: &ObjId,
         focus: &mut Option<NodeId>,
     ) -> bool {
@@ -3228,7 +3243,7 @@ impl FrameBuilder {
         &self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root_obj: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
@@ -3265,7 +3280,7 @@ impl FrameBuilder {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: root_obj,
                     handled: &mut handled,
                     focus_target,
@@ -3289,7 +3304,7 @@ impl FrameBuilder {
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root_obj: &ObjId,
         focus: &mut Option<NodeId>,
     ) -> bool {
@@ -3320,7 +3335,7 @@ impl FrameBuilder {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: root_obj,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3632,6 +3647,42 @@ mod tests {
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
 
     #[test]
+    fn frame_pump_settles_a_launchpad_request_once() {
+        let mut frame = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
+        doc.put(
+            &automerge::ROOT,
+            tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP,
+            true,
+        )
+        .expect("queued launcher request");
+
+        assert!(
+            frame.pump_apps(&mut doc, &automerge::ROOT),
+            "a settled action requests repaint"
+        );
+        assert!(
+            frame.host.palette_visible(),
+            "the production frame pump opens the launcher"
+        );
+        assert!(
+            matches!(
+                doc.get(&automerge::ROOT, tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP),
+                Ok(Some((automerge::Value::Scalar(value), _)))
+                    if matches!(value.as_ref(), automerge::ScalarValue::Boolean(false))
+            ),
+            "typed settlement consumes the request"
+        );
+        let revision = (doc.get_heads(), doc.pending_ops());
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            revision,
+            (doc.get_heads(), doc.pending_ops()),
+            "the next pump does not repeat the request"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -3711,7 +3762,7 @@ mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("record action is asynchronous")(
-                &mut document,
+                &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
                 &chrome,
                 &args,
@@ -3749,7 +3800,7 @@ mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("record action is asynchronous")(
-                &mut document,
+                &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
                 &chrome,
                 &denied_args,
@@ -4232,7 +4283,13 @@ mod tests {
         let root = automerge::ROOT;
         let mut focus = None;
         let press = key_press(Key::Named(NamedKey::Space));
-        fb.dispatch_event(&press, &chord, &mut doc, &root, &mut focus);
+        fb.dispatch_event(
+            &press,
+            &chord,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus,
+        );
 
         assert_eq!(
             fb.chrome.borrow_mut().take_input_source_request(),
@@ -4256,7 +4313,13 @@ mod tests {
             "Super+Alt+Space is not the Super+Space search chord"
         );
 
-        fb.dispatch_event(&press, &chord, &mut doc, &root, &mut focus);
+        fb.dispatch_event(
+            &press,
+            &chord,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus,
+        );
         assert_eq!(
             fb.chrome.borrow_mut().take_input_source_request(),
             Some(0),
@@ -4282,7 +4345,7 @@ mod tests {
             fb.dispatch_event(
                 &key_press(Key::Character("s".into())),
                 &chord,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
                 &mut focus
             ),
@@ -4385,7 +4448,7 @@ mod tests {
         assert!(fb.dispatch_a11y_action(
             query_id,
             &ui::a11y::Action::SetValue("photos".into()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         ));
@@ -4469,7 +4532,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &typed,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4478,7 +4541,7 @@ mod tests {
         assert!(fb.dispatch_event(
             &key_press(Key::Named(NamedKey::Enter)),
             &Modifiers::default(),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         ));
@@ -4555,7 +4618,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 existing_id,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4568,7 +4631,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 restore_id,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4586,7 +4649,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 field_id,
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4600,7 +4663,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 field_id,
                 &ui::a11y::Action::SetValue(probe.into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4650,7 +4713,7 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 ack_id,
                 &ui::a11y::Action::ToggleCheck,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4700,7 +4763,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &tab,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4711,7 +4774,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &key_press(Key::Named(NamedKey::Enter)),
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4821,14 +4884,14 @@ mod tests {
             assert!(fb.dispatch_a11y_action(
                 field,
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
             assert!(fb.dispatch_a11y_action(
                 field,
                 &ui::a11y::Action::SetValue("tilosecretprobe42".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4866,7 +4929,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &enter,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4877,7 +4940,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &tab,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4897,7 +4960,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &tab,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -4907,7 +4970,13 @@ mod tests {
             );
 
             let shift = Modifiers::from(ModifiersState::SHIFT);
-            assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
+            assert!(fb.dispatch_event(
+                &tab,
+                &shift,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus,
+            ));
             assert_eq!(
                 focused_name(&fb, focus).as_deref(),
                 Some("Use my existing Tilo identity")
@@ -4955,7 +5024,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &key_press(Key::Named(NamedKey::Tab)),
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -5046,7 +5115,7 @@ mod tests {
                 fb.dispatch_event(
                     &key_press(key),
                     &Modifiers::default(),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                     &mut focus,
                 ),
@@ -5136,7 +5205,7 @@ mod tests {
                 fb.dispatch_event(
                     &key_press(key),
                     &Modifiers::default(),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                     &mut focus,
                 ),
@@ -5246,7 +5315,7 @@ mod tests {
             fb.dispatch_event(
                 &key_press(Key::Named(NamedKey::Enter)),
                 &chord,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ),
@@ -5315,7 +5384,7 @@ mod tests {
                     position: winit::dpi::PhysicalPosition::new(position.x, position.y),
                 },
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -5385,7 +5454,7 @@ mod tests {
             assert!(fb.dispatch_event(
                 &tab,
                 &Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &mut focus,
             ));
@@ -6010,7 +6079,7 @@ mod tests {
                 position: winit::dpi::PhysicalPosition::new(center.x, center.y),
             },
             &modifiers,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         );
@@ -6021,7 +6090,7 @@ mod tests {
                 button: winit::event::MouseButton::Left,
             },
             &modifiers,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         );
@@ -6184,7 +6253,7 @@ mod tests {
             };
             let mut document = AutoCommit::new();
             (row.on_open)(
-                &mut document,
+                &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
                 &chrome,
                 &ActionArgs::none(),

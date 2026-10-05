@@ -297,7 +297,7 @@ impl ShellDriver {
         self.fb.dispatch_event(
             event,
             &self.modifiers,
-            &mut self.state,
+            &mut ui::widget::Edits::lend(&mut self.state),
             &self.root_obj,
             &mut self.focus,
         )
