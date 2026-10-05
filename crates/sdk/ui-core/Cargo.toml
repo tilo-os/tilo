@@ -344,6 +344,11 @@ path = "tests/it.rs"
 # The shared harness stands up in-process Cap'n Proto brokers.
 required-features = ["broker-transport"]
 
+[[example]]
+name = "action-presence"
+path = "examples/action_presence.rs"
+required-features = ["native"]
+
 [[test]]
 name = "hosted-platform"
 path = "tests/hosted_platform.rs"

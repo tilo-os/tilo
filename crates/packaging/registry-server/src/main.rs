@@ -973,6 +973,10 @@ fn cmd_publish_staged_first_party(
             &identity.owner_pubkey_hex,
             journal.candidate_snapshot.issued_at_unix,
         )?;
+        validate_new_native_runtimes(
+            &journal.candidate_snapshot.entries,
+            writer.current()?.as_ref(),
+        )?;
         journal
     } else {
         let current = writer.current()?;
@@ -988,6 +992,7 @@ fn cmd_publish_staged_first_party(
             .as_ref()
             .map_or_else(Vec::new, |snapshot| snapshot.entries.clone());
         apply_staged_changes(&mut entries, &staged.submissions)?;
+        validate_new_native_runtimes(&entries, current.as_ref())?;
         if entries.len() > authorization.max_snapshot_entries {
             anyhow::bail!("candidate exceeds delegated entry bound");
         }
@@ -1160,6 +1165,53 @@ fn apply_staged_changes(
         }
     }
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
+    Ok(())
+}
+
+/// A new thin app must be installable from the same registry. Collection can
+/// stage an app before its runtime arrives, or while that runtime's artifacts
+/// are unavailable; accepting the app submission does not prove its runtime is
+/// offered. Check the complete candidate before signing or reserving a journal.
+/// Retained versions keep their history when old runtimes leave under retention.
+fn validate_new_native_runtimes(
+    entries: &[registry_types::RegistryEntry],
+    previous: Option<&SignedRegistrySnapshot>,
+) -> anyhow::Result<()> {
+    for entry in entries {
+        if registry_types::is_runtime_package_id(&entry.package_id) {
+            continue;
+        }
+        let retained = previous.and_then(|snapshot| {
+            snapshot
+                .entries
+                .iter()
+                .find(|old| old.package_id == entry.package_id)
+        });
+        for version in &entry.versions {
+            if version.target.native_runtime().is_none()
+                || retained.is_some_and(|old| old.versions.contains(version))
+            {
+                continue;
+            }
+            let offered = entries.iter().any(|provider| {
+                registry_types::is_runtime_package_id(&provider.package_id)
+                    && provider.versions.iter().any(|provided| {
+                        provided.target.platform == version.target.platform
+                            && provided.target.architecture == version.target.architecture
+                            && provided.target.runtime == version.target.runtime
+                    })
+            });
+            if !offered {
+                anyhow::bail!(
+                    "{}@{} ({}) has no offered native runtime {}; keep the app pending until its runtime is collected",
+                    entry.package_id,
+                    version.version,
+                    version.target.architecture,
+                    version.target.runtime.as_deref().unwrap_or_default(),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
