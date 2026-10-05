@@ -905,10 +905,17 @@ fn check_native_target(
         .map(|isa| isa.wire_label().to_string());
     // The interfaces a version records are exactly the ones its signed
     // manifest requires: a device decides what to offer from them before it
-    // has the package, so an entry must not understate them.
+    // has the package, so an entry must not understate them. A version
+    // published before versions recorded interfaces records none; entries
+    // keep such versions, and refusing them would refuse every update of
+    // their entry. `tilo-install` and the launcher check the signed
+    // manifest itself, so such a build still never installs or runs where
+    // its interfaces are not served.
+    let interfaces_bound =
+        target.interfaces.is_empty() || manifest.required_interface_wire() == target.interfaces;
     if manifest_isa.as_deref() != Some(target.isa.as_str())
         || manifest.package.native_runtime_binding() != target.runtime.as_deref()
-        || manifest.required_interface_wire() != target.interfaces
+        || !interfaces_bound
     {
         return Err(BundleReviewError::TargetMismatch {
             version: version.version.clone(),
@@ -1068,6 +1075,33 @@ mod tests {
             // The interfaces a version claims are the manifest's, exactly.
             entry.versions[0].target.isa = "aarch64-v8.2".into();
             entry.versions[0].target.interfaces = vec!["system@1".into()];
+            assert!(matches!(
+                inspect_bytes(&entry, &entry.versions[0], &bytes),
+                Err(BundleReviewError::TargetMismatch { .. })
+            ));
+        }
+        // phase: a_version_recorded_before_interfaces_still_reviews
+        {
+            let identity = SigningIdentity::generate();
+            let (bytes, package_id) = signed_tapp_with(
+                &identity,
+                "aarch64 = \"v8.2-a\"",
+                "[sandbox.services]\nsystem = \"required@1\"\n",
+            );
+            let mut entry = sample_entry("https://example.com/arm.tapp");
+            entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
+            let version = &mut entry.versions[0];
+            version.tapp_root_hash_hex = hex::encode(package_id.as_bytes());
+            version.tapp_size_bytes = bytes.len() as u64;
+            version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+            version.target.architecture = "aarch64".into();
+            version.target.isa = "aarch64-v8.2".into();
+            // Recorded before versions carried interfaces: none recorded.
+            assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
+            entry.versions[0].target.interfaces = vec!["system@1".into()];
+            assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
+            // Recorded, it must be exactly the manifest's.
+            entry.versions[0].target.interfaces = vec!["system@2".into()];
             assert!(matches!(
                 inspect_bytes(&entry, &entry.versions[0], &bytes),
                 Err(BundleReviewError::TargetMismatch { .. })
@@ -1299,6 +1333,14 @@ mod tests {
         identity: &SigningIdentity,
         architecture: &str,
     ) -> (Vec<u8>, tilo_app_package::PackageId) {
+        signed_tapp_with(identity, architecture, "")
+    }
+
+    fn signed_tapp_with(
+        identity: &SigningIdentity,
+        architecture: &str,
+        extra: &str,
+    ) -> (Vec<u8>, tilo_app_package::PackageId) {
         let publisher = hex::encode(identity.public_key_bytes());
         let dir = tempfile::tempdir().unwrap();
         let payload = dir.path().join("payload");
@@ -1329,6 +1371,7 @@ mode = "off"
 [entrypoint]
 bin = "bin/editor"
 type = "gui"
+{extra}
 "#
         ))
         .unwrap();
