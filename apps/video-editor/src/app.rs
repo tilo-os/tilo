@@ -96,7 +96,12 @@ const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
 const GOTO_CARD_W: f64 = 260.0;
 
 // ---- layout constants ----------------------------------------------------
-const TIMELINE_H: f64 = 320.0;
+/// The preview's share of the room under the header row, as the window
+/// opens: about a 320 px timeline in an ordinary window, more preview in a
+/// small one. The person drags the divider; the lanes scroll.
+const PREVIEW_SHARE: f32 = 0.56;
+/// The preview / timeline divider's action target.
+const TIMELINE_SPLIT_TARGET: &str = "video-editor.timeline-split";
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
 const GUTTER_W: f64 = 128.0;
@@ -940,6 +945,8 @@ enum ScrollPane {
     Inspector,
     /// The media bin's vertical axis (px).
     Bin,
+    /// The timeline's lanes, vertically (px).
+    Lanes,
 }
 
 /// The configuration and initial selection policy of this editor instance.
@@ -1031,6 +1038,12 @@ pub struct VideoEditorApp {
     hbar: ui::widget::Scrollbar,
     inspector_bar: ui::widget::Scrollbar,
     bin_bar: ui::widget::Scrollbar,
+    lanes_bar: ui::widget::Scrollbar,
+    /// Vertical scroll offset of the timeline's lanes (px): a project with
+    /// more tracks than the timeline holds scrolls them under the ruler.
+    lane_scroll: f64,
+    /// The divider between the preview and the timeline.
+    timeline_split: ui::widget::SplitHandle,
     selection: Selection,
     selected_media: Option<MediaId>,
     /// Decides which one thing to tell the room about this participant on
@@ -1471,6 +1484,13 @@ impl VideoEditorApp {
             hbar: ui::widget::Scrollbar::horizontal(),
             inspector_bar: ui::widget::Scrollbar::vertical(),
             bin_bar: ui::widget::Scrollbar::vertical(),
+            lanes_bar: ui::widget::Scrollbar::vertical(),
+            lane_scroll: 0.0,
+            timeline_split: ui::widget::SplitHandle::new(
+                ui::widget::SplitOrientation::Vertical,
+                ui::widget::SplitRatio::new(PREVIEW_SHARE).with_bounds(0.3, 0.8),
+            )
+            .with_label("Resize the preview and the timeline"),
             selection: Selection::default(),
             selected_media: None,
             export: ExportSettings::default(),
@@ -1843,15 +1863,73 @@ impl VideoEditorApp {
         ButtonFace::height(ControlSize::Regular, &self.chrome_theme)
     }
 
-    fn timeline_height(&self) -> f64 {
-        // Large type gives audio lanes the same two-row header as video
-        // lanes, so reserve their extra vertical rhythm rather than cutting
-        // the last AUDIO label off behind the add-track footer.
-        if self.text_scale > 1.25 {
-            TIMELINE_H * 1.5
-        } else {
-            TIMELINE_H * self.chrome_scale()
+    /// Where the timeline starts in the room between the header row and
+    /// the window's bottom edge: the divider the person drags.
+    fn timeline_top(&self, below_header: f64, bottom: f64) -> f64 {
+        (below_header
+            + self
+                .timeline_split
+                .ratio()
+                .first_extent((bottom - below_header).max(0.0)))
+        .round()
+    }
+
+    /// The room the divider moves in: everything under the header row.
+    fn timeline_split_bounds(&self) -> Rect {
+        let r = self.rect;
+        Rect::new(r.x0, r.y0 + self.topbar_height(), r.x1, r.y1)
+    }
+
+    /// Give the preview / timeline divider the event. Returns whether it
+    /// took it (a drag, a press on the divider, a key while it is focused).
+    fn route_to_timeline_split(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let bounds = self.timeline_split_bounds();
+        self.timeline_split.set_rect(bounds, &self.chrome_theme);
+        self.timeline_split.handle_event(event, ctx)
+    }
+
+    /// The lanes' scrolled extent: every lane, then the add-track buttons,
+    /// then room for the horizontal scroll bar.
+    fn lanes_content_height(&self) -> f64 {
+        let lanes: f64 = self
+            .project
+            .display_tracks()
+            .iter()
+            .map(|t| self.lane_height(t.kind) + LANE_GAP)
+            .sum();
+        let footer = 2.0 * S2 + ButtonFace::height(ControlSize::Small, &self.chrome_theme);
+        LANE_GAP + lanes + footer + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
+    }
+
+    fn lanes_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
+        ui::widget::ScrollMetrics::new(
+            self.lanes_content_height(),
+            r.lanes.height(),
+            self.lane_scroll,
+        )
+    }
+
+    /// The lanes' vertical scroll bar track, or `None` when every lane fits.
+    fn lanes_scroll_track(&self, r: &Regions) -> Option<Rect> {
+        if !self.lanes_metrics(r).overflows() {
+            return None;
         }
+        let x1 = r.lanes.x1 - SCROLLBAR_INSET;
+        let bottom = if self.hscroll_track(r).is_some() {
+            SCROLLBAR_THICKNESS + 2.0 * SCROLLBAR_INSET
+        } else {
+            SCROLLBAR_INSET
+        };
+        Some(Rect::new(
+            x1 - SCROLLBAR_THICKNESS,
+            r.lanes.y0 + SCROLLBAR_INSET,
+            x1,
+            r.lanes.y1 - bottom,
+        ))
     }
 
     fn transport_height(&self) -> f64 {
@@ -2033,7 +2111,7 @@ impl VideoEditorApp {
     /// full lane width.
     fn lane_rects(&self, r: &Regions) -> Vec<(TrackId, TrackKind, Rect)> {
         let mut out = Vec::new();
-        let mut y = r.lanes.y0 + LANE_GAP;
+        let mut y = r.lanes.y0 + LANE_GAP - self.lane_scroll;
         for t in self.project.display_tracks() {
             let h = self.lane_height(t.kind);
             let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
@@ -2109,7 +2187,8 @@ impl VideoEditorApp {
             };
             (h, [width(TrackKind::Video), width(TrackKind::Audio)])
         });
-        if y + h > r.timeline.y1 {
+        // Scrolled out of the lanes' view, they are not there to press.
+        if y < r.lanes.y0 || y + h > r.timeline.y1 {
             return Vec::new();
         }
         let vbtn = Rect::new(r.gutter.x0 + S2, y, r.gutter.x0 + S2 + widths[0], y + h);
@@ -2421,6 +2500,9 @@ impl VideoEditorApp {
                 .inspector_scroll_track(r)
                 .map(|t| (t, self.inspector_metrics(r))),
             ScrollPane::Bin => self.bin_scroll_track(r).map(|t| (t, self.bin_metrics(r))),
+            ScrollPane::Lanes => self
+                .lanes_scroll_track(r)
+                .map(|t| (t, self.lanes_metrics(r))),
         }
     }
 
@@ -2429,6 +2511,7 @@ impl VideoEditorApp {
             ScrollPane::Timeline => &mut self.hbar,
             ScrollPane::Inspector => &mut self.inspector_bar,
             ScrollPane::Bin => &mut self.bin_bar,
+            ScrollPane::Lanes => &mut self.lanes_bar,
         }
     }
 
@@ -2437,6 +2520,7 @@ impl VideoEditorApp {
             ScrollPane::Timeline => &self.hbar,
             ScrollPane::Inspector => &self.inspector_bar,
             ScrollPane::Bin => &self.bin_bar,
+            ScrollPane::Lanes => &self.lanes_bar,
         }
     }
 
@@ -2452,12 +2536,20 @@ impl VideoEditorApp {
                 let max = self.bin_max_scroll(r);
                 self.bin_scroll = offset.clamp(0.0, max);
             }
+            ScrollPane::Lanes => {
+                let max = self.lanes_metrics(r).max_scroll();
+                self.lane_scroll = offset.clamp(0.0, max);
+            }
         }
     }
 
     /// Every pane that currently shows a bar, for the hover / press sweeps.
-    const SCROLL_PANES: [ScrollPane; 3] =
-        [ScrollPane::Inspector, ScrollPane::Bin, ScrollPane::Timeline];
+    const SCROLL_PANES: [ScrollPane; 4] = [
+        ScrollPane::Inspector,
+        ScrollPane::Bin,
+        ScrollPane::Timeline,
+        ScrollPane::Lanes,
+    ];
 
     /// Keep the audio monitor in step with the transport.
     ///
@@ -6194,6 +6286,8 @@ impl VideoEditorApp {
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
 
+        let bounds = self.timeline_split_bounds();
+        self.timeline_split.set_rect(bounds, theme);
         let mut regions = self.regions();
         if !self.shot_lifecycle.interaction_applied
             && self.shot_scenario.is_interaction()
@@ -6568,6 +6662,9 @@ impl Widget for VideoEditorApp {
         // Same for the bin: deleting sources shortens the list under us.
         let bin_max = self.bin_max_scroll(&r);
         self.bin_scroll = self.bin_scroll.clamp(0.0, bin_max);
+        // And the lanes: removing a track shortens them.
+        let lanes_max = self.lanes_metrics(&r).max_scroll();
+        self.lane_scroll = self.lane_scroll.clamp(0.0, lanes_max);
         // Keep the playhead on screen while it is moving under its own steam,
         // and the horizontal scroll inside a timeline whose length may have
         // just changed under us (a delete, a remote edit).
@@ -6676,6 +6773,9 @@ impl Widget for VideoEditorApp {
                 .handle_event(event, r.history_btn, ctx.scale_factor)
         {
             *ctx.handled = true;
+            return;
+        }
+        if !modal_open && !bin_overlay_open && self.route_to_timeline_split(event, ctx) {
             return;
         }
         // An in-flight inline rename owns input: forward every event to the
@@ -7067,6 +7167,15 @@ impl Widget for VideoEditorApp {
                     let step = self.visible_seconds(&r) * 0.15;
                     self.scroll_by(notches * step, &r);
                     *ctx.handled = true;
+                } else if dy.abs() > 0.0
+                    && !(ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
+                    && self.lanes_metrics(&r).overflows()
+                {
+                    // More lanes than the timeline holds: the wheel scrolls
+                    // them; Ctrl (Cmd) + wheel still zooms.
+                    let max = self.lanes_metrics(&r).max_scroll();
+                    self.lane_scroll = (self.lane_scroll - dy * 40.0).clamp(0.0, max);
+                    *ctx.handled = true;
                 } else if dy.abs() > 0.0 {
                     // Plain wheel zooms, anchored on the time under the pointer
                     // so the frame you are looking at stays put.
@@ -7119,6 +7228,9 @@ impl Widget for VideoEditorApp {
             } else {
                 CursorIcon::Default
             });
+        }
+        if let Some(icon) = self.timeline_split.cursor_shape(point) {
+            return Some(icon);
         }
         // A live drag owns the cursor for its whole duration.
         match self.drag {
@@ -7452,6 +7564,10 @@ impl Widget for VideoEditorApp {
                 self.a11y_project(),
                 self.a11y_bin(),
                 self.a11y_transport(),
+                self.timeline_split
+                    .accessibility()
+                    .with_bounds(self.timeline_split.hit_rect())
+                    .with_action_target(TIMELINE_SPLIT_TARGET),
                 self.a11y_timeline(),
                 self.a11y_inspector(),
             ]
@@ -7505,6 +7621,9 @@ impl Widget for VideoEditorApp {
     ) -> bool {
         if self.history.perform_semantic_action(target, action) {
             return true;
+        }
+        if target == TIMELINE_SPLIT_TARGET {
+            return self.timeline_split.perform_action(action);
         }
         let Some((_, encoded)) = target
             .strip_prefix("tilo.key-action:")

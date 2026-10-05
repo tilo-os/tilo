@@ -1359,7 +1359,7 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         );
         // Empty lane space is where a marquee starts.
         assert_eq!(
-            app.cursor_shape(Point::new(r.lanes.x1 - 4.0, cr.center().y)),
+            app.cursor_shape(Point::new(r.lanes.x1 - 24.0, cr.center().y)),
             Some(CursorIcon::Crosshair),
         );
         // The ruler scrubs.
@@ -4969,7 +4969,7 @@ fn timeline_scrolls_pans_and_follows_playback() {
         move_to(&mut app, &mut doc, r.lanes.x0 + 10.0, r.lanes.center().y);
         // Zoom right in, so the tail is far off-screen.
         for _ in 0..12 {
-            wheel(&mut app, &mut doc, 0.0, 3.0, ModifiersState::empty());
+            wheel(&mut app, &mut doc, 0.0, 3.0, ModifiersState::CONTROL);
         }
         assert!(
             app.time_to_x(last_end, &r.lanes) > r.lanes.x1,
@@ -10896,4 +10896,49 @@ fn crop(rgba: &[u8], fw: u32, rect: Rect) -> Vec<u8> {
         }
     }
     out
+}
+
+#[test]
+fn the_timeline_resizes_against_the_preview_and_its_lanes_scroll() {
+    // Case `a_small_window_gives_the_preview_room_and_scrolls_the_lanes`.
+    let (mut app, mut doc) = app_sized(800.0, 600.0);
+    let r = app.regions();
+    assert!(
+        r.preview.height() > r.timeline.height(),
+        "the preview keeps the larger share: {} vs {}",
+        r.preview.height(),
+        r.timeline.height()
+    );
+    assert!(app.lanes_metrics(&r).overflows(), "four lanes overflow it");
+    move_to(&mut app, &mut doc, r.lanes.x0 + 40.0, r.lanes.center().y);
+    let zoom = app.zoom;
+    wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::empty());
+    assert!(app.lane_scroll > 0.0, "the wheel scrolls the lanes");
+    assert!((app.zoom - zoom).abs() < f64::EPSILON, "and does not zoom");
+    let first = app.lane_rects(&app.regions())[0].2;
+    assert!(
+        first.y0 < r.lanes.y0,
+        "the first lane went up under the ruler"
+    );
+
+    // Case `dragging_the_divider_gives_the_timeline_more_room`.
+    let r = app.regions();
+    let top = r.timeline.y0;
+    move_to(&mut app, &mut doc, r.timeline.center().x, top);
+    press(&mut app, &mut doc);
+    move_to(&mut app, &mut doc, r.timeline.center().x, top - 120.0);
+    release(&mut app, &mut doc);
+    let after = app.regions();
+    assert!(
+        after.timeline.y0 < top - 100.0,
+        "the timeline grew: {} from {top}",
+        after.timeline.y0
+    );
+    let node = app.accessibility().unwrap();
+    assert!(
+        node.children
+            .iter()
+            .any(|child| child.action_target.as_deref() == Some(TIMELINE_SPLIT_TARGET)),
+        "the divider is a separator assistive technology can move"
+    );
 }
