@@ -142,7 +142,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
 fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
     // Case `cleared_or_unadmitted_nodes_never_dispatch_as_outer_widgets`.
     {
-        let mut root = Button::new("probe", "Probe", None);
+        let mut root = Button::new("probe", "Probe");
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
         let node = root.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
@@ -174,7 +174,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                 .unwrap()
             );
             let original = nodes[&node];
-            let mut other = Button::new("other", "Other", None);
+            let mut other = Button::new("other", "Other");
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(&mut other));
             assert!(matches!(
                 invoke_bound_node::<()>(
@@ -623,10 +623,10 @@ impl Widget for Leaf {
     )]
     fn start_operation(
         &mut self,
-        op: &tilo_ui::widget::ResourceOperation<'_>,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         _: &ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         if op.unscoped().is_none() {
             return Ok(None);
         }
@@ -636,7 +636,9 @@ impl Widget for Leaf {
         );
         self.capture("operation-start");
         self.operation_state = Some(LocalState::new(0));
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted))
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Accepted,
+        ))
     }
     fn poll_resource_operation(
         &mut self,
@@ -728,21 +730,22 @@ impl Widget for Root {
 
     fn start_operation(
         &mut self,
-        op: &tilo_ui::widget::ResourceOperation<'_>,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         if op.unscoped().is_none() {
-            return tilo_ui::widget::start_in_children(self, op, doc, path);
+            return tilo_ui::host_operation::start_in_children(self, op, doc, path);
         }
         if !LEGACY_MUTABLE.get() {
-            if let Some(started) = tilo_ui::widget::start_in_children(self, op, doc, path)? {
+            if let Some(started) = tilo_ui::host_operation::start_in_children(self, op, doc, path)?
+            {
                 return Ok(Some(started));
             }
             if let Some(accept) = LEGACY_START.get() {
                 LEGACY_START_CALLS.set(LEGACY_START_CALLS.get().saturating_add(1));
                 return Ok(accept.then(|| {
-                    tilo_ui::widget::ResourceOperationStart::Completed(
+                    tilo_ui::host_operation::ResourceOperationStart::Completed(
                         tilo_actions::ActionOutput::default(),
                     )
                 }));
@@ -757,9 +760,11 @@ impl Widget for Root {
         LEGACY_DOCUMENTS.with_borrow_mut(|seen| seen.push((marker, path == &ROOT)));
         doc.put(ROOT, "legacy-follow-up", true)
             .map_err(|e| e.to_string())?;
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 
     fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
@@ -1082,7 +1087,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         let invocation = tilo_actions::InvocationId::new();
         assert!(matches!(
             tile.start_operation(
-                &tilo_ui::widget::ResourceOperation::local(
+                &tilo_ui::host_operation::ResourceOperation::local(
                     invocation,
                     tilo_actions::OperationKind::Effect,
                     "probe",
@@ -1092,7 +1097,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                 &ROOT
             )
             .unwrap(),
-            Some(tilo_ui::widget::ResourceOperationStart::Accepted)
+            Some(tilo_ui::host_operation::ResourceOperationStart::Accepted)
         ));
         CANCELLED.set(0);
         CLOSED_DROPS.set(0);
@@ -1278,7 +1283,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
 
                 Callback::Start => {
                     tile.start_operation(
-                        &tilo_ui::widget::ResourceOperation::local(
+                        &tilo_ui::host_operation::ResourceOperation::local(
                             invocation,
                             tilo_actions::OperationKind::Effect,
                             "probe",
@@ -1490,7 +1495,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
                 bindings.rebuild(&tile, &tree, node, &nodes);
             }
             tile.start_operation(
-                &tilo_ui::widget::ResourceOperation::local(
+                &tilo_ui::host_operation::ResourceOperation::local(
                     tilo_actions::InvocationId::new(),
                     tilo_actions::OperationKind::Effect,
                     "probe",
@@ -1520,7 +1525,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         let id = tilo_actions::InvocationId::new();
         let mut doc = AutoCommit::new();
         tile.start_operation(
-            &tilo_ui::widget::ResourceOperation::local(
+            &tilo_ui::host_operation::ResourceOperation::local(
                 id,
                 tilo_actions::OperationKind::Effect,
                 "probe",
@@ -2040,7 +2045,7 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
                 ))));
             let result = tree
                 .start_operation(
-                    &tilo_ui::widget::ResourceOperation::local(
+                    &tilo_ui::host_operation::ResourceOperation::local(
                         tilo_actions::InvocationId::new(),
                         tilo_actions::OperationKind::Effect,
                         "legacy",
@@ -2099,7 +2104,7 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
             )));
             let mut invoke = || {
                 tree.start_operation(
-                    &tilo_ui::widget::ResourceOperation::local(
+                    &tilo_ui::host_operation::ResourceOperation::local(
                         tilo_actions::InvocationId::new(),
                         tilo_actions::OperationKind::Effect,
                         "legacy.mutable",
@@ -2124,7 +2129,9 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         );
         assert!(matches!(
             outcomes[0],
-            Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
+            Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
+            ))
         ));
         assert_eq!(
             outcomes[1].as_ref().unwrap_err(),
@@ -2189,7 +2196,7 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         outer.put(ROOT, "marker", "outer-A").unwrap();
         let mut invoke = || {
             tree.start_operation(
-                &tilo_ui::widget::ResourceOperation::local(
+                &tilo_ui::host_operation::ResourceOperation::local(
                     tilo_actions::InvocationId::new(),
                     tilo_actions::OperationKind::Effect,
                     "legacy.mutable",
@@ -2217,7 +2224,9 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         LEGACY_MUTABLE.set(false);
         assert!(matches!(
             selected,
-            Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
+            Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
+            ))
         ));
         assert_eq!(
             absent.as_ref().unwrap_err(),
@@ -2233,7 +2242,9 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         );
         assert!(matches!(
             retained,
-            Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
+            Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
+            ))
         ));
         assert_eq!(
             LEGACY_DOCUMENTS.with_borrow(Clone::clone),
@@ -2492,7 +2503,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                     )
                     .unwrap(),
                 );
-            let button = Button::new("outer-edit", "Outer edit", None)
+            let button = Button::new("outer-edit", "Outer edit")
                 .on_action(tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap());
             column = column.push(Box::new(button));
             let mut driver = controlled_driver(Box::new(column), (300, 200));
@@ -2540,7 +2551,7 @@ fn assert_same_name_inline_wrapper_refused() {
     let clicked = std::rc::Rc::new(Cell::new(false));
     let observer = clicked.clone();
     let wrapper = Box::new(SameNameUnregisteredWrapper(
-        Button::new("ambiguous-child", "Child", None).on_click(move || observer.set(true)),
+        Button::new("ambiguous-child", "Child").on_click(move || observer.set(true)),
     ));
     assert_eq!(
         std::ptr::from_ref(wrapper.as_ref()).cast::<()>(),

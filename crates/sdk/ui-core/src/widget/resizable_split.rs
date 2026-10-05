@@ -219,8 +219,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     /// Forward the per-frame update pass to both panes, so a pane that
@@ -535,19 +534,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             None,
             &paint_rect,
         );
-    }
-}
-
-impl<L: Widget + 'static, R: Widget + 'static> crate::undo::UndoPoints for ResizableSplit<L, R> {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
-        }
     }
 }
 

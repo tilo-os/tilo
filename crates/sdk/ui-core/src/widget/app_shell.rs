@@ -211,7 +211,7 @@ impl AppShell {
     )]
     fn back_button(id: &str, name: &str, requested: &Rc<Cell<bool>>, side: f64) -> Button {
         let requested = Rc::clone(requested);
-        Button::new(id, "", None)
+        Button::new(id, "")
             .with_icon(crate::icons::Icon::ArrowLeft)
             .with_accessible_name(name)
             .with_size(side as f32, side as f32)

@@ -6569,15 +6569,6 @@ impl ui::widget::controls::ActionControls for CalendarApp {
             .into_iter()
             .find_map(ui::widget::controls::take_control_invocation)
     }
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        for child in self.children_mut() {
-            ui::widget::controls::on_control_invocation_result(child, address, result);
-        }
-    }
 }
 
 impl CalendarApp {

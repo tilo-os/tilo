@@ -269,6 +269,44 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
     );
 }
 
+/// Launch records of the apps the session shows inside its own process: the
+/// app and room each is about to connect for, until its collaboration
+/// connection is attested or the record expires.
+static IN_PROCESS_LAUNCHES: Mutex<Vec<(ServiceLaunchIdentity, Instant)>> = Mutex::new(Vec::new());
+
+/// Record that the session itself is about to connect `app_id` in room
+/// `workspace_id`, as it records a process it launched.
+pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
+    launches.push((
+        ServiceLaunchIdentity {
+            app_id: app_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            allowed_compat_entry_ids: Vec::new(),
+            compat_entry_generation: 0,
+        },
+        Instant::now(),
+    ));
+}
+
+/// Spend the session's launch record for a connection from its own process
+/// naming `app_id` in room `workspace_id`.
+pub fn consume_in_process_launch(pid: u32, app_id: &str, workspace_id: &str) -> bool {
+    if pid != std::process::id() {
+        return false;
+    }
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
+    let Some(index) = launches.iter().position(|(identity, _)| {
+        identity.app_id == app_id && identity.workspace_id == workspace_id
+    }) else {
+        return false;
+    };
+    launches.remove(index);
+    true
+}
+
 /// Consume the compositor's one-shot authority record for a launcher child.
 /// Kernel process facts corroborate the record but never create authority.
 pub fn consume_trusted_service_launch_identity(

@@ -19,25 +19,24 @@
 //! therefore repaints the passcode field, not the screen; the clock rebuilds
 //! the screen once a minute.
 //!
-//! The typed username is view state: the username field edits a
-//! [`ui::LocalState`] the greeter reads when an attempt starts. The remaining
-//! non-secret presentation state lives in the CRDT (the toolkit convention):
-//!   * `greeter.submit`   — `bool` flag (Sign in / Enter rising edge)
-//!   * `greeter.fingerprint` — `bool` flag (explicit passwordless PAM attempt)
-//!   * `greeter.session`  — `Text` (the chosen session's label)
+//! The greeter keeps no document. A sign-in attempt is not data: it lives
+//! for one process and ends in a session or in a message on this screen.
+//! Every control therefore reports to the greeter directly:
+//!   * the username field and the session picker edit [`ui::LocalState`]s
+//!     the greeter reads when an attempt starts;
+//!   * the sign-in, fingerprint, account, accessibility and power controls
+//!     raise one-shot requests the greeter takes on its next sync.
 //!
-//! The passcode is deliberately different: it is held only in a process-local,
-//! zeroized buffer shared with a local-mode [`TextInput`]. It never enters an
-//! Automerge object, change history, persistence, presence, or peer sync.
+//! The passcode is held only in a process-local, zeroized buffer shared with
+//! a local-mode [`TextInput`]. It never enters an Automerge object, change
+//! history, persistence, presence, or peer sync.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use ui::doc::{read_bool, read_text};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
 use taffy::style_helpers::{length, percent};
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
@@ -69,13 +68,6 @@ use crate::device_status::DeviceStatus;
 use crate::i18n::{t, t_args};
 use crate::local_users::{LoginUser, discover_login_users, remember_user, remembered_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
-
-const SUBMIT_PATH: &str = "greeter.submit";
-const FINGERPRINT_PATH: &str = "greeter.fingerprint";
-/// The session picker's chosen label, as a CRDT `Text`. The picker writes
-/// its selection here; [`GreeterApp::sync`] mirrors it back onto the
-/// selected index.
-const SESSION_PATH: &str = "greeter.session";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuthMethod {
@@ -230,8 +222,6 @@ impl Stack {
 }
 
 impl Widget for Stack {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -400,14 +390,6 @@ impl Widget for Stack {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::undo::UndoPoints for Stack {
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            ui::undo::on_commit(child.as_mut());
-        }
     }
 }
 
@@ -594,6 +576,10 @@ fn next_minute(now: Instant) -> Instant {
 /// Controls whose callbacks report back to the greeter on its next sync.
 #[derive(Default)]
 struct Requests {
+    /// Sign in with the passcode: the sign-in action, or Enter in a field.
+    sign_in: Cell<bool>,
+    /// Sign in with the enrolled fingerprint instead.
+    fingerprint: Cell<bool>,
     power: Cell<Option<PowerAction>>,
     account: Cell<Option<usize>>,
     accessibility: Cell<Option<AccessibilityRequest>>,
@@ -601,11 +587,14 @@ struct Requests {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent lifecycle flags: bootstrap, rebuild, focus reset, keyboard focus, screen reader"
+    reason = "independent lifecycle flags: rebuild, focus reset, keyboard focus, screen reader, pinned clock"
 )]
 pub struct GreeterApp {
     sessions: Vec<Session>,
     selected_session: usize,
+    /// The session picker's chosen name. [`Widget::sync`] mirrors it onto
+    /// `selected_session`.
+    session_choice: ui::LocalState<String>,
     /// The local accounts this machine offers, in account-database order.
     /// With more than one, the screen lists them to choose from.
     users: Vec<LoginUser>,
@@ -632,7 +621,6 @@ pub struct GreeterApp {
     /// generic "Signing in…" line.
     prompt: String,
     phase: AuthPhase,
-    bootstrap_done: bool,
     /// Set when the composition must be rebuilt (session, notice, auth phase
     /// or the minute changed). Drained by `take_structure_dirty`, which the
     /// App polls to trigger a fresh `build_layout`.
@@ -769,9 +757,16 @@ impl GreeterApp {
         fingerprint: FingerprintAvailability,
     ) -> Self {
         crate::i18n::ensure();
+        let session_choice = ui::LocalState::new(
+            sessions
+                .first()
+                .map(|session| session.name.clone())
+                .unwrap_or_default(),
+        );
         Self {
             sessions,
             selected_session: 0,
+            session_choice,
             users: login_user.iter().cloned().collect(),
             username: ui::LocalState::new(
                 login_user
@@ -787,7 +782,6 @@ impl GreeterApp {
             failures: 0,
             prompt: String::new(),
             phase: AuthPhase::Idle,
-            bootstrap_done: false,
             dirty_structure: false,
             caps_lock: CapsLockEstimate::new(),
             focus_reset_pending: false,
@@ -1203,6 +1197,7 @@ impl GreeterApp {
                 .disabled(busy)
         };
         let sign_in = t("greeter-sign-in");
+        let requests = Rc::clone(&self.requests);
         form.push(Box::new(
             // The action takes the field's height, whatever the text scale
             // makes it, so the two read as one control.
@@ -1212,13 +1207,14 @@ impl GreeterApp {
                 .with_align_items(AlignItems::Stretch)
                 .push(Box::new(password_input))
                 .push(Box::new(
-                    Button::new("greeter.login", "", Some(SUBMIT_PATH))
+                    Button::new("greeter.login", "")
                         .primary()
                         .with_icon(Icon::ArrowRight)
                         .with_accessible_name(&sign_in)
                         .tooltip(sign_in.clone())
                         .content_sized()
-                        .with_min_height(FIELD_HEIGHT),
+                        .with_min_height(FIELD_HEIGHT)
+                        .on_click(move || requests.sign_in.set(true)),
                 )),
         ));
         form.push(Box::new(self.build_status(theme)));
@@ -1227,19 +1223,17 @@ impl GreeterApp {
         if self.fingerprint != FingerprintAvailability::Unavailable && busy {
             form.push(Box::new(Spacer::fixed(FIELD_HEIGHT)));
         } else if self.fingerprint != FingerprintAvailability::Unavailable {
+            let requests = Rc::clone(&self.requests);
             form.push(Box::new(
                 Stack::column(
                     0.0,
                     vec![Box::new(
-                        Button::new(
-                            "greeter.fingerprint",
-                            &t("greeter-use-fingerprint"),
-                            Some(FINGERPRINT_PATH),
-                        )
-                        .ghost()
-                        .with_icon(Icon::Fingerprint)
-                        .content_sized()
-                        .with_min_height(FIELD_HEIGHT),
+                        Button::new("greeter.fingerprint", &t("greeter-use-fingerprint"))
+                            .ghost()
+                            .with_icon(Icon::Fingerprint)
+                            .content_sized()
+                            .with_min_height(FIELD_HEIGHT)
+                            .on_click(move || requests.fingerprint.set(true)),
                     )],
                 )
                 .align(align),
@@ -1271,7 +1265,6 @@ impl GreeterApp {
                 Button::new(
                     &format!("greeter.account.{}", user.username),
                     &user.display_name,
-                    None,
                 )
                 .ghost()
                 .with_icon(Icon::User)
@@ -1302,7 +1295,7 @@ impl GreeterApp {
         let toggle = |id: &str, icon: Icon, key: &str, on: bool, request: AccessibilityRequest| {
             let label = t(key);
             let requests = Rc::clone(&self.requests);
-            let button = Button::new(id, "", None)
+            let button = Button::new(id, "")
                 .with_icon(icon)
                 .with_accessible_name(&label)
                 .tooltip(label)
@@ -1352,7 +1345,7 @@ impl GreeterApp {
                 Stack::column(
                     0.0,
                     vec![Box::new(
-                        Dropdown::new(options, SESSION_PATH)
+                        Dropdown::from_state(options, &self.session_choice)
                             .with_id("greeter.session")
                             .with_accessible_name(t("greeter-session"))
                             .with_enabled(!busy),
@@ -1408,7 +1401,8 @@ impl GreeterApp {
         let labels: Vec<String> = PowerAction::ALL.iter().map(|a| a.label()).collect();
         let chosen = labels.clone();
         trailing.push(Box::new(
-            Dropdown::new(labels, "")
+            // A menu: the choice is a command, reported and never kept.
+            Dropdown::from_state(labels, &ui::LocalState::new(String::new()))
                 .as_menu(Icon::Power)
                 .with_id("greeter.power")
                 .with_accessible_name(t("greeter-power"))
@@ -1571,21 +1565,6 @@ impl GreeterApp {
                 .padding(if compact { s.s2 } else { s.s6 })
                 .fill_height(),
         )
-    }
-
-    fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
-        if state.get(root, SUBMIT_PATH).ok().flatten().is_none() {
-            let _ = state.put(root, SUBMIT_PATH, false);
-        }
-        if state.get(root, FINGERPRINT_PATH).ok().flatten().is_none() {
-            let _ = state.put(root, FINGERPRINT_PATH, false);
-        }
-        if state.get(root, SESSION_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, SESSION_PATH, ObjType::Text)
-            && let Some(s) = self.sessions.get(self.selected_session)
-        {
-            let _ = state.splice_text(&obj, 0, 0, &s.name);
-        }
     }
 
     /// Record + execute a power action. Splitting the record (always) from
@@ -1896,15 +1875,12 @@ impl ui::widget::FullscreenProvider for GreeterApp {
 }
 
 impl Widget for GreeterApp {
-    ui::provides!(dyn ui::widget::FullscreenProvider, dyn ui::undo::UndoPoints);
+    ui::provides!(dyn ui::widget::FullscreenProvider);
 
+    /// Take what the controls reported since the last pass. The document is
+    /// only lent on to the composed controls; the greeter itself neither
+    /// reads nor writes it.
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
-        if !self.bootstrap_done {
-            self.bootstrap_crdt(state, root);
-            self.bootstrap_done = true;
-        }
-
         // The minute turned over (the wake deadline brought us here), or the
         // machine's state changed: rebuild once to show it.
         if !self.clock_pinned {
@@ -1916,12 +1892,13 @@ impl Widget for GreeterApp {
             }
         }
 
-        // The session picker writes its chosen label into the document;
-        // mirror that back onto the selected index. An unrecognised label
-        // (a session that vanished between renders) is ignored rather than
-        // resetting the choice out from under the user.
-        if let Some(name) = read_text(state, root, SESSION_PATH)
-            && let Some(idx) = self.sessions.iter().position(|s| s.name == name)
+        // Mirror the picker's chosen name onto the selected index. An
+        // unrecognised name (a session that vanished between renders) is
+        // ignored rather than resetting the choice out from under the user.
+        let chosen = self
+            .session_choice
+            .with(|name| self.sessions.iter().position(|s| s.name == *name));
+        if let Some(idx) = chosen
             && idx != self.selected_session
         {
             self.selected_session = idx;
@@ -1933,21 +1910,19 @@ impl Widget for GreeterApp {
         }
 
         // Pull local-only passcode edits into the zeroized buffer before
-        // consuming a submit edge raised by Enter or the sign-in action in
-        // the same event cycle. No secret is written to `state` by this sync.
+        // taking a sign-in request raised by Enter or the sign-in action in
+        // the same event cycle.
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
 
-        // Submit rising edge — reset the flag *before* attempting so a
-        // single click fires exactly one attempt.
-        if read_bool(state, root, SUBMIT_PATH).unwrap_or(false) {
-            let _ = state.put(root, SUBMIT_PATH, false);
+        // Each request is taken before it is acted on, so one activation
+        // starts exactly one attempt.
+        if self.requests.sign_in.take() {
             self.attempt_login(AuthMethod::Password);
         }
 
-        if read_bool(state, root, FINGERPRINT_PATH).unwrap_or(false) {
-            let _ = state.put(root, FINGERPRINT_PATH, false);
+        if self.requests.fingerprint.take() {
             self.attempt_login(AuthMethod::Fingerprint);
         }
 
@@ -2104,7 +2079,7 @@ impl Widget for GreeterApp {
         // Only an otherwise-unhandled Enter (normally from either text field)
         // acts as the form's default sign-in action.
         if enter_pressed && !*ctx.handled && !self.focused_button_present() {
-            let _ = ctx.state.put(ctx.path, SUBMIT_PATH, true);
+            self.requests.sign_in.set(true);
             *ctx.handled = true;
         }
         // Esc not taken by an open menu starts the passcode over.
@@ -2179,7 +2154,7 @@ impl Widget for GreeterApp {
     }
 
     fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
-        let (state, _root) = ui::doc::document(state, root);
+        let (state, _root) = ui::doc::document_ref(state, root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state);
             return;
@@ -2231,17 +2206,10 @@ impl Widget for GreeterApp {
     }
 }
 
-impl ui::undo::UndoPoints for GreeterApp {
-    fn on_commit(&mut self) {
-        if let Some(c) = &mut self.composed {
-            ui::undo::on_commit(c.as_mut());
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::{AutoCommit, ReadDoc};
     use std::collections::HashMap;
     use taffy::AvailableSpace;
 
@@ -2334,6 +2302,37 @@ mod tests {
 
     fn typed_username(app: &GreeterApp) -> String {
         app.username.with(Clone::clone)
+    }
+
+    /// Whether the greeter left `doc` exactly as empty as it was lent.
+    fn untouched(doc: &AutoCommit) -> bool {
+        doc.keys(automerge::ROOT).next().is_none()
+    }
+
+    fn find_mut<'a>(w: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
+        if w.test_id() == Some(id) {
+            return Some(w);
+        }
+        w.children_mut()
+            .into_iter()
+            .find_map(|child| find_mut(child, id))
+    }
+
+    /// Activate the control `id` as Enter, Space or assistive technology
+    /// does, then let the greeter take what it reported.
+    fn press(app: &mut GreeterApp, doc: &mut AutoCommit, id: &str) {
+        app.sync(doc, &automerge::ROOT);
+        app.composed = Some(app.build_composition(&Theme::dark()));
+        let control = app
+            .composed
+            .as_deref_mut()
+            .and_then(|composed| find_mut(composed, id))
+            .unwrap_or_else(|| panic!("{id} is on the screen"));
+        assert!(
+            control.perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT),
+            "{id} accepts activation"
+        );
+        app.sync(doc, &automerge::ROOT);
     }
 
     fn dispatch_enter(app: &mut GreeterApp, state: &mut AutoCommit, focused: &str) -> bool {
@@ -2689,15 +2688,13 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
-            // Bootstrap seeds the picker with the current session.
+            // The picker starts on the session that signing in would start.
             app.sync(&mut doc, &root);
             assert_eq!(app.selected_session, 0);
-            assert_eq!(
-                read_text(&doc, &root, SESSION_PATH).as_deref(),
-                Some("Tilo"),
-            );
+            assert_eq!(app.session_choice.with(Clone::clone), "Tilo");
 
-            choose_session(&mut doc, &root, "Weston");
+            // What the picker stores on a selection.
+            app.session_choice.set("Weston".to_owned());
             app.sync(&mut doc, &root);
             assert_eq!(app.selected_session, 1);
             assert_eq!(
@@ -2707,9 +2704,11 @@ mod tests {
             );
 
             // A label that names no known session leaves the choice alone.
-            choose_session(&mut doc, &root, "a session that went away");
+            app.session_choice
+                .set("a session that went away".to_owned());
             app.sync(&mut doc, &root);
             assert_eq!(app.selected_session, 1, "choice survives a stale label");
+            assert!(untouched(&doc), "the choice stays out of the document");
         }
         // Phase `no_session_is_a_clear_error_not_a_crash`.
         {
@@ -2721,15 +2720,6 @@ mod tests {
             assert_eq!(app.notice, Notice::Error("greeter-error-no-session"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
-    }
-
-    /// Replace the session picker's CRDT value, as the `Dropdown` does on
-    /// selection.
-    fn choose_session(doc: &mut AutoCommit, root: &ObjId, name: &str) {
-        let (_, obj) = doc.get(root, SESSION_PATH).unwrap().unwrap();
-        let old = doc.text(&obj).unwrap_or_default().chars().count();
-        let old = isize::try_from(old).expect("count fits isize");
-        let _ = doc.splice_text(&obj, 0, old, name);
     }
 
     fn only_bob_has_a_fingerprint(username: &str) -> bool {
@@ -2829,14 +2819,11 @@ mod tests {
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-
-            let _ = doc.put(&root, SUBMIT_PATH, true);
-            app.sync(&mut doc, &root);
+            press(&mut app, &mut doc, "greeter.login");
             assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
             assert_eq!(app.status_text(), "Enter your username.");
-            assert!(!read_bool(&doc, &root, SUBMIT_PATH).unwrap_or(false));
+            assert!(!app.requests.sign_in.get(), "the request is taken once");
+            assert!(untouched(&doc), "an attempt writes nothing to the document");
         }
         // Phase `submit_without_password_is_a_hint`.
         {
@@ -2851,7 +2838,7 @@ mod tests {
                 doc.get(&root, "greeter.username").unwrap().is_none(),
                 "the typed username stays out of the document"
             );
-            let _ = doc.put(&root, SUBMIT_PATH, true);
+            assert!(dispatch_enter(&mut app, &mut doc, "greeter.username"));
             app.sync(&mut doc, &root);
             assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
             assert_eq!(app.phase, AuthPhase::Idle);
@@ -2901,7 +2888,6 @@ mod tests {
             let app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.bootstrap_crdt(&mut doc, &root);
             seed_password(&app, "correct horse battery staple");
 
             assert!(doc.get(&root, "greeter.password").unwrap().is_none());
@@ -2911,6 +2897,9 @@ mod tests {
                     .any(|bytes| bytes == b"correct horse battery staple"),
                 "the serialized Automerge history must not contain the passcode"
             );
+            let mut app = app;
+            app.sync(&mut doc, &root);
+            assert!(untouched(&doc));
             let secret = app
                 .take_auth_secret(AuthMethod::Password)
                 .expect("local passcode is available exactly for authentication");
@@ -2927,10 +2916,13 @@ mod tests {
             app.username.set("alice".to_owned());
             seed_password(&app, "pw");
 
-            let _ = doc.put(&root, SUBMIT_PATH, true);
+            app.requests.sign_in.set(true);
             app.sync(&mut doc, &root);
             assert_eq!(app.phase, phase);
-            assert!(!read_bool(&doc, &root, SUBMIT_PATH).unwrap_or(false));
+            assert!(
+                !app.requests.sign_in.get(),
+                "the request is taken, not kept"
+            );
             assert_eq!(&*app.password_buffer.lock().unwrap(), "pw");
         }
     }
@@ -3111,7 +3103,10 @@ mod tests {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let mut doc = AutoCommit::new();
             assert!(dispatch_enter(&mut app, &mut doc, field));
-            assert!(read_bool(&doc, &automerge::ROOT, SUBMIT_PATH).unwrap_or(false));
+            assert!(app.requests.sign_in.get(), "Enter in {field} signs in");
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
+            assert!(untouched(&doc));
         }
         // Phase `focused_alternate_controls_own_enter`.
         for control in [
@@ -3126,7 +3121,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             let handled = dispatch_enter(&mut app, &mut doc, control);
             assert!(
-                !read_bool(&doc, &automerge::ROOT, SUBMIT_PATH).unwrap_or(false),
+                !app.requests.sign_in.get(),
                 "Enter on {control} must not submit the passcode form"
             );
             if control == "greeter.session" || control == "greeter.power" {
@@ -3135,6 +3130,26 @@ mod tests {
                 assert!(!handled, "{control} remains available to App activation");
             }
         }
+    }
+
+    #[test]
+    fn the_sign_in_and_fingerprint_actions_each_start_one_attempt() {
+        let mut app = GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
+        let mut doc = AutoCommit::new();
+        press(&mut app, &mut doc, "greeter.login");
+        assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
+        assert!(!app.requests.sign_in.get(), "one press, one attempt");
+
+        seed_password(&app, "typed before the finger");
+        press(&mut app, &mut doc, "greeter.fingerprint");
+        // The test runner is not greetd, so the attempt ends at asking for it.
+        assert_eq!(app.notice, Notice::Error("greeter-error-service"));
+        assert!(
+            app.password_buffer.lock().unwrap().is_empty(),
+            "a fingerprint attempt scrubs a passcode typed before it"
+        );
+        assert!(!app.requests.fingerprint.get(), "one press, one attempt");
+        assert!(untouched(&doc), "attempts write nothing to the document");
     }
 
     #[test]

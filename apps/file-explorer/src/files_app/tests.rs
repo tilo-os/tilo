@@ -455,17 +455,14 @@ mod open_with_tests {
         assert!(matches!(
             crate::files_app::published::start(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
             route.actions(),
@@ -529,12 +526,9 @@ mod open_with_tests {
         let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
         crate::files_app::published::start(
             &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            spec.kind,
+            &encoded.type_id,
+            &encoded.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -1073,7 +1067,7 @@ mod command_path_tests {
                         &serde_json::json!({}),
                     )
                     .unwrap(),
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
+                    Some(ui::framework::Effected::Done(_))
                 ),
                 "{command} is routed through the canonical door"
             );
@@ -1122,17 +1116,14 @@ mod command_path_tests {
         assert!(matches!(
             crate::files_app::published::start(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &undo_encoded.type_id,
-                    &undo_encoded.payload
-                ),
+                OperationKind::Effect,
+                &undo_encoded.type_id,
+                &undo_encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert!(
             w.last_trash_undo.is_none(),
@@ -1279,7 +1270,7 @@ mod command_path_tests {
                 &serde_json::json!({}),
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert!(w.collab_panel.is_some(), "availability route opens details");
     }
@@ -1572,12 +1563,9 @@ mod command_path_tests {
         w.refresh();
         let error = crate::files_app::published::start(
             &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::View,
-                &open.type_id,
-                &open.payload,
-            ),
+            OperationKind::View,
+            &open.type_id,
+            &open.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -1701,12 +1689,9 @@ mod command_path_tests {
             };
             crate::files_app::published::start(
                 files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
                 doc,
                 &automerge::ROOT,
             )
@@ -1778,17 +1763,14 @@ mod command_path_tests {
             .unwrap();
             let started = crate::files_app::published::start(
                 &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
+                OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT,
             );
             match started {
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(output))) => output.value,
+                Ok(Some(ui::framework::Effected::Done(output))) => output.value,
                 other => panic!("{action} completes at once: {other:?}"),
             }
         };
@@ -2064,21 +2046,13 @@ mod command_path_tests {
         .expect("the current resource must export the transfer action");
         crate::files_app::published::start(
             files,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
             &mut doc,
             &automerge::ROOT,
         )
-        .map(|started| {
-            matches!(
-                started,
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            )
-        })
+        .map(|started| matches!(started, Some(ui::framework::Effected::Done(_))))
     }
 
     #[cfg(unix)]
@@ -2249,12 +2223,9 @@ mod command_path_tests {
         assert!(
             crate::files_app::published::start(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut document,
                 &automerge::ROOT
             )
@@ -3398,17 +3369,14 @@ mod command_path_tests {
         assert!(matches!(
             crate::files_app::published::start(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
@@ -3881,6 +3849,7 @@ mod responsive_body_tests {
     use super::*;
     use std::collections::HashMap;
     use taffy::prelude::*;
+    use ui::framework::HostDelivery as _;
     use ui::theme::Theme;
 
     include!("../native_proof_tests.rs");
@@ -4259,15 +4228,12 @@ mod responsive_body_tests {
     fn shared_toolbar_resource_action_opens_view_options() {
         let mut h = H::new(None, 1200.0, 720.0);
         assert!(
-            h.w.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    br#""files.view_menu""#,
-                ),
+            h.w.start_encoded(
+                tilo_actions::OperationKind::Effect,
+                "tilo.ui.control.invoke",
+                br#""files.view_menu""#,
                 &mut h.state.doc,
-                &h.state.root,
+                &h.state.root
             )
             .unwrap()
             .is_some(),
@@ -5095,7 +5061,7 @@ mod injected_startup_tests {
                 &serde_json::json!({}),
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
             widget.current_path, mount,

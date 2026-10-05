@@ -2614,7 +2614,6 @@ impl PhotosApp {
             let button = Button::new(
                 &format!("photos-people-control-{}", self.people_controls.len()),
                 visible_label,
-                None,
             )
             .with_accessible_name(&label);
             let mut button = bound(button, &intent.effect(), actions.as_ref()).fill_width(44.0);
@@ -13823,7 +13822,7 @@ fn build_button(
     } else {
         item_width(face, &label, btn_h)
     };
-    let button = Button::new(key, shown, None);
+    let button = Button::new(key, shown);
     // The large-text overflow face paints a deliberately smaller “More”
     // caption below. An icon-only Button centres its glyph in the entire
     // word-sized slot, so retaining the ellipsis here would paint it through
@@ -13849,7 +13848,7 @@ fn build_album_page_button(
     label: &str,
     actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Button {
-    let button = Button::new(id, label, None)
+    let button = Button::new(id, label)
         .with_size(92.0, 44.0)
         .tooltip(label)
         .with_accessible_name(label);
@@ -13918,7 +13917,7 @@ fn build_metadata_editor_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label)| {
-        let button = Button::new(&format!("photos-metadata-{id}"), label, None)
+        let button = Button::new(&format!("photos-metadata-{id}"), label)
             .tooltip(label)
             .with_accessible_name(label);
         (hit, bound(button, &hit.effect(), actions))
@@ -13927,7 +13926,7 @@ fn build_metadata_editor_buttons(
 }
 
 fn build_library_header_button(id: &str, label: &str) -> Button {
-    Button::new(id, label, None)
+    Button::new(id, label)
         .with_size(142.0, 44.0)
         .tooltip(label)
         .with_accessible_name(label)
@@ -13972,7 +13971,7 @@ fn build_collection_page_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label)| {
-        let button = Button::new(id, label, None)
+        let button = Button::new(id, label)
             .with_size(88.0, 40.0)
             .tooltip(label)
             .with_accessible_name(label);
@@ -14006,7 +14005,7 @@ fn build_directory_import_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label, icon)| {
-        let button = Button::new(id, label, None)
+        let button = Button::new(id, label)
             .with_icon(icon)
             .with_size(104.0, 40.0)
             .tooltip(label)
@@ -14038,7 +14037,7 @@ fn build_timeline_density_buttons(
     ]
     .into_iter()
     .map(|(hit, id, name, icon)| {
-        let button = Button::new(id, "", None)
+        let button = Button::new(id, "")
             .with_icon(icon)
             .with_size(44.0, 44.0)
             .tooltip(name)
@@ -14079,7 +14078,7 @@ fn build_library_analysis_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label, icon)| {
-        let button = Button::new(id, label, None)
+        let button = Button::new(id, label)
             .with_icon(icon)
             .with_size(220.0, 44.0)
             .tooltip(label)

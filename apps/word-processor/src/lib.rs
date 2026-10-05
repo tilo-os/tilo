@@ -84,11 +84,6 @@ pub(crate) fn initialized_state() -> ui::State {
     state
 }
 
-/// The store the document's images are kept in on this device.
-pub(crate) fn app_content_store() -> tilo_content::ContentStore {
-    tilo_content::ContentStore::for_app()
-}
-
 /// The word processor as every host mounts it: the framework app over the
 /// document's rich-text record.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

@@ -185,7 +185,7 @@ pub fn run(_args: &[String]) {
     };
     seed(&mut doc, &t);
 
-    let mut table = Table::new("demo").with_header();
+    let mut table = Table::new("demo");
 
     // 1. base
     let Some((taffy, node, size)) = frame(&mut table, &mut doc, &t) else {
@@ -217,6 +217,10 @@ pub fn run(_args: &[String]) {
     let cols_before = table::dims(&doc, &t).1;
     dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, by));
     dispatch(&mut table, &taffy, node, &mut doc, &t, &press());
+    // The owner applies what the table hands it.
+    for edit in table.take_edits() {
+        table::apply(&mut doc, &t, &edit);
+    }
     let cols_after = table::dims(&doc, &t).1;
     assert_eq!(
         cols_after,

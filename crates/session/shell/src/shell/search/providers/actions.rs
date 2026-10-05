@@ -22,7 +22,6 @@ use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, Par
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 mod native_identity;
-mod text_insert;
 
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
@@ -194,8 +193,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Moving a tab between groups is layout, undone by moving it back;
         // a close is undone by `tab.reopen`, which puts it back in place.
-        "text.insert"
-        | "record.bring"
+        "record.bring"
         | "tab.new.terminal.here"
         | "window.new.terminal"
         | "tab.duplicate"
@@ -270,7 +268,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "history.restore"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
-        "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
+        "record.bring" | "peer.invite.named" | "agent.invite" => {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
@@ -1834,15 +1832,6 @@ impl Action {
                 }
                 set_language(st, language)
             },
-        },
-        // The first exported action that changes a document rather than
-        // the chrome around one, and so the first told *what* to write.
-        Action {
-            id: text_insert::ACTION_ID,
-            label: "search-action-text-insert",
-            subtitle: "search-action-text-insert-subtitle",
-            params: text_insert::PARAMS,
-            apply: text_insert::apply,
         },
         // The palette does this on Enter over a record row; this is the
         // address for a caller that names a record itself.

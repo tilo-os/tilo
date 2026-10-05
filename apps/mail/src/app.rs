@@ -456,7 +456,7 @@ impl MailApp {
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         let accounts = persist.load();
         let shared = MailState::shared(MailState::new_live(accounts, avatar_store()));
-        let content = content.unwrap_or_else(ContentStore::for_app);
+        let content = content.unwrap_or_else(ContentStore::memory);
         let (tx, rx) = crate::engine::spawn(content.clone());
         Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist)
     }

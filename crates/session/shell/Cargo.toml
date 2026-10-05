@@ -130,12 +130,16 @@ tilo-automation = { path = "../../collab/automation" }
 tilo-app-state = { path = "../../system/app-state" }
 # The store the apps the shell mounts in-process keep their records in.
 durable-store = { path = "../../system/durable-store" }
+# Errors a host-made collaboration connection reports.
+runtime-portal = { path = "../../runtime/runtime-portal" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
 terminal = { path = "../../../apps/terminal" }
 file-explorer = { path = "../../../apps/file-explorer" }
 browser = { path = "../../../apps/browser" }
+notes = { path = "../../../apps/notes" }
+code-editor = { path = "../../../apps/code-editor" }
 word-processor = { path = "../../../apps/word-processor" }
 # The document-format registry. The shell asks it whether a path is an
 # editable document; which installed app opens it comes from the app

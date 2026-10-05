@@ -28,12 +28,20 @@ pub struct VersionPreview {
 }
 
 impl VersionPreview {
-    pub fn new(canvas: Element, preview: LocalState<Option<String>>) -> Self {
+    pub fn new(
+        canvas: Element,
+        preview: LocalState<Option<String>>,
+        content: Option<tilo_content::ContentStore>,
+    ) -> Self {
+        let mut renderer = Renderer::default();
+        if let Some(content) = content {
+            renderer.pictures.read_from(content);
+        }
         Self {
             canvas,
             preview,
             shown: None,
-            renderer: Renderer::default(),
+            renderer,
             cursor: Point::ZERO,
         }
     }

@@ -86,7 +86,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
     {
         let mut app = app();
         app.root_widget = Box::new(crate::widget::Column::new().push(Box::new(
-            crate::widget::TextInput::from_document_string("draft").with_id("draft-editor"),
+            crate::widget::TextInput::local().with_id("draft-editor"),
         )));
         app.root_widget.sync(&mut app.state.doc, &ROOT);
         layout(&mut app);
@@ -290,9 +290,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
     // Case `native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolated`.
     {
         let mut app = app();
-        app.root_widget = Box::new(
-            crate::widget::TextInput::from_document_string("draft").with_id("pending-editor"),
-        );
+        app.root_widget = Box::new(crate::widget::TextInput::local().with_id("pending-editor"));
         layout(&mut app);
         let editor = node_for_test_id(&app, "pending-editor");
         app.set_focused_node(Some(editor));
@@ -820,7 +818,7 @@ impl RoutedOwners {
                 .unwrap();
             component.mount(|_| {}).unwrap();
             bindings.push(component.callback_binding());
-            root = root.push(Box::new(crate::widget::BoundAppWidget { component }));
+            root = root.push(Box::new(crate::widget::BoundAppWidget::new(component)));
         }
         let mut state = State::new();
         state.doc.put(ROOT, "outer", "outer only").unwrap();
@@ -1258,7 +1256,7 @@ impl RoutedPrimary {
         component.mount(|_| {}).unwrap();
         let mut app = App::new_with_controlled_inputs(
             State::new(),
-            Box::new(crate::widget::BoundAppWidget { component }),
+            Box::new(crate::widget::BoundAppWidget::new(component)),
         );
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
         app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
@@ -2305,10 +2303,10 @@ fn legacy_ids_and_effects_cannot_reach_a_replacement_owner() {
         }
         let mut tile = Box::new(crate::widget::TileHost::new(
             crate::widget::TileContent::App(Box::new(
-                crate::history_mode::integration_tests::TileEditor(
-                    crate::widget::TextInput::from_document_string("body")
-                        .with_accessible_name("replaceable editor"),
-                ),
+                crate::history_mode::integration_tests::TileEditor(crate::testing::OwnedText::new(
+                    "body",
+                    crate::widget::TextInput::local().with_accessible_name("replaceable editor"),
+                )),
             )),
         ));
         tile.bind_record(a.clone(), checkout.clone());
@@ -3899,7 +3897,7 @@ impl crate::widget::Widget for PaletteHistoryOwner {
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             type_id, payload, ..
         }) = op.unscoped()
         else {
@@ -4489,7 +4487,7 @@ impl crate::widget::Widget for ComponentControlOwner {
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             type_id,
             payload,
@@ -5704,7 +5702,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
         host: _host,
     } = bridge_component(None, false);
     let root = Box::new(
-        crate::widget::Column::new().push(Box::new(crate::widget::BoundAppWidget { component })),
+        crate::widget::Column::new().push(Box::new(crate::widget::BoundAppWidget::new(component))),
     );
     let mut app = App::from_managed_root_with_controlled_inputs(
         State::new(),
@@ -5974,9 +5972,9 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
     let root = Box::new(CustodyDeniedRoot {
         child: Box::new(
             crate::widget::Column::new()
-                .push(Box::new(crate::widget::BoundAppWidget { component }))
+                .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse", None).on_click(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
                 )),
         ),
         denied: denied.clone(),
@@ -6375,7 +6373,7 @@ fn custody_matrix_app_with_confirmation(
     };
     let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let control: Box<dyn Widget> = match kind {
-        "Button" => Box::new(Button::new("control", "Control", None).on_action(unit())),
+        "Button" => Box::new(Button::new("control", "Control").on_action(unit())),
         "Checkbox" => Box::new(
             Checkbox::new("control", "unused")
                 .with_id("control")
@@ -6450,9 +6448,11 @@ fn custody_matrix_app_with_confirmation(
         unsettled_layout: None,
         installed_output: None,
         record: None,
-        child: Box::new(Column::new().push(control).push(Box::new(
-            Button::new("pulse", "Live pulse", None).on_click(|| {}),
-        ))),
+        child: Box::new(
+            Column::new()
+                .push(control)
+                .push(Box::new(Button::new("pulse", "Live pulse").on_click(|| {}))),
+        ),
         resources,
         ledger: ledger.clone(),
     });
@@ -6664,9 +6664,9 @@ fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
     let root = Box::new(CustodyDeniedRoot {
         child: Box::new(
             crate::widget::Column::new()
-                .push(Box::new(crate::widget::BoundAppWidget { component }))
+                .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse", None).on_click(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
                 )),
         ),
         denied: denied.clone(),
@@ -6778,7 +6778,7 @@ fn custody_owned_button(
         unsettled_layout: None,
         installed_output: None,
         record: None,
-        child: Box::new(crate::widget::Button::new(label, label, None).on_action(binding)),
+        child: Box::new(crate::widget::Button::new(label, label).on_action(binding)),
         resources: vec![resource],
         ledger,
     }
@@ -6813,7 +6813,7 @@ fn control_custody_core_outer_component_legacy_owners_and_sibling() {
             .no_wrap()
             .push(outer.child)
             .push(Box::new(tile))
-            .push(Box::new(crate::widget::BoundAppWidget { component })),
+            .push(Box::new(crate::widget::BoundAppWidget::new(component))),
     );
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(outer));
     layout(&mut app);
@@ -7143,9 +7143,7 @@ fn control_custody_core_mounted_modelview_hidden_builder_and_fresh_button() {
                 "builder sees covering lease before emitting"
             );
             *output.borrow_mut() = Some(outbox);
-            Box::new(
-                crate::widget::Button::new("dynamic", "Dynamic", None).on_action(binding.clone()),
-            )
+            Box::new(crate::widget::Button::new("dynamic", "Dynamic").on_action(binding.clone()))
         },
     );
     let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -7299,7 +7297,7 @@ fn custody_native_return_covers_final_draw_callbacks(embedded: bool) {
     let mut live = custody_owned_button("A", ledger.clone());
     live.unsettled_layout = Some(unsettled.clone());
     live.child = Box::new(crate::widget::Column::new().push(live.child).push(Box::new(
-        crate::widget::Button::new("pulse", "Live pulse", None).on_click(|| {}),
+        crate::widget::Button::new("pulse", "Live pulse").on_click(|| {}),
     )));
     live.installed_output = Some(output.clone());
     for phase in ["draw", "overlay", "mark_drawn"] {

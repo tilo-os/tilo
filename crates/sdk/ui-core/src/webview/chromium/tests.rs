@@ -1317,6 +1317,21 @@ fn host_spawns(profile: &Path) -> usize {
         .count()
 }
 
+/// Wait until the hosts started for `profile` have all recorded their start,
+/// expecting `expected` of them. A spawned host records itself once it runs,
+/// which can be after the engine that started it has returned.
+#[cfg(unix)]
+fn assert_host_spawns(profile: &Path, expected: usize) {
+    tilo_test_env::wait_until(format!("{expected} host start(s)"), || {
+        let spawns = host_spawns(profile);
+        assert!(
+            spawns <= expected,
+            "{spawns} hosts started, expected {expected}"
+        );
+        spawns == expected
+    });
+}
+
 #[cfg(unix)]
 fn host_commands(profile: &Path) -> Vec<Value> {
     let mut reader =
@@ -1382,7 +1397,7 @@ fn engines_on_one_profile_share_one_host() {
     {
         assert!(owner.runtime.link.is_none());
         assert!(client.runtime.link.is_some());
-        assert_eq!(host_spawns(&profile), 1, "one host per profile");
+        assert_host_spawns(&profile, 1);
         assert_eq!(
             (owner.tab, client.tab),
             (1, 2),
@@ -1549,7 +1564,7 @@ fn owners_serve_until_idle_and_replace_dead_owners_sockets() {
         std::fs::write(socket.with_extension("lock"), b"").unwrap();
         let owner = ChromiumEngine::with_host(&host, &profile).unwrap();
         assert!(owner.runtime.link.is_none());
-        assert_eq!(host_spawns(&profile), 1);
+        assert_host_spawns(&profile, 1);
         owner
     };
     // phase: the_owner_keeps_the_host_while_a_client_uses_it
@@ -1589,7 +1604,7 @@ fn owners_serve_until_idle_and_replace_dead_owners_sockets() {
     {
         let next = ChromiumEngine::with_host(&host, &profile).unwrap();
         assert!(next.runtime.link.is_none());
-        assert_eq!(host_spawns(&profile), 2);
+        assert_host_spawns(&profile, 2);
     }
     // phase: a_socket_path_too_long_to_bind_is_an_error
     {
@@ -1624,7 +1639,7 @@ fn a_second_process_browses_through_the_first_processs_host() {
         tilo_test_env::wait_until("the owner process", || profile.join("owner-ready").exists());
         let client = ChromiumEngine::with_host(&host, &profile).unwrap();
         assert!(client.runtime.link.is_some());
-        assert_eq!(host_spawns(&profile), 1);
+        assert_host_spawns(&profile, 1);
         std::fs::write(profile.join("release"), b"").unwrap();
         std::thread::sleep(Duration::from_millis(500));
         assert!(
@@ -1667,7 +1682,7 @@ fn a_second_process_browses_through_the_first_processs_host() {
         });
         let next = ChromiumEngine::with_host(&host, &profile).unwrap();
         assert!(next.runtime.link.is_none());
-        assert_eq!(host_spawns(&profile), 3);
+        assert_host_spawns(&profile, 3);
     }
 }
 

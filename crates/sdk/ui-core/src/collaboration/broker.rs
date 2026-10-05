@@ -269,11 +269,12 @@ impl BrokerTransport {
 
 impl CollabTransport for BrokerTransport {
     fn status(&self) -> TransportStatus {
-        if self.worker_stopped {
-            return TransportStatus::Closed("collaboration worker stopped".into());
-        }
         match self.state.connect_phase() {
+            // Why the worker stopped, when it stopped setting up.
             ConnectPhase::Failed(reason) => TransportStatus::Closed(reason),
+            _ if self.worker_stopped => {
+                TransportStatus::Closed("collaboration worker stopped".into())
+            }
             _ if !self.state.is_healthy() => {
                 TransportStatus::Closed("bounded bridge overloaded or disconnected".into())
             }
@@ -2697,6 +2698,25 @@ impl CollaborationManager {
             },
             record_kind,
             presence_handle_env(),
+        )
+    }
+
+    /// A manager on `route`, reached through the host's `connector` as an
+    /// app it launched, connecting in the background: the manager reports
+    /// [`super::CollaborationState::Connecting`] until the broker
+    /// acknowledges the route. For a host showing an app inside its own
+    /// process.
+    pub(crate) fn for_route_host_in_background(
+        connector: HostSessionConnector,
+        route: RouteSpec,
+        record_kind: Option<String>,
+    ) -> Self {
+        Self::connect_in_background(
+            SdkConnectSource::Host(connector, route.clone()),
+            SdkIdentitySource::Ready(None),
+            route,
+            record_kind,
+            None,
         )
     }
 
@@ -9461,11 +9481,7 @@ mod tests {
             let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
             let mut app = crate::App::with_collaboration_manager(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "complete",
-                    "Complete",
-                    Some("completed"),
-                )),
+                Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
                 manager,
             );
             assert!(captures.lock().unwrap().action_publications.is_empty());
@@ -9480,7 +9496,7 @@ mod tests {
                         && seen.action_publications.iter().any(|(id, actions)| {
                             id == &app_id
                                 && actions.iter().any(|(label, action)| {
-                                    label == "Complete" && action == "activate"
+                                    label == "Complete" && !action.is_empty()
                                 })
                         })
                 },
@@ -9502,11 +9518,7 @@ mod tests {
             let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
             let mut app = crate::App::with_collaboration_manager(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "complete",
-                    "Complete",
-                    Some("completed"),
-                )),
+                Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
                 manager,
             );
             crate::app::draw_prepared_component_test_frame(&mut app);
@@ -9524,7 +9536,7 @@ mod tests {
                         id == &app_id
                             && actions
                                 .iter()
-                                .any(|(label, action)| label == "Complete" && action == "activate")
+                                .any(|(label, action)| label == "Complete" && !action.is_empty())
                     })
                 },
             );

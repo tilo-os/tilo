@@ -3018,13 +3018,10 @@ impl CallbackBinding {
         widget: &mut dyn Widget,
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        let bracket = crate::undo::take_committed_action(widget);
-        let commit = crate::undo::needs_commit(widget);
-        if bracket.is_none() && !commit {
+        let Some(before) = crate::undo::take_committed_action(widget) else {
             return Ok(false);
-        }
+        };
         let keep_open = crate::undo::keeps_undo_step_open(widget);
-        let context = crate::undo::take_commit_context(widget);
         let metadata = crate::undo::get_state(widget);
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
@@ -3035,8 +3032,6 @@ impl CallbackBinding {
                 .as_mut()
                 .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
             if !frame.operations.is_empty() {
-                drop(owned);
-                crate::undo::on_commit(widget);
                 return Ok(true);
             }
             frame.settle_segment(doc);
@@ -3048,30 +3043,23 @@ impl CallbackBinding {
             {
                 // A foreign no-op notification is not mutation evidence. Its
                 // acknowledgement must not consume the pending owner's burst
-                // or replace the saved metadata/context.
-                drop(owned);
-                crate::undo::on_commit(widget);
+                // or replace the saved metadata.
                 return Ok(true);
             }
-            if let Some(before) = bracket {
-                // A nested action can already have consumed a bracket still
-                // reported by an ancestor ActionHost. Only advance the pending
-                // boundary; never move it backwards across a recorded action.
-                frame.commit_physical(doc);
-                let advances = frame.state.pending.as_ref().is_none_or(|pending| {
-                    before == pending.before
-                        || doc.get_changes(&before).len() < doc.get_changes(&pending.before).len()
-                });
-                if advances {
-                    frame.finish_pending_at(before.clone(), doc);
-                    frame.state.pending = Some(PendingRecordAction::new(self, before));
-                }
+            // A nested action can already have consumed a bracket still
+            // reported by an ancestor ActionHost. Only advance the pending
+            // boundary; never move it backwards across a recorded action.
+            frame.commit_physical(doc);
+            let advances = frame.state.pending.as_ref().is_none_or(|pending| {
+                before == pending.before
+                    || doc.get_changes(&before).len() < doc.get_changes(&pending.before).len()
+            });
+            if advances {
+                frame.finish_pending_at(before.clone(), doc);
+                frame.state.pending = Some(PendingRecordAction::new(self, before));
             }
             if let Some(pending) = frame.state.pending.as_mut() {
                 pending.metadata = metadata;
-                if let Some(context) = context {
-                    pending.context = context.enriched_by(&self.operation_context);
-                }
             }
         }
         // A step the widget keeps open closes at its next boundary, or
@@ -3079,8 +3067,6 @@ impl CallbackBinding {
         if !keep_open {
             self.finish_action_boundary(doc)?;
         }
-        // Arbitrary widget delivery happens after releasing the frame borrow.
-        crate::undo::on_commit(widget);
         Ok(true)
     }
 
@@ -3931,7 +3917,6 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
             if changed {
                 state.generation = Some(next);
                 state.statuses.clear();
-                crate::undo::on_commit(widget);
             }
             Ok((result, changed))
         })
@@ -4039,7 +4024,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
     let Some(owner) = &admitted.legacy else {
         return Ok(false);
     };
-    let app = authorize_legacy_owner(owner, authority, author)?;
+    authorize_legacy_owner(owner, authority, author)?;
     let (store, checkout) = owner.store_checkout();
     let pointer = admitted.pointer;
     let changed = store
@@ -4052,53 +4037,25 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 .and_then(|generation| generation.checked_add(1))
                 .ok_or("document generation exhausted")?;
             let widget = unsafe { &mut *pointer };
-            let bracket = crate::undo::take_committed_action(widget);
-            let requested = crate::undo::needs_commit(widget);
-            if bracket.is_none() && !requested {
+            let Some(before) = crate::undo::take_committed_action(widget) else {
                 return Ok(false);
-            }
+            };
             // A successful pure resource action may have already recorded the
             // frontier while an older no-op notification remains on the widget.
             // Retire that notification without duplicating or rebasing history.
-            if bracket.is_some() && doc.pending_ops() == 0 && history.matches_recorded_frontier(doc)
-            {
-                if requested {
-                    crate::undo::on_commit(widget);
-                }
+            if doc.pending_ops() == 0 && history.matches_recorded_frontier(doc) {
                 return Ok(false);
             }
-            let changed = if let Some(before) = bracket {
-                history.record_committed_action_authored(
-                    doc,
-                    before,
-                    None,
-                    crate::undo::get_state(widget),
-                    Some(author.clone()),
-                )
-            } else {
-                let context = crate::undo::take_commit_context(widget).unwrap_or_else(|| {
-                    tilo_actions::ActionContext::for_resource(
-                        "Edit",
-                        checkout.id.as_str(),
-                        "document",
-                        "Document",
-                    )
-                    .with_app(&app, &app)
-                });
-                history.commit_action_authored_with_message(
-                    doc,
-                    None,
-                    crate::undo::get_state(widget),
-                    Some(author.clone()),
-                    context.change_message(),
-                )
-            };
+            let changed = history.record_committed_action_authored(
+                doc,
+                before,
+                None,
+                crate::undo::get_state(widget),
+                Some(author.clone()),
+            );
             if changed {
                 state.generation = Some(next);
                 state.statuses.clear();
-            }
-            if requested {
-                crate::undo::on_commit(widget);
             }
             Ok(changed)
         })

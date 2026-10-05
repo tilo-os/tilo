@@ -151,7 +151,7 @@ impl ResourceApp for TallyApp {
         Box::new(
             Column::new()
                 .push(Box::new(
-                    Button::new("step-up", "Step up", None)
+                    Button::new("step-up", "Step up")
                         .on_click(move || step.set(step.get().saturating_add(1))),
                 ))
                 .push(cx.surface(Jobs::default())),

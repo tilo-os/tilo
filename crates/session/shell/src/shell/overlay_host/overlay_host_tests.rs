@@ -3,7 +3,7 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
-use automerge::{ReadDoc as _, ScalarValue, Value};
+use automerge::{ReadDoc as _, ScalarValue};
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -825,11 +825,23 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             );
             assert!(handled, "the visible tour must own {event:?}");
         }
-        assert!(matches!(
-            document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), ScalarValue::Boolean(true))
-        ));
+        assert!(
+            matches!(
+                document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
+                Ok(None)
+            ),
+            "a click is a view action, never a document write"
+        );
+        h.host.sync(&mut document, &automerge::ROOT);
+        assert_eq!(
+            h.host
+                .onboarding
+                .as_ref()
+                .expect("the tour stays open")
+                .tour_step(),
+            Some(2),
+            "Continue advances the tour"
+        );
     }
 
     onboarding_release_keeps_focus_reset_after_relayout_edge_is_consumed();
@@ -2337,80 +2349,6 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         crate::shell::launcher::invalidate_app_cache();
     }
 
-    /// Search must reach the focused app's own *content*, not just its tab
-    /// title. `Welcome` appears only in the note's body, so
-    /// a provider looking it up by tab id rather than by document
-    /// answers nothing.
-    fn configured_search_finds_a_word_that_only_appears_in_the_notes_body() {
-        use crate::shell::chrome_state::SearchScope;
-        use crate::shell::notes_app::NotesApp;
-
-        let mut h = build_harness();
-        h.host
-            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
-            .unwrap();
-        let doc = AutoCommit::new();
-        // The document as `TileHost::sync` hands it to the app every
-        // frame: the tab's own record.
-        let notes_tab =
-            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-        let record = crate::shell::tab_documents::scratch_tab_record(notes_tab);
-        let store = h.chrome.borrow().records().clone();
-        store.open_record(&record);
-        store.with(&record.id, |d| {
-            let mut notes = NotesApp::with_seed(
-                "Welcome to tilo.\n\nThese notes sync live with anyone \
-                 invited to this workspace.",
-            );
-            notes.sync(d, &automerge::ROOT);
-        });
-
-        let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
-        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
-
-        h.host.palette.set_query("Welcome");
-        h.host.refresh_search_results(&doc, &automerge::ROOT);
-
-        let hit = h
-            .host
-            .search_results
-            .iter()
-            .find(|r| r.provider_id == "notes")
-            .unwrap_or_else(|| {
-                panic!(
-                    "searching inside Notes for a word from its own body \
-                     must offer the note; got {:?}",
-                    h.host
-                        .search_results
-                        .iter()
-                        .map(|r| (&r.provider_id, &r.title))
-                        .collect::<Vec<_>>()
-                )
-            });
-        assert!(
-            hit.subtitle.as_deref().unwrap_or_default().contains("tilo"),
-            "the row must show the matching line, not a bare title: {:?}",
-            hit.subtitle
-        );
-        // And it is a row the palette actually paints, with that snippet
-        // as its description.
-        let painted =
-            h.host.palette.visible_entries().iter().any(|e| {
-                e.label == hit.title && e.description.as_deref() == hit.subtitle.as_deref()
-            });
-        assert!(
-            painted,
-            "the hit must reach the palette's own rows: {:?}",
-            h.host
-                .palette
-                .visible_entries()
-                .iter()
-                .map(|e| (&e.label, &e.description))
-                .collect::<Vec<_>>()
-        );
-    }
-
     /// A room starting empty is only workable if moving one of your own
     /// records into it costs one step: Super+K, type the name, and a
     /// record from *another* room is among the answers — labelled with
@@ -2577,7 +2515,6 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
     toggle_palette_focuses_input();
     configured_search_reaches_installed_apps();
-    configured_search_finds_a_word_that_only_appears_in_the_notes_body();
     super_k_finds_a_record_from_another_room_and_enter_brings_it_here();
     app_scope_pill_names_the_app_as_an_app();
 }
@@ -2903,12 +2840,21 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         KEY_BACKUP_CONTINUE,
         KEY_FINISH,
     ] {
-        let _ = automerge::transaction::Transactable::put(
-            &mut doc,
-            &automerge::ROOT,
-            key,
-            ScalarValue::Boolean(true),
-        );
+        // The acknowledgement checkboxes are document-bound; the rest are
+        // the setup's buttons.
+        if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            let _ = automerge::transaction::Transactable::put(
+                &mut doc,
+                &automerge::ROOT,
+                key,
+                ScalarValue::Boolean(true),
+            );
+        } else {
+            host.onboarding
+                .as_ref()
+                .expect("setup is running")
+                .press(key);
+        }
         host.sync(&mut doc, &automerge::ROOT);
     }
     assert!(!host.onboarding_active(), "setup released the desktop");

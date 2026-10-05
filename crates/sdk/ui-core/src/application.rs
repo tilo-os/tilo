@@ -602,6 +602,9 @@ impl HostContext {
     /// opaque bytes addressed by hash that outlive the component and that
     /// other components of the same scope read too.
     pub fn provide_content(&mut self, store: tilo_content::ContentStore) {
+        // The window's code finds it wherever it runs: an action applying,
+        // an action's arguments being built.
+        tilo_resource::content::register(&self.wake_scope.handle(), store.clone());
         self.content = Some(store);
     }
     /// The content store the host lent, if any.
@@ -1119,6 +1122,32 @@ impl AppComponent {
     /// The id of the application this component is an instance of.
     pub fn app_id(&self) -> &str {
         self.context.app_id()
+    }
+    /// A collaboration manager for this component's record, reached through
+    /// the host's `connector` as an app the host launched: what a host
+    /// showing the component inside its own process hands the App it runs
+    /// it in, so the component publishes and is invoked through the session
+    /// broker as a launched app is. `None` when the component's records have
+    /// no route the broker could acknowledge.
+    #[cfg(all(unix, feature = "broker-transport"))]
+    pub fn collaborate_through(
+        &self,
+        connector: crate::collaboration::HostSessionConnector,
+    ) -> Option<crate::collaboration::CollaborationManager> {
+        let binding = self.callback_binding();
+        let route = binding
+            .broker_route()
+            .or_else(|| binding.admission_route())?;
+        // Built inside the component's wake scope, so the broker's traffic
+        // wakes whoever the component wakes.
+        let _entry = self.context.wake_scope.enter();
+        Some(
+            crate::collaboration::CollaborationManager::for_route_host_in_background(
+                connector,
+                route,
+                Some(binding.checkout.kind.as_str().to_owned()),
+            ),
+        )
     }
     pub(crate) fn take_root_retirement(
         &mut self,

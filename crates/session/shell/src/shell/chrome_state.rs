@@ -1227,6 +1227,11 @@ impl ChromeState {
         )
     }
 
+    /// What this host hands the apps it mounts.
+    pub fn hosted_inputs(&self) -> &super::hosted_inputs::HostedTileInputs {
+        &self.hosted_inputs
+    }
+
     pub fn records(&self) -> &RecordStore {
         &self.records
     }

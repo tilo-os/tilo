@@ -1269,7 +1269,7 @@ impl DeviceMeshModel {
         };
         let approve = Box::new(
             self.cx.bind_invocation(
-                Button::new("device_mesh.approve_enrollment", &pair_label, None)
+                Button::new("device_mesh.approve_enrollment", &pair_label)
                     .content_sized()
                     .with_enabled(!pairing),
                 DeviceMeshEffect::PairHomeServer,
@@ -1295,7 +1295,7 @@ impl DeviceMeshModel {
         };
         let approve_personal = Box::new(
             self.cx.bind_invocation(
-                Button::new("device_mesh.approve_personal_device", &personal_label, None)
+                Button::new("device_mesh.approve_personal_device", &personal_label)
                     .content_sized()
                     .with_enabled(!pairing),
                 DeviceMeshEffect::AddPersonalDevice,
@@ -1521,7 +1521,7 @@ impl DeviceMeshModel {
                 .with_font_size(13.0);
             let renamed = device.clone();
             let rename = Box::new(self.cx.bind(
-                Button::new(&peer_key("rename", device), &t("mesh-rename"), None).content_sized(),
+                Button::new(&peer_key("rename", device), &t("mesh-rename")).content_sized(),
                 effect(DeviceMeshEffect::RENAME_HOME_SERVER).map(move |()| {
                     (
                         renamed.clone(),
@@ -1532,15 +1532,12 @@ impl DeviceMeshModel {
                     )
                 }),
             ));
-            let remove = Box::new(
-                self.cx.bind_invocation(
-                    Button::new(&peer_key("remove", device), &t("mesh-revoke-remove"), None)
-                        .content_sized(),
-                    DeviceMeshEffect::RemoveHomeServer {
-                        device: device.clone(),
-                    },
-                ),
-            );
+            let remove = Box::new(self.cx.bind_invocation(
+                Button::new(&peer_key("remove", device), &t("mesh-revoke-remove")).content_sized(),
+                DeviceMeshEffect::RemoveHomeServer {
+                    device: device.clone(),
+                },
+            ));
             let health = self
                 .home_peer_health
                 .get(device)

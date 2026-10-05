@@ -285,7 +285,7 @@ impl<'a> ChoiceCardFace<'a> {
 /// description and a trailing chevron, all one target.
 ///
 /// Activation follows [`Button`]: a click, Enter, Space or an assistive
-/// `Activate` writes `on_click_path` in the document.
+/// `Activate` runs [`ChoiceCard::on_click`].
 pub struct ChoiceCard {
     icon: Icon,
     title: String,
@@ -303,17 +303,24 @@ impl ChoiceCard {
         icon: Icon,
         title: impl Into<String>,
         description: impl Into<String>,
-        on_click_path: Option<&str>,
     ) -> Self {
         let title = title.into();
         Self {
             icon,
-            control: Button::new(id, &title, on_click_path),
+            control: Button::new(id, &title),
             title,
             description: description.into(),
             emphasized: false,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Run `f` on each activation: a click, Enter, Space or an assistive
+    /// `Activate`.
+    #[must_use]
+    pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.control = self.control.on_click(f);
+        self
     }
 
     /// Give the recommended path the accent surface.
@@ -520,16 +527,16 @@ mod tests {
     }
 
     #[test]
-    fn choice_card_is_one_focusable_target_that_writes_its_path() {
-        use automerge::{AutoCommit, ROOT, ReadDoc};
+    fn choice_card_is_one_focusable_target_that_reports_its_choice() {
+        use automerge::{AutoCommit, ROOT};
 
         let mut card = ChoiceCard::new(
             "setup.restore",
             Icon::Archive,
             "Restore from a backup",
             "Use an encrypted backup file",
-            Some("setup.restore"),
-        );
+        )
+        .on_click(crate::testing::record_click("setup.restore"));
         assert!(card.is_focusable());
         assert_eq!(card.test_id(), Some("setup.restore"));
         let node = card.accessibility().expect("the card is announced");
@@ -539,18 +546,14 @@ mod tests {
 
         let mut doc = AutoCommit::new();
         assert!(card.perform_action(&crate::a11y::Action::Activate, &mut doc, &ROOT));
-        assert!(matches!(
-            doc.get(ROOT, "setup.restore"),
-            Ok(Some((automerge::Value::Scalar(value), _)))
-                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-        ));
+        assert_eq!(crate::testing::clicks("setup.restore"), 1);
+        assert!(doc.get_heads().is_empty(), "the choice writes nothing");
 
         let mut disabled = ChoiceCard::new(
             "setup.disabled",
             Icon::Archive,
             "Unavailable",
             "Not offered here",
-            Some("setup.disabled"),
         )
         .with_enabled(false);
         assert!(!disabled.is_enabled());

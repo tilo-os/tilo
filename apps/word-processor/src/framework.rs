@@ -170,7 +170,7 @@ fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
     let content = input
         .content()
         .cloned()
-        .unwrap_or_else(crate::app_content_store);
+        .unwrap_or_else(tilo_content::ContentStore::memory);
     match crate::import_action(file.bytes(), format, &content) {
         Ok(action) => Invoke::apply(&action).into_iter().collect(),
         Err(error) => {
@@ -308,12 +308,12 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Document>) {
-        // A capture keeps the images it stages to itself; every other view
-        // reads the store the app keeps them in.
-        let content = cx.content().unwrap_or_else(|| match cx.mode() {
-            RunMode::Capture => tilo_content::ContentStore::memory(),
-            RunMode::Live | RunMode::Past => crate::app_content_store(),
-        });
+        // The images are in the store the host lends the window, which
+        // carries them on the document's route; without one they are kept
+        // in memory.
+        let content = cx
+            .content()
+            .unwrap_or_else(tilo_content::ContentStore::memory);
         self.model_mut().set_content_store(content);
         if let Some(path) = cx.launch_arguments().first() {
             self.show_record_of(std::path::PathBuf::from(path));

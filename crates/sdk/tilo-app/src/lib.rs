@@ -26,6 +26,13 @@
 
 pub use ui_core::*;
 
+/// The host's raw operation protocol stays the toolkit's: this empty module
+/// takes the place of `ui_core::host_operation` in the glob above, so an app
+/// cannot name the protocol through the facade. Tests deliver operations with
+/// [`framework::HostDelivery`]; the framework reaches `ui_core` directly.
+#[doc(hidden)]
+pub mod host_operation {}
+
 pub mod framework;
 mod runner;
 

@@ -64,3 +64,19 @@ mod test_support;
 pub use app::CodeApp;
 pub use effects::CodeEditorEffect;
 pub use resource::{CodeEditor, CodeEditorShell};
+
+/// The app's toolkit definition, which every host that mounts the editor
+/// (the shell's Editor tabs, a desktop test) instantiates.
+#[must_use]
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<CodeEditorShell>()
+}
+
+/// The record a launch naming `path` opens: the project of that folder, or
+/// of that file on its own.
+#[must_use]
+pub fn launch_record(path: &std::path::Path) -> Option<ui::record::RecordId> {
+    use ui::framework::{LaunchInput, ResourceApp as _};
+    let arguments = [path.display().to_string()];
+    CodeEditorShell::launch_record(&LaunchInput::new(&arguments, None))
+}

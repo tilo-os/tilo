@@ -141,17 +141,6 @@ impl SearchField {
         self
     }
 
-    /// Binds the query to a CRDT string path, instead of the default
-    /// local-only buffer.
-    #[must_use]
-    pub fn bound(mut self, path: &str) -> Self {
-        self.input = std::mem::replace(&mut self.input, TextInput::local())
-            .with_plain_chrome()
-            .with_kind(TextInputKind::Search)
-            .with_on_change_path(path);
-        self
-    }
-
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.leading = icon;
@@ -295,8 +284,6 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.input.set_platform_conventions(conventions);
@@ -552,15 +539,6 @@ impl Widget for SearchField {
             return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }
         Widget::perform_action(&mut self.input, action, state, path)
-    }
-}
-
-impl crate::undo::UndoPoints for SearchField {
-    fn needs_commit(&self) -> bool {
-        self.input.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.input.on_commit();
     }
 }
 

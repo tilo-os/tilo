@@ -113,7 +113,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
         let x = if i == 0 { COL_ENABLED } else { COL_DENIED };
 
         // Accent-filled control: white label on the accent.
-        let mut primary = Button::new("d_primary", "Publish", None)
+        let mut primary = Button::new("d_primary", "Publish")
             .primary()
             .with_permission_scope(locked());
         stamp(
@@ -128,7 +128,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
 
         // Neutral control: primary text on the raised card.
         let mut secondary =
-            Button::new("d_secondary", "Save draft", None).with_permission_scope(locked());
+            Button::new("d_secondary", "Save draft").with_permission_scope(locked());
         stamp(
             &mut scene,
             &mut tr,

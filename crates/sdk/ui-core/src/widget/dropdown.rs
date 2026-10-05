@@ -1883,9 +1883,9 @@ mod tests {
             use crate::widget::{Button, Row};
             let mut row = Row::new()
                 .no_wrap()
-                .push(Box::new(Button::new("left", "Left", None)))
+                .push(Box::new(Button::new("left", "Left")))
                 .push(Box::new(Dropdown::new(opts(), "tz")))
-                .push(Box::new(Button::new("right", "Right", None)));
+                .push(Box::new(Button::new("right", "Right")));
             let theme = Theme::dark();
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();

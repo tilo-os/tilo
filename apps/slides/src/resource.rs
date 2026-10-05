@@ -71,7 +71,11 @@ impl ResourceApp for SlidesShell {
         let Some(file) = input.file().filter(|_| created) else {
             return Vec::new();
         };
-        let content = crate::assets::app_content();
+        // The host's store carries the pictures to the deck's other readers.
+        let content = input
+            .content()
+            .cloned()
+            .unwrap_or_else(crate::assets::app_content);
         let deck = if file.media_type() == PPTX_MEDIA_TYPE {
             crate::pptx::read_pptx(file.bytes(), &content)
         } else {

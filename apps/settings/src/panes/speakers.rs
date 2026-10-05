@@ -843,7 +843,7 @@ impl SpeakersModel {
         let mut row = ui::widget::Row::new();
         if back {
             row = row.push(Box::new(self.cx.bind_invocation(
-                Button::new("speakers.back", &t("speakers-back"), None),
+                Button::new("speakers.back", &t("speakers-back")),
                 SpeakerFlow::SpeakerSetupBack,
             )));
         }
@@ -854,7 +854,7 @@ impl SpeakersModel {
                 _ => SpeakerFlow::ContinueSpeakerSetup,
             };
             row = row.push(Box::new(self.cx.bind_invocation(
-                Button::new(id, label, None).primary().with_enabled(enabled),
+                Button::new(id, label).primary().with_enabled(enabled),
                 step,
             )));
         }
@@ -919,7 +919,6 @@ impl SpeakersModel {
                     Button::new(
                         &format!("speakers.group.{}.calibrate", group.id),
                         &t("speakers-calibrate-button"),
-                        None,
                     ),
                     SpeakerFlow::OpenCalibration {
                         group: group.id.clone(),
@@ -930,7 +929,6 @@ impl SpeakersModel {
                         Button::new(
                             &format!("speakers.group.{}.delete", group.id),
                             &t("speakers-delete"),
-                            None,
                         )
                         .danger(),
                         SpeakerEffect::DeleteSpeakerSet {
@@ -981,7 +979,7 @@ impl SpeakersModel {
             ui::widget::Row::new()
                 .push(Box::new(ui::widget::Spacer::new()))
                 .push(Box::new(self.cx.bind_invocation(
-                    Button::new("speakers.begin", &t("speakers-begin"), None).primary(),
+                    Button::new("speakers.begin", &t("speakers-begin")).primary(),
                     SpeakerFlow::BeginSpeakerSetup,
                 ))),
         ));
@@ -1057,7 +1055,7 @@ impl SpeakersModel {
             ui::widget::Row::new()
                 .push(Box::new(
                     self.cx.bind_invocation(
-                        Button::new("speakers.play", &t("speakers-play-sound"), None)
+                        Button::new("speakers.play", &t("speakers-play-sound"))
                             .with_icon(ui::icons::Icon::Volume2),
                         SpeakerFlow::PlayIdentifySound,
                     ),
@@ -1071,7 +1069,7 @@ impl SpeakersModel {
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new("speakers.skip", &t("speakers-next-speaker"), None).primary(),
+                        Button::new("speakers.skip", &t("speakers-next-speaker")).primary(),
                         SpeakerFlow::SkipSpeaker,
                     ))),
             ));
@@ -1083,7 +1081,6 @@ impl SpeakersModel {
                         Button::new(
                             &format!("speakers.role.{}", role_slug(role)),
                             &role_answer(role),
-                            None,
                         )
                         .with_enabled(played)
                         .with_accessible_name(&t_args(
@@ -1146,7 +1143,6 @@ impl SpeakersModel {
                                 Button::new(
                                     &format!("speakers.layout.{index}.play"),
                                     &t("speakers-layout-play"),
-                                    None,
                                 )
                                 .with_accessible_name(&t_args(
                                     "speakers-layout-play-on",
@@ -1209,7 +1205,7 @@ impl SpeakersModel {
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new("speakers.done", &t("speakers-done"), None),
+                        Button::new("speakers.done", &t("speakers-done")),
                         SpeakerFlow::CloseSpeakerSetup,
                     ))),
             ));
@@ -1302,7 +1298,7 @@ impl SpeakersModel {
         body.extend(self.message_rows());
         let mut actions = ui::widget::Row::new()
             .push(Box::new(self.cx.bind_invocation(
-                Button::new("speakers.done", &t("speakers-done"), None),
+                Button::new("speakers.done", &t("speakers-done")),
                 SpeakerFlow::CloseSpeakerSetup,
             )))
             .push(Box::new(ui::widget::Spacer::new()));
@@ -1310,13 +1306,13 @@ impl SpeakersModel {
             Some(CalibrationPhaseInfo::Proposed) => {
                 actions = actions
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new("speakers.dismiss", &t("speakers-discard"), None),
+                        Button::new("speakers.dismiss", &t("speakers-discard")),
                         SpeakerEffect::DismissCalibration {
                             group: group.to_owned(),
                         },
                     )))
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new("speakers.apply", &t("speakers-apply"), None).primary(),
+                        Button::new("speakers.apply", &t("speakers-apply")).primary(),
                         SpeakerEffect::ApplyCalibration {
                             group: group.to_owned(),
                         },
@@ -1324,7 +1320,7 @@ impl SpeakersModel {
             }
             Some(CalibrationPhaseInfo::Applied) => {
                 actions = actions.push(Box::new(self.cx.bind_invocation(
-                    Button::new("speakers.revert", &t("speakers-revert"), None),
+                    Button::new("speakers.revert", &t("speakers-revert")),
                     SpeakerEffect::RevertCalibration {
                         group: group.to_owned(),
                     },
@@ -1332,7 +1328,7 @@ impl SpeakersModel {
             }
             Some(CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::WaitingForMicrophones) => {
                 actions = actions.push(Box::new(self.cx.bind_invocation(
-                    Button::new("speakers.cancel", &t("speakers-calibration-cancel"), None),
+                    Button::new("speakers.cancel", &t("speakers-calibration-cancel")),
                     SpeakerEffect::CancelCalibration {
                         group: group.to_owned(),
                     },
@@ -1352,7 +1348,6 @@ impl SpeakersModel {
                             } else {
                                 "speakers-calibrate-button"
                             }),
-                            None,
                         )
                         .primary()
                         .with_enabled(problem.is_none()),

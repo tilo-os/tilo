@@ -233,7 +233,7 @@ impl Widget for Probe {
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest { type_id, .. }) = op.unscoped() else {
+        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
             return Ok(None);
         };
         if type_id == "bound.view" {

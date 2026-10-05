@@ -2412,11 +2412,11 @@ impl Widget for DesktopRoot {
 
     fn start_operation(
         &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
+        op: &ui::host_operation::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
+        if let Some(started) = ui::host_operation::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
         let Some(request) = op.unscoped() else {
@@ -2424,7 +2424,7 @@ impl Widget for DesktopRoot {
         };
         Ok(self
             .run_desktop_operation(request.kind, request.type_id, request.payload)?
-            .map(ui::widget::ResourceOperationStart::Completed))
+            .map(ui::host_operation::ResourceOperationStart::Completed))
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

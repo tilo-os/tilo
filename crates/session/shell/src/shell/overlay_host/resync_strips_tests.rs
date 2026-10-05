@@ -200,8 +200,8 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .with(&parent.id, |_| {
                 crate::shell::window_actions::open_hosted(
                     &mut chrome.borrow_mut(),
-                    AppKind::Other("Notes".into()),
-                    "New note",
+                    AppKind::Other("Word".into()),
+                    "New document",
                     crate::shell::window_actions::Destination::Here,
                 )
             })
@@ -361,7 +361,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .with(&parent.id, |_| {
                 let id = crate::shell::window_actions::open_hosted(
                     &mut chrome.borrow_mut(),
-                    AppKind::Other("Notes".into()),
+                    AppKind::Other("Word".into()),
                     "Nested",
                     crate::shell::window_actions::Destination::Here,
                 );

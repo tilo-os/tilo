@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 
+use tilo_app::framework::Helper;
 use tilo_app::prelude::*;
 
 thread_local! {
@@ -75,5 +76,68 @@ fn a_test_profile_keeps_the_apps_files_out_of_the_persons() {
         given,
         tilo_app::storage::AppFiles::for_app(RunsApp::ID),
         "never the person's"
+    );
+}
+
+struct HelperApp;
+
+impl ResourceApp for HelperApp {
+    type Resource = Runs;
+    const ID: &'static str = "so.tilo.test-helpers";
+    const TITLE: &'static str = "Helpers";
+    const ATTACHES_RUNTIME: bool = false;
+
+    fn view(_cx: &mut ViewCx<Runs>) -> Element {
+        Box::new(Text::new("helpers"))
+    }
+
+    fn helpers() -> &'static [Helper] {
+        &[
+            Helper {
+                run: |args| match args.get(1).map(String::as_str) {
+                    Some("--write-helper") if args.len() == 3 => Ok(Some(7)),
+                    Some("--write-helper") => Err("usage: --write-helper REQUEST".into()),
+                    _ => Ok(None),
+                },
+            },
+            Helper {
+                run: |args| Ok(args.iter().any(|arg| arg == "--smoke").then_some(0)),
+            },
+        ]
+    }
+}
+
+#[test]
+fn a_helper_the_binary_is_answers_its_own_command_line_before_the_app() {
+    let args = |rest: &[&str]| {
+        std::iter::once("imager")
+            .chain(rest.iter().copied())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        tilo_app::framework::run_helper::<HelperApp>(&args(&["--write-helper", "req"])),
+        Some(7),
+        "the helper's own exit code"
+    );
+    assert_eq!(
+        tilo_app::framework::run_helper::<HelperApp>(&args(&["--write-helper"])),
+        Some(1),
+        "a refused command line ends the process with 1"
+    );
+    assert_eq!(
+        tilo_app::framework::run_helper::<HelperApp>(&args(&["--setup", "--smoke"])),
+        Some(0),
+        "the next helper is asked"
+    );
+    assert_eq!(
+        tilo_app::framework::run_helper::<HelperApp>(&args(&["--setup"])),
+        None,
+        "the app's own command line starts the app"
+    );
+    assert!(
+        !tilo_app::framework::launch_spec::<HelperApp>()
+            .attaches_runtime(&tilo_app::launch::LaunchArgs::component()),
+        "an app that takes no part in the runtime never attaches"
     );
 }

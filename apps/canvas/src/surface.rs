@@ -2206,7 +2206,7 @@ impl CanvasSurface {
                     resources: Vec::new(),
                 });
             };
-            let hash = tilo_content::ContentStore::for_app()
+            let hash = crate::content::store()
                 .put(&picture.bytes)
                 .map_err(|error| format!("the picture could not be stored: {error}"))?;
             let address = tilo_actions::content_resource(&hash)
@@ -3289,6 +3289,9 @@ impl ResourceSurface<ArtworkResource, ViewOp> for CanvasSurface {
     }
 
     fn attach(&mut self, cx: SurfaceCx<ArtworkResource>) {
+        if let Some(content) = cx.content() {
+            self.tools.renderer.borrow_mut().pictures.read_from(content);
+        }
         self.read_only = cx.read_only();
         self.dispatcher = Some(cx.dispatcher());
     }

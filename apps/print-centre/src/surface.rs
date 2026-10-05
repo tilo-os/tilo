@@ -384,11 +384,7 @@ fn save_scanned_page(path: &std::path::Path, bytes: &[u8]) -> Result<(), String>
         .map_err(|error| format!("could not finish saving the scanned page: {error}"))
 }
 fn action(id: &str, label: &str) -> El {
-    Box::new(
-        Button::new(id, label, None)
-            .fit_content(44.0)
-            .on_view(|| {}),
-    )
+    Box::new(Button::new(id, label).fit_content(44.0).on_view(|| {}))
 }
 
 /// Row ids are shell-facing rather than display text. Keep the externally
@@ -471,7 +467,7 @@ fn effect_button(button: Button, door: &Door, effect: PrintCentreEffect) -> El {
 }
 
 fn command_action(id: &str, label: &str, door: &Door, effect: PrintCentreEffect) -> El {
-    effect_button(Button::new(id, label, None), door, effect)
+    effect_button(Button::new(id, label), door, effect)
 }
 
 fn icon_command_action(
@@ -481,11 +477,11 @@ fn icon_command_action(
     door: &Door,
     effect: PrintCentreEffect,
 ) -> El {
-    effect_button(Button::new(id, label, None).with_icon(icon), door, effect)
+    effect_button(Button::new(id, label).with_icon(icon), door, effect)
 }
 
 fn primary_command_action(id: &str, label: &str, door: &Door, effect: PrintCentreEffect) -> El {
-    effect_button(Button::new(id, label, None).primary(), door, effect)
+    effect_button(Button::new(id, label).primary(), door, effect)
 }
 
 fn primary_icon_command_action(
@@ -496,7 +492,7 @@ fn primary_icon_command_action(
     effect: PrintCentreEffect,
 ) -> El {
     effect_button(
-        Button::new(id, label, None).with_icon(icon).primary(),
+        Button::new(id, label).with_icon(icon).primary(),
         door,
         effect,
     )

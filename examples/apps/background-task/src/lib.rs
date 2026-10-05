@@ -195,8 +195,7 @@ impl ResourceApp for App {
         });
 
         let actions = cx.actions();
-        let run =
-            actions.bind_effect_invocation(Button::new("run-task", "task-run", None), &Task::Run);
+        let run = actions.bind_effect_invocation(Button::new("run-task", "task-run"), &Task::Run);
         let body = ModelView::from_state_by(
             &progress,
             |progress| match progress {
@@ -211,7 +210,7 @@ impl ResourceApp for App {
                         Spinner::new(),
                         Text::new("task-running").with_id("task-status"),
                         actions.bind_effect_invocation(
-                            Button::new("cancel-task", "task-cancel", None),
+                            Button::new("cancel-task", "task-cancel"),
                             &Task::Cancel
                         ),
                     ]),

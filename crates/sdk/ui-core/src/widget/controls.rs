@@ -16,6 +16,10 @@ use super::{
     semantic_action_bindings,
 };
 
+/// How the host answered a control's invocation: started (done at once with
+/// its output, or accepted to finish later), or refused.
+pub type ControlResult = Result<ResourceOperationStart, tilo_actions::DoorError>;
+
 /// A control intent and the effect invocation it continues, when an
 /// effect's handler or completion queued it.
 pub type AttributedControlInvocation = (
@@ -59,7 +63,7 @@ pub trait ActionControls: Widget {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+        result: &ControlResult,
     ) {
         result_to_children(self, address, result);
     }
@@ -110,7 +114,7 @@ fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetada
 fn result_to_children(
     widget: &mut (impl Widget + ?Sized),
     address: &tilo_actions::ActionAddress,
-    result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+    result: &ControlResult,
 ) {
     for child in widget.children_mut() {
         if !child.has_separate_document_owner() {
@@ -163,7 +167,7 @@ pub fn take_attributed_control_invocation(
 pub fn on_control_invocation_result(
     widget: &mut dyn Widget,
     address: &tilo_actions::ActionAddress,
-    result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+    result: &ControlResult,
 ) {
     if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
         controls.on_control_invocation_result(address, result);

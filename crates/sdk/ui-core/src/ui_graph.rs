@@ -45,6 +45,104 @@ pub struct UiComponentRequest<'a> {
     pub id: &'a str,
     pub name: &'a str,
     pub props: &'a serde_json::Map<String, serde_json::Value>,
+    /// The graph's typed values, for a component's own text inputs.
+    pub values: &'a UiValues,
+}
+
+/// What is typed into a graph's text inputs, by each input's `value_path`,
+/// and which of its buttons were clicked, by each button's `on_click_path`.
+///
+/// The values are view state, never written to the document: every input
+/// naming one path shows and edits the same value, and the app reads them
+/// when it acts on them, submitting its own resource actions. A path the app
+/// routes ([`Self::route`]) instead shows the app's own value, and each edit
+/// of it is the app's action. A clicked button is reported the same way: the
+/// app takes the click ([`Self::take_click`]) and acts on it.
+#[derive(Clone, Default)]
+pub struct UiValues {
+    texts: Rc<RefCell<HashMap<String, LocalState<String>>>>,
+    routes: Rc<RefCell<HashMap<String, tilo_actions::ActionBinding<String>>>>,
+    clicks: Rc<RefCell<HashMap<String, String>>>,
+}
+
+impl UiValues {
+    /// The value inputs naming `path` edit, starting empty.
+    #[must_use]
+    pub fn text(&self, path: &str) -> LocalState<String> {
+        self.texts
+            .borrow_mut()
+            .entry(path.to_owned())
+            .or_insert_with(|| LocalState::new(String::new()))
+            .clone()
+    }
+
+    /// What is typed at `path`, if an input names it.
+    #[must_use]
+    pub fn get(&self, path: &str) -> Option<String> {
+        self.texts.borrow().get(path).map(LocalState::get)
+    }
+
+    /// Route the inputs naming `path` through the app: they show `shown`,
+    /// which the app keeps current, and each edit invokes `action` with the
+    /// whole new text, so it is checked, attributed and undone like every
+    /// other edit of the app.
+    pub fn route(
+        &self,
+        path: &str,
+        shown: LocalState<String>,
+        action: tilo_actions::ActionBinding<String>,
+    ) {
+        self.texts.borrow_mut().insert(path.to_owned(), shown);
+        self.routes.borrow_mut().insert(path.to_owned(), action);
+    }
+
+    /// Record a click of a button naming `path`, carrying `value`. Only the
+    /// latest click per path is kept until the app takes it.
+    pub fn click(&self, path: &str, value: &str) {
+        self.clicks
+            .borrow_mut()
+            .insert(path.to_owned(), value.to_owned());
+    }
+
+    /// The latest unhandled click of a button naming `path`: its
+    /// `click_value`, or `"true"` when it names none. Taking it clears it,
+    /// so each click is acted on once.
+    #[must_use]
+    pub fn take_click(&self, path: &str) -> Option<String> {
+        self.clicks.borrow_mut().remove(path)
+    }
+
+    /// An input over `path`: the app's value edited through its action when
+    /// the path is routed, else the shared typed value, which starts as
+    /// `initial`.
+    #[must_use]
+    pub fn input(&self, path: &str, initial: &str) -> TextInput {
+        let value = self.text(path);
+        if let Some(action) = self.routes.borrow().get(path) {
+            return TextInput::from_state(&value).on_action(action.clone());
+        }
+        if value.with(String::is_empty) && !initial.is_empty() {
+            value.set(initial.to_owned());
+        }
+        TextInput::from_state(&value)
+    }
+}
+
+impl fmt::Debug for UiValues {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut paths: Vec<String> = self.texts.borrow().keys().cloned().collect();
+        paths.sort_unstable();
+        let mut routes: Vec<String> = self.routes.borrow().keys().cloned().collect();
+        routes.sort_unstable();
+        let mut clicks: Vec<String> = self.clicks.borrow().keys().cloned().collect();
+        clicks.sort_unstable();
+        formatter
+            .debug_struct("UiValues")
+            .field("paths", &paths)
+            .field("routes", &routes)
+            .field("clicks", &clicks)
+            .finish()
+    }
 }
 
 type UiComponentFactory =
@@ -56,6 +154,7 @@ pub struct UiBuildContext {
     router: Option<crate::widget::RouteHandle>,
     components: Rc<HashMap<String, Rc<UiComponentFactory>>>,
     component_placeholders: bool,
+    values: UiValues,
 }
 
 impl fmt::Debug for UiBuildContext {
@@ -67,6 +166,7 @@ impl fmt::Debug for UiBuildContext {
             .field("router", &self.router)
             .field("components", &components)
             .field("component_placeholders", &self.component_placeholders)
+            .field("values", &self.values)
             .finish()
     }
 }
@@ -91,6 +191,19 @@ impl UiBuildContext {
     ) -> Self {
         Rc::make_mut(&mut self.components).insert(name.into(), Rc::new(factory));
         self
+    }
+
+    /// Keep what the graph's inputs type in `values`, which the app reads.
+    #[must_use]
+    pub fn with_values(mut self, values: UiValues) -> Self {
+        self.values = values;
+        self
+    }
+
+    /// What the graph's inputs type, by their `value_path`.
+    #[must_use]
+    pub fn values(&self) -> &UiValues {
+        &self.values
     }
 
     /// Render unresolved components as named text placeholders.
@@ -279,7 +392,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
                         UiNavigation::Back | UiNavigation::Forward => true,
                     })
             });
-            let mut button = Button::new(id, label, on_click_path.as_deref())
+            let mut button = Button::new(id, label)
                 .with_enabled(*enabled && (navigation_bound || on_click_path.is_some()))
                 .with_style((*style).into());
             if let Some(name) = accessible_name {
@@ -288,54 +401,52 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             if let Some(tooltip) = tooltip {
                 button = button.tooltip(tooltip);
             }
-            if let Some(value) = click_value {
-                button = button.with_click_value(value);
-            }
-            if let (Some(navigation), Some(router)) = (navigate, context.router.as_ref()) {
-                let router = router.clone();
-                // A published view action, so the palette, agents and the
-                // native audit reach navigation as they reach any control. A
-                // button that also writes a document path keeps that path.
-                let bind = |button: Button, navigate: Box<dyn Fn() + 'static>| {
-                    if on_click_path.is_some() {
-                        button.on_click(move || navigate())
-                    } else {
-                        button.on_view(move || navigate())
+            // A click path reports the click to the app through its values;
+            // the button never writes the document.
+            let record: Option<Box<dyn Fn()>> = on_click_path.as_ref().map(|path| {
+                let values = context.values.clone();
+                let path = path.clone();
+                let value = click_value.clone().unwrap_or_else(|| "true".to_owned());
+                Box::new(move || values.click(&path, &value)) as Box<dyn Fn()>
+            });
+            let navigation: Option<Box<dyn Fn()>> = match (navigate, context.router.as_ref()) {
+                (Some(UiNavigation::Push { route }), Some(router)) if router.knows(route) => {
+                    let (router, route) = (router.clone(), route.clone());
+                    Some(Box::new(move || {
+                        let _ = router.push(route.clone());
+                    }))
+                }
+                (Some(UiNavigation::Replace { route }), Some(router)) if router.knows(route) => {
+                    let (router, route) = (router.clone(), route.clone());
+                    Some(Box::new(move || {
+                        let _ = router.replace(route.clone());
+                    }))
+                }
+                (Some(UiNavigation::Back), Some(router)) => {
+                    let router = router.clone();
+                    Some(Box::new(move || {
+                        let _ = router.back();
+                    }))
+                }
+                (Some(UiNavigation::Forward), Some(router)) => {
+                    let router = router.clone();
+                    Some(Box::new(move || {
+                        let _ = router.forward();
+                    }))
+                }
+                _ => None,
+            };
+            // A published view action, so the palette, agents and the native
+            // audit reach the button as they reach any control.
+            if record.is_some() || navigation.is_some() {
+                button = button.on_view(move || {
+                    if let Some(record) = &record {
+                        record();
                     }
-                };
-                button = match navigation {
-                    UiNavigation::Push { route } if router.knows(route) => {
-                        let route = route.clone();
-                        bind(
-                            button,
-                            Box::new(move || {
-                                let _ = router.push(route.clone());
-                            }),
-                        )
+                    if let Some(navigate) = &navigation {
+                        navigate();
                     }
-                    UiNavigation::Replace { route } if router.knows(route) => {
-                        let route = route.clone();
-                        bind(
-                            button,
-                            Box::new(move || {
-                                let _ = router.replace(route.clone());
-                            }),
-                        )
-                    }
-                    UiNavigation::Back => bind(
-                        button,
-                        Box::new(move || {
-                            let _ = router.back();
-                        }),
-                    ),
-                    UiNavigation::Forward => bind(
-                        button,
-                        Box::new(move || {
-                            let _ = router.forward();
-                        }),
-                    ),
-                    UiNavigation::Push { .. } | UiNavigation::Replace { .. } => button,
-                };
+                });
             }
             Box::new(button)
         }
@@ -350,16 +461,15 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             disabled,
         } => {
             let name = label.as_deref().unwrap_or(accessible_name);
-            let mut input = TextInput::local()
-                .with_id(id)
-                .with_accessible_name(name)
-                .with_placeholder(placeholder)
-                .with_initial_value(initial_value)
-                .multiline(*multiline)
-                .disabled(*disabled);
-            if let Some(path) = value_path {
-                input = input.with_on_change_path(path);
+            let input = match value_path {
+                Some(path) => context.values.input(path, initial_value),
+                None => TextInput::local().with_initial_value(initial_value),
             }
+            .with_id(id)
+            .with_accessible_name(name)
+            .with_placeholder(placeholder)
+            .multiline(*multiline)
+            .disabled(*disabled);
             if let Some(label) = label {
                 Box::new(labeled_field(label, input))
             } else {
@@ -404,12 +514,16 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
         }
         UiNode::Component { id, name, props } => {
             if let Some(factory) = context.components.get(name) {
-                factory(UiComponentRequest { id, name, props }).map_err(|message| {
-                    UiGraphError::ComponentBuild {
-                        id: id.clone(),
-                        name: name.clone(),
-                        message,
-                    }
+                factory(UiComponentRequest {
+                    id,
+                    name,
+                    props,
+                    values: &context.values,
+                })
+                .map_err(|message| UiGraphError::ComponentBuild {
+                    id: id.clone(),
+                    name: name.clone(),
+                    message,
                 })?
             } else if context.component_placeholders {
                 Box::new(
@@ -1384,10 +1498,7 @@ impl LiveUi {
 }
 
 impl Widget for LiveUi {
-    crate::provides!(
-        dyn crate::resources::PublishesResources,
-        dyn crate::undo::UndoPoints
-    );
+    crate::provides!(dyn crate::resources::PublishesResources);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -1539,15 +1650,6 @@ impl Widget for LiveUi {
             presence,
             permissions,
         );
-    }
-}
-
-impl crate::undo::UndoPoints for LiveUi {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.child.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.child.as_mut());
     }
 }
 
@@ -1779,7 +1881,7 @@ fn build_editor_child(
         let graph = handle.clone();
         let id_for_click = id.clone();
         hierarchy = hierarchy.push(Box::new(
-            Button::new(&button_id, &label, None)
+            Button::new(&button_id, &label)
                 .fit_content(34.0)
                 .with_style(if selected_row {
                     ButtonStyle::Primary
@@ -2077,7 +2179,7 @@ fn editable_properties(
                 (
                     EditableProperty::ButtonClickPath,
                     on_click_path.clone().unwrap_or_default(),
-                    "Click document path (optional)",
+                    "Click reported to the app as (optional)",
                     "builder-button-click-path",
                 ),
                 (
@@ -2597,7 +2699,6 @@ fn boolean_property_button(
     Button::new(
         id,
         &format!("{label}: {}", if value { "On" } else { "Off" }),
-        None,
     )
     .fit_content(36.0)
     .on_click(move || {
@@ -2667,7 +2768,7 @@ fn choice_property_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     let selected = selected.to_owned();
-    Button::new(id, &format!("{label}: {value}"), None)
+    Button::new(id, &format!("{label}: {value}"))
         .fit_content(36.0)
         .on_click(move || {
             let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
@@ -2779,7 +2880,7 @@ fn parent_relation<'a>(node: &'a UiNode, id: &str) -> Option<(&'a str, usize, us
 fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>) -> Button {
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new("builder-save", "Save", None)
+    Button::new("builder-save", "Save")
         .primary()
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2808,7 +2909,7 @@ fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
 fn undo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>) -> Button {
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new("builder-undo", "Undo", None)
+    Button::new("builder-undo", "Undo")
         .fit_content(36.0)
         .with_enabled(handle.can_undo())
         .on_click(move || {
@@ -2824,7 +2925,7 @@ fn undo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
 fn redo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>) -> Button {
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new("builder-redo", "Redo", None)
+    Button::new("builder-redo", "Redo")
         .fit_content(36.0)
         .with_enabled(handle.can_redo())
         .on_click(move || {
@@ -2849,7 +2950,7 @@ fn add_button(
     let parent = selected.to_owned();
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new(id, label, None)
+    Button::new(id, label)
         .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
@@ -2996,7 +3097,7 @@ fn move_button(
     let selected = selected.to_owned();
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new(id, label, None)
+    Button::new(id, label)
         .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
@@ -3032,7 +3133,7 @@ fn delete_button(
     let selected = selected.to_owned();
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new("builder-delete", "Delete", None)
+    Button::new("builder-delete", "Delete")
         .danger()
         .with_enabled(enabled)
         .on_click(move || {
@@ -3058,7 +3159,7 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    crate::provides!(dyn crate::undo::LocalUndo, dyn crate::undo::UndoPoints);
+    crate::provides!(dyn crate::undo::LocalUndo);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -3185,15 +3286,6 @@ impl Widget for UiGraphEditor {
     }
 }
 
-impl crate::undo::UndoPoints for UiGraphEditor {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.child.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.child.as_mut());
-    }
-}
-
 impl crate::undo::LocalUndo for UiGraphEditor {
     fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
         if !widget_tree_has_focus(self.child.as_ref()) {
@@ -3224,6 +3316,135 @@ mod tests {
     use crate::a11y::{Action, Role};
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
+
+    fn graph_field(id: &str, value_path: &str) -> UiNode {
+        UiNode::TextInput {
+            id: id.into(),
+            label: None,
+            accessible_name: id.into(),
+            placeholder: String::new(),
+            value_path: Some(value_path.into()),
+            initial_value: String::new(),
+            multiline: false,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn a_routed_path_edits_through_the_apps_action_and_shows_its_value() {
+        use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
+        let spec = ActionSpec::typed_operation(
+            "rename",
+            "Rename",
+            "The new title",
+            OperationKind::Effect,
+            "graph.rename",
+            vec![ActionParam::required("title", ParamType::Text, "Title")],
+            |args| EncodedAction::encode_operation("graph.rename", &args.to_json()).unwrap(),
+        );
+        let resource =
+            tilo_actions::Resource::new("ordinary:graph", "graph", "Graph").with_action(spec);
+        let action = tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |title| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("title".into(), serde_json::Value::String(title));
+            arguments
+        })
+        .unwrap();
+        let title = LocalState::new("Atlas".to_owned());
+        let values = UiValues::default();
+        values.route("title", title.clone(), action);
+        let context = UiBuildContext::default().with_values(values.clone());
+        let document = UiDocument::new(UiNode::Column {
+            id: "root".into(),
+            children: vec![
+                graph_field("title-a", "title"),
+                graph_field("title-b", "title"),
+                graph_field("draft", "draft"),
+            ],
+            gap: None,
+            no_padding: false,
+            intrinsic_height: false,
+            fill_remaining_height: false,
+        });
+        let mut root = document.build_with(&Theme::dark(), &context).unwrap();
+        crate::widget::controls::refresh_control_action_availability(
+            root.as_mut(),
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                "ordinary:graph",
+                "rename",
+            )]),
+        );
+        let mut doc = AutoCommit::new();
+        Widget::sync(root.as_mut(), &mut doc, &ROOT);
+        assert_eq!(
+            named_value(root.as_ref(), "title-b").as_deref(),
+            Some("Atlas")
+        );
+
+        let set = |root: &mut Element, doc: &mut AutoCommit, id: &str, value: &str| {
+            assert!(perform_named(
+                root.as_mut(),
+                id,
+                &Action::SetValue(value.into()),
+                doc
+            ));
+        };
+        set(&mut root, &mut doc, "title-a", "Atlas II");
+        let invocation = crate::widget::controls::take_control_invocation(root.as_mut())
+            .expect("the edit is the app's action");
+        assert_eq!(invocation.address.action, "rename");
+        assert_eq!(invocation.arguments["title"], "Atlas II");
+        assert!(
+            automerge::ReadDoc::get(&doc, &ROOT, "title")
+                .unwrap()
+                .is_none(),
+            "the input never writes the document"
+        );
+        // What every input over the path shows is the app's value.
+        title.set("Atlas II".to_owned());
+        Widget::sync(root.as_mut(), &mut doc, &ROOT);
+        assert_eq!(
+            named_value(root.as_ref(), "title-b").as_deref(),
+            Some("Atlas II")
+        );
+
+        set(&mut root, &mut doc, "draft", "Notes");
+        assert!(
+            crate::widget::controls::take_control_invocation(root.as_mut()).is_none(),
+            "an unrouted path invokes nothing"
+        );
+        assert_eq!(values.get("draft").as_deref(), Some("Notes"));
+        assert!(
+            automerge::ReadDoc::get(&doc, &ROOT, "draft")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    fn perform_named(
+        widget: &mut dyn Widget,
+        id: &str,
+        action: &Action,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        if widget.test_id() == Some(id) {
+            return Widget::perform_action(widget, action, doc, &ROOT);
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| perform_named(child, id, action, doc))
+    }
+
+    fn named_value(widget: &dyn Widget, id: &str) -> Option<String> {
+        if widget.test_id() == Some(id) {
+            return widget.accessibility().and_then(|node| node.value);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| named_value(child, id))
+    }
 
     fn run_operation(
         live: &mut impl Widget,
@@ -3382,9 +3603,11 @@ mod tests {
         let mut title_doc = AutoCommit::new();
         let text = title_doc.put_object(&ROOT, "title", ObjType::Text).unwrap();
         title_doc.splice_text(&text, 0, 0, "Roadmap").unwrap();
+        let values = UiValues::default();
+        let context = UiBuildContext::default().with_values(values.clone());
         let mut driver = crate::headless::Driver::new(
             crate::State::from_doc(title_doc),
-            reparsed.build(&Theme::dark()).unwrap(),
+            reparsed.build_with(&Theme::dark(), &context).unwrap(),
             (640, 360),
         );
         let inspection = driver.inspection();
@@ -3403,7 +3626,16 @@ mod tests {
         driver
             .perform_named("save", &Action::Activate)
             .expect("serialized button is a real button");
-        assert!(driver.dump_json().contains("save-requested"));
+        assert_eq!(values.take_click("save-requested").as_deref(), Some("yes"));
+        assert_eq!(
+            values.take_click("save-requested"),
+            None,
+            "a click is taken once"
+        );
+        assert!(
+            !driver.dump_json().contains("save-requested"),
+            "the button never writes the document"
+        );
     }
 
     #[test]
@@ -4212,7 +4444,13 @@ mod tests {
     #[test]
     fn live_structural_edits_rebuild_and_save_the_same_graph() {
         let handle = UiGraphHandle::new(sample()).unwrap();
-        let live = handle.widget(&Theme::dark()).unwrap();
+        let values = UiValues::default();
+        let live = handle
+            .widget_with(
+                &Theme::dark(),
+                UiBuildContext::default().with_values(values.clone()),
+            )
+            .unwrap();
         let mut driver =
             crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
         handle
@@ -4236,7 +4474,10 @@ mod tests {
         driver
             .perform_named("new-project", &Action::Activate)
             .unwrap();
-        assert!(driver.dump_json().contains("new-project"));
+        assert_eq!(
+            values.take_click("new-project").as_deref(),
+            Some("requested")
+        );
 
         let removed = handle.remove_node("new-project").unwrap();
         assert_eq!(removed.id(), "new-project");

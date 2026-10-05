@@ -1853,12 +1853,6 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::HostApplicationsProvider::new(),
         ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::NotesProvider::new(),
-        ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::EditorProvider::new(),
-        ));
         let records = crate::shell::search::providers::RecordsProvider::new();
         let room_records = records.index();
         search_registry.register(std::rc::Rc::new(records));
@@ -1939,12 +1933,6 @@ impl ShellOverlayHost {
             crate::shell::search::providers::ActionsProvider::with_shared_qs_actions(
                 qs_action_slot.clone(),
             ),
-        ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::NotesProvider::new(),
-        ));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::EditorProvider::new(),
         ));
         let records = crate::shell::search::providers::RecordsProvider::new();
         let room_records = records.index();

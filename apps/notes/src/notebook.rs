@@ -406,28 +406,16 @@ pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> 
 /// Returns an error when validation fails, the content store refuses the
 /// bytes, or the collaborative asset map cannot be updated.
 pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(), String> {
-    put_asset_in(content(), doc, digest, bytes)
+    put_asset_in(&content(), doc, digest, bytes)
 }
 
-/// The content store this process keeps notebook images in: the device
-/// content store when the launcher handed the process one. Notebook actions
-/// write images while they apply, where no app handle reaches them, so the
-/// store is the process's own, created on first use.
-pub fn content() -> &'static tilo_content::ContentStore {
-    static CONTENT: std::sync::OnceLock<tilo_content::ContentStore> = std::sync::OnceLock::new();
-    CONTENT.get_or_init(|| {
-        // A host without native files (a browser page) has no local store for
-        // notebook images; it keeps them in memory, as tests do.
-        let native = matches!(
-            tilo_files::availability(tilo_files::Feature::NativePaths),
-            tilo_files::Availability::Available
-        );
-        if native && !cfg!(test) {
-            tilo_content::ContentStore::for_app()
-        } else {
-            tilo_content::ContentStore::memory()
-        }
-    })
+/// The content store of the window whose code is running, which the
+/// framework hands every window: the one its host lent, joined to the
+/// notebook's route, so an image reaches every device that opens the
+/// notebook. Outside a window (a test, a browser page without a store),
+/// an empty one in memory, which keeps images inline in the notebook.
+pub fn content() -> tilo_content::ContentStore {
+    ui::tilo_resource::content::current().unwrap_or_else(tilo_content::ContentStore::memory)
 }
 
 /// [`put_asset`] against an explicit store.
@@ -508,7 +496,8 @@ fn write_reference(
 /// # Errors
 /// Returns an error when the notebook asset schema or any payload is invalid.
 pub fn asset_snapshot(doc: &AutoCommit) -> Result<HashMap<String, Vec<u8>>, String> {
-    asset_snapshot_with(doc, |hash| content().read(hash))
+    let content = content();
+    asset_snapshot_with(doc, |hash| content.read(hash))
 }
 
 /// [`asset_snapshot`] reading referenced bytes through `read`.

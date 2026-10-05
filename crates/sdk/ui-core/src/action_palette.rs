@@ -381,11 +381,11 @@ impl ActionPalette {
         let cancel = command.clone();
         let controls = crate::widget::Row::new()
             .push(Box::new(
-                crate::widget::Button::new("palette-submit", "Confirm", None)
+                crate::widget::Button::new("palette-submit", "Confirm")
                     .on_click(move || submit.set(Some(true))),
             ))
             .push(Box::new(
-                crate::widget::Button::new("palette-cancel", "Cancel", None)
+                crate::widget::Button::new("palette-cancel", "Cancel")
                     .on_click(move || cancel.set(Some(false))),
             ));
         Self {

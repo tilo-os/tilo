@@ -1135,7 +1135,7 @@ impl AudioModel {
     fn speakers_card(&self) -> crate::widgets::El {
         let open_label = t("sound-speakers-open");
         let open = self.cx.bind_invocation(
-            Button::new("sound.speakers", &open_label, None).content_sized(),
+            Button::new("sound.speakers", &open_label).content_sized(),
             crate::effects::NavigationEffect::OpenPane {
                 pane: crate::categories::Category::Speakers.slug().to_owned(),
             },
@@ -1240,7 +1240,6 @@ impl AudioModel {
                                 } else {
                                     t("sound-test-show")
                                 },
-                                None,
                             )
                             .content_sized(),
                             AudioEffect::ShowSoundTests {
@@ -1255,12 +1254,8 @@ impl AudioModel {
                     Row::new()
                         .push(Box::new(
                             self.cx.bind_invocation(
-                                Button::new(
-                                    "settings.audio.test.left",
-                                    &t("sound-test-left"),
-                                    None,
-                                )
-                                .content_sized(),
+                                Button::new("settings.audio.test.left", &t("sound-test-left"))
+                                    .content_sized(),
                                 AudioEffect::TestSpeaker {
                                     channel: "left".into(),
                                 },
@@ -1268,12 +1263,8 @@ impl AudioModel {
                         ))
                         .push(Box::new(
                             self.cx.bind_invocation(
-                                Button::new(
-                                    "settings.audio.test.right",
-                                    &t("sound-test-right"),
-                                    None,
-                                )
-                                .content_sized(),
+                                Button::new("settings.audio.test.right", &t("sound-test-right"))
+                                    .content_sized(),
                                 AudioEffect::TestSpeaker {
                                     channel: "right".into(),
                                 },
@@ -1353,7 +1344,6 @@ impl AudioModel {
                                 } else {
                                     t("sound-mic-test")
                                 },
-                                None,
                             )
                             .content_sized(),
                             AudioEffect::ToggleMicrophoneTest,

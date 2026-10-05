@@ -321,6 +321,36 @@ fn id_dropdown(
     dropdown
 }
 
+/// The languages spelling can be checked in, by id, each named in its own
+/// language; the empty id is the session's language.
+pub const SPELLING_LANGUAGES: [(&str, &str); 9] = [
+    ("", ""),
+    ("en_US", "English (United States)"),
+    ("en_GB", "English (United Kingdom)"),
+    ("de_DE", "Deutsch"),
+    ("fr_FR", "Français"),
+    ("es_ES", "Español"),
+    ("it_IT", "Italiano"),
+    ("nl_NL", "Nederlands"),
+    ("pt_BR", "Português (Brasil)"),
+];
+
+/// The spelling language choices, the session's named in the reader's
+/// language.
+fn spelling_language_choices() -> Vec<(String, String)> {
+    SPELLING_LANGUAGES
+        .iter()
+        .map(|(id, name)| {
+            let shown = if id.is_empty() {
+                t("input-spell-language-session")
+            } else {
+                (*name).to_owned()
+            };
+            ((*id).to_owned(), shown)
+        })
+        .collect()
+}
+
 /// The Map-to choice for spanning every display.
 pub const WHOLE_DESKTOP: &str = "desktop";
 /// Pad buttons Settings offers a shortcut for; pads have far fewer.
@@ -827,6 +857,15 @@ pub enum InputEffect {
     /// Correct misspellings while typing, or stop.
     #[effect(idempotent)]
     SetAutoCorrect { on: bool },
+    /// Check spelling in one language, or the session's.
+    #[effect(idempotent)]
+    SetSpellingLanguage {
+        #[param(
+            "A language (`de_DE`), or empty for the session's language",
+            choices = SPELLING_LANGUAGES.iter().map(|(id, _)| *id)
+        )]
+        language: String,
+    },
     /// Map a drawing tablet onto one display, or the whole desktop.
     #[effect(idempotent)]
     SetTabletOutput {
@@ -1091,7 +1130,7 @@ fn apply(
                 dial_for_id(&action).ok_or_else(|| format!("`{action}` is not a dial choice"))?;
             tablet_entry(input, &device)?.set_dial_action(dial, mode, action);
         }
-        E::SetSpellChecking { .. } | E::SetAutoCorrect { .. } => {}
+        E::SetSpellChecking { .. } | E::SetAutoCorrect { .. } | E::SetSpellingLanguage { .. } => {}
     }
     Ok(())
 }
@@ -1117,6 +1156,14 @@ pub(crate) fn answer(
         }
         InputEffect::SetAutoCorrect { on } => {
             return host.update(|text: &mut TextAssistancePrefs| text.auto_correct = on);
+        }
+        InputEffect::SetSpellingLanguage { language } => {
+            if !SPELLING_LANGUAGES.iter().any(|(id, _)| *id == language) {
+                return Err(format!(
+                    "`{language}` is not a spelling language Settings offers"
+                ));
+            }
+            return host.update(|text: &mut TextAssistancePrefs| text.spelling_language = language);
         }
         _ => {}
     }
@@ -1762,6 +1809,18 @@ impl MouseKeyboardPane {
                             .bound(&self.cx, effect(InputEffect::SET_AUTO_CORRECT)),
                     ),
                 ),
+                choice_row(
+                    &t("input-spell-language"),
+                    Box::new(
+                        id_dropdown(
+                            spelling_language_choices(),
+                            &self.text.get().spelling_language,
+                            "text.spelling_language",
+                            &t("input-spell-language"),
+                        )
+                        .bound(&self.cx, effect(InputEffect::SET_SPELLING_LANGUAGE)),
+                    ),
+                ),
                 caption(&t("input-spell-caption")),
             ]),
         )
@@ -1785,7 +1844,7 @@ impl MouseKeyboardPane {
             let up = format!("input.source.{index}.up");
             let down = format!("input.source.{index}.down");
             let remove = format!("input.source.{index}.remove");
-            let mut up_button = Button::new(&up, "↑", None)
+            let mut up_button = Button::new(&up, "↑")
                 .with_size(36.0, 34.0)
                 .with_accessible_name(&move_up)
                 .with_enabled(index > 0);
@@ -1794,7 +1853,7 @@ impl MouseKeyboardPane {
                     .cx
                     .bind_invocation(up_button, InputEffect::MoveSourceUp { source: id.clone() });
             }
-            let mut down_button = Button::new(&down, "↓", None)
+            let mut down_button = Button::new(&down, "↓")
                 .with_size(36.0, 34.0)
                 .with_accessible_name(&move_down)
                 .with_enabled(index + 1 < self.last.keyboard_layouts.len());
@@ -1804,7 +1863,7 @@ impl MouseKeyboardPane {
                     InputEffect::MoveSourceDown { source: id.clone() },
                 );
             }
-            let mut remove_button = Button::new(&remove, &remove_label, None)
+            let mut remove_button = Button::new(&remove, &remove_label)
                 .content_sized()
                 .with_enabled(self.last.keyboard_layouts.len() > 1);
             if self.last.keyboard_layouts.len() > 1 {
@@ -2491,6 +2550,37 @@ mod tests {
         assert_eq!(input.caps_lock.as_deref(), Some("ctrl"));
         assert_eq!(input.touchpad_click_method, TouchpadClickMethod::Areas);
         assert!(!app.settings::<TextAssistancePrefs>().get().check_spelling);
+        assert!(set(
+            &mut app,
+            InputEffect::SetSpellingLanguage {
+                language: "de_DE".into()
+            }
+        ));
+        assert_eq!(
+            app.settings::<TextAssistancePrefs>()
+                .get()
+                .spelling_language,
+            "de_DE"
+        );
+        assert!(!set(
+            &mut app,
+            InputEffect::SetSpellingLanguage {
+                language: "xx_YY".into()
+            }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::SetSpellingLanguage {
+                language: String::new()
+            }
+        ));
+        assert_eq!(
+            app.settings::<TextAssistancePrefs>()
+                .get()
+                .spelling_language,
+            "",
+            "empty is the session's language"
+        );
 
         assert!(!set(&mut app, InputEffect::SetMouseSpeed { speed: 4.0 }));
         assert!(!set(

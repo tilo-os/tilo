@@ -571,17 +571,14 @@ mod tests {
             assert!(matches!(
                 crate::files_app::published::start(
                     &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        kind,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
+                    kind,
+                    &encoded.type_id,
+                    &encoded.payload,
                     &mut doc,
                     &ROOT
                 )
                 .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
+                Some(ui::framework::Effected::Done(_))
             ));
             assert_eq!(
                 app.current_path(),

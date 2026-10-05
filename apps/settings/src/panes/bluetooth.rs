@@ -581,7 +581,6 @@ impl BluetoothModel {
                             Button::new(
                                 &format!("settings.bluetooth.rename.{}", token(&d.path)),
                                 &t("settings-bluetooth-rename"),
-                                None,
                             )
                             .content_sized(),
                             effect(BluetoothEffect::RENAME_DEVICE).map(move |()| {
@@ -600,7 +599,6 @@ impl BluetoothModel {
                             Button::new(
                                 &format!("settings.bluetooth.forget.{}", token(&d.path)),
                                 &t("settings-bluetooth-forget"),
-                                None,
                             )
                             .content_sized(),
                             BluetoothEffect::ForgetDevice {
@@ -627,7 +625,6 @@ impl BluetoothModel {
                     Button::new(
                         &format!("settings.bluetooth.primary.{}", token(&d.path)),
                         &label,
-                        None,
                     )
                     .content_sized(),
                     primary,
@@ -656,11 +653,11 @@ impl BluetoothModel {
         let mut body: Vec<El> = vec![Box::new(
             Row::new()
                 .push(Box::new(self.cx.bind_invocation(
-                    Button::new("settings.bluetooth.scan", &scan, None).content_sized(),
+                    Button::new("settings.bluetooth.scan", &scan).content_sized(),
                     BluetoothEffect::SetDiscovering { on: !self.scanning },
                 )))
                 .push(Box::new(self.cx.bind_invocation(
-                    Button::new("settings.bluetooth.refresh", &refresh, None).content_sized(),
+                    Button::new("settings.bluetooth.refresh", &refresh).content_sized(),
                     BluetoothEffect::RefreshBluetooth,
                 )))
                 .push(Box::new(Spacer::new())),

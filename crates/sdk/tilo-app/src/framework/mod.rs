@@ -113,7 +113,10 @@
 //!   `--private`) runs one on a profile thrown away with the process,
 //!   attached to no runtime, and its view knows ([`ViewCx::is_private`]).
 //!   A command the binary runs instead of a window (`--emit-photos DIR`) is a
-//!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
+//!   [`Command`] in [`ResourceApp::commands`]; a helper the binary also is
+//!   (a privileged writer started with its own command line) is a
+//!   [`Helper`] in [`ResourceApp::helpers`], asked before anything of the
+//!   app starts; and the app's messages are
 //!   its [`ResourceApp::catalog`], loaded in every host that mounts it. A
 //!   launch that continues playback another device or app handed over says
 //!   where it stood ([`LaunchInput::handoff`]): the media is what the launch
@@ -292,6 +295,7 @@ mod app;
 mod controls;
 // In-place reload swaps native code into a running process; a browser build
 // has neither the thin shared library nor the host that loads it.
+mod delivery;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dev_reload;
 mod dispatch;
@@ -323,8 +327,9 @@ pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
-pub use app::{FileHistory, ResourceApp, SeedCx, definition};
+pub use app::{FileHistory, ResourceApp, SeedCx, definition, run_helper};
 pub use controls::{ActionControl, Actions};
+pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{
@@ -332,7 +337,7 @@ pub use effect::{
     JobProgress, Jobs, Progress, Projection,
 };
 pub use kinds::{hosted_kinds, resource_kind, seed_record};
-pub use launch::{Command, LaunchInput, OpenHere};
+pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
 pub use participant::Participant;
 pub use people::People;

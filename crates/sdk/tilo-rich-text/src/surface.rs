@@ -880,7 +880,7 @@ impl ResourceSurface<RichText> for RichTextSurface {
 }
 
 impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
-    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoPoints; inner = editor);
+    ui::provides!(dyn ui::undo::CommittedActions; inner = editor);
 
     type Inner = BlockEditor;
 
@@ -1060,12 +1060,6 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             }
             _ => self.editor.perform_action(action, state, path),
         }
-    }
-}
-
-impl<S: RichTextSource + 'static> ui::undo::UndoPoints for RichTextSurface<S> {
-    fn needs_commit(&self) -> bool {
-        false
     }
 }
 

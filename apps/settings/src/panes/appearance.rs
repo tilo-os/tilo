@@ -671,7 +671,6 @@ impl AppearancePane {
                             Button::new(
                                 "appearance.wallpaper.choose",
                                 &t("settings-appearance-choose-picture"),
-                                None,
                             )
                             .content_sized(),
                             AppearanceEffect::ChooseWallpaper,

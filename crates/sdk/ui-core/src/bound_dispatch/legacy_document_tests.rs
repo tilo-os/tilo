@@ -44,7 +44,8 @@ impl Action for SetValue {
 #[derive(Clone)]
 pub(crate) struct Probe {
     pub(crate) children: Rc<RefCell<Vec<Box<dyn Widget>>>>,
-    commit: Rc<Cell<bool>>,
+    /// An ordinary completion this owner reports outside its action host.
+    completion: Rc<RefCell<Option<Vec<ChangeHash>>>>,
     model_passes: Rc<Cell<(usize, usize)>>,
     pub(crate) eager: Rc<Cell<bool>>,
     pub(crate) declarations: Rc<Cell<usize>>,
@@ -64,7 +65,7 @@ impl Probe {
     pub(crate) fn new() -> Self {
         Self {
             children: Rc::default(),
-            commit: Rc::default(),
+            completion: Rc::default(),
             model_passes: Rc::default(),
             eager: Rc::new(Cell::new(true)),
             declarations: Rc::new(Cell::new(1)),
@@ -114,8 +115,7 @@ impl Widget for Probe {
         dyn crate::undo::CommittedActions,
         dyn crate::history_mode::capability::DocumentHistory,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::undo::UndoPoints
+        dyn crate::resources::PublishesResources
     );
 
     crate::testing::inert_widget_methods!(
@@ -157,7 +157,7 @@ impl Widget for Probe {
         doc: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             kind,
             type_id,
@@ -213,15 +213,6 @@ impl Widget for Probe {
     }
 }
 
-impl crate::undo::UndoPoints for Probe {
-    fn needs_commit(&self) -> bool {
-        self.commit.get()
-    }
-    fn on_commit(&mut self) {
-        self.commit.set(false);
-    }
-}
-
 impl crate::resources::PublishesResources for Probe {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         self.value.set(
@@ -269,7 +260,8 @@ impl crate::history_mode::capability::DocumentHistory for Probe {
 
 impl crate::undo::CommittedActions for Probe {
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.borrow_mut().take_committed()
+        let committed = self.actions.borrow_mut().take_committed();
+        committed.or_else(|| self.completion.borrow_mut().take())
     }
 }
 crate::testing::test_app_widget!(
@@ -1063,10 +1055,13 @@ fn legacy_status_preserves_real_pending_owned_action_until_ordinary_owner_comple
         assert!(map.legacy_status(node, &binding.author).is_some());
     }
     assert_eq!(snapshot(), before);
+    // The owner completes at the current frontier: it reports its boundary
+    // with no further write of its own.
     let mut committer = Probe::new();
-    committer.commit.set(true);
+    let completion = committer.completion.clone();
     binding
         .with_record_frame(&mut AutoCommit::new(), false, |doc, _| {
+            *completion.borrow_mut() = Some(doc.get_heads());
             binding.drain_widget_actions(&mut committer, doc)
         })
         .unwrap()

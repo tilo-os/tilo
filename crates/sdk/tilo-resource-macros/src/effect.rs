@@ -104,7 +104,9 @@ struct VariantOptions {
     destructive: bool,
     privileged: bool,
     sensitive: bool,
-    device_only: bool,
+    /// `device_only` (or `device_only = true`) marks this effect device-only;
+    /// `device_only = false` exempts it from a vocabulary marked so.
+    device_only: Option<bool>,
     risk: Option<syn::Path>,
     programmatic: bool,
     untrusted: bool,
@@ -141,7 +143,11 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
             } else if meta.path.is_ident("sensitive") {
                 options.sensitive = true;
             } else if meta.path.is_ident("device_only") {
-                options.device_only = true;
+                options.device_only = Some(if meta.input.peek(syn::Token![=]) {
+                    meta.value()?.parse::<syn::LitBool>()?.value
+                } else {
+                    true
+                });
             } else if meta.path.is_ident("risk") {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
             } else if meta.path.is_ident("programmatic") {
@@ -321,7 +327,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         };
         let idempotent = options.idempotent;
-        let device_only = all_device_only || options.device_only;
+        let device_only = options.device_only.unwrap_or(all_device_only);
         let risk_of = if let Some(classify) = &options.risk {
             quote! {
                 ::std::option::Option::Some(
