@@ -11,6 +11,8 @@
 use std::io::Read;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -67,14 +69,72 @@ pub struct AudioCapture {
     receiver: Receiver<Vec<u8>>,
     reader: Option<JoinHandle<()>>,
     pending: Vec<u8>,
+    frame_bytes: usize,
+    discontinuity: Arc<AtomicBool>,
+}
+
+/// Format is chosen by the capture purpose, never by an untrusted command line.
+#[derive(Clone, Copy)]
+enum CapturePurpose {
+    Recording,
+    Dictation,
+}
+
+impl CapturePurpose {
+    fn format_args(self) -> [&'static str; 6] {
+        match self {
+            Self::Recording => [
+                "--rate",
+                "48000",
+                "--channels",
+                "2",
+                "--channel-map",
+                "Stereo",
+            ],
+            Self::Dictation => [
+                "--rate",
+                "16000",
+                "--channels",
+                "1",
+                "--channel-map",
+                "mono",
+            ],
+        }
+    }
+
+    fn frame_bytes(self) -> usize {
+        match self {
+            Self::Recording => SAMPLE_FRAME_BYTES,
+            Self::Dictation => BYTES_PER_SAMPLE,
+        }
+    }
 }
 
 impl AudioCapture {
     pub fn start(source: AudioSource) -> Result<Self, String> {
+        Self::start_for(source, CapturePurpose::Recording)
+    }
+
+    /// Start only after the user requested dictation and its edit target and
+    /// trusted speech engine are ready. `PipeWire` performs mono conversion and
+    /// resampling; no samples are skipped by this process.
+    pub fn start_dictation_microphone() -> Result<Self, String> {
+        Self::start_for(AudioSource::Microphone, CapturePurpose::Dictation)
+    }
+
+    fn start_for(source: AudioSource, purpose: CapturePurpose) -> Result<Self, String> {
         let target = default_target(source)?;
-        let args = capture_args(source, &target);
+        let args = match purpose {
+            CapturePurpose::Recording => capture_args(source, &target),
+            CapturePurpose::Dictation => vec![
+                "--target".into(), target,
+                "--properties".into(),
+                "{ node.name = tilo-dictation-microphone node.description = \"Tilo dictation microphone\" }".into(),
+            ],
+        };
         let mut child = Command::new("pw-record")
             .args(args)
+            .args(purpose.format_args())
             .args([
                 "--media-type",
                 "Audio",
@@ -84,12 +144,6 @@ impl AudioCapture {
                 "Production",
                 "--latency",
                 "20ms",
-                "--rate",
-                "48000",
-                "--channels",
-                "2",
-                "--channel-map",
-                "Stereo",
                 "--format",
                 "s16",
                 "--raw",
@@ -106,18 +160,28 @@ impl AudioCapture {
             .take()
             .ok_or_else(|| "PipeWire recorder did not expose an audio pipe".to_string())?;
         let (sender, receiver) = sync_channel(QUEUED_CHUNKS);
-        let reader = std::thread::Builder::new()
+        let discontinuity = Arc::new(AtomicBool::new(false));
+        let reader_discontinuity = Arc::clone(&discontinuity);
+        let reader = match std::thread::Builder::new()
             .name(format!(
                 "tilo-screen-recording-{}",
                 source.track_name().to_lowercase().replace(' ', "-")
             ))
-            .spawn(move || read_audio(stdout, &sender))
-            .map_err(|error| format!("start audio reader: {error}"))?;
+            .spawn(move || read_audio(stdout, &sender, purpose, &reader_discontinuity))
+        {
+            Ok(reader) => reader,
+            Err(error) => {
+                bounded_command::terminate_tree(&mut child, Duration::ZERO);
+                return Err(format!("start audio reader: {error}"));
+            }
+        };
         Ok(Self {
             child,
             receiver,
             reader: Some(reader),
             pending: Vec::new(),
+            frame_bytes: purpose.frame_bytes(),
+            discontinuity,
         })
     }
 
@@ -125,6 +189,10 @@ impl AudioCapture {
     /// bytes are deliberately discarded so resume starts at the current sound
     /// rather than appending audio captured during the pause.
     pub fn drain(&mut self, keep: bool) -> Result<Vec<u8>, String> {
+        if self.discontinuity.load(Ordering::Acquire) {
+            self.pending.clear();
+            return Err("PipeWire dictation audio was interrupted".into());
+        }
         if let Some(status) = self
             .child
             .try_wait()
@@ -145,10 +213,16 @@ impl AudioCapture {
             self.pending.clear();
             return Ok(Vec::new());
         }
-        let aligned = self
+        if self.discontinuity.load(Ordering::Acquire) {
+            self.pending.clear();
+            return Err("PipeWire dictation audio was interrupted".into());
+        }
+        let remainder = self
             .pending
             .len()
-            .saturating_sub(self.pending.len() % SAMPLE_FRAME_BYTES);
+            .checked_rem(self.frame_bytes)
+            .unwrap_or(0);
+        let aligned = self.pending.len().saturating_sub(remainder);
         if aligned == 0 {
             return Ok(Vec::new());
         }
@@ -166,7 +240,12 @@ impl Drop for AudioCapture {
     }
 }
 
-fn read_audio(mut stdout: impl Read, sender: &SyncSender<Vec<u8>>) {
+fn read_audio(
+    mut stdout: impl Read,
+    sender: &SyncSender<Vec<u8>>,
+    purpose: CapturePurpose,
+    discontinuity: &AtomicBool,
+) {
     let mut buffer = vec![0u8; PIPE_BUFFER];
     while let Ok(read) = stdout.read(&mut buffer) {
         if read == 0 {
@@ -176,9 +255,19 @@ fn read_audio(mut stdout: impl Read, sender: &SyncSender<Vec<u8>>) {
             break;
         };
         match sender.try_send(bytes.to_vec()) {
+            Err(TrySendError::Full(_)) if matches!(purpose, CapturePurpose::Dictation) => {
+                discontinuity.store(true, Ordering::Release);
+                break;
+            }
             Ok(()) | Err(TrySendError::Full(_)) => {}
             Err(TrySendError::Disconnected(_)) => break,
         }
+    }
+    // The microphone is continuous until explicitly stopped by its owner.
+    // EOF/read failure can precede process exit; never treat it as silence or
+    // permit buffered words to finish a request after its source disappeared.
+    if matches!(purpose, CapturePurpose::Dictation) {
+        discontinuity.store(true, Ordering::Release);
     }
 }
 
@@ -227,6 +316,106 @@ fn parse_object_serial(inspect: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dictation_overflow_is_reported_instead_of_silently_dropping_audio() {
+        let (sender, receiver) = sync_channel(1);
+        let discontinuity = AtomicBool::new(false);
+        let mut audio = std::io::Cursor::new(vec![0u8; PIPE_BUFFER.saturating_mul(3)]);
+        read_audio(
+            &mut audio,
+            &sender,
+            CapturePurpose::Dictation,
+            &discontinuity,
+        );
+        assert!(discontinuity.load(Ordering::Acquire));
+        assert_eq!(
+            audio.position(),
+            u64::try_from(PIPE_BUFFER.saturating_mul(2)).unwrap()
+        );
+        assert_eq!(receiver.try_recv().unwrap().len(), PIPE_BUFFER);
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(CapturePurpose::Dictation.frame_bytes(), 2);
+        assert_eq!(
+            CapturePurpose::Dictation.format_args(),
+            [
+                "--rate",
+                "16000",
+                "--channels",
+                "1",
+                "--channel-map",
+                "mono"
+            ]
+        );
+    }
+
+    #[test]
+    fn dictation_reports_source_eof_without_waiting_for_process_exit() {
+        let (sender, receiver) = sync_channel(1);
+        let discontinuity = AtomicBool::new(false);
+        read_audio(
+            std::io::empty(),
+            &sender,
+            CapturePurpose::Dictation,
+            &discontinuity,
+        );
+        assert!(discontinuity.load(Ordering::Acquire));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn screen_recording_retains_its_existing_drop_policy_and_stereo_format() {
+        let (sender, receiver) = sync_channel(1);
+        let discontinuity = AtomicBool::new(false);
+        let audio = std::io::Cursor::new(vec![0u8; PIPE_BUFFER.saturating_mul(2)]);
+        read_audio(audio, &sender, CapturePurpose::Recording, &discontinuity);
+        assert!(!discontinuity.load(Ordering::Acquire));
+        assert_eq!(receiver.try_recv().unwrap().len(), PIPE_BUFFER);
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(CapturePurpose::Recording.frame_bytes(), 4);
+    }
+
+    #[test]
+    fn dropping_dictation_capture_reaps_its_owned_process_and_unblocks_the_reader() {
+        // A blocked pipe exercises teardown without a microphone or a desktop.
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = libc::pid_t::try_from(child.id()).unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+        let stdout = child.stdout.take().unwrap();
+        let (sender, receiver) = sync_channel(QUEUED_CHUNKS);
+        let discontinuity = Arc::new(AtomicBool::new(false));
+        let reader_discontinuity = Arc::clone(&discontinuity);
+        let reader = std::thread::spawn(move || {
+            read_audio(
+                stdout,
+                &sender,
+                CapturePurpose::Dictation,
+                &reader_discontinuity,
+            );
+        });
+        let capture = AudioCapture {
+            child,
+            receiver,
+            reader: Some(reader),
+            pending: Vec::new(),
+            frame_bytes: BYTES_PER_SAMPLE,
+            discontinuity,
+        };
+        drop(capture);
+        // SAFETY: signal 0 only checks the PID of the child this test spawned;
+        // it cannot send a signal or affect another process.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
 
     #[test]
     fn pipewire_sources_come_from_server_assigned_identity() {

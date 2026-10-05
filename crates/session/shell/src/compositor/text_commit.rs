@@ -92,6 +92,8 @@ struct FieldState {
     committed: ContentType,
     pending_cursor: Option<CursorRectangle>,
     cursor: Option<CursorRectangle>,
+    revision: u64,
+    pending_edit: bool,
 }
 
 /// The content type and caret every text input has committed, tracked beside
@@ -108,7 +110,13 @@ impl TextFields {
     pub fn observe(&mut self, resource: &ZwpTextInputV3, request: &zwp_text_input_v3::Request) {
         let field = self.fields.entry(resource.id()).or_default();
         match request {
-            zwp_text_input_v3::Request::Enable => field.pending_enable = true,
+            zwp_text_input_v3::Request::Enable => {
+                field.pending_enable = true;
+                field.pending_edit = true;
+            }
+            zwp_text_input_v3::Request::Disable
+            | zwp_text_input_v3::Request::SetSurroundingText { .. }
+            | zwp_text_input_v3::Request::SetTextChangeCause { .. } => field.pending_edit = true,
             zwp_text_input_v3::Request::SetContentType { hint, purpose } => {
                 field.pending = Some(ContentType {
                     hint: match hint {
@@ -128,6 +136,16 @@ impl TextFields {
                 height,
             } => field.pending_cursor = Some((*x, *y, *width, *height)),
             zwp_text_input_v3::Request::Commit => {
+                if std::mem::take(&mut field.pending_edit)
+                    || field
+                        .pending
+                        .is_some_and(|content| content != field.committed)
+                    || field
+                        .pending_cursor
+                        .is_some_and(|cursor| Some(cursor) != field.cursor)
+                {
+                    field.revision = field.revision.saturating_add(1);
+                }
                 let pending = field.pending.take();
                 let pending_cursor = field.pending_cursor.take();
                 if std::mem::take(&mut field.pending_enable) {
@@ -144,6 +162,10 @@ impl TextFields {
             }
             _ => {}
         }
+    }
+
+    pub(crate) fn revision(&self, resource: &ZwpTextInputV3) -> Option<u64> {
+        self.fields.get(&resource.id()).map(|field| field.revision)
     }
 
     pub fn forget(&mut self, resource: &ZwpTextInputV3) {
@@ -226,6 +248,7 @@ struct Pending {
 pub struct TextCommit {
     pending: Option<Pending>,
     delivered: Vec<DeliveredText>,
+    pub(crate) dictation: super::dictation::Dictation,
 }
 
 impl State {
@@ -408,7 +431,7 @@ pub fn relay(
     delivered
 }
 
-enum Progress {
+pub(super) enum Progress {
     /// Still binding, or waiting for a field to activate the input method.
     Waiting,
     /// A field activated it: commit now.
@@ -437,7 +460,7 @@ struct LentState {
 
 /// The compositor's in-process `input-method-v2` connection, alive for one
 /// commit. Dropping it closes the connection and releases the seat.
-struct LentInputMethod {
+pub(super) struct LentInputMethod {
     conn: Connection,
     queue: EventQueue<LentState>,
     state: LentState,
@@ -450,7 +473,7 @@ struct LentInputMethod {
 }
 
 impl LentInputMethod {
-    fn connect(state: &mut State) -> Result<Self, String> {
+    pub(super) fn connect(state: &mut State) -> Result<Self, String> {
         let (server, client) = UnixStream::pair().map_err(|e| e.to_string())?;
         client.set_nonblocking(true).map_err(|e| e.to_string())?;
         let server = state
@@ -495,7 +518,7 @@ impl LentInputMethod {
         })
     }
 
-    fn pump(&mut self) -> Progress {
+    pub(super) fn pump(&mut self) -> Progress {
         if self.queue.dispatch_pending(&mut self.state).is_err() {
             return Progress::Failed;
         }
