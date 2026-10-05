@@ -3680,6 +3680,57 @@ impl StoreApp {
         }
     }
 
+    fn inspect_catalogue(&self, app: Option<&str>) -> Result<serde_json::Value, String> {
+        let detail = app
+            .map(|id| {
+                if !crate::doc_actions::valid_app_id(id) {
+                    return Err("invalid app identity".to_string());
+                }
+                self.items
+                    .iter()
+                    .find(|item| item.id == id)
+                    .map(|item| inspect_item(item, self.flatpak_available))
+                    .ok_or_else(|| "App is not in the current catalogue.".to_string())
+            })
+            .transpose()?;
+        let visible = self.visible_items();
+        let pages = visible.len().div_ceil(PAGE_SIZE).max(1);
+        let page = self.catalog_page.min(pages.saturating_sub(1));
+        let items = visible
+            .iter()
+            .skip(page.saturating_mul(PAGE_SIZE))
+            .take(PAGE_SIZE)
+            .map(|item| inspect_item(item, self.flatpak_available))
+            .collect::<Vec<_>>();
+        let remotes = self
+            .remotes
+            .iter()
+            .filter(|remote| remote.resource_id().len() <= 512)
+            .take(64)
+            .map(|remote| {
+                serde_json::json!({
+                    "resource": remote.resource_id(),
+                    "name": resource_detail_excerpt(&remote.name),
+                    "title": resource_detail_excerpt(&remote.title),
+                    "scope": if remote.user_managed { "account" } else { "device" },
+                    "disabled": remote.disabled,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "query": self.query, "source": self.active_filter.label(),
+            "category": self.active_category, "page": page, "pages": pages,
+            "total": self.items.len(), "matching": visible.len(), "items": items,
+            "detail": detail, "selected_app": self.focused_detail, "flatpak_available": self.flatpak_available,
+            "worker_attached": self.worker.is_some(), "worker_busy": self.worker_busy,
+            "pending_jobs": self.pending_jobs,
+            "status": resource_detail_excerpt(&self.status_line),
+            "error": self.operation_error.as_deref().map(resource_detail_excerpt),
+            "remote_count": self.remotes.len(), "remotes_truncated": remotes.len() < self.remotes.len(),
+            "remotes": remotes,
+        }))
+    }
+
     /// Answer `effect`: move around the window, or start the job it asks
     /// for.
     pub(crate) fn answer(
@@ -3687,6 +3738,9 @@ impl StoreApp {
         effect: StoreEffect,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
+        if let StoreEffect::InspectCatalogue { app } = &effect {
+            return self.inspect_catalogue(app.as_deref()).map(Effected::value);
+        }
         match self.admit(effect)? {
             Admitted::Done => Ok(Effected::done()),
             Admitted::Job(job) => self.start_job(job, cx),
@@ -3717,6 +3771,9 @@ impl StoreApp {
             ));
         }
         match effect {
+            StoreEffect::InspectCatalogue { .. } => {
+                return Err("Catalogue inspection must use the resource effect route.".into());
+            }
             StoreEffect::Refresh => return Ok(Job::admitted(Request::Refresh, Finish::Status)),
             StoreEffect::UpdateAll => return self.admit_update_all(),
             StoreEffect::SetSearch { query } => {
@@ -4481,6 +4538,20 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
     }
 }
 
+fn inspect_item(item: &StoreItem, flatpak_available: bool) -> serde_json::Value {
+    serde_json::json!({
+        "resource": format!("app:{}", item.id), "id": item.id,
+        "name": resource_detail_excerpt(&item.name),
+        "description": resource_detail_excerpt(&item.description),
+        "source": item.source.short_label(),
+        "repository": resource_detail_excerpt(item.source.distribution_name()),
+        "trust": item.trust,
+        "latest_version": resource_detail_excerpt(item.latest_version()),
+        "installed": !matches!(item.installed, crate::InstalledState::Not),
+        "primary_action": item.action_kind(flatpak_available).label(),
+    })
+}
+
 fn operation_error_summary() -> &'static str {
     "The last operation failed. Refresh the catalogue and try again."
 }
@@ -4488,6 +4559,130 @@ fn operation_error_summary() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn inspected_store() -> (
+        tilo_test_env::ScopedEnv,
+        tempfile::TempDir,
+        ui::framework::testing::TestApp<crate::resource::StoreShell>,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("registries.toml"),
+            "[[registry]]\nname = \"off\"\nbase_url = \"https://registry.invalid\"\nowner_pubkey_hex = \"ab\"\nenabled = false\n").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment
+            .set("TILO_STORE_CONFIG_DIR", directory.path())
+            .set("TILO_STORE_CACHE_DIR", directory.path().join("cache"))
+            .set("FLATHUB_API_BASE", "http://127.0.0.1:9")
+            .set("TILO_STORE_HTTP_TIMEOUT", "1");
+        let app = ui::framework::testing::TestApp::<crate::resource::StoreShell>::new().unwrap();
+        (environment, directory, app)
+    }
+
+    #[test]
+    fn catalogue_inspection_uses_the_published_effect_without_navigation_or_document_edits() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_remotes(vec![crate::flathub_client::Remote {
+                name: "flathub".into(),
+                title: "Flathub".into(),
+                url: "https://dl.flathub.org/repo/".into(),
+                disabled: false,
+                user_managed: true,
+            }]);
+        })
+        .unwrap();
+        let versions = app.versions().len();
+        let first = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert!(!first["items"].as_array().unwrap().is_empty());
+        assert_eq!(first["remotes"][0]["resource"], "remote:flathub");
+        assert_eq!(first["remotes"][0]["scope"], "account");
+        let detail = app
+            .effect(&StoreEffect::InspectCatalogue {
+                app: Some("so.tilo.notes".into()),
+            })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(detail["detail"]["id"], "so.tilo.notes");
+        assert_eq!(detail["selected_app"], first["selected_app"]);
+        assert_eq!(detail["page"], first["page"]);
+        assert_eq!(detail["query"], first["query"]);
+        assert_eq!(app.versions().len(), versions);
+        assert!(
+            app.effect(&StoreEffect::InspectCatalogue {
+                app: Some("so.tilo.absent".into())
+            })
+            .is_err()
+        );
+        assert!(
+            app.effect(&StoreEffect::InspectCatalogue {
+                app: Some("../bad".into())
+            })
+            .is_err()
+        );
+        app.effect(&StoreEffect::SetSource {
+            source: "Flatpak".into(),
+        })
+        .unwrap();
+        let filtered = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(filtered["source"], "Flatpak");
+        assert!(
+            filtered["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["source"] == "Flatpak")
+        );
+    }
+
+    #[test]
+    fn catalogue_inspection_bounds_pages_and_untrusted_copy_through_the_surface() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            let mut items = crate::fixture::fixture_catalog();
+            let template = items.remove(0);
+            let items = (0..200)
+                .map(|index| {
+                    let mut item = template.clone();
+                    item.id = format!("so.example.app{index}");
+                    item.description = "large 🧘\n".repeat(10000);
+                    item
+                })
+                .collect();
+            store.set_items(items);
+        })
+        .unwrap();
+        let first = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(first["total"], 200);
+        assert_eq!(first["matching"], 200);
+        assert_eq!(first["pages"], 5);
+        assert_eq!(first["items"].as_array().unwrap().len(), 48);
+        assert!(serde_json::to_vec(&first).unwrap().len() < 64 * 1024);
+        app.effect(&StoreEffect::NextPage).unwrap();
+        let next = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(next["page"], 1);
+        assert_ne!(next["items"][0]["id"], first["items"][0]["id"]);
+    }
+
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
     use automerge::{AutoCommit, ReadDoc};
     use ui::tilo_resource::Resource as _;
