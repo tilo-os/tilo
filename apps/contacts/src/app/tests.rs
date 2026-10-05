@@ -63,8 +63,8 @@ fn every_view_mode_renders_legibly() {
     // --- phase: seeds_sample_contacts_and_selects_one ---
     {
         let mut app = sampled();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         assert_eq!(app.store.len(), 7);
         assert!(app.selected.is_some(), "a contact must be auto-selected");
         // The seeded selection points at a real, richly-populated record.
@@ -82,8 +82,8 @@ fn every_view_mode_renders_legibly() {
     {
         let mut app = sampled();
         // Seed first.
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         // Enter edit on the selected contact and add repeated fields.
         let c = app
             .selected
@@ -105,8 +105,8 @@ fn every_view_mode_renders_legibly() {
     // --- phase: calendar_and_type_popups_frame_does_not_panic ---
     {
         let mut app = sampled();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         let c = app
             .selected
             .and_then(|id| app.store.get(id))
@@ -300,9 +300,9 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     tr.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
 
-    app.sync(&mut doc, &ROOT);
+    app.sync(&doc, &ROOT);
     let child = app.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy
         .new_with_children(
@@ -371,8 +371,8 @@ fn single_pane_push_navigation_follows_width() {
     // --- phase: narrow_selection_pushes_detail_then_back_returns_to_list ---
     {
         let mut app = sampled();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         drive_frame(&mut app, 480, 860);
         assert!(app.narrow);
         // Snap the push to the detail pane (as a row selection would) and
@@ -2034,8 +2034,8 @@ fn open_edit_forms_ignore_bare_keys_and_start_clean() {
         // phone/email rows) must not be considered dirty — otherwise the
         // unsaved guard would fire on the very first contact switch.
         let mut app = sampled();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         app.stage_new_contact();
         assert!(
             !app.form_is_dirty(),
@@ -2265,8 +2265,8 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
     // --- phase: group_filter_shot_defers_its_anchor_until_layout_exists ---
     {
         let mut app = sampled();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         app.stage_group_filter();
         drive_frame(&mut app, 1_280, 800);
         assert!(matches!(
@@ -2820,8 +2820,8 @@ fn first_run_is_empty_and_actionable() {
         // The live app must NOT invent sample contacts on an empty store.
         let (dir, _path) = scratch_book();
         let mut app = ContactsApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         assert!(
             app.store.is_empty(),
             "a fresh disk-backed launch shows an empty book"
@@ -2840,7 +2840,7 @@ fn first_run_is_empty_and_actionable() {
     {
         let mut app = ContactsApp::new();
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
         drive_frame(&mut app, 760, 620);
 
         assert!(app.store.is_empty());

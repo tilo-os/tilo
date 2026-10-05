@@ -2,7 +2,7 @@ use crate::{ChatApp, doc::ChatDoc, identity::LocalIdentity};
 
 /// The chat surface over `doc` for `identity`, editing as them, as a host
 /// without native services mounts it, after its first sync.
-fn projection(doc: &mut AutoCommit, identity: LocalIdentity) -> ChatApp {
+fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
     let me = identity.id.clone();
     let mut app = ChatApp::new(
         identity,
@@ -27,9 +27,9 @@ fn component_projection_never_seeds_or_marks_read() {
     ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     doc.commit();
     let before = (doc.base_heads(), doc.pending_ops());
-    let mut app = projection(&mut doc, identity);
+    let mut app = projection(&doc, identity);
     for _ in 0..3 {
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
     }
     assert_eq!((doc.base_heads(), doc.pending_ops()), before);
 }
@@ -40,12 +40,12 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
     let mut doc = AutoCommit::new();
     ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     doc.commit();
-    let mut app = projection(&mut doc, identity);
-    app.sync(&mut doc, &ROOT);
+    let mut app = projection(&doc, identity);
+    app.sync(&doc, &ROOT);
     assert!(app.needs_redraw(), "the first sync paints");
     app.mark_drawn();
     for _ in 0..3 {
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
     }
     assert!(
         !app.needs_redraw(),
@@ -79,10 +79,10 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
 
     doc.put(ROOT, "remote-change", "newer").unwrap();
     doc.commit();
-    app.sync(&mut doc, &ROOT);
+    app.sync(&doc, &ROOT);
     assert!(app.needs_redraw(), "a document change repaints");
     app.mark_drawn();
-    app.sync(&mut doc, &ROOT);
+    app.sync(&doc, &ROOT);
     assert!(
         !app.needs_redraw(),
         "the change is absorbed after one paint"
@@ -115,7 +115,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     let identity = LocalIdentity::demo();
     ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     doc.commit();
-    let mut app = projection(&mut doc, identity.clone());
+    let mut app = projection(&doc, identity.clone());
     app.scroll = 125.;
     app.inbox_open = true;
     app.left_flap.snap(false);
@@ -126,7 +126,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     doc.put(ROOT, "remote-change", "newer").unwrap();
     doc.commit();
     let before = doc.base_heads();
-    let mut restored = projection(&mut doc, identity);
+    let mut restored = projection(&doc, identity);
     restored.restore_application_view(&saved, &doc).unwrap();
     assert_eq!(restored.scroll, 125.);
     assert!(restored.inbox_open);
@@ -138,14 +138,11 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     let me = LocalIdentity::demo();
     ChatDoc::seed_starter(&mut doc, &me.id, &me.name, &me.initials);
     doc.commit();
-    let mut app = projection(&mut doc, me);
-    app.sync(&mut doc, &ROOT);
-    let _ = app.update(&mut doc, &ROOT);
+    let mut app = projection(&doc, me);
+    app.sync(&doc, &ROOT);
+    let _ = app.update(&doc, &ROOT);
     app.mark_drawn();
-    assert!(
-        !app.update(&mut doc, &ROOT),
-        "an idle frame is not a change"
-    );
+    assert!(!app.update(&doc, &ROOT), "an idle frame is not a change");
     assert!(
         !app.needs_animation_frame(),
         "idle Chat must not keep requesting frames"
@@ -153,7 +150,7 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     assert!(!app.needs_redraw());
     doc.put(ROOT, "remote-change", "newer").unwrap();
     doc.commit();
-    app.sync(&mut doc, &ROOT);
+    app.sync(&doc, &ROOT);
     assert!(
         app.needs_redraw(),
         "a conversation change still requests one paint"
@@ -165,7 +162,7 @@ fn canonical_composer_exports_ime_purpose_through_app_root() {
     let me = LocalIdentity::demo();
     ChatDoc::seed_starter(&mut doc, &me.id, &me.name, &me.initials);
     doc.commit();
-    let app = projection(&mut doc, me);
+    let app = projection(&doc, me);
     assert!(app.is_focusable());
     assert!(app.ime_purpose().is_some());
 }

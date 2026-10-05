@@ -5739,7 +5739,7 @@ mod tests {
             assert!(a.refresh.finished_at.is_some(), "completion timestamped");
             // The completion summary lingers briefly, then frames can stop.
             assert!(a.refresh.visible());
-            a.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            a.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(
                 a.next_wake_deadline().is_none(),
                 "completed work stops polling"
@@ -6035,7 +6035,7 @@ mod tests {
                     &automerge::ROOT
                 ));
             }
-            reader.sync(&mut doc, &automerge::ROOT);
+            reader.sync(&doc, &automerge::ROOT);
             assert!(reader.modal.is_none());
             assert!(
                 reader.take_structure_dirty(),
@@ -6685,7 +6685,7 @@ mod tests {
                 .expect("export must wake without animation");
             assert_eq!(a.next_wake_deadline(), Some(deadline));
             assert!(!path.exists());
-            a.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            a.sync(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
             assert_eq!(opml::parse(&xml).len(), a.store.feeds.len());
             assert!(a.export_rx.is_none());
@@ -6702,7 +6702,7 @@ mod tests {
             ] {
                 let mut a = app();
                 export_with(&mut a, outcome.clone());
-                a.sync(&mut AutoCommit::new(), &automerge::ROOT);
+                a.sync(&AutoCommit::new(), &automerge::ROOT);
                 assert!(a.export_rx.is_none());
                 let message = &a.toast.as_ref().unwrap().0;
                 assert!(
@@ -6727,7 +6727,7 @@ mod tests {
             let mut a = app();
             // A directory cannot be replaced by the export's file write on either host.
             export_with(&mut a, PortalOutcome::Opened(std::env::temp_dir()));
-            a.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            a.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(a.export_rx.is_none());
             assert!(a.toast.as_ref().unwrap().0.starts_with("Export failed:"));
         }
@@ -6741,7 +6741,7 @@ mod tests {
                 .next_wake_deadline()
                 .expect("file completion must wake even with reduced motion");
             assert_eq!(a.next_wake_deadline(), Some(deadline));
-            a.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            a.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(a.import_rx.is_none());
             assert!(a.next_wake_deadline().is_none());
         }
@@ -6768,7 +6768,7 @@ mod tests {
                 "a request is in flight until drained"
             );
 
-            a.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            a.sync(&AutoCommit::new(), &automerge::ROOT);
 
             assert!(
                 a.import_rx.is_none(),
@@ -6793,7 +6793,7 @@ mod tests {
             let mut a = app();
             let before = a.store.feeds.len();
             import_with(&mut a, PortalOutcome::Cancelled);
-            a.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            a.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(a.import_rx.is_none(), "cancel clears the request");
             assert_eq!(a.store.feeds.len(), before, "cancel adds no feeds");
         }

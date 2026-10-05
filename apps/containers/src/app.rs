@@ -1428,7 +1428,7 @@ impl ContainersApp {
     }
 
     /// Apply the pending destructive confirm against the real engine/document.
-    fn apply_confirm(&mut self, doc: &mut ui::widget::Edits<'_>) {
+    fn apply_confirm(&mut self, doc: &AutoCommit) {
         if let Some(confirm) = self.confirm.take() {
             match confirm.target {
                 ConfirmTarget::Container { id, action } => {
@@ -1446,7 +1446,7 @@ impl ContainersApp {
     }
 
     /// Read the prompt's typed value out of the embedded field and commit it.
-    fn submit_prompt(&mut self, doc: &mut ui::widget::Edits<'_>) {
+    fn submit_prompt(&mut self, doc: &AutoCommit) {
         let value = self
             .prompt_dialog
             .as_ref()
@@ -2093,7 +2093,7 @@ impl Widget for ContainersApp {
                 }
             }
             *ctx.handled = true;
-            self.refresh_view(&mut ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
@@ -2108,7 +2108,7 @@ impl Widget for ContainersApp {
         {
             self.open_container_palette();
             *ctx.handled = true;
-            self.refresh_view(&mut ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
@@ -2123,7 +2123,7 @@ impl Widget for ContainersApp {
                 &mut ctx.state,
                 ctx.handled,
             );
-            self.refresh_view(&mut ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
         if self.prompt.is_some() {
@@ -2134,7 +2134,7 @@ impl Widget for ContainersApp {
                 &mut ctx.state,
                 ctx.handled,
             );
-            self.refresh_view(&mut ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
@@ -2179,8 +2179,7 @@ impl Widget for ContainersApp {
                     && self.view.section == Section::Containers
                     && self.view.selected.is_some();
                 if compact_detail
-                    || self.cursor.x
-                        > self.rect.x0 + RAIL_WIDTH + self.list_area_width(&mut ctx.state)
+                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(&ctx.state)
                 {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
                 } else {
@@ -2244,7 +2243,7 @@ impl Widget for ContainersApp {
         }
         // Refresh the cached view state after any mutation so the next draw
         // reflects it (draw has no doc access).
-        self.refresh_view(&mut ctx.state);
+        self.refresh_view(&ctx.state);
     }
 
     fn name(&self) -> &'static str {
@@ -3407,8 +3406,8 @@ mod tests {
         app.last_refresh = Instant::now()
             .checked_sub(crate::podman::REFRESH_INTERVAL + std::time::Duration::from_millis(1))
             .expect("refresh interval fits below Instant::now");
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
         assert!(
             requests.try_recv().is_err(),
             "controlled fixtures own refresh; wall-clock must not enqueue Refresh"
@@ -3510,9 +3509,9 @@ mod tests {
     fn pending_control_intent_keeps_exact_target_until_host_take() {
         let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
         app.apply_action(Action::Restart, "retained-target");
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        app.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         let intent =
             ui::widget::controls::take_control_invocation(&mut app).expect("retained intent");
         assert_eq!(intent.address.resource, "container:retained-target");

@@ -16169,7 +16169,7 @@ impl Widget for PhotosApp {
                 .copied()
         {
             match hit {
-                AlbumEditorHit::New => self.begin_new_album(&mut ctx.state),
+                AlbumEditorHit::New => self.begin_new_album(&ctx.state),
                 AlbumEditorHit::Edit => self.begin_edit_album(),
                 _ => {}
             }
@@ -17195,6 +17195,15 @@ mod history_reconcile_tests {
         }
     }
 
+    fn dispatch_unmatched_action(app: &mut PhotosApp, doc: &mut AutoCommit) {
+        app.perform_semantic_action(
+            "nonexistent",
+            &AccessAction::Activate,
+            &mut ui::widget::Edits::lend(doc),
+            &ROOT,
+        );
+    }
+
     #[test]
     fn changed_targets_invalidate_metadata_and_album_drafts() {
         eprintln!(
@@ -17218,12 +17227,7 @@ mod history_reconcile_tests {
             restore(&mut doc, &selected);
             present(&mut app, &doc);
             present(&mut app, &doc);
-            app.perform_semantic_action(
-                "nonexistent",
-                &AccessAction::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &ROOT,
-            );
+            dispatch_unmatched_action(&mut app, &mut doc);
             assert!(
                 !app.metadata_editor,
                 "stale draft must detach before any new input"
@@ -17256,12 +17260,7 @@ mod history_reconcile_tests {
             library.photos[1].tags = vec!["remote edit".into()];
             PhotosDoc::set_library(&mut doc, &library);
             present(&mut app, &doc);
-            app.perform_semantic_action(
-                "nonexistent",
-                &AccessAction::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &ROOT,
-            );
+            dispatch_unmatched_action(&mut app, &mut doc);
             assert!(
                 !app.metadata_editor,
                 "a changed non-first batch target invalidates the draft before input"

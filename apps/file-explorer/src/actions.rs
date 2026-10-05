@@ -37,13 +37,13 @@ mod tests {
         // --- phase: local_interaction_state_never_materialises_a_shared_document_record ---
         {
             let mut files = FileExplorerWidget::new();
-            let mut document = AutoCommit::new();
+            let document = AutoCommit::new();
 
-            files.sync(&mut document, &ROOT);
+            files.sync(&document, &ROOT);
             assert_eq!(document.keys(&ROOT).count(), 0, "initial UI state is local");
 
             files.set_rename_buffer("draft.txt".into());
-            files.sync(&mut document, &ROOT);
+            files.sync(&document, &ROOT);
             assert_eq!(
                 document.keys(&ROOT).count(),
                 0,
@@ -58,8 +58,8 @@ mod tests {
 
             let mut files = FileExplorerWidget::new();
             files.navigate(directory.path().to_path_buf());
-            let mut document = AutoCommit::new();
-            files.sync(&mut document, &ROOT);
+            let document = AutoCommit::new();
+            files.sync(&document, &ROOT);
 
             let index = files
                 .displayed_entries()
@@ -85,8 +85,8 @@ mod tests {
             std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
             let mut files = FileExplorerWidget::new();
             files.navigate(directory.path().to_path_buf());
-            let mut document = AutoCommit::new();
-            files.sync(&mut document, &ROOT);
+            let document = AutoCommit::new();
+            files.sync(&document, &ROOT);
 
             let resources = files.published_rows();
             assert!(
@@ -119,8 +119,8 @@ mod tests {
         std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
         let mut files = FileExplorerWidget::new();
         files.navigate(directory.path().to_path_buf());
-        let mut synced = document.clone();
-        files.sync(&mut synced, &ROOT);
+        let synced = document.clone();
+        files.sync(&synced, &ROOT);
         crate::files_app::published::tree(&files, &synced)
     }
 

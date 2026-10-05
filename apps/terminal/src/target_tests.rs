@@ -127,8 +127,8 @@ fn the_device_shell_is_asked_for_once_and_opens_when_allowed() {
             Ok(())
         }
     });
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
+    let doc = AutoCommit::new();
+    widget.sync(&doc, &ROOT);
     let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
     assert_eq!(widget.session_state(), &OpenState::AwaitingAllow);
 
@@ -136,7 +136,7 @@ fn the_device_shell_is_asked_for_once_and_opens_when_allowed() {
     else {
         panic!("the tab must ask the shell for the person's allow");
     };
-    widget.sync(&mut doc, &ROOT);
+    widget.sync(&doc, &ROOT);
     assert_eq!(
         widget.session_state(),
         &OpenState::AwaitingAllow,
@@ -145,7 +145,7 @@ fn the_device_shell_is_asked_for_once_and_opens_when_allowed() {
 
     *allowed.borrow_mut() = true;
     reply.upgrade().unwrap().borrow_mut().answer = Some(true);
-    widget.sync(&mut doc, &ROOT);
+    widget.sync(&doc, &ROOT);
     assert_eq!(widget.session_state(), &OpenState::Open);
     let log = opened.borrow();
     assert_eq!(log.last(), Some(&(SessionTarget::Host, Requester::Person)));
@@ -160,15 +160,15 @@ fn a_declined_allow_leaves_the_tab_saying_so() {
             Ok(())
         }
     });
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
+    let doc = AutoCommit::new();
+    widget.sync(&doc, &ROOT);
     let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
     let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
     else {
         panic!("expected an allow request");
     };
     reply.upgrade().unwrap().borrow_mut().answer = Some(false);
-    widget.sync(&mut doc, &ROOT);
+    widget.sync(&doc, &ROOT);
     assert!(matches!(widget.session_state(), OpenState::Failed(_)));
     assert!(widget.is_disconnected());
 }
@@ -426,8 +426,8 @@ fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
 #[test]
 fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
+    let doc = AutoCommit::new();
+    widget.sync(&doc, &ROOT);
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
     let run_on = ui::i18n::I18nManager::lookup("terminal-run-on", None);

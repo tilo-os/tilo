@@ -6579,7 +6579,7 @@ impl Widget for VideoEditorApp {
                 {
                     self.place_cursor_at(&r, self.last_mouse);
                 }
-                self.handle_press(&mut ctx.state, &r, ctx.modifiers.state().shift_key());
+                self.handle_press(&ctx.state, &r, ctx.modifiers.state().shift_key());
                 // Take the keyboard, the way every shared widget in `ui` does
                 // on a press. Without it the editor only ever held focus after
                 // a Tab, so a user who clicked into it and then used the arrow
