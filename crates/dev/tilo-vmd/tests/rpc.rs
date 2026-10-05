@@ -557,6 +557,37 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
 }
 
 #[test]
+fn device_login_input_uses_the_physical_seat() {
+    use tilo_vm_protocol::{Input, InputAction};
+
+    let actions = vec![InputAction::Key {
+        combos: vec!["a".into()],
+    }];
+    let root = tempfile::tempdir().unwrap();
+    let mut login = Daemon::spawn_with(root.path(), "record-login");
+    login.client.hello("test").unwrap();
+    let sent = login
+        .client
+        .call(Input {
+            slot: "device".into(),
+            actions: actions.clone(),
+        })
+        .unwrap();
+    assert_eq!(sent.seat, "seat0");
+    assert!(sent.events > 0);
+
+    let board_root = tempfile::tempdir().unwrap();
+    let mut board = Daemon::spawn_with(board_root.path(), "record-device");
+    board.client.hello("test").unwrap();
+    let error = rpc_error(board.client.call(Input {
+        slot: "device".into(),
+        actions,
+    }));
+    assert_eq!(error.code, code::INVALID);
+    assert!(error.message.contains("headless"));
+}
+
+#[test]
 fn the_device_slot_is_the_machines_own_session() {
     // Phase `a_machine_without_its_own_session_has_no_device_slot`.
     {
