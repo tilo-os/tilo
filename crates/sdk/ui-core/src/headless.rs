@@ -498,6 +498,7 @@ pub struct FrameOutput<'a> {
 }
 
 mod caller_palette;
+mod search_open;
 pub mod system_search;
 pub mod test_support;
 
@@ -512,6 +513,8 @@ pub struct FrameHarness {
     root: Box<dyn Widget>,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
     action_palette: Option<Box<crate::action_palette::ActionPalette>>,
+    /// The open search palette has provider pages left to read.
+    search_pending: bool,
     root_lifetime: uuid::Uuid,
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
     taffy: TaffyTree<()>,
@@ -1334,6 +1337,7 @@ impl FrameHarness {
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
             action_palette: None,
+            search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
             component_close_reports: vec![],
@@ -1987,6 +1991,7 @@ impl FrameHarness {
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
         let queued_work = self.presence_redraw
+            || self.search_pending
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
             || self
@@ -2944,6 +2949,7 @@ impl FrameHarness {
 
         // Focus was already recovered for this tree before draw, with the
         // active-instance filter a second unfiltered pass would undo.
+        self.search_pending = self.advance_search();
         self.draw_caller_palette();
         self.refresh_system_search();
         self.draw_system_search();
@@ -5950,7 +5956,9 @@ impl FrameHarness {
         }
         for (target, intent) in registered.components.into_iter().chain(bound.pending) {
             let owner = crate::history_mode::HistoryOwner::component(target.binding.clone());
-            if !self.take_history_invocation(&intent, Some(owner)) {
+            if !self.take_search_invocation(&intent)
+                && !self.take_history_invocation(&intent, Some(owner))
+            {
                 self.dispatch_bound_control(target, &intent);
             }
         }
@@ -5961,7 +5969,9 @@ impl FrameHarness {
             tracing::warn!(%error, "headless legacy drain refused");
         }
         for (target, intent) in registered.legacy.into_iter().chain(batch.controls) {
-            if !self.take_history_invocation(&intent, Some(target.owner.clone())) {
+            if !self.take_search_invocation(&intent)
+                && !self.take_history_invocation(&intent, Some(target.owner.clone()))
+            {
                 self.dispatch_legacy_control(&target, &intent);
             }
         }
@@ -5970,7 +5980,7 @@ impl FrameHarness {
             .pop_front()
             .or_else(|| crate::widget::controls::take_control_invocation(self.root.as_mut()))
         {
-            if self.take_history_invocation(&intent, None) {
+            if self.take_search_invocation(&intent) || self.take_history_invocation(&intent, None) {
                 continue;
             }
             // The remaining controls originated in the outer document. Never
