@@ -1193,7 +1193,7 @@ impl Widget for Scrollable {
     fn child_clip_rect(&self) -> Option<Rect> {
         Some(self.content_viewport_rect())
     }
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         // Drives click-and-hold auto-repeat while the host pumps frames.
         if self.hold.is_some() {
             self.advance_hold(crate::time::now());
@@ -1203,7 +1203,7 @@ impl Widget for Scrollable {
         }
     }
 
-    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let ticking = self.momentum_speed() > 0.0;
         if ticking {
             self.tick(1.0 / 60.0);

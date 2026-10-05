@@ -571,7 +571,7 @@ impl Customizer {
 }
 
 impl Widget for Customizer {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.color_picker.sync(state, path);
         self.radius_slider.sync(state, path);
         self.spacing_slider.sync(state, path);

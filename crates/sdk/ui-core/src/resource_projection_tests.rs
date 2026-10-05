@@ -146,7 +146,7 @@ impl Widget for SemanticCountingPublisher {
         dyn crate::resources::PublishesResources
     );
 
-    fn sync(&mut self, _s: &mut AppModel, _p: &ModelPath) {}
+    fn sync(&mut self, _s: &AppModel, _p: &ModelPath) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

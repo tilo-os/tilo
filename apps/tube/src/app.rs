@@ -2102,7 +2102,7 @@ impl TubeApp {
 impl Widget for TubeApp {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.follow_history() | self.refresh_preferences() {
             self.structure_dirty = true;
         }

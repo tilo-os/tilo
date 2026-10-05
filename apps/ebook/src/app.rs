@@ -4442,7 +4442,7 @@ impl Widget for BooksApp {
         clippy::too_many_lines,
         reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
     )]
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, path) = ui::doc::document(doc, path);
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.

@@ -354,8 +354,8 @@ impl Widget for CounterCard {
         dyn crate::widget::controls::ActionControls
     );
 
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
-        let (s, p) = crate::doc::document(s, p);
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
+        let (s, p) = crate::doc::document_ref(s, p);
         self.button.sync(s, p);
         for scope in std::mem::take(&mut self.scoped_jobs) {
             let invocation = scope.invocation();

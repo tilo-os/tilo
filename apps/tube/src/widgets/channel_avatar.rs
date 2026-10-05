@@ -124,7 +124,7 @@ impl ChannelAvatar {
 }
 
 impl Widget for ChannelAvatar {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // Lazily resolve the real avatar. Only touch the store until we have the
         // image (an `Arc` clone thereafter would be wasted work); a freshly
         // decoded photo flips `dirty` so the next frame repaints it — no rebuild.

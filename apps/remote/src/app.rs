@@ -2473,7 +2473,7 @@ impl Widget for RemoteApp {
     }
 
     /// Answer a session effect once its transport settled.
-    fn sync(&mut self, _state: &mut ui::widget::AppModel, _path: &ui::widget::ModelPath) {
+    fn sync(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) {
         self.settle_pending_effect();
     }
 

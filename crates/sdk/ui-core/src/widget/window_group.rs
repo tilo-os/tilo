@@ -2200,12 +2200,12 @@ impl Widget for WindowGroup {
         Ok(())
     }
 
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         if let Some(h) = self.active_host_mut() {
             h.sync(s, p);
         }
     }
-    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         self.active_host_mut().is_some_and(|h| h.update(s, p))
     }
     fn build_layout(

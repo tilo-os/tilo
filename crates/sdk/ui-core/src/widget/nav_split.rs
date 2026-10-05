@@ -864,7 +864,7 @@ impl Widget for NavSplit {
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         // The reveal/push slide is driven from the draw path (`self_tick`),
         // not here, because drawing owns its frame delta. This pass only
         // forwards to children and reports whether anything still needs

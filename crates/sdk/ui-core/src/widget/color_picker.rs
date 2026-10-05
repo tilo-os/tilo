@@ -1042,7 +1042,7 @@ impl ColorPicker {
 }
 
 impl Widget for ColorPicker {
-    fn sync(&mut self, _state: &mut AppModel, _root: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _root: &ModelPath) {
         if let Some(color) = self
             .local_state
             .as_mut()

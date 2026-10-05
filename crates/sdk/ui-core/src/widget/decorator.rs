@@ -213,11 +213,11 @@ pub trait Decorator {
         self.inner_mut().set_interaction_environment(environment);
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.inner_mut().sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.inner_mut().update(state, path)
     }
 
@@ -790,11 +790,11 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::set_interaction_environment(self, environment);
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         Decorator::sync(self, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         Decorator::update(self, state, path)
     }
 

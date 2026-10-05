@@ -65,7 +65,7 @@ impl<M: PaneModel> ModelPane<M> {
 }
 
 impl<M: PaneModel> Widget for ModelPane<M> {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.model.borrow_mut().poll() {
             self.structure_dirty = true;
         }

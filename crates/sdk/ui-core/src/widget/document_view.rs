@@ -204,14 +204,14 @@ where
         dyn crate::view::capability::ViewState
     );
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
         self.reconcile(state, path);
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        let (state, path) = crate::doc::document(state, path);
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let (state, path) = crate::doc::document_ref(state, path);
         self.reconcile(state, path);
         self.child.update(state, path)
     }

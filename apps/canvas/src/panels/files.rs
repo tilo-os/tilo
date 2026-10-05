@@ -484,7 +484,7 @@ impl ui::widget::Decorator for FileDesk {
         "FileDesk"
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.take();
         self.poll();
         self.content.sync(state, path);

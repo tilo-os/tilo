@@ -386,7 +386,7 @@ impl Widget for Checkbox {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding {
             match binding.pull(state, root) {
                 Pulled::Value(checked) => self.is_checked = checked,

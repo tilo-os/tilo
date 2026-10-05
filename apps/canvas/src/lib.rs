@@ -319,7 +319,7 @@ impl ui::widget::Decorator for Shown {
         &mut self.dialog
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         let open = self.sheet.with(|sheet| *sheet == Some(self.which));
         if open != self.dialog.is_open() {
             self.dialog.set_open(open);

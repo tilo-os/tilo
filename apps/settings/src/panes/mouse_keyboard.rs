@@ -2111,7 +2111,7 @@ impl MouseKeyboardPane {
 }
 
 impl Widget for MouseKeyboardPane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // The controls are built from the values: a change rebuilds them.
         if self.input.refresh() {
             let mut last = self.input.get().clone();

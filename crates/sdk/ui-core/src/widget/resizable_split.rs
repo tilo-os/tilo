@@ -224,11 +224,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
 
     /// Forward the per-frame update pass to both panes, so a pane that
     /// polls a model (a data table, a pending image) keeps updating.
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let left = self.left.update(state, path);
         let right = self.right.update(state, path);
         left | right
@@ -578,7 +574,7 @@ mod tests {
     impl Widget for TestLeaf {
         fn update(
             &mut self,
-            _state: &mut crate::widget::AppModel,
+            _state: &crate::widget::AppModel,
             _path: &crate::widget::ModelPath,
         ) -> bool {
             self.updates += 1;

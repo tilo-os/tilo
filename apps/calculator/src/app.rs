@@ -1206,7 +1206,7 @@ impl Widget for CalculatorApp {
             .then_some(winit::window::ImePurpose::Normal)
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(effect) = self.pending_effect.take() {
             let (doc, _) = ui::doc::document(state, path);
             self.perform_effect(effect, doc);

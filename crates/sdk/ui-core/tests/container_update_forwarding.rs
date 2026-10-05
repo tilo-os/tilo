@@ -40,7 +40,7 @@ struct Probe {
 }
 
 impl Widget for Probe {
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         self.updates.set(self.updates.get().saturating_add(1));
         true
     }

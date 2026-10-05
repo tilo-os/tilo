@@ -5022,7 +5022,7 @@ impl ImagerApp {
 // Widget impl
 // =========================================================================
 impl Widget for ImagerApp {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if !self.seeded {
             // Start genuinely blank. In the live app a real `lsblk` probe
             // fills the drive list; if it finds nothing (or is unavailable)

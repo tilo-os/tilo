@@ -2073,7 +2073,7 @@ impl Widget for NotesApp {
         self.main.apply_primary_vertical_scroll(action)
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
             && saved != self.record_save_status

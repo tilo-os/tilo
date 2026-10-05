@@ -14799,7 +14799,7 @@ impl Widget for PhotosApp {
         clippy::too_many_lines,
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, path) = ui::doc::document(doc, path);
         self.follow_cancellations();
         self.open_launched();

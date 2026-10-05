@@ -1824,7 +1824,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.visible_window_changed();
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let model_changes = self
             .model
             .as_deref_mut()

@@ -1425,7 +1425,7 @@ fn selected_on(ground: Color) -> (Color, Color) {
 }
 
 impl Widget for FirewallApp {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(status) = self.outcome.borrow_mut().take() {
             self.status = status;
         }

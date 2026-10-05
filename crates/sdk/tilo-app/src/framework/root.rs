@@ -792,8 +792,8 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         owners
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui_core::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui_core::doc::document_ref(state, path);
         self.refresh_access();
         self.refresh(state);
         self.storage.refresh();

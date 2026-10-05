@@ -59,7 +59,7 @@ impl Widget for AgentTarget {
         true
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
     fn build_layout(

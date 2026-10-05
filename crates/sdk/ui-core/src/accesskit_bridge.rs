@@ -1334,7 +1334,7 @@ mod tests {
     }
 
     impl Widget for TestWidget {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1397,7 +1397,7 @@ mod tests {
     }
 
     impl Widget for AliasWrapper {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -1677,7 +1677,7 @@ mod tests {
     }
 
     impl Widget for FirstFieldHost {
-        fn sync(&mut self, _s: &mut crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
+        fn sync(&mut self, _s: &crate::widget::AppModel, _p: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

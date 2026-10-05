@@ -10271,7 +10271,7 @@ impl Widget for WordProcessorWidget {
         clippy::too_many_lines,
         reason = "the editor binds, rebases and reconciles in one sync pass"
     )]
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         #[cfg(test)]
         if self.source.is_none() && self.dispatch.is_some() {

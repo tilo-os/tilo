@@ -2902,7 +2902,7 @@ impl Widget for ChatApp {
         }
     }
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(doc, path);
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
@@ -3529,7 +3529,7 @@ impl Widget for ChatApp {
     /// decoding in the background. A live-but-static call does **not** force
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
-    fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
         std::mem::take(&mut self.read_on_present)

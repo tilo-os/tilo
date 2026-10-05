@@ -4997,7 +4997,7 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         // Drain the dedicated PDF owner before any portal/action work.  This
         // is non-blocking and is the sole route by which production PDFium

@@ -1047,14 +1047,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.visible_window_changed();
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile_mounted();
         for row in &mut self.mounted {
             row.widget.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let now = crate::time::now();
         let elapsed = self
             .last_tick

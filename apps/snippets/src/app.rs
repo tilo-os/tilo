@@ -926,7 +926,7 @@ impl ui::widget::Widget for SnippetsApp {
         dyn ui::undo::UndoPoints
     );
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.sync_body_editor();
     }
 
@@ -1119,7 +1119,7 @@ impl ui::widget::Widget for SnippetsApp {
             || self.push.is_animating(SplitLayout::Docked)
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Advance the sidebar reveal + the push (list↔detail) slide toward
         // their targets. Frame-rate-independent; the host re-pumps frames
         // while `needs_animation_frame` stays true.

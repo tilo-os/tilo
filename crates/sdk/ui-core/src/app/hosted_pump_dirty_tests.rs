@@ -22,7 +22,7 @@ impl Widget for HostedPumpProbe {
         get_rect,
         name = "hosted-pump-probe"
     );
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         self.syncs.set(self.syncs.get() + 1);
         if let Some(label) = self.pending_label.borrow_mut().take() {
             self.label = label;

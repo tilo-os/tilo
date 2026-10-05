@@ -1505,19 +1505,19 @@ impl Widget for DesktopSurface {
         "DesktopSurface"
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         if let Some(row) = self.shown_row() {
             row.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let before = self.shared.borrow().revision;
         let search_was_open = self.search.is_open();
         self.reconcile();
         self.harvest();
         {
-            let (doc, root) = ui::doc::document(state, path);
+            let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
             // Search opens over the tree as these commands left it, and what
             // it chose applies in this same pass.
@@ -1536,7 +1536,7 @@ impl Widget for DesktopSurface {
         self.refresh_notifications();
         if !self.shared.borrow().queue.is_empty() {
             // The pane or the centre opened a window.
-            let (doc, root) = ui::doc::document(state, path);
+            let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
             self.show_active_strip();
             self.present();

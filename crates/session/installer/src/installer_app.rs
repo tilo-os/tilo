@@ -3912,8 +3912,8 @@ fn args_none() -> serde_json::Map<String, serde_json::Value> {
 impl Widget for InstallerApp {
     ui::provides!(dyn ui::resources::PublishesResources);
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document_ref(state, root);
         if !self.bootstrap_done {
             self.bootstrap_crdt(state, root);
             self.bootstrap_done = true;

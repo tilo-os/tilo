@@ -22,7 +22,7 @@ pub enum Pulled<T> {
 /// Two-way storage for a control's value.
 pub trait ValueBinding<T> {
     /// The value to present, read in the sync pass before layout.
-    fn pull(&mut self, model: &mut AppModel, path: &ModelPath) -> Pulled<T>;
+    fn pull(&mut self, model: &AppModel, path: &ModelPath) -> Pulled<T>;
 
     /// Store a value the user committed.
     fn push(&mut self, model: &mut AppModel, path: &ModelPath, value: &T);
@@ -40,7 +40,7 @@ pub trait ValueBinding<T> {
 }
 
 impl<T: Clone + PartialEq> ValueBinding<T> for crate::local_state::LocalBinding<T> {
-    fn pull(&mut self, _model: &mut AppModel, _path: &ModelPath) -> Pulled<T> {
+    fn pull(&mut self, _model: &AppModel, _path: &ModelPath) -> Pulled<T> {
         self.poll().map_or(Pulled::Unchanged, Pulled::Value)
     }
 

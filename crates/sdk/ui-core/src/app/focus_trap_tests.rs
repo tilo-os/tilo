@@ -84,7 +84,7 @@ impl ModalHost {
     }
 }
 impl Widget for ModalHost {
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         self.modal.set_open(self.want_open.get());
         for c in &mut self.outer {
             c.sync(s, p);

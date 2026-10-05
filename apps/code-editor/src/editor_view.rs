@@ -2491,7 +2491,7 @@ impl EditorView {
 }
 
 impl Widget for EditorView {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         // Pull remote/undo edits: if the buffer text differs from our cache,
         // rebuild. Cheap string compare on the hot path.

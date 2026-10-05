@@ -492,7 +492,7 @@ impl Widget for NumberInput {
         self.plus_hover &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // Don't clobber the field while the user is mid-edit; the model is
         // adopted as soon as editing ends.
         if self.field.is_focused() {

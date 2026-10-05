@@ -1743,7 +1743,7 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
 impl Widget for TypstApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(doc, path);
         self.background_poll_deadline.set(None);
         if let Some(operation) = self.pending_resource_io.take() {

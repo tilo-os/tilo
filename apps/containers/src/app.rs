@@ -1873,7 +1873,7 @@ impl ContainersApp {
 impl Widget for ContainersApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(doc, path);
         self.drain_bg();
         // Periodically re-probe the engine for fresh stats / state. Controlled

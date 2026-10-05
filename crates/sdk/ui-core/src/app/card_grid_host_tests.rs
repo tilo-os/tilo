@@ -424,7 +424,7 @@ struct GrowingBody {
     clicks: Rc<RefCell<Vec<usize>>>,
 }
 impl Widget for GrowingBody {
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         if self.count == self.requested.get() {
             return false;
         }

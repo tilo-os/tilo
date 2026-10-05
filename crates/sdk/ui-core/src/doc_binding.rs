@@ -118,8 +118,8 @@ struct DocKey<C> {
 }
 
 impl<C: Codec> ValueBinding<C::Value> for DocKey<C> {
-    fn pull(&mut self, model: &mut AppModel, path: &ModelPath) -> Pulled<C::Value> {
-        let (doc, obj) = crate::doc::document(model, path);
+    fn pull(&mut self, model: &AppModel, path: &ModelPath) -> Pulled<C::Value> {
+        let (doc, obj) = crate::doc::document_ref(model, path);
         C::read(doc, obj, &self.key).map_or(Pulled::Missing, Pulled::Value)
     }
 

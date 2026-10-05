@@ -83,7 +83,7 @@ impl Widget for OpenBook {
         self.inner.apply_layout(taffy, node, origin);
     }
 
-    fn sync(&mut self, state: &mut tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
         self.inner.sync(state, path);
     }
 

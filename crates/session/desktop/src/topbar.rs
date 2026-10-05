@@ -4901,7 +4901,7 @@ impl Widget for TopBarChrome {
         Some(self)
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // The time is read when drawing, so nothing else marks the bar
         // dirty when the minute turns over on an idle desktop.
         let time_changed = self.take_time_wake();

@@ -5193,7 +5193,7 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // The preferences follow the person's settings, never the shared
         // document.
         self.sync_preferences();

@@ -916,13 +916,13 @@ pub trait Widget {
     /// Pull model state into this widget before layout. The default syncs the
     /// children [`Widget::children_mut`] returns; a widget overrides it only to
     /// read state of its own, or to sync children it does not expose there.
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         for child in self.children_mut() {
             child.sync(state, path);
         }
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         false
     }
     fn build_layout(
@@ -2610,7 +2610,7 @@ mod tests {
     impl Widget for CollabProbe {
         crate::provides!(dyn Collaborative, dyn AudiencePresentationProvider);
 
-        fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+        fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
         fn build_layout(
             &mut self,

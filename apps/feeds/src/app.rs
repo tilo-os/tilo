@@ -4356,7 +4356,7 @@ fn chrono_date(published: i64, now: i64) -> String {
 impl Widget for FeedsApp {
     ui::provides!(dyn ui::undo::LocalUndo);
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.background_poll_deadline.set(None);
         self.adopt_read_settings();
         self.now = chrono::Utc::now().timestamp();
