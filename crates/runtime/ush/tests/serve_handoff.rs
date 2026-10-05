@@ -324,6 +324,65 @@ fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     run_handoff();
 }
 
+/// The installed public spelling creates Default on first use and runs a
+/// command through the actual native guest, without a host-shell grant.
+#[test]
+fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let images = dir.path().join("images");
+    fixture_images(&images);
+    let usr = dir.path().join("usr");
+    std::fs::create_dir_all(usr.join("bin")).unwrap();
+    std::fs::create_dir_all(usr.join("libexec")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo-ush"), usr.join("libexec/tilo-ush"))
+        .unwrap();
+    std::os::unix::fs::symlink("../libexec/tilo-ush", usr.join("bin/ush")).unwrap();
+    let store = Store::at(dir.path().join("store"));
+    let records = Records::at(store.records_root());
+    assert!(records.load(DEFAULT_RECORD).unwrap().is_none());
+    let output = std::process::Command::new("timeout")
+        .arg("--kill-after=5s")
+        .arg("30s")
+        .arg(usr.join("bin/ush"))
+        .args(["-c", "touch /usr/public-ush-probe 2>/dev/null || printf 'READ_ONLY\\n'; printf 'PUBLIC_%s\\n' DEFAULT"])
+        .env(ush::store::STORE_ENV, store.root())
+        .env_remove(ush::store::RECORDS_ENV)
+        .env_remove("TILO_USH_BIN")
+        .env("TILO_USH_IMAGES", &images)
+        .env("SHELL", "/usr/bin/bash")
+        .output().unwrap();
+    assert!(
+        output.status.success(),
+        "public ush failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout, "READ_ONLY\nPUBLIC_DEFAULT\n");
+    assert!(
+        !images
+            .join(PackageId::from_bytes(RUNTIME).to_hex())
+            .join("usr/public-ush-probe")
+            .exists()
+    );
+    let default = records
+        .load(DEFAULT_RECORD)
+        .unwrap()
+        .expect("first use creates Default");
+    assert_eq!(default.name, tilo_environment::DEFAULT_NAME);
+    assert_eq!(
+        default
+            .runtime_image(tilo_environment::host_arch())
+            .unwrap(),
+        PackageId::from_bytes(RUNTIME)
+    );
+}
+
 /// The record: the default environment, one tool, one granted directory.
 fn fixture_environment(store: &Store, granted: &Path) {
     let records = Records::at(store.records_root());

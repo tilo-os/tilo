@@ -112,7 +112,9 @@ containerfile="$repo/os/Containerfile"
 # which says what app builds this OS can run, is a deliberate addition.
 # The ush service unit is installed through its component manifest so normal
 # component updates carry the same owned reexec path as the OS image.
-expected_contract=77a1e19e53552f4135d5fd9d2d00180d21dc0e23fe1739a962ca1779a674fd91
+# The public /usr/bin/ush symlink deliberately exposes the same confined
+# runtime already installed at /usr/libexec/tilo-ush.
+expected_contract=a192031eac51818062fa12249d9f2786af41c7395be29119ad246d7a86d8ddd4
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
