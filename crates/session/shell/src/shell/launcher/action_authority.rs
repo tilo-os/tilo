@@ -13,7 +13,7 @@ struct RoomPolicy {
     local_id: String,
     owner: Option<String>,
     capabilities: Vec<CapOverride>,
-    runtime: crate::shell::native_workspace_owner::NativeStateRuntime,
+    runtime: crate::shell::native_workspace_owner::NativeStateWitness,
     authority: crate::shell::native_workspace_owner::NativeAuthorityStorage,
 }
 
@@ -48,7 +48,7 @@ impl Export {
                             local_id: workspace.id.raw().to_string(),
                             owner: workspace.owner.clone(),
                             capabilities: workspace.capabilities.clone(),
-                            runtime: tree.native_runtime.clone(),
+                            runtime: tree.native_runtime.authority_witness(),
                             authority: tree.native_authority.clone(),
                         },
                     )
@@ -272,6 +272,42 @@ pub(crate) fn tick(now: Instant) {
 mod tests {
     use super::*;
     use collab_types::caps::{Principal, Verb};
+
+    #[test]
+    fn action_authority_export_releases_file_custody_and_revokes_dropped_runtime() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        tree.desktop.workspaces[0].set_owner("person-a");
+        tree.persist_path = Some(path.clone());
+        let tree = tree.shared();
+        let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
+        let binding = (room, "so.tilo.store".into(), "person-a".into());
+        // Keep the actual accepted export alive across the owner's shutdown,
+        // exactly as the publication cache and queued export do in production.
+        let published = Published {
+            rooms: Export::of(&tree.read()).0,
+            ..Published::default()
+        };
+        assert_eq!(
+            projection(&published, &binding).owner.as_deref(),
+            Some("person-a")
+        );
+        drop(owner);
+        drop(tree);
+        let mut restored = crate::shell::persist::load_tree_from(&path).unwrap();
+        restored.persist_path = Some(path);
+        let reopened = crate::shell::native_workspace_owner::open(restored.shared())
+            .expect("cached policy must not retain the state-file lease after shutdown");
+        let revoked = projection(&published, &binding);
+        assert_eq!(
+            revoked.owner, None,
+            "a reopened owner cannot revive the old witness"
+        );
+        assert!(revoked.capabilities.is_empty());
+        drop(reopened);
+    }
 
     #[test]
     fn action_authority_export_retains_only_selected_app_person_and_accepted_room_policy() {

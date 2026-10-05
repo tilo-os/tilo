@@ -18,6 +18,7 @@ use super::{
     state::{RoomId, WorkspaceId, WorkspaceTreeHandle},
 };
 pub use store::NativeStateRuntime;
+pub(crate) use store::NativeStateWitness;
 pub use tilo_joined_room::NativeAuthorityStorage;
 use tilo_joined_room::{Change, Store};
 pub(crate) use tilo_joined_room::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};

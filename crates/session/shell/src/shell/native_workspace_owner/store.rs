@@ -37,6 +37,20 @@ pub(crate) enum Publication {
 /// Clones of the desktop share the writer, so stale UI snapshots cannot erase floors.
 #[derive(Clone, Default)]
 pub struct NativeStateRuntime(pub(super) Arc<Runtime>);
+/// Policy observers must not retain the state writer or its exclusive file lease.
+#[derive(Clone)]
+pub(crate) struct NativeStateWitness(Weak<Runtime>);
+impl NativeStateWitness {
+    pub(crate) fn authority_is_current(
+        &self,
+        storage: &NativeAuthorityStorage,
+        room: crate::shell::state::RoomId,
+    ) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|runtime| NativeStateRuntime(runtime).authority_is_current(storage, room))
+    }
+}
 impl std::fmt::Debug for NativeStateRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("NativeStateRuntime")
@@ -94,6 +108,9 @@ pub(super) fn digest(storage: &NativeAuthorityStorage) -> io::Result<[u8; 32]> {
     Ok(*hash.0.finalize().as_bytes())
 }
 impl NativeStateRuntime {
+    pub(crate) fn authority_witness(&self) -> NativeStateWitness {
+        NativeStateWitness(Arc::downgrade(&self.0))
+    }
     pub(crate) fn owner(&self) -> Option<NativeWorkspaceOwner> {
         self.0
             .writer
@@ -317,19 +334,22 @@ mod action_authority_tests {
     #[test]
     fn action_authority_witness_rejects_fenced_uncertain_and_stale_native_writer() {
         let runtime = NativeStateRuntime::default();
+        let witness = runtime.authority_witness();
         let storage = NativeAuthorityStorage::default();
         let room =
             crate::shell::state::RoomId::parse("00000000-0000-4000-8000-000000000123").unwrap();
-        assert!(runtime.authority_is_current(&storage, room));
+        assert!(witness.authority_is_current(&storage, room));
         runtime.0.healthy.store(false, Ordering::Release);
-        assert!(!runtime.authority_is_current(&storage, room));
+        assert!(!witness.authority_is_current(&storage, room));
         runtime.0.healthy.store(true, Ordering::Release);
         runtime.0.uncertain_rooms.write().insert(room);
-        assert!(!runtime.authority_is_current(&storage, room));
+        assert!(!witness.authority_is_current(&storage, room));
         runtime.0.uncertain_rooms.write().remove(&room);
         runtime.0.writer.lock().expected = Some([0xff; 32]);
-        assert!(!runtime.authority_is_current(&storage, room));
+        assert!(!witness.authority_is_current(&storage, room));
         runtime.0.writer.lock().expected = Some(digest(&storage).unwrap());
-        assert!(runtime.authority_is_current(&storage, room));
+        assert!(witness.authority_is_current(&storage, room));
+        drop(runtime);
+        assert!(!witness.authority_is_current(&storage, room));
     }
 }
