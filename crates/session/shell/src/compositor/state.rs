@@ -13,8 +13,9 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Copy)]
 enum ForeignCommitCapture {
     NoBuffer,
+    Failed,
     Removed,
-    Shm,
+    Shm(u64),
     Dmabuf(u64),
 }
 
@@ -425,6 +426,11 @@ pub struct State {
     pub display_handle: DisplayHandle,
     /// `wl_compositor` + `wl_subcompositor` global state.
     pub compositor_state: CompositorState,
+    pub presentation_state: smithay::wayland::presentation::PresentationState,
+    /// Original timestamp of the currently dispatched trusted physical key.
+    pub physical_key_input_time_ns: Option<u64>,
+    pub presentation_feedback: crate::compositor::presentation::PresentationFeedback,
+
     /// `xdg_wm_base` global state — toplevels and popups.
     pub xdg_shell_state: XdgShellState,
     /// `xdg_activation_v1` token store. Client-minted tokens enter it only
@@ -1136,6 +1142,10 @@ impl State {
         workspace_tree: WorkspaceTreeHandle,
     ) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
+        let presentation_state = smithay::wayland::presentation::PresentationState::new::<Self>(
+            &display_handle,
+            u32::try_from(libc::CLOCK_MONOTONIC).unwrap_or(1),
+        );
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
         let xdg_dialog_state = XdgDialogState::new::<Self>(&display_handle);
@@ -1203,6 +1213,9 @@ impl State {
             loop_handle,
             display_handle,
             compositor_state,
+            presentation_state,
+            physical_key_input_time_ns: None,
+            presentation_feedback: crate::compositor::presentation::PresentationFeedback::default(),
             xdg_shell_state,
             xdg_activation_state,
             xdg_dialog_state,
@@ -2681,7 +2694,7 @@ impl State {
         }
     }
 
-    fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) {
+    fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) -> ForeignCommitCapture {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
             // SurfaceAttributes.current().buffer is intentionally aggregated
@@ -2700,12 +2713,15 @@ impl State {
                         .pop_front()
                 })
                 .unwrap_or(ForeignCommitCapture::NoBuffer);
-            if matches!(association, ForeignCommitCapture::NoBuffer) {
-                return;
+            if matches!(
+                association,
+                ForeignCommitCapture::NoBuffer | ForeignCommitCapture::Failed
+            ) {
+                return association;
             }
             if matches!(association, ForeignCommitCapture::Removed) {
                 store().clear_frame(surface_id);
-                return;
+                return association;
             }
             let mut attrs = states
                 .cached_state
@@ -2716,8 +2732,12 @@ impl State {
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm => CaptureOutcome::Queued,
-                        ForeignCommitCapture::NoBuffer | ForeignCommitCapture::Removed => return,
+                        ForeignCommitCapture::Shm(_) => CaptureOutcome::Queued,
+                        ForeignCommitCapture::NoBuffer
+                        | ForeignCommitCapture::Failed
+                        | ForeignCommitCapture::Removed => {
+                            return association;
+                        }
                     };
                     if let CaptureOutcome::Failed(reason) = outcome {
                         tracing::warn!(
@@ -2736,7 +2756,9 @@ impl State {
                     // Damage-only commit — keep the staged frame.
                 }
             }
-        });
+            drop(attrs);
+            association
+        })
     }
 
     /// The exact `commit` capture gate, kept named so output-owned surfaces
@@ -3781,6 +3803,61 @@ impl State {
         crate::compositor::foreign::store().set_children(root_id, children);
     }
 
+    fn capture_committed_foreign_pixels(&mut self, surface: &WlSurface, surface_id: u64) {
+        let foreign_root = foreign_root(surface);
+        self.note_presentation_commit(
+            surface,
+            surface_id,
+            self.should_capture_foreign_surface(surface_id) || foreign_root.is_some(),
+        );
+        if let Some(root) = foreign_root {
+            self.refresh_foreign_subsurface_tree(&root);
+        }
+        if !self.is_floating_toplevel(surface_id) {
+            Self::note_foreign_window_geometry(surface, surface_id);
+        }
+        let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
+            && wl_compositor::with_states(surface, |states| {
+                let mut attrs = states
+                    .cached_state
+                    .get::<wl_compositor::SurfaceAttributes>();
+                matches!(
+                    &attrs.current().buffer,
+                    Some(wl_compositor::BufferAssignment::NewBuffer(_))
+                )
+            });
+        if floating_has_new_buffer {
+            self.mark_floating_toplevel_presented(surface_id);
+        }
+    }
+
+    fn note_presentation_commit(&mut self, surface: &WlSurface, surface_id: u64, capture: bool) {
+        let association = if capture {
+            Self::capture_foreign_surface(surface, surface_id)
+        } else {
+            ForeignCommitCapture::Removed
+        };
+        let pixels = match association {
+            ForeignCommitCapture::Shm(generation) => Some(
+                crate::compositor::presentation::PixelCommit::Shm(generation),
+            ),
+            ForeignCommitCapture::Dmabuf(token) => Some(
+                crate::compositor::foreign::store()
+                    .capture_seq_for_token(surface_id, token)
+                    .map_or(
+                        crate::compositor::presentation::PixelCommit::Unavailable,
+                        crate::compositor::presentation::PixelCommit::Captured,
+                    ),
+            ),
+            ForeignCommitCapture::Removed | ForeignCommitCapture::Failed => {
+                Some(crate::compositor::presentation::PixelCommit::Unavailable)
+            }
+            ForeignCommitCapture::NoBuffer => None,
+        };
+        self.presentation_feedback
+            .committed(surface, surface_id, pixels);
+    }
+
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
         // `new_toplevel` registers the protocol surface before adopting it
@@ -3809,11 +3886,21 @@ impl State {
                 Some(wl_compositor::BufferAssignment::Removed) => {
                     return (ForeignCommitCapture::Removed, None);
                 }
-                None => return (ForeignCommitCapture::NoBuffer, None),
+                None => {
+                    // Damage without a freshly captured buffer can refer to
+                    // mutated pixels in an existing buffer. Do not certify the
+                    // older cached image as this commit's new content.
+                    let association = if attrs.pending().damage.is_empty() {
+                        ForeignCommitCapture::NoBuffer
+                    } else {
+                        ForeignCommitCapture::Failed
+                    };
+                    return (association, None);
+                }
             };
             drop(attrs);
             let Some(client) = surface.client() else {
-                return (ForeignCommitCapture::NoBuffer, None);
+                return (ForeignCommitCapture::Failed, None);
             };
             if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
                 let colorimetry = states
@@ -3831,19 +3918,21 @@ impl State {
                     // app commit (most visibly Chat).
                     return (ForeignCommitCapture::Dmabuf(token), Some(barrier));
                 }
-                return (ForeignCommitCapture::NoBuffer, None);
+                return (ForeignCommitCapture::Failed, None);
             }
             match crate::compositor::surface_readback::copy_shm_frame(&buffer) {
                 Ok(frame) => {
-                    if crate::compositor::foreign::store().prepare_shm_capture(surface_id, frame) {
-                        (ForeignCommitCapture::Shm, None)
+                    if let Some(generation) =
+                        crate::compositor::foreign::store().prepare_shm_capture(surface_id, frame)
+                    {
+                        (ForeignCommitCapture::Shm(generation), None)
                     } else {
-                        (ForeignCommitCapture::NoBuffer, None)
+                        (ForeignCommitCapture::Failed, None)
                     }
                 }
                 Err(error) => {
                     crate::compositor::foreign::store().note_failure(surface_id, error.to_string());
-                    (ForeignCommitCapture::NoBuffer, None)
+                    (ForeignCommitCapture::Failed, None)
                 }
             }
         });
@@ -3852,7 +3941,7 @@ impl State {
         }
         if matches!(
             association,
-            ForeignCommitCapture::Shm | ForeignCommitCapture::Dmabuf(_)
+            ForeignCommitCapture::Shm(_) | ForeignCommitCapture::Dmabuf(_)
         ) {
             // A typed key's answer: the window it went to drew again. Outside
             // `with_states`, whose surface mutex `foreign_root` takes too.
@@ -4209,29 +4298,7 @@ impl CompositorHandler for State {
                 || self.active_sessions.contains_key(&surface_id)
         };
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
-        let foreign_root = foreign_root(surface);
-        if self.should_capture_foreign_surface(surface_id) || foreign_root.is_some() {
-            Self::capture_foreign_surface(surface, surface_id);
-        }
-        if let Some(root) = foreign_root {
-            self.refresh_foreign_subsurface_tree(&root);
-        }
-        if !self.is_floating_toplevel(surface_id) {
-            Self::note_foreign_window_geometry(surface, surface_id);
-        }
-        let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
-            && wl_compositor::with_states(surface, |states| {
-                let mut attrs = states
-                    .cached_state
-                    .get::<wl_compositor::SurfaceAttributes>();
-                matches!(
-                    &attrs.current().buffer,
-                    Some(wl_compositor::BufferAssignment::NewBuffer(_))
-                )
-            });
-        if floating_has_new_buffer {
-            self.mark_floating_toplevel_presented(surface_id);
-        }
+        self.capture_committed_foreign_pixels(surface, surface_id);
         if !is_shared {
             return;
         }
@@ -4314,6 +4381,7 @@ impl CompositorHandler for State {
         let root = foreign_root(surface);
         self.drop_transients_for_surface(id);
         self.surface_handles.remove(&id);
+        self.presentation_feedback.destroyed(id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
         crate::compositor::foreign::store().forget(id);
@@ -7654,3 +7722,5 @@ mod keycap_layout_tests {
         assert_eq!(power.display(), "Ctrl+Alt+Delete");
     }
 }
+
+smithay::delegate_presentation!(State);
