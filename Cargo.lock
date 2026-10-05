@@ -5075,6 +5075,7 @@ dependencies = [
  "greetd_ipc",
  "tracing",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
