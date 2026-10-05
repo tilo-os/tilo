@@ -6,26 +6,46 @@
 //! typing in the same form, undoes a word at a time, and shows a restore or
 //! an agent's edit as it lands.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use ui::framework::{Dispatcher, TextControl};
 use ui::tilo_resource::PlainText;
-use ui::widget::{Column, Density, Field, Form, FormControl, FormSection, TextInput, Widget};
+
+use ui::icons::Icon;
+use ui::widget::{
+    Autocomplete, Column, Density, Field, Form, FormControl, FormSection, Suggestion, TextInput,
+    Widget,
+};
 
 use crate::doc::{CreateDoc, CreateField};
 
-/// One draft field: a [`TextInput`] over the draft's text of its field.
+/// The installed images' references, which the image field suggests. The
+/// app keeps it current as the engine changes.
+pub(crate) type InstalledImages = Rc<RefCell<Vec<String>>>;
+
+/// One draft field over the draft's text of its field; a field can suggest
+/// what to type (the image field offers the installed images).
 pub(crate) struct DraftInput {
     field: CreateField,
-    text: TextControl<TextInput>,
+    text: TextControl<Autocomplete>,
 }
 
 impl DraftInput {
-    fn new(field: CreateField, input: TextInput) -> Self {
-        let input = input
-            .with_id(&format!("container_create_{}", field.key()))
-            .with_placeholder(field.placeholder());
+    fn new(field: CreateField, input: TextInput, images: &InstalledImages) -> Self {
+        let kind = input.kind();
+        let input = input.with_placeholder(field.placeholder());
+        let mut control =
+            Autocomplete::with_input(input).with_id(&format!("container_create_{}", field.key()));
+        // The field keeps what its text is; suggesting does not make it a
+        // search.
+        control.input_mut().set_kind(kind);
+        if field == CreateField::Image {
+            let images = Rc::clone(images);
+            control.set_suggester(move |typed| suggest_images(&images.borrow(), typed));
+        }
         Self {
             field,
-            text: TextControl::view_only(input, move |doc| CreateDoc::field_obj(doc, field)),
+            text: TextControl::view_only(control, move |doc| CreateDoc::field_obj(doc, field)),
         }
     }
 
@@ -34,7 +54,7 @@ impl DraftInput {
     }
 
     pub(crate) fn input_mut(&mut self) -> &mut TextInput {
-        self.text.control_mut()
+        self.text.control_mut().input_mut()
     }
 
     /// Edit the draft through `dispatcher` from now on.
@@ -45,7 +65,7 @@ impl DraftInput {
 
 impl FormControl for DraftInput {
     fn with_form_accessible_name(mut self, name: &str) -> Self {
-        let control = self.text.control_mut();
+        let control = self.input_mut();
         let named = std::mem::replace(control, TextInput::local()).with_accessible_name(name);
         *control = named;
         self
@@ -53,13 +73,13 @@ impl FormControl for DraftInput {
 }
 
 impl ui::widget::Decorator for DraftInput {
-    type Inner = TextControl<TextInput>;
+    type Inner = TextControl<Autocomplete>;
 
-    fn inner(&self) -> &TextControl<TextInput> {
+    fn inner(&self) -> &TextControl<Autocomplete> {
         &self.text
     }
 
-    fn inner_mut(&mut self) -> &mut TextControl<TextInput> {
+    fn inner_mut(&mut self) -> &mut TextControl<Autocomplete> {
         &mut self.text
     }
 
@@ -83,6 +103,31 @@ impl ui::widget::Decorator for DraftInput {
         ui::widget::decorator::register_node(node_map, node, self);
         node
     }
+}
+
+/// The references of `engine`'s images that a container can be created
+/// from (an untagged image has none).
+pub(crate) fn image_references(engine: &crate::model::Engine) -> Vec<String> {
+    engine
+        .images
+        .iter()
+        .filter(|image| image.repository != "<none>")
+        .map(crate::model::Image::reference)
+        .collect()
+}
+
+/// The installed images whose reference holds what was typed, in the
+/// engine's order; nothing to suggest once the field names one exactly.
+fn suggest_images(images: &[String], typed: &str) -> Vec<Suggestion> {
+    let typed = typed.trim().to_lowercase();
+    if images.iter().any(|image| image.to_lowercase() == typed) {
+        return Vec::new();
+    }
+    images
+        .iter()
+        .filter(|image| image.to_lowercase().contains(&typed))
+        .map(|image| Suggestion::new(image.clone()).with_icon(Icon::Layers))
+        .collect()
 }
 
 /// What a field is called and the one line that says how to fill it.
@@ -113,11 +158,11 @@ pub(crate) const ORDER: [CreateField; 6] = [
 /// The form, with a fresh input per field from `make_input`. It is a
 /// compact form: the labels stand beside their fields where the sheet has
 /// the room, so the whole draft fits a small window.
-pub(crate) fn form(make_input: fn() -> TextInput) -> Column {
+pub(crate) fn form(make_input: fn() -> TextInput, images: &InstalledImages) -> Column {
     let mut section = FormSection::untitled();
     for field in ORDER {
         let (label, help) = copy(field);
-        let mut row = Field::new(label, DraftInput::new(field, make_input()));
+        let mut row = Field::new(label, DraftInput::new(field, make_input(), images));
         if let Some(help) = help {
             row = row.with_help(help);
         }

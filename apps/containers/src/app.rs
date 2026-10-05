@@ -297,6 +297,8 @@ pub struct ContainersApp {
     /// The new-container form. It is retained while closed so its fields
     /// keep their caret and binding.
     create: ModalDialog<Column>,
+    /// What the form's image field suggests: the engine's images.
+    installed_images: crate::create_form::InstalledImages,
     pub(crate) create_open: bool,
     pub(crate) confirm: Option<Confirm>,
     confirm_dialog: Option<ModalDialog<Text>>,
@@ -373,12 +375,16 @@ impl ContainersApp {
     fn with_engine(engine: Engine, make_input: fn() -> TextInput) -> Self {
         let search_index = crate::search_provider::ContainerSearchIndex::new(&engine);
         let intents = Intents::default();
-        let create = Self::create_dialog(&intents, make_input);
+        let installed_images = crate::create_form::InstalledImages::new(
+            crate::create_form::image_references(&engine).into(),
+        );
+        let create = Self::create_dialog(&intents, make_input, &installed_images);
         let parts = view::Parts {
             model: ui::LocalState::new(view::Model::default()),
             pane: ui::LocalState::new(NavPane::Overview),
             intents: intents.clone(),
             offsets: view::Offsets::default(),
+            sort: ui::LocalState::new(None),
         };
         let window = view::window(&parts);
         Self {
@@ -391,6 +397,7 @@ impl ContainersApp {
             published: None,
             intents,
             create,
+            installed_images,
             create_open: false,
             confirm: None,
             confirm_dialog: None,
@@ -417,17 +424,24 @@ impl ContainersApp {
         }
     }
 
-    fn create_dialog(intents: &Intents, make_input: fn() -> TextInput) -> ModalDialog<Column> {
+    fn create_dialog(
+        intents: &Intents,
+        make_input: fn() -> TextInput,
+        images: &crate::create_form::InstalledImages,
+    ) -> ModalDialog<Column> {
         let submit = intents.clone();
         let cancel = intents.clone();
         let dismiss = intents.clone();
-        ModalDialog::new("New container", crate::create_form::form(make_input))
-            .with_test_id("containers-create-dialog")
-            .primary_action("Create container", move || {
-                submit.push(Intent::SubmitCreate);
-            })
-            .secondary_action("Cancel", move || cancel.push(Intent::CloseCreate))
-            .on_dismiss(move || dismiss.push(Intent::CloseCreate))
+        ModalDialog::new(
+            "New container",
+            crate::create_form::form(make_input, images),
+        )
+        .with_test_id("containers-create-dialog")
+        .primary_action("Create container", move || {
+            submit.push(Intent::SubmitCreate);
+        })
+        .secondary_action("Cancel", move || cancel.push(Intent::CloseCreate))
+        .on_dismiss(move || dismiss.push(Intent::CloseCreate))
     }
 
     /// Talk to rootless podman: probe it now, then keep the snapshot fresh
@@ -529,6 +543,7 @@ impl ContainersApp {
     pub(crate) fn engine_changed(&mut self) {
         self.engine_rev = self.engine_rev.wrapping_add(1);
         self.search_index.sync(&self.engine);
+        *self.installed_images.borrow_mut() = crate::create_form::image_references(&self.engine);
     }
 
     pub(crate) fn show_toast(&mut self, message: impl Into<String>, error: bool) {

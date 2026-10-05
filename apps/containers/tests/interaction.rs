@@ -175,6 +175,20 @@ fn create_form_edits_the_draft() {
         );
     }
 
+    // --- phase: the_image_field_suggests_installed_images ---
+    {
+        let mut app = hosted();
+        app.harness().key("n");
+        app.harness().type_text("redis");
+        app.harness().key("ArrowDown");
+        app.harness().key("Enter");
+        assert_eq!(
+            draft(&app, CreateField::Image),
+            "docker.io/library/redis:7-alpine",
+            "choosing an installed image fills the draft with its reference"
+        );
+    }
+
     // --- phase: tab_follows_the_form_order ---
     {
         let mut d = offline();
@@ -378,6 +392,24 @@ fn keyboard_pointer_and_semantic_navigation() {
         assert_eq!(app(&mut d).tab(), DetailTab::Stats);
         assert!(labels(&d).iter().any(|label| label == "Memory"));
     }
+}
+
+/// The bundled sample says that it is one; only an engine that answered
+/// reads as connected.
+#[test]
+fn the_sample_never_claims_a_connection() {
+    let d = offline();
+    let labels = labels(&d);
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Not connected to Podman"),
+        "{labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|label| label == "Connected"),
+        "{labels:?}"
+    );
 }
 
 #[test]

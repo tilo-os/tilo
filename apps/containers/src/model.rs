@@ -403,7 +403,7 @@ pub fn sample_engine() -> Engine {
         images: sample_images(),
         volumes: sample_volumes(),
         distroboxes: sample_distroboxes(),
-        connection: "Podman 5.1.1, rootless".into(),
+        connection: "Not connected to Podman".into(),
         live: false,
     }
 }

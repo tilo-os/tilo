@@ -3654,7 +3654,23 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 row = match row_state {
                     Some(TableRowState::Loading) => row.with_name("Loading"),
                     Some(TableRowState::Error(message)) => row.with_name(message),
-                    _ => row,
+                    // A ready row is named by its first column that has a
+                    // value (its row header), as a person reads the table.
+                    Some(TableRowState::Ready(data)) => {
+                        match self
+                            .columns
+                            .iter()
+                            .enumerate()
+                            .filter(|(ci, _)| !self.hidden.get(*ci).copied().unwrap_or(false))
+                            .find_map(|(_, col)| col.accessible_value.as_ref())
+                            .map(|value| value(data))
+                            .filter(|name| !name.is_empty())
+                        {
+                            Some(name) => row.with_name(name),
+                            None => row,
+                        }
+                    }
+                    None => row,
                 };
                 if let Some(bounds) = row_bounds {
                     row = row.with_bounds(bounds);
@@ -3693,8 +3709,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
     /// behaviour here.
     ///
     /// Rows carry no explicit key, so the path element is the row's display
-    /// index (its ordinal among the table's synthetic children), which is the
-    /// same index `on_row_click` / `on_activate` report.
+    /// index (its ordinal among the table's synthetic children); the
+    /// callbacks it reaches name the host's row, as `on_row_click` does.
     fn perform_action_at(
         &mut self,
         action: &crate::a11y::Action,

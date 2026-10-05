@@ -12,7 +12,8 @@
 //! completions recompute whenever the typed text changes.
 //!
 //! Typing opens the dropdown; Down/Up move the highlight; Enter accepts (the
-//! highlighted suggestion, or the typed text); Tab completes to the
+//! highlighted suggestion, or the typed text, which Enter then goes on to
+//! the host with, so a form's default action runs); Tab completes to the
 //! highlight without accepting; Esc or an outside click cancels — the
 //! outside click is not consumed, so it still reaches the host. The
 //! outcome is polled once via [`take_outcome`](Autocomplete::take_outcome),
@@ -671,6 +672,9 @@ pub struct Autocomplete {
     rect: Rect,
     last_pointer: Point,
     outcome: AutocompleteOutcome,
+    /// The person changed the text, typing or taking a suggestion, since
+    /// [`Self::take_edited`] last ran.
+    edited: bool,
 }
 
 impl Autocomplete {
@@ -691,6 +695,7 @@ impl Autocomplete {
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             outcome: AutocompleteOutcome::None,
+            edited: false,
         }
     }
 
@@ -790,6 +795,22 @@ impl Autocomplete {
         self.input.value()
     }
 
+    /// The field itself, for a host that binds its text (a shared draft).
+    pub fn input(&self) -> &TextInput {
+        &self.input
+    }
+
+    pub fn input_mut(&mut self) -> &mut TextInput {
+        &mut self.input
+    }
+
+    /// The field's text after the person's edits since the last call,
+    /// typed or chosen from the suggestions, if any.
+    pub fn take_edited(&mut self) -> Option<String> {
+        let typed = self.input.take_dirty().is_some();
+        (std::mem::take(&mut self.edited) || typed).then(|| self.input.value().to_owned())
+    }
+
     /// Replace the field text (does not open the dropdown or recompute);
     /// the caret waits at its end.
     pub fn set_text(&mut self, s: &str) {
@@ -875,6 +896,7 @@ impl Autocomplete {
     /// Accept `value`: emit the outcome, load it into the field, close.
     fn accept(&mut self, value: String) {
         self.input.set_text(&value);
+        self.edited = true;
         self.close();
         self.outcome = AutocompleteOutcome::Accepted(value);
     }
@@ -900,6 +922,7 @@ impl Autocomplete {
         {
             let value = s.value.clone();
             self.input.set_text(&value);
+            self.edited = true;
             self.recompute();
             self.open = !self.list.suggestions().is_empty();
             self.list.set_highlight(None);
@@ -962,12 +985,17 @@ impl Autocomplete {
                 self.move_highlight(false);
                 *ctx.handled = true;
             }
+            // Enter takes the highlighted suggestion. Without one it
+            // accepts the typed text and goes on to the host, so a form's
+            // or dialog's default action still runs.
             Key::Named(NamedKey::Enter) => {
-                let value = self
-                    .highlighted()
-                    .map_or_else(|| self.input.value().to_string(), |s| s.value.clone());
-                self.accept(value);
-                *ctx.handled = true;
+                if let Some(value) = self.highlighted().map(|s| s.value.clone()) {
+                    self.accept(value);
+                    *ctx.handled = true;
+                } else {
+                    let value = self.input.value().to_string();
+                    self.accept(value);
+                }
             }
             Key::Named(NamedKey::Tab) if !self.list.suggestions().is_empty() => {
                 self.complete_to_highlight();
@@ -981,6 +1009,7 @@ impl Autocomplete {
                 // Forward to the field, then recompute if the text changed.
                 self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
+                    self.edited = true;
                     self.recompute();
                     self.open = !self.list.suggestions().is_empty();
                     self.list.set_highlight(None);
@@ -992,6 +1021,10 @@ impl Autocomplete {
 
 impl Widget for Autocomplete {
     crate::provides!(dyn crate::widget::controls::ActionControls);
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.input.sync(state, path);
+    }
 
     fn build_layout(
         &mut self,
@@ -1138,6 +1171,7 @@ impl Widget for Autocomplete {
             _ => {
                 self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
+                    self.edited = true;
                     self.recompute();
                     self.open = !self.list.suggestions().is_empty();
                     self.list.set_highlight(None);
@@ -1367,7 +1401,10 @@ mod tests {
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
             drive(&mut ac, &char_key("b"));
-            drive(&mut ac, &named(NamedKey::Enter));
+            assert!(
+                !drive(&mut ac, &named(NamedKey::Enter)),
+                "Enter goes on to the form's default action"
+            );
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("b".into()));
         }
 
