@@ -213,7 +213,7 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
         // Two thirds of the bar's width leaves File and Format in place with
         // the rest in More, whatever the commands measure at.
         let width = whole * 2.0 / 3.0 + 2.0 * probe.metrics.s3;
-        let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(width, 600.0, 1.0);
+        let (mut app, doc, mut tr, theme) = measured_app_with_doc(width, 600.0, 1.0);
         app.sync(&doc, &automerge::ROOT);
         paint_frame(&mut app, &mut tr, &theme);
         assert!(
@@ -246,7 +246,7 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
     {
         let (fits, _doc, _tr, _theme) = measured_app_with_doc(800.0, 600.0, 1.0);
         assert!(!fits.toolbar.has_overflow(), "the bar fits 800 px at 1x");
-        let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(390.0, 844.0, 1.0);
+        let (mut app, doc, mut tr, theme) = measured_app_with_doc(390.0, 844.0, 1.0);
         app.sync(&doc, &automerge::ROOT);
         paint_frame(&mut app, &mut tr, &theme);
         app.toolbar.open_overflow();
