@@ -781,13 +781,6 @@ impl DisksApp {
             "/dev/{leaf} is no longer present; rescan storage and try again"
         ))
     }
-
-    /// The selected partition, if any.
-    #[cfg(test)]
-    fn part(&self) -> Option<&crate::model::Partition> {
-        let drive = self.drive()?;
-        self.part_index().and_then(|i| drive.partitions.get(i))
-    }
 }
 
 fn found_message(n: usize) -> String {

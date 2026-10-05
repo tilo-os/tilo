@@ -20,8 +20,6 @@ use ui::{
 
 #[derive(Clone, Debug)]
 enum Action {
-    Open,
-    Addresses,
     FillAddress,
     Close,
     Refresh,
@@ -186,10 +184,6 @@ impl Credentials {
         self.origin = crate::site_controls::origin(uri).filter(|s| s.starts_with("https://"));
         requests
     }
-    fn open_addresses(&mut self, supported: bool) -> Vec<CredentialRequest> {
-        self.address_mode = true;
-        self.open(supported)
-    }
     fn open(&mut self, supported: bool) -> Vec<CredentialRequest> {
         let mut requests = self.close();
         self.open = true;
@@ -352,11 +346,6 @@ impl Credentials {
             self.action.set(None);
             dirty = true;
             let requests = match action {
-                Action::Open => {
-                    self.address_mode = false;
-                    self.open(engine.supports_native_filtering())
-                }
-                Action::Addresses => self.open_addresses(engine.supports_native_filtering()),
                 Action::Refresh => self.open(engine.supports_native_filtering()),
                 other => self.act(other),
             };
@@ -392,22 +381,6 @@ impl Credentials {
     fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();
         move || pending.set(Some(action.clone()))
-    }
-    /// A maker of the closure that opens the passwords panel, or the address
-    /// autofill panel when `addresses` is set. The settings page asks it for
-    /// a fresh closure each time it composes.
-    pub fn opener(&self, addresses: bool) -> impl Fn() -> Box<dyn FnMut()> + 'static {
-        let pending = self.action.clone();
-        move || {
-            let pending = pending.clone();
-            Box::new(move || {
-                pending.set(Some(if addresses {
-                    Action::Addresses
-                } else {
-                    Action::Open
-                }));
-            })
-        }
     }
     /// One choice among a few (a form, an account): the chosen row is lifted.
     fn choice(
@@ -714,7 +687,8 @@ mod tests {
             let mut model = Credentials::new(false);
             model.attach_address_book(book);
             model.navigation("https://example.com");
-            let status = model.open_addresses(true).remove(0);
+            model.address_mode = true;
+            let status = model.open(true).remove(0);
             let requests = model.apply(reply(&status, "1"));
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].action, CredentialAction::DiscoverAddresses);

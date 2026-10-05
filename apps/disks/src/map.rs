@@ -23,7 +23,7 @@ use ui::tokens::colors::Colors;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::vello::peniko::Color;
-use ui::widget::{AppModel, ChipFace, ChipLead, EventCtx, ModelPath, TaffyTreeExt, Widget};
+use ui::widget::{ChipFace, ChipLead, EventCtx, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::window::CursorIcon;
 

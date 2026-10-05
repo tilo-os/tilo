@@ -26,7 +26,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
-use automerge::ObjId;
 use iroh_base::{EndpointId, SecretKey};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
@@ -2229,11 +2228,6 @@ impl RemoteApp {
         let Some(connection) = self.workspace.get(id) else {
             return Vec::new();
         };
-        let can_send_text = matches!(
-            &self.session.borrow().live,
-            Some(LiveSession::Ssh(session))
-                if session.status() == SessionStatus::Connected
-        );
         let host_key_issue = self.ssh_host_key_issue(id);
         vec![crate::actions::session_row(
             connection,

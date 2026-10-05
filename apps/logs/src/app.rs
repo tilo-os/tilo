@@ -554,11 +554,6 @@ impl LogsApp {
 
     /// Adopt collaborative view prefs; never clear the local journal cache.
 
-    #[cfg(test)]
-    pub(crate) fn entry_count(&self) -> usize {
-        self.entries.len()
-    }
-
     /// Apply a document action to the widget caches without writing the doc.
 
     /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]

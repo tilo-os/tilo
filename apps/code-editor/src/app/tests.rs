@@ -862,7 +862,7 @@ fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
 /// editor's highlight layer, and stepping to a match selects it.
 fn find_highlights_and_navigates_matches() {
     let mut sample = synced_sample();
-    sample.with_doc(|app, doc| {
+    sample.with_doc(|app, _doc| {
         app.open_find();
         app.find.set_query("primes");
         app.refresh_find();

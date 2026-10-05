@@ -1845,7 +1845,9 @@ fn website_renders_and_opens_through_the_link_widget() {
             .harness_mut()
             .a11y_nodes()
             .into_iter()
-            .find(|(_, node)| node.label() == Some("Open Website") && node.role() == Role::Button)
+            .find(|(_, node)| {
+                node.label() == Some("Open Website") && node.role() == ui::accesskit::Role::Button
+            })
             .expect("the shared property offers its website action");
         assert!(
             button.bounds().is_some_and(|bounds| bounds.width() > 0.0),
@@ -1883,7 +1885,9 @@ fn website_renders_and_opens_through_the_link_widget() {
             .harness_mut()
             .a11y_nodes()
             .into_iter()
-            .find(|(_, node)| node.label() == Some("Open Website") && node.role() == Role::Button)
+            .find(|(_, node)| {
+                node.label() == Some("Open Website") && node.role() == ui::accesskit::Role::Button
+            })
             .expect("website action");
         let bounds = action.bounds().expect("published website action geometry");
         let rect = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
