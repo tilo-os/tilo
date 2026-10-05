@@ -212,8 +212,8 @@ impl ResourceApp for ImagerShell {
     const TITLE: &'static str = "Disk Imager";
     const ICON: Option<&'static str> = Some("imager");
     const FLAGS: &'static [&'static str] = &["--setup", "--import-folders"];
-    // Windows has no workspace runtime for the imager to take part in.
-    const ATTACHES_RUNTIME: bool = !cfg!(target_os = "windows");
+    // Only hosts with a local workspace runtime can attach the imager.
+    const ATTACHES_RUNTIME: bool = ui::collaboration::SESSION_RUNTIME_SUPPORTED;
 
     /// The privileged and staging helpers the imager's binary also is, and
     /// its packaging probes: each is started with its own command line and

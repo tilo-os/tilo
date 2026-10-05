@@ -257,6 +257,20 @@ impl ContentStore {
         Self::new(MemoryBackend::default())
     }
 
+    /// The device content store, when the launcher handed this process its capability.
+    /// Every returned store shares the one connection. Returns `None` on hosts without
+    /// device transport or when the `device` feature is disabled; no storage fallback is opened.
+    pub fn device() -> Option<Self> {
+        #[cfg(all(unix, feature = "device"))]
+        {
+            device::store()
+        }
+        #[cfg(not(all(unix, feature = "device")))]
+        {
+            None
+        }
+    }
+
     /// Content in the directory `root`, created on first write.
     #[cfg(feature = "dir")]
     pub fn in_dir(root: impl Into<PathBuf>) -> Self {
@@ -272,7 +286,6 @@ impl ContentStore {
     /// memory.
     #[cfg(feature = "dir")]
     pub fn for_app() -> Self {
-        #[cfg(all(unix, feature = "device"))]
         if let Some(device) = Self::device() {
             return device;
         }
@@ -548,3 +561,11 @@ impl<R: Read> Read for Verifying<R> {
 
 #[cfg(all(test, feature = "dir"))]
 mod tests;
+
+#[cfg(all(test, not(all(unix, feature = "device"))))]
+mod device_api_tests {
+    #[test]
+    fn device_store_is_unavailable_without_device_transport() {
+        assert!(super::ContentStore::device().is_none());
+    }
+}
