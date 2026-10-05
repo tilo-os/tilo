@@ -352,6 +352,39 @@ fn repositories_json_from(app: &std::path::Path) -> Result<String, Error> {
         .map_err(|_| Error::failed("app repo list printed invalid UTF-8".to_owned()))
 }
 
+const MAX_REGISTRY_CATALOGUE_BYTES: usize = 4 * 1024 * 1024;
+
+fn registry_catalogue(registry: &str) -> Result<String, Error> {
+    let configured = app_cli::config::load_registries();
+    registry_catalogue_from(&configured, registry, app_cli::client::fetch_entries)
+}
+
+fn registry_catalogue_from(
+    configured: &app_cli::config::RegistriesFile,
+    name: &str,
+    fetch: impl FnOnce(
+        &app_cli::config::RegistryConfig,
+    )
+        -> Result<Vec<app_cli::client::VerifiedEntry>, app_cli::client::RegistryError>,
+) -> Result<String, Error> {
+    if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+        return Err(Error::failed("invalid repository name".into()));
+    }
+    let registry = configured
+        .registries
+        .iter()
+        .find(|registry| registry.name == name && registry.enabled)
+        .ok_or_else(|| Error::failed("repository is not configured and enabled".into()))?;
+    let entries = fetch(registry).map_err(failed)?;
+    let json = serde_json::to_string(&entries).map_err(failed)?;
+    if json.len() > MAX_REGISTRY_CATALOGUE_BYTES {
+        return Err(Error::failed(
+            "verified repository catalogue exceeds the response limit".into(),
+        ));
+    }
+    Ok(json)
+}
+
 fn wayland_socket() -> Option<std::path::PathBuf> {
     let display = std::env::var_os("WAYLAND_DISPLAY")?;
     let display = std::path::PathBuf::from(display);
@@ -862,6 +895,30 @@ impl app_host::Server for AppHostServer {
         clippy::manual_async_fn,
         reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
     )]
+    fn registry_catalogue(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::RegistryCatalogueParams,
+        mut results: app_host::RegistryCatalogueResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        async move {
+            let registry = params
+                .get()
+                .map_err(failed)?
+                .get_registry()
+                .map_err(failed)?
+                .to_string()
+                .map_err(failed)?;
+            let json = tokio::task::spawn_blocking(move || registry_catalogue(&registry))
+                .await
+                .map_err(failed)??;
+            results.get().set_entries(&json);
+            Ok(())
+        }
+    }
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    )]
     fn flatpak_catalogue(
         self: capnp::capability::Rc<Self>,
         params: app_host::FlatpakCatalogueParams,
@@ -937,6 +994,65 @@ impl app_host::Server for AppHostServer {
 #[cfg(test)]
 mod command_tests {
     use super::{repositories_json_from, safe_host_diagnostic};
+
+    fn catalogue_configuration() -> app_cli::config::RegistriesFile {
+        app_cli::config::RegistriesFile {
+            registries: vec![app_cli::config::RegistryConfig {
+                name: "Configured source".into(),
+                base_url: "https://registry.example.test/".into(),
+                owner_pubkey_hex: "17".repeat(32),
+                enabled: true,
+                channel: tilo_app_package::version::ReleaseChannel::Stable,
+            }],
+        }
+    }
+
+    #[test]
+    fn registry_catalogue_restricts_fetch_to_enabled_host_configuration() {
+        let mut configured = catalogue_configuration();
+        let json = super::registry_catalogue_from(&configured, "Configured source", |registry| {
+            assert_eq!(registry.base_url, "https://registry.example.test/");
+            assert_eq!(registry.owner_pubkey_hex, "17".repeat(32));
+            Ok(Vec::new())
+        })
+        .unwrap();
+        assert_eq!(json, "[]");
+        for name in ["", "https://attacker.example.test/", "Configured source\n"] {
+            assert!(
+                super::registry_catalogue_from(&configured, name, |_| panic!("unconfigured fetch"))
+                    .is_err()
+            );
+        }
+        configured.registries[0].enabled = false;
+        assert!(
+            super::registry_catalogue_from(&configured, "Configured source", |_| panic!(
+                "disabled fetch"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn registry_catalogue_preserves_checkpoint_failure_and_refuses_oversized_metadata() {
+        let configured = catalogue_configuration();
+        let error = super::registry_catalogue_from(&configured, "Configured source", |_| {
+            Err(app_cli::client::RegistryError::Rollback)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("rolled back or replayed"));
+        let entry: app_cli::client::VerifiedEntry = serde_json::from_value(serde_json::json!({
+            "entry": {
+                "package_id": "so.tilo.catalogue-test", "name": {"en": "Catalogue test"}, "description": {"en": "x".repeat(super::MAX_REGISTRY_CATALOGUE_BYTES)},
+                "tagline": {"en": ""}, "images": {}, "supported_languages": [], "categories": [],
+                "source_url": null, "homepage": null, "publisher_pubkey_hex": "17".repeat(32),
+                "versions": [], "updated_at_unix": 0, "signature_hex": ""
+            }, "trust": "PublisherSigned", "version_index": null
+        })).unwrap();
+        let error =
+            super::registry_catalogue_from(&configured, "Configured source", |_| Ok(vec![entry]))
+                .unwrap_err();
+        assert!(error.to_string().contains("exceeds the response limit"));
+    }
 
     #[test]
     fn catalogue_install_requires_the_exact_selected_signed_identity() {

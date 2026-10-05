@@ -9,6 +9,9 @@ Type=notify
 # read and write; the daemon keeps no store of its own. Packages the daemon
 # once kept in its own state directory move into it at startup.
 ExecStartPre=+/usr/bin/mkdir -p %h/.local/share/tilo-apps
+# Only the broker-owned checkpoint and account Flatpak state are writable.
+# Repository configuration and the rest of this person's home remain read-only.
+ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
 ExecStart=/usr/libexec/tilo-app-host --socket %t/tilo/services/app-host.sock --store %h/.local/share/tilo-apps
 Restart=on-failure
 RestartSec=1
@@ -31,4 +34,4 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 StateDirectory=tilo-app-host
 StateDirectoryMode=0700
-ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps
+ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
