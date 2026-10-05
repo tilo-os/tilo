@@ -269,10 +269,12 @@ pub fn inspect_stored_bytes(
         version: version.version.clone(),
         reason: error.to_string(),
     };
-    if !missing.is_empty() {
+    if !missing.is_empty() && fetch.is_some() {
         // The thin form lands first: pruning keeps the blobs of every thin
         // package a pending version names, so blobs arriving below survive
-        // a concurrent prune.
+        // a concurrent prune. Only collection fetches; publication inspects
+        // what collection already stored, while holding the registry lock
+        // that storing takes.
         storage.save_payload_blobs(bytes).map_err(storage_error)?;
     }
     let mut total = payload_total(&lengths);
