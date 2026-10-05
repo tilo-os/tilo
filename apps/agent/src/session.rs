@@ -4165,10 +4165,6 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("collab.sock");
-            let _broker = peer::spawn_with_agent_actions(
-                &socket,
-                &[(PHOTOS, PRODUCE), (PHOTOS, "view"), (WRITER, "place-image")],
-            );
             let mut photo = automerge::AutoCommit::new();
             let source = photos::pixels::encode_png(&photos::shots_pattern(3, 2)).unwrap();
             let source_hash = content.put(&source).unwrap();
@@ -4181,6 +4177,16 @@ mod tests {
                 &mut photo,
             )
             .unwrap();
+            // Exactly the open photograph's production and view, and the
+            // document's placement: grants name the resource they are on.
+            let _broker = peer::spawn_with_agent_actions(
+                &socket,
+                &[
+                    (PHOTOS, image_id.as_str(), PRODUCE),
+                    (PHOTOS, image_id.as_str(), "view"),
+                    (WRITER, peer::WP_DOCUMENT, "place-image"),
+                ],
+            );
             let mut document = automerge::AutoCommit::new();
             let model = tilo_doc::model::init(&mut document, &automerge::ROOT);
             let mut ids = tilo_doc::model::seeded_id_gen(&document, &model);
