@@ -1,0 +1,21 @@
+[package]
+name = "tilo-presentation"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Native presentation feedback, input provenance and clock observations behind a portable host boundary."
+
+[dependencies]
+winit.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+
+[lints]
+workspace = true

@@ -36,16 +36,7 @@ impl Trace {
             WindowEvent::Ime(Ime::Commit(_)) => "ime_commit",
             _ => return None,
         };
-        #[cfg(target_os = "linux")]
-        let stamp = match event {
-            WindowEvent::KeyboardInput { event, .. } => {
-                use winit::platform::wayland::KeyEventExtWayland;
-                event.wayland_serial_time()
-            }
-            _ => None,
-        };
-        #[cfg(not(target_os = "linux"))]
-        let stamp: Option<(u32, u32)> = None;
+        let stamp = tilo_presentation::key_stamp(event);
         self.next_id = self.next_id.checked_add(1)?;
         let id = self.next_id;
         self.pending.push(id);

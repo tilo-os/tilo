@@ -11,12 +11,8 @@ use std::sync::{
 };
 
 pub(crate) struct Observer {
-    #[cfg(target_os = "linux")]
     worker_id: u64,
-    #[cfg(target_os = "linux")]
     window: Option<std::sync::Arc<winit::window::Window>>,
-    #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
-    worker_id: u64,
     #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
     sender: mpsc::SyncSender<Sample>,
 }
@@ -30,32 +26,8 @@ struct Sample {
 }
 
 impl Observer {
-    #[cfg_attr(
-        not(any(
-            target_os = "linux",
-            all(target_os = "macos", feature = "presentation-feedback")
-        )),
-        allow(
-            clippy::unused_self,
-            reason = "the enabled backend reads the observer worker identity"
-        )
-    )]
     fn worker_id(&self) -> Option<u64> {
-        #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
-        {
-            Some(self.worker_id)
-        }
-        #[cfg(target_os = "linux")]
-        {
-            Some(self.worker_id)
-        }
-        #[cfg(not(any(
-            target_os = "linux",
-            all(target_os = "macos", feature = "presentation-feedback")
-        )))]
-        {
-            None
-        }
+        Some(self.worker_id)
     }
 
     /// Emitted only under the native timing gate. The caller brackets complete
@@ -173,37 +145,40 @@ impl Observer {
                 eprintln!("tilo-display-error {error}");
                 return None;
             }
-            Some(Self { worker_id, sender })
-        }
-        #[cfg(target_os = "linux")]
-        {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
             Some(Self {
-                worker_id: NEXT_WORKER.fetch_add(1, Ordering::Relaxed),
+                worker_id,
+                sender,
                 window: _window,
             })
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            all(target_os = "macos", feature = "presentation-feedback")
-        )))]
+        #[cfg(not(all(target_os = "macos", feature = "presentation-feedback")))]
         {
+            if tilo_presentation::supported() {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
+                return Some(Self {
+                    worker_id: NEXT_WORKER.fetch_add(1, Ordering::Relaxed),
+                    window: _window,
+                });
+            }
             eprintln!(
-                "tilo-display-error presentation feedback requires macOS and the presentation-feedback feature"
+                "tilo-display-error presentation feedback requires a supported native backend"
             );
             None
         }
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn present_wayland(
         &self,
         worker_frame_ix: u64,
         cpu_frame_id: Option<u64>,
         present: impl FnOnce(),
     ) {
-        use winit::platform::wayland::{WaylandPresentation, WindowExtWayland};
+        if !tilo_presentation::supported() {
+            present();
+            return;
+        }
+        use tilo_presentation::Feedback;
         let worker_id = self.worker_id;
         let process_id = std::process::id();
         let observer_session = crate::physical_input_trace::session_id();
@@ -212,10 +187,11 @@ impl Observer {
             present();
             return;
         };
-        let accepted = window.present_with_feedback(
+        let accepted = tilo_presentation::present(
+            window,
             Box::new(move |result| {
                 let row = match result {
-                    WaylandPresentation::Presented {
+                    Feedback::Presented {
                         clock_id,
                         timestamp,
                         refresh,
@@ -229,7 +205,7 @@ impl Observer {
                         "refresh_ns": refresh.as_nanos(), "sequence": sequence, "flags": flags,
                         "discarded": false,
                     }),
-                    WaylandPresentation::Discarded => serde_json::json!({
+                    Feedback::Discarded => serde_json::json!({
                         "worker_id": worker_id, "worker_frame_ix": worker_frame_ix, "process_id": process_id,
                         "observer_session": observer_session,
                         "cpu_frame_id": cpu_frame_id, "backend": "wayland", "discarded": true,
@@ -326,42 +302,6 @@ mod tests {
             ] {
                 assert!(handoff_row(row, Some(1)).is_none());
             }
-        }
-    }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod wayland_tests {
-    use std::time::Duration;
-    use winit::platform::wayland::WaylandPresentation;
-
-    #[test]
-    fn standard_wayland_dispatch_decoder_preserves_kernel_clock_and_sequence() {
-        assert_eq!(
-            WaylandPresentation::from_protocol(
-                Some(1),
-                (2, 7, 123_456),
-                16_666_667,
-                (3, 9),
-                Some(7)
-            ),
-            WaylandPresentation::Presented {
-                clock_id: 1,
-                timestamp: Duration::new((2u64 << 32) | 7, 123_456),
-                refresh: Duration::from_nanos(16_666_667),
-                sequence: (3u64 << 32) | 9,
-                flags: 7,
-            }
-        );
-        for (clock, nanos, flags) in [
-            (None, 0, Some(7)),
-            (Some(1), 1_000_000_000, Some(7)),
-            (Some(1), 0, None),
-        ] {
-            assert_eq!(
-                WaylandPresentation::from_protocol(clock, (0, 1, nanos), 16_666_667, (0, 1), flags),
-                WaylandPresentation::Discarded
-            );
         }
     }
 }

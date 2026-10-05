@@ -761,19 +761,24 @@ mod tests {
             assert!(!packets[1].warmup);
             // Every packet, including warmup and the final delivery, carries its
             // own bounds. Delayed delivery must not reuse an origin calibration.
+            let has_host_clock = match host_clock::CLOCK_NAME {
+                "mach_absolute_seconds" | "clock_monotonic_seconds" => true,
+                "unavailable" => false,
+                other => panic!("unknown host clock: {other}"),
+            };
             for packet in packets.iter() {
-                #[cfg(target_os = "macos")]
-                {
+                if has_host_clock {
                     let bounds = packet.sent_host.expect("per-packet host bounds");
                     assert!(bounds.lo_s.is_finite() && bounds.lo_s > 0.0);
                     assert!(bounds.hi_s.is_finite() && bounds.hi_s >= bounds.lo_s);
+                } else {
+                    assert!(packet.sent_host.is_none());
                 }
-                #[cfg(not(target_os = "macos"))]
-                assert!(packet.sent_host.is_none());
             }
-            #[cfg(target_os = "macos")]
-            for pair in packets.windows(2) {
-                assert!(pair[0].sent_host.unwrap().hi_s <= pair[1].sent_host.unwrap().lo_s);
+            if has_host_clock {
+                for pair in packets.windows(2) {
+                    assert!(pair[0].sent_host.unwrap().hi_s <= pair[1].sent_host.unwrap().lo_s);
+                }
             }
         }
 
