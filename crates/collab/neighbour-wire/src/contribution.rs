@@ -66,6 +66,26 @@ pub struct ContributionTaskFrontierV1 {
     pub task_basis: u32,
 }
 
+/// A Conversation reply is bound to its canonical parent and delivery attempt,
+/// not to a fabricated Task frontier. Its completion invocation is retained
+/// separately on the receipt.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ContributionConversationReplyV1 {
+    pub room: String,
+    pub chat_record: String,
+    pub channel: String,
+    pub message: String,
+    pub request_invocation: [u8; 16],
+    pub delivery_invocation: [u8; 16],
+    pub agent: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ContributionPurposeV1 {
+    Task(ContributionTaskFrontierV1),
+    ConversationReply(ContributionConversationReplyV1),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ContributionReceiptV1 {
     pub change_hash: [u8; 32],
@@ -75,7 +95,7 @@ pub struct ContributionReceiptV1 {
     pub source_invocation: [u8; 16],
     pub action: String,
     pub contract: u32,
-    pub task: Option<ContributionTaskFrontierV1>,
+    pub purpose: Option<ContributionPurposeV1>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
