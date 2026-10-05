@@ -3522,9 +3522,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         app.broadcast_doc_delta();
 
-        // Flag drained by the draw handler, not here — just pump a redraw.
-        if app.root_widget.take_structure_dirty() {
-            app.layout.structure_dirty = true;
+        // Polling a view's topology can itself replace its widgets (Switch
+        // reconciles here). Retire the old node pointers before another
+        // input event can query a cursor or tooltip, even before drawing.
+        if app.forget_replaced_widgets() {
             request_primary_redraw();
         }
 
@@ -3546,10 +3547,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // `needs_sync` forced a full redraw.
             let updated = app.update_model();
             let _ = app.sync_model(true);
-            let structure = app.root_widget.take_structure_dirty();
-            if structure {
-                app.layout.structure_dirty = true;
-            }
+            let structure = app.forget_replaced_widgets();
             if present_after_deadline_sync(
                 updated || structure || app.layout.layout_dirty,
                 app.root_widget.needs_animation_frame(),
