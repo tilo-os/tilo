@@ -236,6 +236,9 @@ impl AgentTaskFrontiers {
         if self.workspace.is_empty() || self.agent.is_empty() {
             return;
         }
+        if matches!(self.direction_state, AgentDirectionState::Saved { .. }) {
+            let _ = self.refresh_direction_status();
+        }
         if self.current_consumed {
             self.start_current_refresh(true);
         } else {
@@ -528,6 +531,7 @@ impl AgentTaskFrontiers {
                 .then_with(|| left.task_id.cmp(&right.task_id))
         });
         frontiers.dedup_by(|left, right| left.task_id == right.task_id);
+        self.confirm_saved_direction_from_collection(&frontiers);
         let prior_context = self.context.clone();
         let current_context = prior_context.as_ref().and_then(|prior| {
             frontiers
@@ -536,8 +540,24 @@ impl AgentTaskFrontiers {
         });
         let frontier_changed = prior_context.as_ref().is_some_and(|prior| {
             current_context.is_none_or(|current| {
-                current.run_epoch != prior.run_epoch
-                    || current.after_revision != prior.after_revision
+                let expected_saved_ack = self.saved_direction.as_ref().is_some_and(|saved| {
+                    let same_saved_run = (current.task_id.as_str(), current.run_epoch)
+                        == (saved.task_id.as_str(), saved.run_epoch);
+                    let same_original_run = (prior.task_id.as_str(), prior.run_epoch)
+                        == (saved.task_id.as_str(), saved.run_epoch);
+                    let follows_original_frontier =
+                        prior.after_revision.checked_add(1) == Some(saved.revision);
+                    let exact_saved_frontier = current.after_revision == saved.revision;
+                    let saved_revision_applied = current.applied_revision >= saved.revision;
+                    same_saved_run
+                        && same_original_run
+                        && follows_original_frontier
+                        && exact_saved_frontier
+                        && saved_revision_applied
+                });
+                (current.run_epoch != prior.run_epoch
+                    || current.after_revision != prior.after_revision)
+                    && !expected_saved_ack
             })
         });
         self.stale_frontier = frontier_changed && !self.current_accepts_frontier_change;
@@ -564,6 +584,29 @@ impl AgentTaskFrontiers {
         self.snapshot_complete = true;
         self.invalidated = false;
         self.discovery = AgentTaskDiscovery::Ready;
+    }
+
+    fn confirm_saved_direction_from_collection(&mut self, frontiers: &[AgentTaskFrontier]) {
+        let Some(saved) = &self.saved_direction else {
+            return;
+        };
+        if !matches!(self.direction_state, AgentDirectionState::Saved { .. }) {
+            return;
+        }
+        let applied = frontiers.iter().any(|frontier| {
+            let same_saved_run = (frontier.task_id.as_str(), frontier.run_epoch)
+                == (saved.task_id.as_str(), saved.run_epoch);
+            let includes_saved_revision = frontier.after_revision >= saved.revision;
+            let saved_revision_applied = frontier.applied_revision >= saved.revision;
+            same_saved_run && includes_saved_revision && saved_revision_applied
+        });
+        if applied {
+            self.direction_state = AgentDirectionState::Applied {
+                task_id: saved.task_id.clone(),
+                run_epoch: saved.run_epoch,
+                revision: saved.revision,
+            };
+        }
     }
 
     fn invalidate_snapshot(&mut self, discovery: AgentTaskDiscovery) {
@@ -651,7 +694,6 @@ impl AgentTaskFrontiers {
         };
         if (generation, saved.read_issued) < (self.snapshot_generation, self.snapshot_observed) {
             saved.read = None;
-            self.stale_frontier = true;
             return;
         }
         let same_run = frontier.run_epoch == saved.run_epoch;
@@ -1365,6 +1407,196 @@ mod tests {
             model.direction_state(),
             AgentDirectionState::Applied { revision: 5, .. }
         ));
+    }
+
+    #[test]
+    fn idle_collection_confirms_the_exact_saved_direction_as_applied() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [(
+                "one",
+                vec![exact_task_at(2, "one", "Current task", "agent-a", 5, 4)],
+            )],
+        ));
+        let mut model = model(host, "room", "agent-a");
+        model.steer("Use the final reviewed wording").unwrap();
+        model.poll_direction();
+        assert!(matches!(
+            model.direction_state(),
+            AgentDirectionState::Saved { revision: 5, .. }
+        ));
+
+        let collection_issued = model.issue_observation();
+        let invocation = InvocationId::new();
+        model.current = Some(LocalState::new(RemoteCall::Done(
+            InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput {
+                    value: Some(current_snapshot(
+                        3,
+                        vec![current_task("one", "Current task", "agent-a", 5, 5)],
+                    )),
+                    resources: Vec::new(),
+                },
+            },
+        )));
+        model.current_consumed = false;
+        model.current_issued = collection_issued;
+        model.collect_current_tasks(crate::background::Background::current().now());
+        model.poll_saved_direction();
+
+        assert!(matches!(
+            model.direction_state(),
+            AgentDirectionState::Applied { revision: 5, .. }
+        ));
+        let AgentTaskChoice::One(frontier) = model.choice() else {
+            panic!("the unchanged owner run remains steerable")
+        };
+        assert_eq!(frontier.run_epoch, 7);
+        assert_eq!(frontier.after_revision, 5);
+    }
+
+    #[test]
+    fn cumulative_ack_confirms_history_without_retargeting_to_a_later_direction() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [(
+                "one",
+                vec![exact_task_at(2, "one", "Current task", "agent-a", 5, 4)],
+            )],
+        ));
+        let mut model = model(host, "room", "agent-a");
+        model.steer("Use the final reviewed wording").unwrap();
+        model.poll_direction();
+
+        let collection_issued = model.issue_observation();
+        let invocation = InvocationId::new();
+        model.current = Some(LocalState::new(RemoteCall::Done(
+            InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput {
+                    value: Some(current_snapshot(
+                        3,
+                        vec![current_task("one", "Current task", "agent-a", 6, 6)],
+                    )),
+                    resources: Vec::new(),
+                },
+            },
+        )));
+        model.current_consumed = false;
+        model.current_issued = collection_issued;
+        model.collect_current_tasks(crate::background::Background::current().now());
+        model.poll_saved_direction();
+
+        assert!(matches!(
+            model.direction_state(),
+            AgentDirectionState::Applied { revision: 5, .. }
+        ));
+        assert_eq!(model.choice(), AgentTaskChoice::None);
+        assert!(model.needs_frontier_confirmation());
+        assert_eq!(model.context_task().unwrap().after_revision, 4);
+        assert!(!model.can_steer());
+    }
+
+    #[test]
+    fn explicit_refresh_checks_saved_status_and_accepts_a_new_current_run() {
+        let mut replacement = current_task("one", "Replacement run", "agent-a", 0, 0);
+        replacement["run_epoch"] = serde_json::json!(8);
+        let mut replacement_exact = exact_task_at(3, "one", "Replacement run", "agent-a", 0, 0);
+        replacement_exact["run_epoch"] = serde_json::json!(8);
+        let host = Arc::new(FrontierHost {
+            current: Mutex::new(VecDeque::from([
+                current_snapshot(
+                    1,
+                    vec![current_task("one", "Current task", "agent-a", 4, 4)],
+                ),
+                current_snapshot(3, vec![replacement]),
+            ])),
+            reads: Mutex::new(BTreeMap::from([(
+                "one".into(),
+                VecDeque::from([
+                    exact_task_at(2, "one", "Current task", "agent-a", 5, 4),
+                    replacement_exact,
+                ]),
+            )])),
+            invocations: Mutex::new(Vec::new()),
+        });
+        let mut model = model(host.clone(), "room", "agent-a");
+        model.steer("Use the final reviewed wording").unwrap();
+        model.observe("room", "agent-a");
+        assert!(matches!(
+            model.direction_state(),
+            AgentDirectionState::Saved { revision: 5, .. }
+        ));
+
+        model.refresh();
+
+        let AgentTaskChoice::One(frontier) = model.choice() else {
+            panic!("explicit refresh accepts the replacement owner run")
+        };
+        assert_eq!(frontier.run_epoch, 8);
+        assert_eq!(frontier.after_revision, 0);
+        assert!(matches!(
+            model.direction_state(),
+            AgentDirectionState::Saved { revision: 5, .. }
+        ));
+        let actions = host
+            .requests()
+            .into_iter()
+            .map(|request| request.target.address.action)
+            .collect::<Vec<_>>();
+        assert!(actions.ends_with(&[READ_TASK_ACTION.into(), READ_CURRENT_TASKS_ACTION.into()]));
+    }
+
+    #[test]
+    fn old_saved_ack_never_retargets_an_explicitly_selected_replacement_run() {
+        let mut replacement = current_task("one", "Replacement run", "agent-a", 0, 0);
+        replacement["run_epoch"] = serde_json::json!(8);
+        let mut replacement_exact = exact_task_at(3, "one", "Replacement run", "agent-a", 0, 0);
+        replacement_exact["run_epoch"] = serde_json::json!(8);
+        let host = Arc::new(FrontierHost {
+            current: Mutex::new(VecDeque::from([
+                current_snapshot(
+                    1,
+                    vec![current_task("one", "Original run", "agent-a", 4, 4)],
+                ),
+                current_snapshot(3, vec![replacement]),
+                current_snapshot(
+                    4,
+                    vec![current_task("one", "Original run", "agent-a", 5, 5)],
+                ),
+            ])),
+            reads: Mutex::new(BTreeMap::from([(
+                "one".into(),
+                VecDeque::from([
+                    exact_task_at(2, "one", "Original run", "agent-a", 5, 4),
+                    replacement_exact,
+                ]),
+            )])),
+            invocations: Mutex::new(Vec::new()),
+        });
+        let mut model = model(host, "room", "agent-a");
+        model.steer("Saved for the original run").unwrap();
+        model.observe("room", "agent-a");
+        model.refresh();
+        let AgentTaskChoice::One(selected) = model.choice() else {
+            panic!("explicit refresh selects the replacement run")
+        };
+        assert_eq!(selected.run_epoch, 8);
+        let deadline = model.next_refresh_deadline().expect("bounded refresh");
+        model.poll_at(deadline);
+        assert_eq!(model.choice(), AgentTaskChoice::None);
+        assert_eq!(model.context_task().unwrap().run_epoch, 8);
+        assert!(model.needs_frontier_confirmation());
+        assert!(matches!(
+            model.direction_state(),
+            AgentDirectionState::Applied {
+                run_epoch: 7,
+                revision: 5,
+                ..
+            }
+        ));
+        assert!(model.steer("Unsent replacement-run draft").is_err());
     }
 
     #[test]
