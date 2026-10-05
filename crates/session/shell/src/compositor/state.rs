@@ -3455,12 +3455,14 @@ impl RemoteInputSink for State {
                 }
             }
             InputEvent::PointerEnter { surface: target } => {
-                // Preserve compatibility with pre-KeyboardFocus viewers,
-                // which used PointerEnter as their focus handshake. New
-                // viewers send an explicit click-derived transition too.
+                // Old viewers use hover as their focus handshake. Once a
+                // viewer uses KeyboardFocus, incidental hover during strip
+                // movement must only change pointer attribution.
                 let seat = self.remote_seats.seat_mut(peer);
                 let _ = seat.pointer_enter(target);
-                let _ = seat.enter(target);
+                if !seat.explicit_keyboard_focus {
+                    let _ = seat.enter(target);
+                }
             }
             InputEvent::PointerLeave { surface: _ } => {
                 // Leaving ends pointer attribution only. In particular, do
@@ -3475,6 +3477,7 @@ impl RemoteInputSink for State {
                 surface: target,
                 focused,
             } => {
+                self.remote_seats.seat_mut(peer).explicit_keyboard_focus = true;
                 if focused {
                     if self
                         .remote_seats
