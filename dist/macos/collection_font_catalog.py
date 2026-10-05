@@ -9,7 +9,9 @@ import tomllib
 from collection import digest
 from collection_local_runtime import floor
 
-DESTINATION = Path('Contents/MacOS/fonts')
+DESTINATION = Path('Contents/Resources/fonts')
+LOOKUP_LINK = Path('Contents/MacOS/fonts')
+LINK_TARGET = '../Resources/fonts'
 LIMIT = 64 * 1024**2
 
 
@@ -68,6 +70,10 @@ def inspect(app, plan):
     root = app / DESTINATION
     if root.is_symlink() or not root.is_dir():
         raise ValueError('missing regular bundled font catalog directory')
+    link = app / LOOKUP_LINK
+    if (not link.is_symlink() or os.readlink(link) != LINK_TARGET or
+            link.resolve(strict=True) != root):
+        raise ValueError('font catalog lookup link changed')
     actual = set()
     for path in root.rglob('*'):
         if path.is_symlink() or (not path.is_dir() and not path.is_file()):
@@ -89,7 +95,7 @@ def stage(app, plan):
         if (str(path) != relative or '..' in path.parts or path.is_absolute() or
                 not path.is_relative_to(DESTINATION) or path == DESTINATION):
             raise ValueError('font destination escapes catalog')
-    root.mkdir(exist_ok=False)
+    root.mkdir(parents=True, exist_ok=False)
     for relative, item in plan['files'].items():
         floor(app.parent)
         path = Path(item['source'])
@@ -103,4 +109,5 @@ def stage(app, plan):
         with source.open('rb') as incoming, target.open('xb') as outgoing:
             shutil.copyfileobj(incoming, outgoing)
         target.chmod(0o644)
+    (app / LOOKUP_LINK).symlink_to(LINK_TARGET)
     inspect(app, plan)
