@@ -542,19 +542,7 @@ impl SettingsApp {
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Appearance => {
-                let mut pane = match ui::launch::capture_distinct_letters() {
-                    // A capture with `--distinct-letters` shows the switch as
-                    // that choice, matching the text it renders.
-                    Some(on) => {
-                        let prefs = crate::prefs::SystemPrefs::load();
-                        let colour = prefs.identity_colour();
-                        let mut appearance = prefs.appearance;
-                        appearance.choose_distinct_letters(on);
-                        panes::appearance::AppearancePane::with_prefs(appearance)
-                            .with_colour(colour)
-                    }
-                    None => panes::appearance::AppearancePane::new(),
-                };
+                let mut pane = panes::appearance::AppearancePane::new();
                 if let Some(dispatcher) = &self.framework {
                     pane.bind_dispatcher(dispatcher.clone());
                 }
