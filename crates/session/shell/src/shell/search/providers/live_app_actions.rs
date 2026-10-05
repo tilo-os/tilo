@@ -1463,10 +1463,9 @@ impl LiveAppActionsProvider {
         needle: &str,
         actor: &str,
         cursor: &[u8],
-    ) -> Option<SearchResult> {
-        if descriptor.contract.is_programmatic() {
-            return None;
-        }
+    ) -> SearchResult {
+        // Exact addresses also materialize programmatic actions; browse
+        // callers filter their visibility before reaching this shared path.
         // The app's own index found this row for the needle.
         let score = crate::shell::search::remote_score(
             needle,
@@ -1487,7 +1486,7 @@ impl LiveAppActionsProvider {
         let typed = !descriptor.params.is_empty();
         let resource = address.resource.clone();
         let action = address.action.clone();
-        Some(SearchResult {
+        SearchResult {
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
             provider_id: PROVIDER_ID.into(),
@@ -1547,7 +1546,7 @@ impl LiveAppActionsProvider {
                 );
                 Ok(InvocationDisposition::Pending(ticket))
             })),
-        })
+        }
     }
 
     fn directory_resource_result(
@@ -1807,16 +1806,16 @@ impl SearchProvider for LiveAppActionsProvider {
                 if let Some(page) = page {
                     for row in page.rows {
                         if let Some(descriptor) = row.action
-                            && let Some(result) = self.directory_action_result(
+                            && !descriptor.contract.is_programmatic()
+                        {
+                            results.push(self.directory_action_result(
                                 &root,
                                 &page.revision,
                                 &descriptor,
                                 &needle,
                                 &root_actor,
                                 &[],
-                            )
-                        {
-                            results.push(result);
+                            ));
                         }
                     }
                 }
@@ -2087,7 +2086,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 })
             },
         )?;
-        self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2)
+        Some(self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2))
             .filter(|result| result.id == id)
     }
 
@@ -2252,20 +2251,17 @@ impl SearchProvider for LiveAppActionsProvider {
                         actor,
                         cursor,
                     } => {
-                        if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
+                        if descriptor.contract.is_programmatic()
+                            || (!ctx.wanted.is_empty()
+                                && !ctx.wanted.contains(&ResourceKind::Action))
+                        {
                             position = position.saturating_add(1);
                             work = work.saturating_add(1);
                             continue;
                         }
-                        if let Some(row) = self.directory_action_result(
+                        self.directory_action_result(
                             root, revision, descriptor, &needle, actor, cursor,
-                        ) {
-                            row
-                        } else {
-                            position = position.saturating_add(1);
-                            work = work.saturating_add(1);
-                            continue;
-                        }
+                        )
                     }
                     AuxiliaryEntry::Resource { root, row } => {
                         if !Self::wants_resource_rows(ctx.wanted) {
@@ -2816,7 +2812,7 @@ mod tests {
                 cluster_id: "room".into(),
                 record_id: "record".into(),
             };
-            assert!(
+            assert_eq!(
                 provider
                     .directory_action_result(
                         &root,
@@ -2826,7 +2822,10 @@ mod tests {
                         "fixture",
                         &[]
                     )
-                    .is_some()
+                    .id,
+                format!(
+                    "directory{ID_SEPARATOR}7{ID_SEPARATOR}r1{ID_SEPARATOR}resource:one{ID_SEPARATOR}one"
+                )
             );
             *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
                 revision,
@@ -2990,6 +2989,68 @@ mod tests {
         {
             assert!(LiveAppActionsProvider::decode_auxiliary_resume("not;a,cursor").is_none());
         }
+    }
+
+    #[test]
+    fn programmatic_directory_actions_resolve_without_entering_palette_search() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let state = chrome.borrow();
+        let workspace_room = state.tree().desktop.workspaces[0].room;
+        let actor = state.local_user_for_room(&workspace_room);
+        let root = ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.browser".into(),
+            cluster_id: workspace_room.to_string(),
+            record_id: "root".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![root]);
+        let mut descriptor = exported("Read page content", "read");
+        descriptor
+            .contract
+            .tags
+            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+        let row = CatalogueRow {
+            provider: "9".into(),
+            app_id: "so.tilo.browser".into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: descriptor.address.resource.clone(),
+                kind: "fixture".into(),
+                label: "Fixture".into(),
+                presentation: None,
+            },
+            action: Some(descriptor),
+            has_children: false,
+            visibility: None,
+        };
+        provider.set_directory_query("read");
+        provider.directory_pages.borrow_mut().insert(
+            (9, actor, "read".into(), Vec::new()),
+            page(vec![row], Vec::new()),
+        );
+        let doc = AutoCommit::new();
+        let id = format!(
+            "directory{ID_SEPARATOR}9{ID_SEPARATOR}r1{ID_SEPARATOR}resource:read{ID_SEPARATOR}read"
+        );
+        assert!(provider.query(context("read", &state, &doc)).is_empty());
+        assert!(
+            provider
+                .query_page(context("read", &state, &doc), None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+        let resolved = provider.resolve(&id, context("", &state, &doc));
+        assert!(
+            resolved.is_some(),
+            "a cached programmatic directory action must resolve by address"
+        );
+        assert!(
+            provider
+                .resolve(&id.replace("r1", "stale"), context("", &state, &doc))
+                .is_none()
+        );
     }
 
     #[test]
