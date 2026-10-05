@@ -1206,6 +1206,16 @@ impl ContainersApp {
         }
     }
 
+    /// Present the authored screenshot engine on an existing host, with no
+    /// device polling. The framework's live action executor stays installed;
+    /// the offline engine refuses actual Podman lifecycle effects.
+    pub fn stage_sample_engine(&mut self) {
+        self.live = false;
+        self.bg_rx = None;
+        self.bg_tx = None;
+        self.show_engine(crate::model::sample_engine());
+    }
+
     /// Stage a screenshot scenario (`None` for a plain `--shots`): the
     /// section, selection and tab it shows, and the dialog it has open. The
     /// engine and the draft are the scenario's already.

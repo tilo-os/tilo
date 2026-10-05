@@ -3307,9 +3307,20 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
         h.app.begin_edit(contact, false);
         h.relayout();
         let chip = target(&h.app, "contacts.form.type.phone-0");
-        h.press_left(chip.center());
-        h.press_named(NamedKey::ArrowDown);
-        h.press_named(NamedKey::Enter);
+        h.app
+            .harness_mut()
+            .click_at(chip.center().x, chip.center().y);
+        h.app.settle();
+        let (_, focused) = h
+            .app
+            .harness_mut()
+            .a11y_focus()
+            .expect("the actual host applies the pointer's focus request");
+        assert_eq!(focused.role(), ui::accesskit::Role::ComboBox);
+        assert_eq!(focused.label(), Some("Phone 1 type"));
+        h.app.harness_mut().key("Down");
+        h.app.harness_mut().key("Enter");
+        h.app.settle();
         h.app.form.as_mut().unwrap().collect();
         assert_eq!(
             h.app.form.as_ref().unwrap().draft.phones[0].label,
@@ -3574,7 +3585,10 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     {
         let mut app = Live::empty(760, 620);
         assert!(app.store.is_empty());
-        let bounds = target(&app, crate::view::EMPTY_ACTION);
+        let bounds = named_widget(&app, "No contacts yet", Role::Group)
+            .expect("the actual first-run empty state is mounted")
+            .synthetic_accessibility_rect(&[0])
+            .expect("the shared empty state measures its virtual action");
         let action = app
             .harness_mut()
             .controls()

@@ -1043,6 +1043,9 @@ impl ApiTesterApp {
             | FormMode::DeleteVariable => (String::new(), String::new()),
         };
         self.nav.show(ui::widget::NavPane::Content);
+        // In drawer mode, choosing a sidebar command must uncover the
+        // content-owned form; selecting a push pane alone cannot close it.
+        self.dismiss_drawer();
         let fields = Fields::new(&initial);
         self.slots
             .dialog

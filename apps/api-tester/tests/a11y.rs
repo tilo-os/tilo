@@ -550,6 +550,17 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     let modes = d.targets()["api.response-view"];
     d.click_at(modes.x0 + modes.width() * 5.0 / 6.0, modes.center().y);
     assert!(
+        semantic_nodes(d).iter().any(|node| {
+            node.name.as_deref() == Some("Headers") && node.state.checked == Some(true)
+        }),
+        "the real response switch selects Headers"
+    );
+    // Response presentation changes do not save a request. Open the form
+    // through the real request Save control before checking resize custody.
+    d.click_named("api.save-request").unwrap();
+    d.wait_for_named("api.form-name", ui::time::Duration::from_secs(5))
+        .expect("the published Save control opens the request form");
+    assert!(
         d.focus_access_nodes()
             .iter()
             .any(|node| node.name.as_deref() == Some("Name")),
