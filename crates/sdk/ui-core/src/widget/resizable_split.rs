@@ -1326,11 +1326,24 @@ mod tests {
     #[test]
     fn hosted_child_drag_keeps_capture_and_releases_outside_its_pane() {
         use crate::widget::{Column, Segment, TextInput, ToggleGroup};
+        struct InspectInput(TextInput);
+        impl crate::widget::Decorator for InspectInput {
+            type Inner = TextInput;
+            fn inner(&self) -> &TextInput {
+                &self.0
+            }
+            fn inner_mut(&mut self) -> &mut TextInput {
+                &mut self.0
+            }
+            fn as_any(&self) -> Option<&dyn std::any::Any> {
+                Some(self)
+            }
+        }
         type Split = ResizableSplit<Column, Column>;
         let split = ResizableSplit::new(
-            Column::new()
-                .with_no_padding()
-                .push(Box::new(TextInput::local().with_id("drag-text"))),
+            Column::new().with_no_padding().push(Box::new(InspectInput(
+                TextInput::local().with_id("drag-text"),
+            ))),
             Column::new().with_no_padding().push(Box::new(
                 ToggleGroup::new(
                     vec![Segment::new("Other first"), Segment::new("Other second")],
@@ -1353,11 +1366,12 @@ mod tests {
                 &crate::a11y::Action::SetValue("select this text".into()),
             )
             .unwrap();
-        let input = harness.root::<Split>().left.children()[0]
+        let input = &harness.root::<Split>().left.children()[0]
             .as_any()
             .unwrap()
-            .downcast_ref::<TextInput>()
-            .unwrap();
+            .downcast_ref::<InspectInput>()
+            .unwrap()
+            .0;
         assert_eq!(
             input.value(),
             "select this text",
@@ -1366,11 +1380,12 @@ mod tests {
         let text = harness.targets()["drag-text"];
         assert!(text.width() > 0.0 && text.height() > 0.0);
         harness.drag_at((text.x0 + 20.0, text.center().y), (590.0, text.center().y));
-        let input = harness.root::<Split>().left.children()[0]
+        let input = &harness.root::<Split>().left.children()[0]
             .as_any()
             .unwrap()
-            .downcast_ref::<TextInput>()
-            .unwrap();
+            .downcast_ref::<InspectInput>()
+            .unwrap()
+            .0;
         let (start, end) = input
             .selection_range_public()
             .expect("actual drag selects text");
