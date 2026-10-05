@@ -1029,15 +1029,7 @@ impl<'a> ListRowFace<'a> {
         // Title (with its mark and tags), subtitle and secondary text.
         let text_x = geo.text_x;
         let mut y = text_top;
-        let title_width = (geo.title_right - text_x).max(0.0);
-        let tags_w = self.tags_width(ctx.text, theme, &m);
-        let mark_count = self.marks.iter().flatten().count();
-        #[allow(clippy::cast_precision_loss, reason = "at most MAX_MARKS")]
-        let mark_w = mark_count as f64 * (m.mark + m.tag_gap);
-        // The title keeps at least half its line; tags and the mark take the
-        // rest and drop off before the title elides further.
-        let accessories = (tags_w + mark_w).min(title_width / 2.0);
-        let room = crate::num::f32_of_f64((title_width - accessories).max(0.0));
+        let room = self.title_room(&geo, ctx.text, theme, &m);
         let lines = ctx.text.clamp_to_lines(
             self.title,
             &title_style,
@@ -1152,6 +1144,46 @@ impl<'a> ListRowFace<'a> {
                 theme,
             );
         }
+    }
+
+    /// The width the title is set in: its column, less the tags and marks
+    /// after it. The title keeps at least half its line; tags and the mark
+    /// take the rest and drop off before the title elides further.
+    fn title_room(
+        &self,
+        geo: &RowGeometry,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        m: &RowMetrics,
+    ) -> f32 {
+        let title_width = (geo.title_right - geo.text_x).max(0.0);
+        let tags_w = self.tags_width(text, theme, m);
+        let mark_count = self.marks.iter().flatten().count();
+        #[allow(clippy::cast_precision_loss, reason = "at most MAX_MARKS")]
+        let mark_w = mark_count as f64 * (m.mark + m.tag_gap);
+        let accessories = (tags_w + mark_w).min(title_width / 2.0);
+        crate::num::f32_of_f64((title_width - accessories).max(0.0))
+    }
+
+    /// Whether the title, painted in `rect`, is cut short with an ellipsis.
+    /// A row shows such a title in full in its tooltip.
+    #[must_use]
+    pub fn title_elided(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> bool {
+        if self.title.is_empty() {
+            return false;
+        }
+        let m = RowMetrics::new(theme);
+        let geo = self.geometry(rect, &m, text, theme);
+        let room = self.title_room(&geo, text, theme, &m);
+        let lines = text.clamp_to_lines(
+            self.title,
+            &self.title_style(&m),
+            room,
+            usize::from(self.title_lines),
+        );
+        lines
+            .last()
+            .is_none_or(|line| line.ends_with('\u{2026}') && !self.title.ends_with('\u{2026}'))
     }
 
     fn tags_width(&self, text: &mut TextRenderer, theme: &Theme, m: &RowMetrics) -> f64 {
@@ -1525,6 +1557,9 @@ struct Trailing {
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
     title: String,
+    /// Whether the last paint cut the title short; the tooltip then shows it
+    /// in full.
+    title_elided: bool,
     two_line_title: bool,
     title_family: Option<FontChoice>,
     subtitle: Option<String>,
@@ -1578,6 +1613,7 @@ impl ListRow {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
+            title_elided: false,
             two_line_title: false,
             title_family: None,
             subtitle: None,
@@ -2625,11 +2661,12 @@ impl Widget for ListRow {
             return;
         }
         let band = self.text_band();
-        self.with_face(|face| {
+        self.title_elided = self.with_face(|face| {
             face.paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 band,
             );
+            face.title_elided(band, text_renderer, theme)
         });
         if let Some(trailing) = &mut self.trailing {
             trailing
@@ -2744,11 +2781,17 @@ impl Widget for ListRow {
             return Some((r, tooltip.clone()));
         }
         let shown = self.shown_actions();
-        self.action_rects()
+        let action = self
+            .action_rects()
             .into_iter()
             .zip(shown)
             .find(|(r, _)| r.contains(point))
-            .and_then(|(r, index)| self.actions.get(index).map(|a| (r, a.label.clone())))
+            .and_then(|(r, index)| self.actions.get(index).map(|a| (r, a.label.clone())));
+        // A title cut short reads in full where it is pointed at.
+        action.or_else(|| {
+            let band = self.text_band();
+            (self.title_elided && band.contains(point)).then(|| (band, self.title.clone()))
+        })
     }
 
     fn is_focusable(&self) -> bool {

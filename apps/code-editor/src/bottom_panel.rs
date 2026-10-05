@@ -19,9 +19,10 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::Rhythm;
 use ui::widget::{
-    Element, EmptyState, EmptyStateContent, ListRow, Scrollable, Section, TabBar, TabDescriptor,
-    Widget,
+    Container, Element, EmptyState, EmptyStateContent, ListRow, Scrollable, Section, TabBar,
+    TabDescriptor, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -224,7 +225,13 @@ impl BottomPanel {
             Scrollable::new_vertical()
                 .fill_parent_height()
                 .with_persisted_offset(Rc::clone(&self.list_offset))
-                .with_child(Box::new(Section::new(rows))),
+                // The panel body's padding, so rows stand off the panel's
+                // edges like every list in a page.
+                .with_child(Box::new(
+                    Container::new()
+                        .with_inset(Rhythm::Section)
+                        .with_child(Box::new(Section::new(rows))),
+                )),
         );
     }
 

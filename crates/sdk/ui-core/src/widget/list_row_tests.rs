@@ -28,6 +28,28 @@ fn rect_of(node: &InspectionNode) -> Rect {
     Rect::new(x, y, x + w, y + h)
 }
 
+#[test]
+fn a_title_cut_short_reads_in_full_in_the_tooltip() {
+    let theme = crate::theme::Theme::dark();
+    let message = "Expected `&[String]`, found `&Vec<String>` in the argument to parse_limit";
+    let long = ListRow::new("long", message).meta("Ln 14, Col 29");
+    let h = FrameHarness::for_root(crate::State::new(), long, (240, 60), theme.clone());
+    let row = h.root::<ListRow>();
+    let band = row.text_band();
+    let (rect, text) = Widget::tooltip_target_at(row, band.center()).expect("elided title");
+    assert_eq!(text, message);
+    assert_eq!(rect, band);
+
+    let short = ListRow::new("short", "Unused import").meta("Ln 2, Col 5");
+    let h = FrameHarness::for_root(crate::State::new(), short, (480, 60), theme);
+    let row = h.root::<ListRow>();
+    assert_eq!(
+        Widget::tooltip_target_at(row, row.text_band().center()),
+        None,
+        "a title that fits needs no tooltip"
+    );
+}
+
 fn hovered() -> Interaction {
     Interaction {
         hovered: true,
