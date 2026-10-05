@@ -491,9 +491,37 @@ export function createLegacyWindows({
       if (dx || dy) queueInput(entry, {PointerAxis: {dx, dy}});
     }, {passive: false});
     on('contextmenu', event => { if (entry.control) event.preventDefault(); });
+    // A modifier may already be held when this window gains focus. Browser
+    // typing also supplies its state on each character without a separate
+    // modifier edge. Wayland needs those edges before the character's keycode.
+    const syncModifiers = event => {
+      const ctrl = mac && (typeof event.ctrlKey === 'boolean' || typeof event.metaKey === 'boolean')
+        ? Boolean(event.ctrlKey || event.metaKey) : event.ctrlKey;
+      const groups = [
+        [event.shiftKey, [KEYS.ShiftLeft, KEYS.ShiftRight]],
+        [ctrl, [KEYS.ControlLeft, KEYS.ControlRight]],
+        [event.altKey, [KEYS.AltLeft, KEYS.AltRight]],
+        ...mac ? [] : [[event.metaKey, [KEYS.MetaLeft, KEYS.MetaRight]]],
+      ];
+      for (const [held, keys] of groups) {
+        if (typeof held !== 'boolean') continue;
+        const down = keys.filter(keysym => entry.keys.has(keysym));
+        if (held && !down.length) {
+          entry.keys.add(keys[0]);
+          queueInput(entry, {Key: {keysym: keys[0], pressed: true, modifiers: 0}});
+        } else if (!held) {
+          for (const keysym of down) {
+            entry.keys.delete(keysym);
+            queueInput(entry, {Key: {keysym, pressed: false, modifiers: 0}});
+          }
+        }
+      }
+    };
     const key = pressed => event => {
       const keysym = evdevKey(event.code, {mac});
       if (!entry.control || keysym === null) return;
+      if (pressed && event.repeat && !entry.keys.has(keysym)) return;
+      if (!MODIFIERS.has(keysym)) syncModifiers(event);
       // The window repeats a held key only as the browser does: one more
       // press of it. Modifiers do not repeat.
       if (pressed && event.repeat) {
