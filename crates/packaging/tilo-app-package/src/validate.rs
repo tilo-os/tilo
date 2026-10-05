@@ -55,6 +55,8 @@ pub enum ManifestError {
     DuplicateCapability(String),
     #[error("kind=runtime must not declare a runtime dependency")]
     RuntimeKindHasRuntime,
+    #[error("runtime entrypoint {0:?} must name a safe relative payload file")]
+    RuntimeEntrypoint(String),
     #[error("only kind=runtime packages declare `package.provides`")]
     ProvidesOnNonRuntime,
     #[error(
@@ -214,6 +216,17 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         .map_err(|e| ManifestError::BadVersion(m.package.version.clone(), e.to_string()))?;
 
     validate_optional_runtimes(m)?;
+    if m.package.kind == Kind::Runtime
+        && let Some(entrypoint) = &m.entrypoint
+        && entrypoint
+            .bin
+            .to_str()
+            .is_none_or(|path| !crate::package::is_safe_path(path))
+    {
+        return Err(ManifestError::RuntimeEntrypoint(
+            entrypoint.bin.display().to_string(),
+        ));
+    }
 
     match (&m.package.kind, &m.package.runtime) {
         (Kind::Runtime, Some(_)) => return Err(ManifestError::RuntimeKindHasRuntime),
@@ -681,6 +694,14 @@ pub fn validate_manifest_with_payload(
     payload_files: &[std::path::PathBuf],
 ) -> Result<(), ManifestError> {
     validate_manifest(m)?;
+    if m.package.kind == Kind::Runtime
+        && let Some(entrypoint) = &m.entrypoint
+        && !payload_files.iter().any(|path| path == &entrypoint.bin)
+    {
+        return Err(ManifestError::RuntimeEntrypoint(
+            entrypoint.bin.display().to_string(),
+        ));
+    }
     if matches!(m.package.kind, Kind::FormatProvider)
         && !payload_files
             .iter()
