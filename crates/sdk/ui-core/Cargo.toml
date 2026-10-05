@@ -12,12 +12,11 @@ homepage.workspace = true
 description = "The Tilo UI toolkit: retained-mode, CRDT-native widgets."
 
 [package.metadata.cargo-machete]
-# build.rs probes optional system libraries through pkg-config.
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
 # dependency marks `presentation-feedback`, which uses the Metal observer of
 # the patched HAL (vendor/wgpu-hal).
 # getrandom02 only selects the browser entropy backend for transitive crypto.
-ignored = ["pkg-config", "wgpu-hal", "getrandom02"]
+ignored = ["wgpu-hal", "getrandom02"]
 
 [features]
 default = ["native", "broker-transport"]
@@ -59,13 +58,6 @@ dx12-shader-cache = []
 # other app embedding a WebView with built-in blocking) pays for the
 # adblock-rust dependency.
 webview-adblock = ["dep:adblock"]
-# WPE WebKit engine backend for the WebView widget (`webview::wpe`).
-# Links the WPE stack (not packaged by Fedora — build it with
-# os/dev/build-wpe.sh and export PKG_CONFIG_PATH/LD_LIBRARY_PATH to its
-# prefix). Off by default so the workspace builds without the libraries.
-# Pulls `ash` for the DMA-BUF zero-copy import (raw-Vulkan interop with
-# wgpu-hal); its 0.38 matches the version wgpu-hal 29 resolves.
-webview-wpe = ["dep:ash", "dmabuf-import"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
@@ -316,11 +308,6 @@ windows = { version = "0.62.2", optional = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
-
-[build-dependencies]
-# Locates the WPE WebKit stack when the `webview-wpe` feature is on
-# (see build.rs); inert otherwise.
-pkg-config = "0.3"
 
 [dev-dependencies]
 serial_test.workspace = true

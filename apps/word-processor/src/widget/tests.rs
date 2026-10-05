@@ -5625,9 +5625,11 @@ fn typing_composes_with_the_input_method_and_erases_whole_clusters() {
         Ime::Preedit("かな".into(), Some((3, 3))),
     );
     assert_eq!(wp.inner.preedit(), "かな");
+    let composition = wp.inner.composition("a").expect("composing");
+    assert_eq!(composition.display_text("a"), "aかな");
     assert_eq!(
-        wp.inner.preedit_before_cursor(),
-        "か",
+        composition.display_caret("a"),
+        "aか".len(),
         "the caret sits inside"
     );
     assert_eq!(body_text(&wp, &state), ["a"], "not typed until committed");
@@ -5659,6 +5661,87 @@ fn typing_composes_with_the_input_method_and_erases_whole_clusters() {
     );
     send_ime(&mut wp, &mut state, Ime::Commit("x".into()));
     assert_eq!(body_text(&wp, &state), ["ax"]);
+}
+
+/// A composition in the middle of a paragraph is laid out inside it: the text
+/// after the caret moves aside and rewraps, the caret sits inside the
+/// composition, clicks map back onto the committed text, and the commit lands
+/// exactly where it was composed.
+#[test]
+fn a_composition_lays_out_inside_its_paragraph_and_commits_in_place() {
+    use winit::event::Ime;
+    let (mut state, mut wp) = bound();
+    wp.model_mut().insert_str(&mut state.doc, "hello world");
+    wp.lifecycle.focused = true;
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, state) = Framed::split(&mut framed);
+    let bid = wp.blocks[0].id.clone();
+    // Where committed char `offset` of the paragraph draws, and the shaped height.
+    let at = |wp: &WordProcessorWidget, offset: usize| {
+        let l = wp.laid.iter().find(|l| l.id == bid).expect("laid out");
+        let (_, layout) = wp.layout_cache.get(&bid).expect("shaped");
+        let (x, y, _) = layout.caret_geometry(l.layout_byte(offset));
+        (
+            Point::new(l.text_x + f64::from(x), l.layout_y + f64::from(y)),
+            layout.height(),
+        )
+    };
+    let (w_before, height_before) = at(wp, 6);
+    wp.inner.set_caret(Caret {
+        block: bid.clone(),
+        offset: 5,
+    });
+    send_ime(wp, state, Ime::Preedit("かな".into(), Some((3, 3))));
+    let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
+
+    let l = wp.laid.iter().find(|l| l.id == bid).expect("laid out");
+    assert_eq!(l.text, "hello world", "the document is untouched");
+    let core = l.composition.clone().expect("the composition is laid out");
+    let shown = composed_block(&wp.blocks[0], &core);
+    assert_eq!(shown.text, "helloかな world");
+    assert!(
+        shown
+            .marks
+            .iter()
+            .any(|m| m.name == "underline" && (m.start, m.end) == (5, 7)),
+        "the composition is underlined"
+    );
+    assert_eq!(l.caret_byte(5), "helloか".len(), "the caret sits inside");
+    let (w_after, _) = at(wp, 6);
+    assert!(
+        (w_after.y - w_before.y).abs() < 0.5 && w_after.x > w_before.x + 10.0,
+        "the text after the caret moves aside: {w_before:?} -> {w_after:?}"
+    );
+
+    // A click inside the composition lands at the caret it is composed at;
+    // a click on the text after it lands on that committed character.
+    let (start, _) = at(wp, 5);
+    wp.caret_from_pointer(Point::new(start.x + 4.0, start.y + 4.0), false);
+    assert_eq!(wp.inner.caret.offset, 5);
+    wp.caret_from_pointer(Point::new(w_after.x + 2.0, w_after.y + 4.0), false);
+    assert_eq!(wp.inner.caret.offset, 6, "on the 'w' of \"world\"");
+    wp.inner.set_caret(Caret {
+        block: bid.clone(),
+        offset: 5,
+    });
+
+    // A composition too long for the line wraps the text after it.
+    send_ime(wp, state, Ime::Preedit("あ".repeat(80), None));
+    let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
+    let (w_wrapped, height_wrapped) = at(wp, 6);
+    assert!(
+        height_wrapped > height_before && w_wrapped.y > w_before.y,
+        "the paragraph rewraps around the composition"
+    );
+
+    send_ime(wp, state, Ime::Preedit("かな".into(), Some((3, 3))));
+    send_ime(wp, state, Ime::Commit("仮名".into()));
+    assert_eq!(body_text(wp, state), ["hello仮名 world"]);
+    assert_eq!(wp.inner.caret.offset, 7, "the caret follows the commit");
+    let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
+    let l = wp.laid.iter().find(|l| l.id == bid).expect("laid out");
+    assert_eq!(l.text, "hello仮名 world");
+    assert!(l.composition.is_none(), "nothing is composing any more");
 }
 
 #[test]

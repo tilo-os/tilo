@@ -1960,15 +1960,15 @@
         "name": "quality",
         "ty": "integer",
         "required": false,
-        "description": "JPEG quality, 1 to 100 (default 90).",
+        "description": "JPEG quality (default 90).",
         "schema": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 0,
-          "maximum": 255,
-          "description": "JPEG quality, 1 to 100 (default 90)."
+          "minimum": 1,
+          "maximum": 100,
+          "description": "JPEG quality (default 90)."
         },
         "nullable": true
       },
@@ -3149,7 +3149,7 @@
     "action": "select",
     "resource_kind": "canvas.artwork",
     "label": "Select area",
-    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it",
+    "description": "Select an area: shapes, marks, magic wand (at), colour or subject; add, subtract, intersect, grow, feather, invert, refine. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it",
     "operation": "Document",
     "params": [
       {
@@ -3259,6 +3259,67 @@
           "minItems": 2,
           "maxItems": 2,
           "description": "Magic wand `[x, y]`: like colour touching it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "subject",
+        "ty": "boolean",
+        "required": false,
+        "description": "The photo's main subject, found on-device (with at: the object there).",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "The photo's main subject, found on-device (with at: the object there)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "refine",
+        "ty": "number",
+        "required": false,
+        "description": "Units: fit the edge to the picture, soft for fur (subject: 6px).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Units: fit the edge to the picture, soft for fur (subject: 6px)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "matte",
+        "ty": "object",
+        "required": false,
+        "description": "Set by subject/refine.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "src",
+            "rect"
+          ],
+          "properties": {
+            "src": {
+              "type": "string"
+            },
+            "rect": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 4,
+              "maxItems": 4,
+              "description": "`[x, y, w, h]`."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Set by subject/refine."
         },
         "nullable": true
       },
@@ -3658,6 +3719,42 @@
             "null"
           ],
           "description": "The new mark's."
+        },
+        "nullable": true
+      },
+      {
+        "name": "defringe",
+        "ty": "boolean",
+        "required": false,
+        "description": "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true).",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "cleaned",
+        "ty": "array",
+        "required": false,
+        "description": "Set by defringe.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Set by defringe."
         },
         "nullable": true
       }

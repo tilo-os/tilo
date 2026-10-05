@@ -92,27 +92,23 @@ grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.
   && ok 'kernel publication survives cache-write failures and retries a failed push of the completed build' \
   || bad 'a registry cache or push hiccup can fail or silently skip kernel publication'
 
-# The engine compiles only from os/Containerfile.wpe. Every image build takes
-# that stage by digest as its wpe-builder context; os/Containerfile fails
-# closed without it.
-[ "$(grep -Fc 'file: os/Containerfile.wpe' "$os")" = 2 ] \
-  && [ "$(grep -Fc "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)" "$os")" = 8 ] \
-  && grep -Fq "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)" "$os" \
-  && ok 'OS image builds take the browser engine from its isolated recipe' \
-  || bad 'an OS image build lacks the isolated browser engine context'
+# The browser engine is built inside the image build from the pinned CEF
+# distribution; no image build takes a separately compiled engine stage.
+! grep -Fq 'wpe-builder' "$os" && ! grep -Fq 'WPE_BUILDROOT_REF' "$os" \
+  && grep -Fq 'ARG CHROMIUM_RUNTIME_VERSION=' "$repo/os/Containerfile" \
+  && ok 'OS image builds compile the browser engine runtime themselves' \
+  || bad 'an OS image build still takes a separately compiled browser engine'
 
 # A cache manifest naming a blob the registry lost fails a build only when the
 # layer's content is needed. The OS build treats exactly that as a cache miss:
 # rebuild without cache-from, rewrite every cache tag, consume either digest.
 uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/# Dev VMs must not wait/' "$os")
-[ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the browser engine stage/,/- name: Recognize a missing registry cache blob/' "$os"))" = 6 ] \
+[ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the build toolchain/,/- name: Recognize a missing registry cache blob/' "$os"))" = 5 ] \
   && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \
   && ! grep -Fq 'cache-from:' <<<"$uncached" \
   && [ "$(grep -c 'ignore-error=true' <<<"$uncached")" = 1 ] \
   && ! grep -Fq "'\${{ steps.build.outputs.digest }}'" "$os" \
   && grep -Fq "'\${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
-  && grep -A1 -F -- '- name: Build the browser engine stage without the damaged layer cache' "$os" \
-    | grep -Fq 'id: wpe-uncached' \
   && ok 'a missing registry cache blob degrades the OS build to an uncached rebuild' \
   || bad 'a lost registry cache blob can still fail the OS build'
 
@@ -310,10 +306,8 @@ grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json
   && ok 'OS composition reuses the desktop payload only while no Rust or Cargo input changed since it was built' \
   || bad 'OS composition can ship a desktop payload older than its own compositor sources'
 
-grep -Fq 'with_browser=0' "$os" \
-  && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \
-  && grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
-  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 8 \
+grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
+  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 9 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
@@ -323,8 +317,8 @@ grep -Fq 'with_browser=0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
   && grep -Fq 'installed dev image, desktop, app integration and tilo-vmd passed; publication was not requested' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.publish == 'true'" "$os" \
-  && ok 'ordinary OS integration checks omit the release-only browser engine' \
-  || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
+  && ok 'ordinary OS integration checks run without release-only steps' \
+  || bad 'OS branch validation still requires release-only steps'
 
 ! grep -Fq 'cron:' "$os" \
   && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
@@ -337,17 +331,16 @@ grep -Fq 'with_browser=0' "$os" \
   || bad 'nightly OS publication is missing, not main-only, or rebuilds an already published revision'
 
 grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
-  && grep -Fq 'if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then' "$os" \
-  && grep -Fq "no digest-pinned WPE buildroot for %s; run build-buildroots" "$os" \
-  && ok 'tags always ship the browser; the nightly ships it once both WPE buildroots are promoted' \
-  || bad 'the nightly browser profile can fail on a missing WPE pin, or a tag can omit the browser'
+  && grep -Fq 'with_browser=${REQUESTED_BROWSER:-1}' "$os" \
+  && ok 'every image carries the browser unless a manual run leaves it out' \
+  || bad 'an image can omit the browser without a manual request'
 
 # CI and os/dev/build-image.sh derive the Windows provider with one command, so
 # x86_64 can never drop it and ARM includes it as soon as both pins exist.
 grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
   && grep -Fq 'FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}' "$os" \
   && grep -Fq 'WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}' "$os" \
-  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 8 ] \
+  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 9 ] \
   && grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
   && grep -Fq -- '--build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS"' "$repo/os/dev/build-image.sh" \
   && grep -Fq 'FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider' "$repo/os/Containerfile" \
@@ -359,6 +352,7 @@ if ! grep -q '^  pull_request:' "$os" \
   && ! grep -Fq '  schedule:' "$os" \
   && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
+  && grep -Fq 'native-atspi-smoke.sh quick-settings' "$os" \
   && grep -Fq 'native-atspi-smoke.sh auth' "$os" \
   && grep -Fq 'org.freedesktop.PolicyKit1.Authority.CheckAuthorization' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
@@ -374,6 +368,17 @@ if ! grep -q '^  pull_request:' "$os" \
   ok 'OS release VM drives compositor and manifest-certified app AT-SPI actions over its session bus'
 else
   bad 'AT-SPI release gate can ship an app outside the readable, action-capable desktop endpoint'
+fi
+
+# polkit's rules engine reads a subject as a process or a bus name only; a
+# unix-session subject reaches g_assert_not_reached() and aborts polkitd, so
+# the administrator-prompt check must ask as a process in the session.
+smoke="$repo/crates/session/shell/tests/native_atspi_smoke.sh"
+if grep -Fq "('unix-process', {'pid': <uint32 \$asker>, 'start-time': <uint64 \$started>" "$smoke" \
+  && ! grep -Fq "('unix-session'" "$smoke"; then
+  ok 'the release VM asks polkit for administrator access as a session process'
+else
+  bad 'the release VM asks polkit with a subject its rules engine aborts on'
 fi
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
@@ -472,6 +477,16 @@ grep -Fq './os/dev/test-nearby-pairing.sh "$TILO_DISK"' "$os" \
   && grep -Fq '  oobe-nearby)' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && ok 'the OS gate pairs a first-boot device with a nearby trusted one and surfaces helper failures' \
   || bad 'nearby pairing from first-boot onboarding has no real-boot gate'
+
+# Apps opened on a slow machine keep their windows: the dev gate signs in
+# again with every frame stalled as on a slow laptop and opens apps. The stall
+# is a developer override that release compositors never read.
+grep -Fq './os/dev/test-slow-frame-launch.sh --out "$TILO_RUN/slow-frames" --stall 50-130' "$os" \
+  && grep -Fq 'TILO_TEST_FRAME_STALL_MS' "$repo/os/dev/test-slow-frame-launch.sh" \
+  && grep -Fq '"TILO_TEST_FRAME_STALL_MS",' "$repo/crates/session/shell/src/compositor/dev_env.rs" \
+  && grep -Fq 'super::dev_env::DEV_ENV_OVERRIDES' "$repo/crates/session/shell/src/compositor/frame_stall.rs" \
+  && ok 'the dev gate opens apps at a slow machine'"'"'s frame times, behind the developer-override gate' \
+  || bad 'apps opened on a slow machine have no real-boot gate'
 
 python3 "$repo/tools/apps/app_release.py" --collection default > /dev/null \
   && python3 "$repo/tools/apps/app_release.py" --collection recovery > /dev/null \

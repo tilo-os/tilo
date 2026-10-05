@@ -85,6 +85,7 @@ session exit or panic in the journal or `latest.log`.
 
 It runs in CI only (`.forgejo/workflows/host-session-e2e.yml`, on the KVM
 runners): after every Release / desktop package lane with that run's RPMs,
-and by dispatch with any Release / desktop run's RPMs (`rpm_run`, default the
-newest on main). `report.md`, screenshots, the guest journal and session logs
+and on dispatch or a pull request changing the test with RPMs built from that
+commit first (`dist/ci/run-package-job.sh` with the fedora-44 target of
+`dist/ci/package-targets.txt`). `report.md`, screenshots, the guest journal and session logs
 are the run's artifact.

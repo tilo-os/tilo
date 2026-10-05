@@ -1,5 +1,6 @@
 /* Bundle-local launcher; exec preserves helper arguments and exit semantics. */
 #include <errno.h>
+#include <CommonCrypto/CommonDigest.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <pwd.h>
@@ -9,6 +10,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "local_runtime_config.h"
+
+#ifndef TILO_LAUNCH_NAME
+#define TILO_LAUNCH_NAME "tilo-runtime-mcp"
+#define TILO_EXEC_NAME "tilo-runtime-mcp.real"
+#endif
 
 static void fail(void) {
     fputs("Tilo local runtime: invalid bundle or cache path\n", stderr);
@@ -37,9 +43,9 @@ int main(int argc, char **argv) {
     uint32_t size = sizeof(raw);
     if (_NSGetExecutablePath(raw, &size) || !realpath(raw, executable)) fail();
     char *slash = strrchr(executable, '/');
-    if (!slash || strcmp(slash + 1, "tilo-runtime-mcp")) fail();
+    if (!slash || strcmp(slash + 1, TILO_LAUNCH_NAME)) fail();
     *slash = 0;
-    join(next, executable, "tilo-runtime-mcp.real");
+    join(next, executable, TILO_EXEC_NAME);
     slash = strrchr(executable, '/');
     if (!slash || strcmp(slash + 1, "MacOS")) fail();
     *slash = 0;
@@ -53,15 +59,42 @@ int main(int argc, char **argv) {
     join(raw, cache, "Caches"); directory(raw);
     join(cache, raw, "so.tilo.local-runtime"); directory(cache);
     join(raw, cache, TILO_PROFILE_KEY); directory(raw);
-    join(cache, raw, "registry-arm64.bin");
+    /* Registry entries carry absolute plugin paths. Distinct app bundles and
+     * moved copies must not reuse another location's registry. */
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    char location[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+    if (!CC_SHA256(plugins, (CC_LONG)strlen(plugins), digest)) fail();
+    for (size_t i = 0; i < sizeof(digest); i++)
+        snprintf(location + 2 * i, 3, "%02x", digest[i]);
+    join(cache, raw, location); directory(cache);
+#ifdef TILO_MEDIA_DATA
+    /* Restrict subtitle configuration/data to this signed bundle. System font
+     * files are read in place; caches stay outside the sealed bundle. */
+    variable("XDG_CACHE_HOME", cache);
+    join(raw, executable, "Resources/fontconfig");
+    variable("FONTCONFIG_PATH", raw);
+    join(raw, executable, "Resources/fontconfig/fonts.conf");
+    if (access(raw, R_OK)) fail();
+    variable("FONTCONFIG_FILE", raw);
+    unsetenv("FONTCONFIG_SYSROOT");
+    variable("PANGOCAIRO_BACKEND", "fontconfig");
+    join(raw, executable, "Resources/libthai/thbrk.tri");
+    if (access(raw, R_OK)) fail();
+    join(raw, executable, "Resources/libthai");
+    variable("LIBTHAI_DICTDIR", raw);
+    /* reqwest's native certificate loader uses macOS system trust. */
+    unsetenv("SSL_CERT_FILE");
+    unsetenv("SSL_CERT_DIR");
+#endif
+    join(raw, cache, "registry-arm64.bin");
     variable("GST_PLUGIN_SYSTEM_PATH_1_0", plugins);
     variable("GST_PLUGIN_SYSTEM_PATH", plugins);
     variable("GST_PLUGIN_PATH_1_0", "");
     variable("GST_PLUGIN_PATH", "");
     variable("GST_PLUGIN_SCANNER_1_0", scanner);
     variable("GST_PLUGIN_SCANNER", scanner);
-    variable("GST_REGISTRY_1_0", cache);
-    variable("GST_REGISTRY", cache);
+    variable("GST_REGISTRY_1_0", raw);
+    variable("GST_REGISTRY", raw);
     /* A stale external cache must not suppress local scanner validation. */
     variable("GST_REGISTRY_UPDATE", "yes");
     variable("GST_REGISTRY_FORK", "yes");

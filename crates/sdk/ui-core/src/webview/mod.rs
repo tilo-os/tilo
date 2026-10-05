@@ -10,7 +10,9 @@
 //! Backends:
 //!  * [`test_engine::TestEngine`] — deterministic, dependency-free engine
 //!    used by unit tests and `--shots` headless renders.
-//!  * WPE `WebKit` — the Tilo system engine, rendering real pages offscreen.
+//!  * [`chromium::ChromiumEngine`] — the Tilo system engine: a Chromium
+//!    (CEF) host process rendering real pages offscreen, delivered as its
+//!    own signed runtime (see [`chromium::runtime`]).
 //!
 //! Coordinates in commands are **physical pixels relative to the web
 //! view's top-left corner** — the widget does the logical→physical
@@ -30,9 +32,6 @@ pub mod test_engine;
 
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;
-
-#[cfg(feature = "webview-wpe")]
-pub mod wpe;
 
 pub(crate) mod frame_trace;
 mod scroll_marker;
@@ -494,30 +493,6 @@ pub struct MediaElementInfo {
     pub label: String,
 }
 
-/// One plane of a [`DmabufFrame`]: its own fd + layout. A GPU-tiled RGBA
-/// buffer has 2 planes (pixels + compression metadata); a linear one, 1.
-#[derive(Debug)]
-#[cfg(unix)]
-pub struct DmabufPlane {
-    pub fd: media::dmabuf::DmabufHandle,
-    pub stride: u32,
-    pub offset: u32,
-}
-
-/// A GPU frame exported as a DMA-BUF handle (the `webview-wpe` EGL export
-/// path). Feature-neutral so it can cross the engine trait — only the WPE
-/// engine produces one and only the wgpu import consumes it. `fourcc` +
-/// `modifier` describe the pixel format and tiling.
-#[derive(Debug)]
-#[cfg(unix)]
-pub struct DmabufFrame {
-    pub planes: Vec<DmabufPlane>,
-    pub fourcc: u32,
-    pub modifier: u64,
-    pub width: u32,
-    pub height: u32,
-}
-
 /// A running web engine instance. Implementations are `Send + Sync` so
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
@@ -569,13 +544,9 @@ pub trait WebViewEngine: Send + Sync {
     /// on engine activity. Synchronous engines don't need one.
     fn set_waker(&self, _waker: Box<dyn Fn() + Send + Sync>) {}
 
-    /// The zero-copy path, if a GPU frame is pending. Default: the wrapped
-    /// engine's, else none — SHM and test engines deliver pixels through
-    /// [`frames`](Self::frames).
-    #[cfg(unix)]
-    fn take_dmabuf(&self) -> Option<DmabufFrame> {
-        self.wrapped().and_then(|inner| inner.take_dmabuf())
-    }
+    /// A view drew this engine's page just now. Engines that stop painting
+    /// pages nobody draws (see [`paint::PaintEngine`]) resume here.
+    fn presented(&self) {}
 
     /// The engine this one wraps, for what only a backend can answer.
     fn wrapped(&self) -> Option<&SharedEngine> {

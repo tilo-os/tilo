@@ -973,7 +973,7 @@ impl NotesApp {
                 .pages()
                 .iter()
                 .filter(|page| page.parent.is_none())
-                .min_by_key(|page| (page.order, page.id))
+                .min_by(|a, b| crate::model::sibling_order(a, b))
                 .map(|page| page.id);
             workspace.set_selected(first);
         }
@@ -1362,11 +1362,57 @@ impl NotesApp {
         self.main.set_transclusion_previews(previews);
     }
 
-    /// Keep each image pasted into the open note with the notebook and put it
-    /// after the caret, as a chosen image is.
+    /// Store clipboard bytes and replace their original target in one action.
     fn drain_pasted_images(&mut self, doc: &mut AutoCommit) {
-        for image in self.main.take_pasted_images() {
-            self.insert_image_bytes(doc, std::path::Path::new("Pasted image"), image.bytes);
+        for request in self.main.take_pasted_images() {
+            let Some(page) = self.main.page_id() else {
+                continue;
+            };
+            let root = self
+                .legacy_fixture_storage
+                .as_ref()
+                .map(|legacy| legacy.root.clone());
+            let target_check = if root.is_some() {
+                self.main
+                    .body_editor_mut()
+                    .image_paste_action(doc, &request.target, String::new())
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            } else {
+                Ok(())
+            };
+            let result = target_check
+                .and_then(|()| image_from_bytes(root.as_deref(), request.image.bytes))
+                .and_then(|(destination, bytes)| {
+                    let edit = self
+                        .main
+                        .body_editor_mut()
+                        .image_paste_action(
+                            doc,
+                            &request.target,
+                            format!("![Pasted image]({destination})"),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let action = if let Some(bytes) = bytes {
+                        actions::add_image_asset_action(page, bytes, edit)
+                    } else {
+                        actions::edit_body_action(page, edit)
+                    };
+                    let scope = self.markdown_scope();
+                    self.dispatch_transfer_action(doc, &action, scope.as_ref())
+                });
+            match result {
+                Ok(()) => {
+                    self.bound_page = None;
+                    self.self_dirty = true;
+                }
+                Err(error) => {
+                    self.transfer_toasts.push(
+                        format!("Image paste failed: {error}"),
+                        ui::widget::toast::ToastKind::Error,
+                    );
+                }
+            }
         }
     }
 
@@ -2548,8 +2594,7 @@ impl NotesApp {
     }
 
     /// Turn the page-tree change [`apply_event`] just made into the matching
-    /// action(s). Deletes are dispatched before upserts so a delete's own sibling
-    /// renumber (which `apply` recomputes in the document) doesn't double-write.
+    /// action(s). Deletes are dispatched before upserts.
     fn dispatch_tree_diff(
         &mut self,
         doc: &mut AutoCommit,

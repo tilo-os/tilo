@@ -19,6 +19,12 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
     PathBuf::from("/run/tilo-runtime").join(version)
 }
 
+/// The `LD_LIBRARY_PATH` of a sandbox running on the runtime bundle mounted
+/// for `version`: the bundle's `lib/` directory.
+pub fn runtime_library_path(version: &str) -> PathBuf {
+    runtime_mount_for(version).join("lib")
+}
+
 /// Canonical absolute ELF interpreter paths re-exposed from the runtime
 /// bundle. Ordinary shared libraries are found through the bundle's
 /// `LD_LIBRARY_PATH`; rebinding them here can target host symlinks (for
@@ -488,6 +494,15 @@ fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload
     }
 }
 
+/// Mount a further runtime bundle read-only at its runtime mount. Unlike the
+/// app's own runtime it changes no loader path: the app finds what it needs
+/// inside by path. Returns the mount.
+pub fn push_optional_runtime(argv: &mut Vec<String>, root: &Path, version: &str) -> PathBuf {
+    let mount = runtime_mount_for(version);
+    push_bind(argv, "--ro-bind", root, &mount);
+    mount
+}
+
 fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
@@ -497,7 +512,7 @@ fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     argv.extend([
         "--setenv".to_string(),
         "LD_LIBRARY_PATH".to_string(),
-        runtime_mount.join("lib").display().to_string(),
+        runtime_library_path(runtime_version).display().to_string(),
     ]);
     for canonical in CANONICAL_LOADER_PATHS {
         let in_bundle = runtime_root
@@ -925,6 +940,7 @@ mod tests {
             version: "0.1.0".to_string(),
             kind: crate::manifest::KIND_APP.to_string(),
             runtime: None,
+            optional_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/notes".to_string(),
                 r#type: crate::manifest::EntrypointType::Gui,

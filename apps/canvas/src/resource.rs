@@ -138,11 +138,22 @@ impl ArtworkResource {
         ActionRef::new("use-selection", &["do", "layer", "colour"]);
     /// `select` inverting the selection.
     pub const SELECT_INVERT: ActionRef<Self, bool> = ActionRef::new("select", &["invert"]);
+    /// `select` growing (or, negative, shrinking) the selection by units.
+    pub const SELECT_GROW: ActionRef<Self, f64> = ActionRef::new("select", &["grow"]);
+    /// `select` softening the selection's edge over units.
+    pub const SELECT_FEATHER: ActionRef<Self, f64> = ActionRef::new("select", &["feather"]);
     /// `select` with a mode alone: `none` selects nothing.
     pub const SELECT_MODE: ActionRef<Self, String> = ActionRef::new("select", &["mode"]);
     /// `combine`: marks, then `union`, `subtract`, `intersect` or `exclude`.
     pub const COMBINE: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("combine", &["ids", "op"]);
+    /// `align`: marks lined up along an edge or centre line, within their
+    /// own extent or (`artwork`) the artwork's.
+    pub const ALIGN: ActionRef<Self, (Vec<String>, String, Option<String>)> =
+        ActionRef::new("align", &["ids", "edge", "to"]);
+    /// `align` spacing marks evenly, `horizontal` or `vertical`.
+    pub const DISTRIBUTE: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("align", &["ids", "distribute"]);
     /// `edit-layer` giving a layer a mask (`reveal`, `hide`) or removing it.
     pub const SET_LAYER_MASK: ActionRef<Self, (String, String)> =
         ActionRef::new("edit-layer", &["id", "mask"]);
@@ -238,7 +249,8 @@ pub struct Export {
     pub scale: Option<f64>,
     /// `png` (default, or the path's), `jpeg` or `webp` (lossless).
     pub format: Option<String>,
-    /// JPEG quality, 1 to 100 (default 90).
+    /// JPEG quality (default 90).
+    #[schema(range(min = 1, max = 100))]
     pub quality: Option<u8>,
     /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
     pub path: Option<String>,
@@ -592,7 +604,11 @@ impl Resource for ArtworkResource {
     type Action = CanvasAction;
 
     fn read(doc: &Doc) -> Result<Artwork, ModelError> {
-        Ok(crate::doc::read(doc))
+        let art = crate::doc::read(doc);
+        // What the next action authored here finds in the artwork, even
+        // before the window has shown it.
+        crate::author::read(&art);
+        Ok(art)
     }
 
     /// A new artwork is an empty sheet of paper with one plain layer, so the
@@ -864,18 +880,16 @@ fn picture_declarations() -> Vec<ActionDecl<ArtworkResource>> {
 fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
     vec![
             ActionDecl::new("select", "Select area", params_of::<crate::selection::Select>(), |args, _now| {
-            let mut select: crate::selection::Select = read_args(args)?;
-            crate::author::resolve(&mut select)?;
-            Ok(CanvasAction::Select(Box::new(select)))
+            let select: crate::selection::Select = read_args(args)?;
+            crate::author::resolve(select)
         })
-        .describe("Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it")
+        .describe("Select an area: shapes, marks, magic wand (at), colour or subject; add, subtract, intersect, grow, feather, invert, refine. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it")
         .answering(),
-        decl::<crate::selection::UseSelection>(
-            "use-selection",
-            "Use selection",
-            "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
-            CanvasAction::UseSelection,
-        )
+        ActionDecl::new("use-selection", "Use selection", params_of::<crate::selection::UseSelection>(), |args, _now| {
+            let using: crate::selection::UseSelection = read_args(args)?;
+            crate::subject::clean(using)
+        })
+        .describe("Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).")
         .answering(),
         decl::<crate::selection::Combine>(
             "combine",

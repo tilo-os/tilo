@@ -764,8 +764,8 @@ impl MainPanel {
     }
 
     /// Images pasted into the open note since the last call.
-    pub fn take_pasted_images(&mut self) -> Vec<ui::clipboard::ClipboardImage> {
-        self.editor.editor_mut().take_pasted_images()
+    pub fn take_pasted_images(&mut self) -> Vec<ui::widget::block_editor::ImagePasteRequest> {
+        self.editor.editor_mut().take_image_paste_requests()
     }
 
     pub fn set_bottom_inset(&mut self, inset: f64) {

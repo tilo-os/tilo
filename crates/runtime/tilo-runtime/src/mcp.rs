@@ -3,6 +3,8 @@
 mod content;
 #[path = "mcp_page.rs"]
 mod page;
+#[path = "mcp_schema.rs"]
+mod schema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
@@ -10,8 +12,14 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 
+/// Host-configured per-session construction. It receives no client identity,
+/// label, requested room or execution UUID.
+pub type SessionFactory<H> =
+    std::sync::Arc<dyn Fn() -> std::io::Result<McpServer<H>> + Send + Sync>;
+
 pub struct McpServer<H> {
     host: H,
+    retire_execution: fn(&H, &Caller),
     room: String,
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
@@ -283,14 +291,51 @@ fn tool_result(result: Result<Value, String>) -> Value {
         Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
     }
 }
+impl<H> Drop for McpServer<H> {
+    fn drop(&mut self) {
+        (self.retire_execution)(&self.host, &self.caller);
+    }
+}
+
 impl<H: ActionHost + Send + Sync> McpServer<H> {
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
         let caller = Caller::local_person(actor.clone())
             .in_room(room.clone())
             .in_new_execution();
+        Self::from_caller(host, room, actor, caller)
+    }
+
+    /// The host has already bound this exact authenticated run to its action
+    /// door. This constructor does not mint or replace the execution identity.
+    pub(crate) fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
+        let tilo_actions::remote::CallerPrincipal::Person(actor) = caller.principal() else {
+            return Err(std::io::Error::other(
+                "MCP requires an admitted person execution",
+            ));
+        };
+        let room = caller
+            .room()
+            .ok_or_else(|| std::io::Error::other("MCP room unavailable"))?
+            .to_owned();
+        if caller.user_public_key().is_none()
+            || caller.device_public_key().is_none()
+            || !caller.execution_is_live()
+        {
+            return Err(std::io::Error::other("MCP certified execution unavailable"));
+        }
+        let actor = actor.clone();
+        Ok(Self::from_caller(host, room, actor, caller))
+    }
+
+    pub(crate) fn audience_matches(&self, room: &str, actor: &str) -> bool {
+        self.room == room && self.actor == actor
+    }
+
+    fn from_caller(host: H, room: String, actor: String, caller: Caller) -> Self {
         Self {
             host,
+            retire_execution: H::retire_execution,
             room,
             actor,
             caller,
@@ -304,6 +349,10 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             shown: std::sync::Mutex::default(),
         }
     }
+    pub(crate) fn execution_caller(&self) -> Caller {
+        self.caller.clone()
+    }
+
     /// Answer an action that produced image content with the image itself,
     /// read from `media` with the producing app's own scope.
     #[must_use]
@@ -514,6 +563,50 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             None => None,
         }
     }
+    /// The resource id a query's `parent_resource` means: `name` when
+    /// something is listed under it, else the resource of `provider` whose
+    /// kind or label it is (`canvas.artwork`, `Canvas`). A name that lists
+    /// nothing and names no resource is refused with the resources there
+    /// are, not answered with an empty page that reads as "no children".
+    async fn parent_named(&self, provider: &str, name: String) -> Result<String, String> {
+        let beneath = self
+            .ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                parent_resource: Some(name.clone()),
+                max_results: 1,
+                ..CatalogueQuery::default()
+            })
+            .await?;
+        if !beneath.rows.is_empty() {
+            return Ok(name);
+        }
+        let rows = self.top_resources(provider).await?;
+        let workspace = tilo_actions::remote::workspace_provider_room(provider).is_some();
+        if rows.iter().any(|row| row.resource.id == name) {
+            return Ok(name);
+        }
+        if !workspace
+            && name.len() <= RESOURCE_NAME_BYTES
+            && let Some(found) = page::resource_named(&name, &rows)
+        {
+            return found;
+        }
+        let shown = if name.len() > RESOURCE_NAME_BYTES {
+            "that resource id"
+        } else {
+            name.as_str()
+        };
+        if page::looks_like_handle(&name) {
+            return Err(format!(
+                "{shown} is no handle of this connection (handles last one connection); name the parent by its kind or label instead: {}",
+                resource_list(&rows)
+            ));
+        }
+        Err(format!(
+            "nothing is listed under {shown}: it has no actions or children, or names no resource here (a handle, resource id, kind or label does); the resources: {}",
+            resource_list(&rows)
+        ))
+    }
     /// The resources `provider` lists at its top level.
     async fn top_resources(&self, provider: &str) -> Result<Vec<CatalogueRow>, String> {
         Ok(self
@@ -599,6 +692,40 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         } else {
             page::compact_described(page, Some(&mut self.handles()), describe)
         }
+    }
+    /// The row `tilo_resolve` answers. A compact session's names its long
+    /// resource id by a handle, as its pages do, and says each schema once
+    /// ([`schema::compact`]); a session that pinned `full` reads the row as
+    /// version 1 published it.
+    fn resolved(&self, row: &CatalogueRow, provider: &str) -> Value {
+        let mut value = resolved_row_json(row);
+        if self.detail == Detail::Full {
+            return value;
+        }
+        let Some(fields) = value.as_object_mut() else {
+            return value;
+        };
+        if fields.get("has_children") == Some(&Value::Bool(false)) {
+            fields.remove("has_children");
+        }
+        if tilo_actions::remote::workspace_provider_room(provider).is_none() {
+            fields.insert(
+                "resource".into(),
+                self.handles().short(&row.resource.id).into(),
+            );
+        }
+        if let Some(Value::Array(params)) = fields
+            .get_mut("descriptor")
+            .and_then(|descriptor| descriptor.get_mut("params"))
+        {
+            for param in params.iter_mut().filter_map(Value::as_object_mut) {
+                let optional = param.get("required") != Some(&Value::Bool(true));
+                if let Some(schema) = param.get_mut("schema") {
+                    schema::compact(schema, optional);
+                }
+            }
+        }
+        value
     }
     /// Offer the canonical `computer` tools, driving `computer`.
     #[must_use]
@@ -718,6 +845,11 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             return Some(error(&reply_id, -32600, "Invalid Request"));
         }
         let id = id?;
+        // A request may have retained this server before HTTP DELETE or expiry
+        // and only now acquired its mutex. Do not let it resume a retired run.
+        if self.caller.execution_id().is_some() && !self.caller.execution_is_live() {
+            return Some(error(&id, -32000, "execution session ended"));
+        }
         let method = request
             .get("method")
             .and_then(Value::as_str)
@@ -936,6 +1068,11 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         let cursor = args.cursor.into_bytes()?;
         let words = page::needle_words(&args.needle);
         let parent = self.full_id(args.parent_resource);
+        let parent = if parent.is_empty() {
+            parent
+        } else {
+            self.parent_named(&provider, parent).await?
+        };
         let workspace = tilo_actions::remote::workspace_provider_room(&provider).is_some();
         let query = CatalogueQuery {
             provider: Some(provider),
@@ -1206,7 +1343,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     return Err("StaleRevision".into());
                 }
                 match page.rows.first() {
-                    Some(row) => Ok(json!({"row":resolved_row_json(row)})),
+                    Some(row) => Ok(json!({"row":self.resolved(row, &target.provider)})),
                     None => Err(self.not_offered(&target).await),
                 }
             }

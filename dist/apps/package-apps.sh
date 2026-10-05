@@ -86,8 +86,8 @@ mapfile -t app_binaries < <(
 # second invocation, whose Cargo builds are then already fresh.
 [[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] || exit 0
 
-runtime_version=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else error("apps require different runtimes") end | sub("^tilo-runtime/"; "")' "$plan")
-[[ $runtime_version =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]
+runtime_release=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else error("apps require different runtimes") end | sub("^tilo-runtime/"; "")' "$plan")
+[[ $runtime_release =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]
 if [[ -z $runtime_identity ]]; then
     runtime_identity="$out/work/runtime-publisher.json"
     "$release_dir/tilo-runtime-bundle" key generate --out "$runtime_identity"
@@ -98,12 +98,16 @@ rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.
 # Keep the public runtime and publisher key under the root transported by
 # release-apps.yml and consumed by assemble-collection.sh. Private identities
 # stay in work/ (or the caller's external identity files), outside that root.
-OUT_DIR="$out/runtime" RUNTIME_VERSION="$runtime_version" FROM=/ \
+OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
+    VERSION_OUT="$out/work/runtime-version" \
     SOURCE_DATE_EPOCH="$source_epoch" \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
     EXTRA_LIBS="$runtime_dylib $rust_libstd" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
+# Every app below links this exact runtime build and names it.
+runtime_version=$(<"$out/work/runtime-version")
+runtime_id="tilo-runtime/$runtime_version"
 
 if [[ -z $identity ]]; then
     identity="$out/work/publisher.json"
@@ -132,6 +136,7 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
     python3 "$repo_root/tools/apps/dev_app_versions.py" --manifest "$staged_manifest" --version "$version"
+    "$repo_root/os/scripts/stamp-runtime.sh" "$staged_manifest" "$runtime_id"
     python3 "$repo_root/tools/apps/app_package_isa.py" stage --arch "$native_arch" \
         --manifest "$staged_manifest" --binary "$payload/bin/$binary" --output "$staged_manifest"
     tapp="$out/tapp/$name-$version-$(uname -m).tapp"
@@ -159,14 +164,26 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     }
 done < <(jq -r '.catalog[] | [.name,.package,.binary,.id,.version,.manifest] | @tsv' "$plan")
 
-python3 - "$plan" "$out/tapp" "$out/index.json" "$(uname -m)" "${GITHUB_SHA:-unknown}" <<'PY'
+# The runtime itself, as the registry offers it: a `kind = "runtime"`
+# package whose payload is the signed bundle above, split into its thin
+# form plus content-addressed payload objects that are uploaded beside it.
+runtime_package_version=0.1.0
+if [[ -n ${TILO_APP_RELEASE_SOURCE:-} ]]; then
+    runtime_package_version="0.1.${TILO_APP_RELEASE_SEQUENCE}+g${TILO_APP_RELEASE_SOURCE}"
+fi
+"$repo_root/tools/apps/pack-runtime-package.sh" \
+    "$out/runtime/tilo-runtime/$runtime_version" so.tilo.runtime "Tilo runtime" \
+    "$runtime_package_version" "$identity" "$release_dir" "$out/runtime-package" >/dev/null
+
+python3 - "$plan" "$out/tapp" "$out/index.json" "$(uname -m)" "${GITHUB_SHA:-unknown}" "$runtime_id" <<'PY'
 import hashlib, json, pathlib, sys
 plan = json.load(open(sys.argv[1], encoding="utf-8"))
 directory = pathlib.Path(sys.argv[2])
 entries = []
 for app in plan["catalog"]:
     path = next(directory.glob(f"{app['name']}-{app['version']}-*.tapp"))
-    entries.append({**app, "file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    entries.append({**app, "runtime": sys.argv[6], "file": path.name,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
 json.dump({"format": 1, "architecture": sys.argv[4], "source": sys.argv[5], "apps": entries},
           open(sys.argv[3], "w", encoding="utf-8"), indent=2, sort_keys=True)
 PY

@@ -36,8 +36,16 @@ impl ClipboardBackend for Clipboard {
 fn app() -> (TestApp<notes::NotesShell>, notes::PageId) {
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&actions::new_page_action(page, None, 0, "Clipboard")).unwrap())
-        .unwrap();
+    app.invoke(
+        Invoke::apply(&actions::new_page_action(
+            page,
+            None,
+            "a".into(),
+            "Clipboard",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("Ä😀");
@@ -316,4 +324,374 @@ fn image_app() -> (TestApp<notes::NotesShell>, notes::PageId, &'static str) {
         )
         .unwrap();
     (app, page, source)
+}
+
+fn image_replacement(route: &str) {
+    let clipboard = Arc::new(Clipboard::default());
+    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::host::enter(&services);
+    let (mut app, page, source) = image_app();
+    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let assets_before = app.read_document(|doc| notes::notebook::asset_snapshot(doc).unwrap());
+    let versions = app.versions().len();
+    *clipboard.image.lock().unwrap() = Some(image_bytes());
+    paste(&mut app, route);
+    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    assert!(!after.iter().any(|block| block.text == source));
+    assert_eq!(
+        after
+            .iter()
+            .filter(|block| block.text.starts_with("!["))
+            .count(),
+        1
+    );
+    assert!(
+        after
+            .iter()
+            .any(|block| block.text.starts_with("![Pasted image](asset:"))
+    );
+    assert_eq!(
+        app.versions().len(),
+        versions.checked_add(1).unwrap(),
+        "one canonical image-paste action"
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        before
+    );
+    assert_eq!(
+        app.read_document(|doc| notes::notebook::asset_snapshot(doc).unwrap()),
+        assets_before
+    );
+    assert!(app.redo());
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        after
+    );
+}
+
+fn paste(app: &mut TestApp<notes::NotesShell>, route: &str) {
+    if route == "menu" {
+        menu(app, 2);
+    } else {
+        app.harness().set_modifiers(&["ctrl".into()]);
+        app.harness().key("v");
+        app.harness().set_modifiers(&[]);
+    }
+}
+
+fn image_bytes() -> ui::clipboard::ClipboardImage {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(2, 2, image::Rgb([40, 80, 120]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    ui::clipboard::ClipboardImage {
+        mime: "image/png",
+        bytes: bytes.into_inner(),
+    }
+}
+
+#[test]
+fn context_menu_image_paste_still_replaces_the_preview_and_undoes() {
+    image_replacement("menu");
+}
+#[test]
+fn keyboard_image_paste_replaces_the_preview_in_one_action() {
+    image_replacement("keyboard");
+}
+
+#[test]
+fn invalid_image_paste_preserves_selected_source_and_history_then_retries() {
+    let clipboard = Arc::new(Clipboard::default());
+    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::host::enter(&services);
+    let (mut app, page, _) = image_app();
+    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let versions = app.versions().len();
+    *clipboard.image.lock().unwrap() = Some(ui::clipboard::ClipboardImage {
+        mime: "image/png",
+        bytes: vec![0, 1, 2, 3],
+    });
+    for route in ["keyboard", "menu"] {
+        paste(&mut app, route);
+        app.harness().key("Q");
+        assert_eq!(
+            app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+            before
+        );
+        assert_eq!(app.versions().len(), versions);
+    }
+    *clipboard.image.lock().unwrap() = Some(image_bytes());
+    paste(&mut app, "menu");
+    assert_eq!(app.versions().len(), versions.checked_add(1).unwrap());
+    assert!(app.undo());
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        before
+    );
+}
+
+#[test]
+fn image_paste_replaces_a_marked_unicode_range_and_restores_it_in_one_undo() {
+    let clipboard = Arc::new(Clipboard::default());
+    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::host::enter(&services);
+    let (mut app, page) = app();
+    let blocks = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    app.invoke(
+        Invoke::apply(&actions::edit_body_action(
+            page,
+            tilo_document::RichTextAction::SetMark {
+                region: tilo_document::action::RegionKind::Body,
+                spans: blocks[..2]
+                    .iter()
+                    .map(|block| tilo_document::action::Span {
+                        block: block.id.clone(),
+                        start: 0,
+                        end: 2,
+                    })
+                    .collect(),
+                name: "strong".into(),
+                value: Some(tilo_document::action::MarkVal::Bool(true)),
+                also_clear: vec![],
+            },
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let versions = app.versions().len();
+    app.harness()
+        .perform_named(
+            "block_editor",
+            &ui::a11y::Action::SetSelection {
+                anchor: 1,
+                focus: 4,
+            },
+        )
+        .unwrap();
+    *clipboard.image.lock().unwrap() = Some(image_bytes());
+    paste(&mut app, "keyboard");
+    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    assert_eq!(
+        after.len(),
+        4,
+        "prefix, image, suffix, untouched next block"
+    );
+    assert_eq!(after[0].text, "Ä");
+    assert!(after[1].text.starts_with("![Pasted image](asset:"));
+    assert_eq!(after[2].text, "本");
+    assert_eq!(after[3], before[2]);
+    assert!(!after[0].marks.is_empty());
+    assert!(!after[2].marks.is_empty());
+    assert_eq!(app.versions().len(), versions.checked_add(1).unwrap());
+    assert!(app.undo());
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        before
+    );
+    assert!(app.redo());
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        after
+    );
+}
+
+#[test]
+fn image_paste_into_a_fresh_empty_note_is_undoable() {
+    let clipboard = Arc::new(Clipboard::default());
+    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::host::enter(&services);
+    let mut app = TestApp::<notes::NotesShell>::new().unwrap();
+    let page = notes::PageId::new_v4();
+    app.invoke(Invoke::apply(&actions::new_page_action(page, None, "a".into(), "Image")).unwrap())
+        .unwrap();
+    let rect = app.harness().targets()["block_editor"];
+    app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
+    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    *clipboard.image.lock().unwrap() = Some(image_bytes());
+    paste(&mut app, "keyboard");
+    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    assert_eq!(after.len(), 1);
+    assert!(after[0].text.starts_with("![Pasted image](asset:"));
+    assert!(app.undo());
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        before
+    );
+}
+
+#[test]
+fn image_paste_excludes_a_column_zero_endpoint_and_preserves_peer_text_through_undo() {
+    let clipboard = Arc::new(Clipboard::default());
+    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::host::enter(&services);
+    let (mut app, page) = app();
+    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let mut peer = app.peer_document();
+    NotesDoc::edit_page_body(
+        &mut peer,
+        page,
+        &tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
+            block: before[2].id.clone(),
+            at: 0,
+            del: 0,
+            ins: "Peer ".into(),
+        },
+    )
+    .unwrap();
+    peer.commit();
+    app.harness()
+        .perform_named(
+            "block_editor",
+            &ui::a11y::Action::SetSelection {
+                anchor: 0,
+                focus: 3,
+            },
+        )
+        .unwrap();
+    *clipboard.image.lock().unwrap() = Some(image_bytes());
+    paste(&mut app, "keyboard");
+    let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    assert_eq!(after.len(), 3);
+    assert!(after[0].text.starts_with("![Pasted image](asset:"));
+    assert_eq!(after[1..], before[1..]);
+    app.merge_peer(&mut peer).unwrap();
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)[2].text.clone()),
+        "Peer After"
+    );
+    assert!(app.undo());
+    let undone = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    assert_eq!(undone[..2], before[..2]);
+    assert_eq!(undone[2].text, "Peer After");
+}
+
+#[test]
+fn image_paste_refuses_during_composition_and_for_viewers() {
+    let clipboard = Arc::new(Clipboard::default());
+    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::host::enter(&services);
+    let (mut app, page) = app();
+    let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+    let versions = app.versions().len();
+    *clipboard.image.lock().unwrap() = Some(image_bytes());
+    app.harness()
+        .perform_named(
+            "block_editor",
+            &ui::a11y::Action::SetSelection {
+                anchor: 0,
+                focus: 5,
+            },
+        )
+        .unwrap();
+    app.harness()
+        .dispatch_to_root(&ui::winit::event::WindowEvent::Ime(
+            ui::winit::event::Ime::Preedit("に".into(), Some((0, 3))),
+        ));
+    paste(&mut app, "keyboard");
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        before
+    );
+    assert_eq!(app.versions().len(), versions);
+    app.harness()
+        .dispatch_to_root(&ui::winit::event::WindowEvent::Ime(
+            ui::winit::event::Ime::Preedit(String::new(), None),
+        ));
+    app.set_role(ui::permissions::Role::Viewer);
+    paste(&mut app, "keyboard");
+    menu(&mut app, 2);
+    assert_eq!(
+        app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+        before
+    );
+    assert_eq!(app.versions().len(), versions);
+}
+
+#[test]
+fn image_paste_replaces_empty_rows_and_selected_separators_without_touching_the_next_id() {
+    for empty in [false, true] {
+        let clipboard = Arc::new(Clipboard::default());
+        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::host::enter(&services);
+        let (mut app, page) = app();
+        if empty {
+            let id = app.read_document(|doc| NotesDoc::page_blocks(doc, page)[0].id.clone());
+            app.invoke(
+                Invoke::apply(&actions::edit_body_action(
+                    page,
+                    tilo_document::RichTextAction::SpliceText {
+                        region: tilo_document::action::RegionKind::Body,
+                        block: id,
+                        at: 0,
+                        del: 2,
+                        ins: String::new(),
+                    },
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let anchor = if empty { 0 } else { 2 };
+        app.harness()
+            .perform_named(
+                "block_editor",
+                &ui::a11y::Action::SetSelection {
+                    anchor,
+                    focus: anchor + 1,
+                },
+            )
+            .unwrap();
+        *clipboard.image.lock().unwrap() = Some(image_bytes());
+        paste(&mut app, "keyboard");
+        let after = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let image_at = usize::from(!empty);
+        assert!(after[image_at].text.starts_with("![Pasted image](asset:"));
+        assert_eq!(after[image_at + 1..], before[1..]);
+        if !empty {
+            assert_eq!(after[0], before[0]);
+        }
+        assert!(app.undo());
+        assert_eq!(
+            app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+            before
+        );
+    }
+}
+
+#[test]
+fn unavailable_image_paste_keeps_preview_source_protected_then_accepts_text() {
+    for text in [None, Some(String::new())] {
+        let clipboard = Arc::new(Clipboard::default());
+        *clipboard.text.lock().unwrap() = text;
+        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::host::enter(&services);
+        let (mut app, page, _) = image_app();
+        let before = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let versions = app.versions().len();
+        for route in ["keyboard", "menu"] {
+            paste(&mut app, route);
+            app.harness().key("Q");
+            assert_eq!(
+                app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+                before
+            );
+            assert_eq!(app.versions().len(), versions);
+        }
+        *clipboard.text.lock().unwrap() = Some("replacement".into());
+        paste(&mut app, "keyboard");
+        assert_eq!(
+            app.read_document(|doc| NotesDoc::page_blocks(doc, page)[0].text.clone()),
+            "replacement"
+        );
+        assert!(app.undo());
+        assert_eq!(
+            app.read_document(|doc| NotesDoc::page_blocks(doc, page)),
+            before
+        );
+    }
 }

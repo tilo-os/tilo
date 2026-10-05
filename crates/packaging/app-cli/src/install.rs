@@ -65,6 +65,13 @@ pub enum InstallError {
     Refused { code: i32, detail: String },
     /// Downloaded bytes did not match the signed registry metadata.
     Integrity { detail: String },
+    /// The app needs a runtime build this device lacks and its registry
+    /// does not offer; nothing was changed.
+    RuntimeUnavailable {
+        package_id: String,
+        runtime: String,
+        registry: String,
+    },
 }
 
 impl InstallError {
@@ -90,6 +97,15 @@ impl InstallError {
             InstallError::Integrity { detail } => {
                 format!("the downloaded package failed its registry check: {detail}")
             }
+            InstallError::RuntimeUnavailable {
+                package_id,
+                runtime,
+                registry,
+            } => format!(
+                "{package_id} needs runtime {runtime}, the exact runtime build it was made for; \
+                 this device does not have it and the {registry} registry does not offer it, so \
+                 nothing was changed"
+            ),
         }
     }
 }
@@ -164,13 +180,26 @@ fn payload_source(app: &CatalogueApp) -> Option<String> {
         .map(|registry| registry.base_url)
 }
 
+/// Largest runtime `.tapp` fetched as one file. A runtime's large libraries
+/// travel as content-addressed payload blobs from the registry, so the
+/// package itself is its signed metadata and small files.
+const MAX_RUNTIME_TAPP_BYTES: u64 = 64 * 1024 * 1024;
+
+fn tapp_limit(app: &CatalogueApp) -> u64 {
+    if registry_types::is_runtime_package_id(&app.package_id) {
+        MAX_RUNTIME_TAPP_BYTES
+    } else {
+        tilo_app_package::MAX_APP_TAPP_BYTES
+    }
+}
+
 fn validate_offer_metadata(app: &CatalogueApp) -> Result<(), InstallError> {
-    if app.tapp_size_bytes == 0 || app.tapp_size_bytes > tilo_app_package::MAX_APP_TAPP_BYTES {
+    let limit = tapp_limit(app);
+    if app.tapp_size_bytes == 0 || app.tapp_size_bytes > limit {
         return Err(InstallError::Integrity {
             detail: format!(
-                "advertised size {} is outside the application tapp limit (1..={} bytes)",
+                "advertised size {} is outside the tapp limit (1..={limit} bytes)",
                 app.tapp_size_bytes,
-                tilo_app_package::MAX_APP_TAPP_BYTES
             ),
         });
     }
@@ -427,6 +456,13 @@ fn install_or_update_app_reporting(
     change: Change,
 ) -> Result<(), InstallError> {
     validate_offer_metadata(app)?;
+    // The runtime first: an app whose runtime is missing does not start, so
+    // replacing a working build with it would break the app.
+    if let Some(runtime) = app.runtime.as_deref()
+        && !registry_types::is_runtime_package_id(&app.package_id)
+    {
+        ensure_runtime(app, runtime, on_progress)?;
+    }
     let staging = staging_dir().ok_or(InstallError::NoStagingDir)?;
     // The package id comes from a signed registry entry, but it still
     // becomes a filename here — refuse anything that could escape the
@@ -471,6 +507,7 @@ fn install_or_update_app_reporting(
         });
     }
 
+    install_optional_runtimes(app, &dest, on_progress);
     let payload_from = payload_source(app);
     let mut command = Command::new(tilo_install_bin());
     if change == Change::Install {
@@ -523,6 +560,73 @@ fn install_or_update_app_reporting(
                 code: out.status.code().unwrap_or(1),
                 detail: installer_complaint(&detail),
             })
+        }
+    }
+}
+
+/// Make the runtime build `runtime` that `app` needs available: installed
+/// already, or fetched from the registry that offers the app.
+fn ensure_runtime(
+    app: &CatalogueApp,
+    runtime: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    if crate::runtime_installed(runtime) {
+        return Ok(());
+    }
+    let unavailable = || InstallError::RuntimeUnavailable {
+        package_id: app.package_id.clone(),
+        runtime: runtime.to_string(),
+        registry: app.registry.clone(),
+    };
+    let offer = crate::runtime_offer(runtime, &app.registry)
+        .map_err(|detail| InstallError::Download { detail })?
+        .ok_or_else(unavailable)?;
+    install_or_update_app_reporting(&offer, on_progress, Change::Install)?;
+    if crate::runtime_installed(runtime) {
+        Ok(())
+    } else {
+        Err(unavailable())
+    }
+}
+
+/// Install the optional runtimes the downloaded app mounts when present —
+/// a browser's engine — that its registry offers. The app starts without
+/// one and says so, so a runtime that cannot be fetched now is reported and
+/// does not stop the install.
+fn install_optional_runtimes(
+    app: &CatalogueApp,
+    staged: &Path,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) {
+    let Ok(file) = std::fs::File::open(staged) else {
+        return;
+    };
+    let Ok(tapp) = tilo_app_package::tapp::read(
+        std::io::BufReader::new(file),
+        &mut tilo_app_package::DiscardBlobs,
+    ) else {
+        return;
+    };
+    for runtime in &tapp.meta.manifest.package.optional_runtimes {
+        if crate::runtime_installed(runtime) {
+            continue;
+        }
+        let outcome = crate::runtime_offer(runtime, &app.registry)
+            .map_err(|detail| InstallError::Download { detail })
+            .and_then(|offer| match offer {
+                Some(offer) => {
+                    install_or_update_app_reporting(&offer, on_progress, Change::Install)
+                }
+                None => Err(InstallError::NotOffered {
+                    package_id: runtime.clone(),
+                }),
+            });
+        if let Err(error) = outcome {
+            eprintln!(
+                "app: {} can use runtime {runtime}, which was not installed: {error}",
+                app.package_id
+            );
         }
     }
 }

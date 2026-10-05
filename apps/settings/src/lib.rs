@@ -147,4 +147,4 @@ pub(crate) fn clear_text_object(
         }
     }
 }
-pub use resource::{Settings, SettingsShell};
+pub use resource::{Settings, SettingsEffect, SettingsShell, parse_settings_uri};

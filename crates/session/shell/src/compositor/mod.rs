@@ -11,6 +11,8 @@ pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
 #[cfg(target_os = "linux")]
+pub(crate) mod admin_control;
+#[cfg(target_os = "linux")]
 pub mod agent_seats;
 #[cfg(target_os = "linux")]
 mod audio_capture;
@@ -38,6 +40,7 @@ pub mod drag_feedback;
 pub mod floating_service;
 pub mod foreign;
 pub mod frame;
+pub mod frame_stall;
 #[cfg(target_os = "linux")]
 pub mod gpu_health;
 pub mod gpu_import;
@@ -53,6 +56,7 @@ pub mod input_environment;
 pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
+pub mod key_latency;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;

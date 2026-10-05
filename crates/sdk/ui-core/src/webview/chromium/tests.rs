@@ -277,8 +277,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
     // phase: private_packaged_helper_discovery_failure_removes_root
     {
         let fixture = tempfile::tempdir().unwrap();
-        let isolated_executable = fixture.path().join("isolated/bin/browser-test");
-        std::fs::create_dir_all(isolated_executable.parent().unwrap()).unwrap();
         let root = private_root();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -286,8 +284,8 @@ fn private_engines_own_and_remove_their_disposable_roots() {
                 "webview::chromium::tests::private_packaged_helper_discovery_failure_child",
                 "--ignored",
             ])
-            .env_remove("TILO_CHROMIUM_HOST")
-            .env("TILO_TEST_CHROMIUM_DISCOVERY_EXE", isolated_executable)
+            .env_remove(runtime::HOST_OVERRIDE_ENV)
+            .env(runtime::RUNTIME_DIR_ENV, fixture.path())
             .env("TILO_TEST_PRIVATE_ROOT", &root)
             .status()
             .unwrap();
@@ -322,16 +320,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
             .unwrap();
         assert!(result.success());
         assert!(!root.exists(), "root must be absent when the child exits");
-    }
-    // phase: unavailable_private_engine_owns_its_disposable_root
-    {
-        let root = private_root();
-        let engine =
-            UnavailableEngine::new_with_private_root("Private backend unavailable".into(), &root)
-                .unwrap();
-        assert!(root.exists());
-        drop(engine);
-        assert!(!root.exists());
     }
 }
 
@@ -1209,13 +1197,14 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             request: PageRequest::Fill {
                 element: "d2e7".into(),
                 text: "ada@example.test".into(),
+                secret: false,
             },
         };
         assert!(command_within_limits(&command));
         assert_eq!(
             encode_command(command),
             Some(
-                json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test"})
+                json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test","secret":false})
             )
         );
         for invalid in [
@@ -1256,6 +1245,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                     url: "https://shop.test/cart".into(),
                     message: "Clicked".into(),
                     outline: None,
+                    data: None,
                     navigated: true,
                     loading: true,
                 }),
@@ -1284,6 +1274,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             request_id: 8,
             request: PageRequest::Submit {
                 element: "not a ref".into(),
+                cross_origin: false,
             },
         });
         let answered = engine.drain_events().into_iter().any(|event| {
@@ -1693,4 +1684,19 @@ fn shared_owner_child() {
     drop(owner);
     serve_shared_until_idle();
     std::fs::write(profile.join("served"), b"").unwrap();
+}
+
+#[test]
+fn the_engine_host_does_not_inherit_the_app_loader_environment() {
+    let command = host_command(Path::new(
+        "/run/tilo-runtime/x/lib/chromium/tilo-chromium-host",
+    ));
+    for name in ["LD_LIBRARY_PATH", "LD_PRELOAD"] {
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == name && value.is_none()),
+            "the host must start without the app's {name}"
+        );
+    }
 }

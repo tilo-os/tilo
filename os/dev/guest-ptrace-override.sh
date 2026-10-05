@@ -18,7 +18,7 @@ rebuilt_initrd=/tmp/tilo-ptrace-initrd.img
 dracut --force --reproducible --compress zstd --kver "$kver" \
   --omit 'network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh' \
   --omit-drivers "amdgpu nouveau xe xfs" --add-drivers ext4 \
-  --add 'crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback' \
+  --add 'crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock' \
   --include "$override" "$override" "$rebuilt_initrd"
 [[ -s "$rebuilt_initrd" ]]
 mount -o remount,rw /boot

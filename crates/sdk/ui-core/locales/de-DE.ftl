@@ -81,6 +81,7 @@ history-mode-unavailable = Verlauf nicht verfügbar
 history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
 history-mode-back-to-activity = Zurück zur Aktivität
 history-mode-back-to-live = Zurück zur aktuellen Version
+history-mode-earlier = Frühere Änderungen anzeigen
 history-mode-before = Vorher
 history-mode-after = Nachher
 history-mode-showing-before = Frühere Version: Vorher
@@ -420,3 +421,9 @@ widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizi
 
 widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
 widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
+
+block-editor-replace-placeholder = Ersetzen durch
+block-editor-replace = Ersetzen
+
+block-editor-replace-all = Alle ersetzen
+block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld

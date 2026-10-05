@@ -69,6 +69,9 @@ pub struct EditableLabel {
     edits_on_click: bool,
     /// Shown, dimmed, while the value is empty and no edit is open.
     placeholder: Option<String>,
+    /// Set by something else that offers a rename (a context menu's
+    /// "Rename"): the label begins an edit with the next event it sees.
+    edit_request: Option<crate::LocalState<bool>>,
 }
 
 impl EditableLabel {
@@ -92,7 +95,16 @@ impl EditableLabel {
             grow: false,
             edits_on_click: false,
             placeholder: None,
+            edit_request: None,
         }
+    }
+
+    /// Begin an edit when `request` is set, as a rename offered elsewhere
+    /// (a context menu) asks; the label clears it once the edit is open.
+    #[must_use]
+    pub fn begins_editing_on(mut self, request: &crate::LocalState<bool>) -> Self {
+        self.edit_request = Some(request.clone());
+        self
     }
 
     /// Invoke `binding` with each committed value that differs from the one
@@ -411,6 +423,14 @@ impl Widget for EditableLabel {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
+        if !self.editing
+            && let Some(request) = &self.edit_request
+            && request.get()
+        {
+            request.set(false);
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
         }
         if !self.editing {
             self.begin_on_press(event, ctx);

@@ -18,6 +18,21 @@ sys.modules[SPEC.name] = CLIENT
 SPEC.loader.exec_module(CLIENT)
 
 
+class PageServerTests(unittest.TestCase):
+    def test_the_served_page_carries_the_expected_title_and_records_its_fetch(self):
+        import urllib.request
+
+        server, url, requests = CLIENT.serve_page("Engine <check>")
+        try:
+            self.assertTrue(url.startswith("http://127.0.0.1:"))
+            with urllib.request.urlopen(url, timeout=10) as response:
+                body = response.read().decode()
+            self.assertIn("<title>Engine &lt;check&gt;</title>", body)
+            self.assertEqual(requests, ["/"])
+        finally:
+            server.shutdown()
+
+
 class SettingsNetworkTests(unittest.TestCase):
     DEVICES = "ethernet:connected:Wired connection 1\nwifi:connected:caf\\:e\nloopback:connected (externally):lo\n"
 
@@ -40,6 +55,18 @@ class SettingsNetworkTests(unittest.TestCase):
         self.assertEqual(len(problems), 3, problems)
         failed = good + ["('Can\u2019t read network status: nmcli not installed',)", "(\"Can't check connectivity: x\",)"]
         self.assertTrue(CLIENT.network_mismatches(failed, expected))
+
+
+class OnScreenKeyboardTests(unittest.TestCase):
+    def test_extents_replies_parse_into_rectangles(self):
+        self.assertEqual(CLIENT.extents_reply("((12, -3, 640, 48),)\n"), (12, -3, 640, 48))
+        self.assertIsNone(CLIENT.extents_reply("()"))
+
+    def test_the_keyboard_docks_where_the_compositor_places_it(self):
+        # crates/session/shell/src/shell/frame.rs `layout_osk_overlay`.
+        self.assertEqual(CLIENT.keyboard_rect(1280, 800), (160.0, 460.0, 960.0, 320.0))
+        self.assertEqual(CLIENT.keyboard_rect(1920, 1080), (480.0, 680.0, 960.0, 380.0))
+        self.assertEqual(CLIENT.keyboard_rect(400, 300), (20.0, 60.0, 360.0, 220.0))
 
 
 class ManifestScenarioTests(unittest.TestCase):
@@ -94,6 +121,64 @@ class ManifestScenarioTests(unittest.TestCase):
         with self.subTest(phase='name matching uses an atspi string value'):
             tree = {"/node/1": "(< 'Settings' >,)", "/node/2": "(< 'Other' >,)"}
             self.assertEqual(CLIENT.AtspiClient.named(tree, "Settings"), ["/node/1"])
+
+
+class TypingTargetTests(unittest.TestCase):
+    def test_a_named_field_or_else_the_document_takes_typing(self):
+        from unittest import mock
+
+        client = mock.Mock()
+        client.interfaces.return_value = "['org.a11y.atspi.EditableText', 'org.a11y.atspi.Component']"
+        # AccessKit answers GetRole with an AtspiRole number; 82 is a document frame.
+        client.role.return_value = 82
+        target = CLIENT.is_typing_target
+        with self.subTest(phase="a block editor's editable line, by name"):
+            self.assertTrue(target(client, "/1", "(<'Block text'>,)", "Block text"))
+            self.assertFalse(target(client, "/2", "(<'Page title'>,)", "Block text"))
+        with self.subTest(phase="without a field name, the document"):
+            self.assertTrue(target(client, "/3", "(<''>,)", None))
+            client.role.return_value = 43  # a push button
+            self.assertFalse(target(client, "/4", "(<'New note'>,)", None))
+
+
+class KeyboardFocusTests(unittest.TestCase):
+    def focus_client(self, states: list[int]):
+        from unittest import mock
+
+        client = mock.Mock()
+        client.tree.return_value = {"/page": "(<'Web content'>,)", "/address": "(<'Address and search'>,)"}
+        client.interfaces.return_value = "['org.a11y.atspi.EditableText', 'org.a11y.atspi.Component']"
+        replies = iter(states)
+
+        def call(path, method, *args, check=True):
+            if method.endswith("GetState"):
+                return f"([uint32 {next(replies, states[-1])}, 0],)"
+            return "()"
+
+        client.call.side_effect = call
+        return client
+
+    def test_ready_waits_until_the_field_holds_the_keyboard(self):
+        from unittest import mock
+
+        # The window is mapped and focused on the third look.
+        client = self.focus_client([0, 0, CLIENT.FOCUSED_STATE_BIT])
+        with mock.patch.object(CLIENT.time, "sleep"):
+            CLIENT.wait_for_keyboard_focus(client, "Address and search", 5)
+        methods = [c.args[:2] for c in client.call.call_args_list]
+        self.assertEqual(methods[0], ("/address", "org.a11y.atspi.Component.GrabFocus"))
+        self.assertEqual(sum(m == "org.a11y.atspi.Accessible.GetState" for _, m in methods), 3)
+
+    def test_a_window_that_never_takes_the_keyboard_fails_the_gate(self):
+        from unittest import mock
+
+        client = self.focus_client([0])
+        clock = iter(range(0, 1000, 10))
+        with mock.patch.object(CLIENT.time, "sleep"), \
+                mock.patch.object(CLIENT.time, "monotonic", lambda: next(clock)), \
+                mock.patch.object(CLIENT, "app_log", return_value="(nothing)"):
+            with self.assertRaisesRegex(CLIENT.GateError, "never took keyboard focus"):
+                CLIENT.wait_for_keyboard_focus(client, "Address and search", 30)
 
 
 class TypedTextTests(unittest.TestCase):
@@ -184,6 +269,112 @@ class AppDrivingTests(unittest.TestCase):
         finally:
             CLIENT.AtspiClient.tree = original
         self.assertEqual(names, ["App Store", "Update all", "Settings, offered by a test registry"])
+
+
+class FakeShell:
+    """A desktop with two window groups: [Notes] and [Browser, Browser]."""
+
+    ROOT = CLIENT.ROOT_PATH
+    BASE = "/org/a11y/atspi/accessible/"
+
+    def __init__(self):
+        b = self.BASE
+        self.nodes = {
+            self.ROOT: ("frame", "", [b + "1", b + "4"]),
+            b + "1": ("page tab list", "", [b + "2", b + "3"]),
+            b + "2": ("page tab", "Notes", []),
+            b + "3": ("push button", "New tab", []),
+            b + "4": ("page tab list", "", [b + "5", b + "6", b + "7"]),
+            b + "5": ("page tab", "Browser", []),
+            b + "6": ("page tab", "Browser", []),
+            b + "7": ("push button", "New tab", []),
+        }
+
+    def tree(self, _limit):
+        return {path: f"(<'{name}'>,)" for path, (_role, name, _kids) in self.nodes.items()}
+
+    def property(self, path, _name):
+        return f"(<'{self.nodes[path][1]}'>,)"
+
+    def role(self, path):
+        return CLIENT.AtspiClient.role(self, path)
+
+    def call(self, path, method, *args, check=True):
+        role, _name, kids = self.nodes[path]
+        if method.endswith("GetRole"):
+            number = {"frame": 23, "page tab": 37, "page tab list": 38, "push button": 43}[role]
+            return f"(uint32 {number},)"
+        if method.endswith("GetChildren"):
+            return "([" + ", ".join(f"(':1.2', objectpath '{kid}')" for kid in kids) + "],)"
+        raise AssertionError(method)
+
+
+class FakeSettings(CLIENT.AtspiClient):
+    """Settings on the shared shell: wide, the category list sits beside the
+    pane; narrow, it opens on the Network pane with a Back arrow to the list.
+    Each screen maps a name to whether it can be clicked."""
+
+    LIST = {"Settings": False, "Network": True, "Appearance": True, "Accessibility": True}
+    PANE = {"Settings": False, "Back": True, "Network": False, "Connectivity": False}
+
+    def __init__(self, narrow: bool):
+        super().__init__("unix:path=/x", ":1.2")
+        wide = {**self.PANE, **self.LIST}
+        del wide["Back"]
+        self.screen = self.PANE if narrow else wide
+        self.clicked: list[str] = []
+
+    def tree(self, limit=0):
+        return {f"/{index}": f"(<'{name}'>,)" for index, name in enumerate(self.screen)}
+
+    def call(self, path, method, *args, check=True):
+        name = list(self.screen)[int(path[1:])]
+        if method.endswith("GetActions"):
+            return "([('click', '', '')],)" if self.screen[name] else "([],)"
+        if method.endswith("DoAction"):
+            self.clicked.append(name)
+            if name == "Back":
+                self.screen = self.LIST
+            return "(true,)"
+        raise AssertionError(method)
+
+
+class NarrowWindowTests(unittest.TestCase):
+    def test_a_wide_window_clicks_the_category_in_place(self):
+        settings = FakeSettings(narrow=False)
+        tree = CLIENT.wait_for_reachable(settings, ("Network",), "settings", clickable=True)
+        settings.click(tree, "Network")
+        self.assertEqual(settings.clicked, ["Network"])
+
+    def test_a_narrow_window_goes_back_to_the_list_for_the_category(self):
+        # The pane's heading is named "Network" too; only the list entry clicks.
+        settings = FakeSettings(narrow=True)
+        tree = CLIENT.wait_for_reachable(settings, ("Network",), "settings", clickable=True)
+        settings.click(tree, "Network")
+        self.assertEqual(settings.clicked, ["Back", "Network"])
+
+    def test_manifest_names_on_the_list_are_reached_from_a_narrow_pane(self):
+        settings = FakeSettings(narrow=True)
+        CLIENT.wait_for_reachable(settings, ("Settings", "Appearance", "Accessibility"), "settings")
+        self.assertEqual(settings.clicked, ["Back"])
+
+    def test_a_name_missing_from_both_screens_fails_after_one_back(self):
+        from unittest import mock
+
+        settings = FakeSettings(narrow=True)
+        with mock.patch.object(CLIENT, "START_TIMEOUT_SECONDS", 0.05), \
+                mock.patch.object(CLIENT, "POLL_SECONDS", 0.001):
+            with self.assertRaisesRegex(CLIENT.GateError, "click-capable Sound .also not after going Back"):
+                CLIENT.wait_for_reachable(settings, ("Sound",), "settings", clickable=True)
+        self.assertEqual(settings.clicked, ["Back"])
+
+
+class TabListTests(unittest.TestCase):
+    def test_window_group_strips_list_only_their_tabs(self):
+        lists = CLIENT.tab_lists(FakeShell())
+        self.assertEqual(len(lists), 2)
+        self.assertEqual([len(tabs) for tabs in lists], [1, 2])
+        self.assertTrue(all("Browser" in name for name in lists[1]))
 
 
 if __name__ == "__main__":
