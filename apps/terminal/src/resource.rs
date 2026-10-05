@@ -522,6 +522,9 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         effect: TerminalEffect,
         _cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
+        if effect == TerminalEffect::InspectSession {
+            return Ok(Effected::value(self.inspect_session()));
+        }
         self.perform(effect).map(|()| Effected::done())
     }
     fn effects(&self) -> Vec<EffectStatus> {
