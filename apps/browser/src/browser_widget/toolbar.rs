@@ -7,7 +7,7 @@
 //! ([`MenuButton`]). In a compact window the site information, bookmark and
 //! library commands join them: nothing is ever hidden, only moved.
 
-use tilo_app::prelude::Resource;
+use ui::prelude::Resource;
 
 use ui::icons::Icon;
 use ui::theme::Theme;

@@ -186,7 +186,7 @@ fn text_cell(
         Table::Form => crate::actions::RowSection::Form,
     };
     let input = TextInput::from_state(state)
-        .with_id(format!("api.kv.{section:?}.{id}.{field}"))
+        .with_id(&format!("api.kv.{section:?}.{id}.{field}"))
         .with_kind(TextInputKind::Code)
         .with_plain_chrome()
         .with_placeholder(name)
@@ -207,7 +207,7 @@ fn text_cell(
                 },
             ),
         ),
-        None => input.with_enabled(false),
+        None => input.disabled(true),
     };
     // The plain field draws its text at its own edge; the inset lines the
     // text up under the column's header.
