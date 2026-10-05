@@ -190,6 +190,12 @@ pub enum StoreEffect {
         #[param("App name, publisher, category, or description")]
         query: String,
     },
+    /// Browse apps from a configured Flatpak repository.
+    #[effect(job, permission = "read")]
+    BrowseRemote {
+        #[param("Configured repository resource identity, including its account or device scope")]
+        remote: String,
+    },
     /// Filter apps by source.
     #[effect(permission = "read")]
     SetSource {

@@ -279,10 +279,52 @@ impl BlockingClient {
         )
     }
 
-    /// Read the host's Flatpak state without executing tools in the app sandbox.
+    /// Read cached app metadata from one configured Flatpak repository.
     ///
     /// # Errors
-    /// Returns an error if the service cannot observe its host installation.
+    /// Returns why the repository cannot be read on this device.
+    pub fn flatpak_catalogue(&self, remote: &str, user_managed: bool) -> Result<String, String> {
+        let mut request = self.client.flatpak_catalogue_request();
+        request.get().set_remote(remote);
+        request.get().set_user_managed(user_managed);
+        let response = self.wait(request.send().promise)?;
+        response
+            .get()
+            .map_err(|e| e.to_string())?
+            .get_rows()
+            .map_err(|e| e.to_string())?
+            .to_string()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Install from a configured repository belonging to this account.
+    ///
+    /// # Errors
+    /// Returns why the repository or installation was refused.
+    pub fn flatpak_install_remote(
+        &self,
+        remote: &str,
+        app_id: &str,
+        branch: &str,
+    ) -> Result<String, String> {
+        let mut request = self.client.flatpak_install_remote_request();
+        request.get().set_remote(remote);
+        request.get().set_app_id(app_id);
+        request.get().set_branch(branch);
+        let response = self.wait(request.send().promise)?;
+        response
+            .get()
+            .map_err(|e| e.to_string())?
+            .get_status()
+            .map_err(|e| e.to_string())?
+            .to_string()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Read host Flatpak state without executing tools in the app sandbox.
+    ///
+    /// # Errors
+    /// Returns why the host installation cannot be read.
     pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
         let response = self.wait(self.client.flatpak_status_request().send().promise)?;
         let result = response.get().map_err(|e| e.to_string())?;

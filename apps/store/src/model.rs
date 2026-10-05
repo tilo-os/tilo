@@ -26,14 +26,30 @@ pub enum StoreSource {
     Tilo { registry_name: String },
     /// A Flathub-hosted Flatpak app.
     Flathub,
+    /// A configured Flatpak repository. Its original scope is retained.
+    FlatpakRemote {
+        name: String,
+        title: String,
+        branch: String,
+        user_managed: bool,
+    },
 }
 
 impl StoreSource {
+    /// The repository whose metadata is shown, without inventing trust claims.
+    pub fn distribution_name(&self) -> &str {
+        match self {
+            Self::Tilo { registry_name } => registry_name,
+            Self::Flathub => "Flathub",
+            Self::FlatpakRemote { title, .. } => title,
+        }
+    }
+
     /// Short label used on filter chips.
     pub fn short_label(&self) -> &'static str {
         match self {
             StoreSource::Tilo { .. } => "Tilo",
-            StoreSource::Flathub => "Flatpak",
+            StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => "Flatpak",
         }
     }
 }
@@ -43,13 +59,16 @@ impl StoreSource {
 pub enum StoreTrust {
     PublisherSigned,
     Flathub,
+    /// Metadata from the device’s configured Flatpak repository.
+    ConfiguredRemote,
 }
 
 impl StoreTrust {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::PublisherSigned => "Publisher + registry verified",
-            Self::Flathub => "Flathub distribution",
+            Self::PublisherSigned => "Publisher + registry verified".to_string(),
+            Self::Flathub => "Flathub distribution".to_string(),
+            Self::ConfiguredRemote => ui::i18n!("store-remote-trust-short"),
         }
     }
 }
@@ -288,16 +307,35 @@ impl StoreItem {
                     ActionKind::Open
                 }
             }
-            (StoreSource::Flathub, _, false) => ActionKind::NeedsFlatpakHost,
-            (StoreSource::Flathub, InstalledState::Not, true) => ActionKind::FlatpakInstall,
-            (StoreSource::Flathub, InstalledState::Installed { .. }, true)
-                if !self.latest_version().is_empty() && self.installed.update_available() =>
+            (StoreSource::Flathub | StoreSource::FlatpakRemote { .. }, _, false) => {
+                ActionKind::NeedsFlatpakHost
+            }
+            (
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+                InstalledState::Not,
+                true,
+            ) => ActionKind::FlatpakInstall,
+            (
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+                InstalledState::Installed { .. },
+                true,
+            ) if !self.latest_version().is_empty()
+                && self.installed.update_available()
+                && matches!(
+                    self.installed,
+                    InstalledState::Installed {
+                        user_managed: true,
+                        ..
+                    }
+                ) =>
             {
                 ActionKind::FlatpakUpdate
             }
-            (StoreSource::Flathub, InstalledState::Installed { .. }, true) => {
-                ActionKind::FlatpakOpen
-            }
+            (
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+                InstalledState::Installed { .. },
+                true,
+            ) => ActionKind::FlatpakOpen,
         }
     }
 
@@ -336,10 +374,55 @@ impl StoreItem {
                     user_managed: true, ..
                 },
             ) => Some(ActionKind::Remove),
-            (StoreSource::Flathub, InstalledState::Installed { .. }) => {
-                Some(ActionKind::FlatpakRemove)
-            }
+            (
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+                InstalledState::Installed {
+                    user_managed: true, ..
+                },
+            ) => Some(ActionKind::FlatpakRemove),
             _ => None,
+        }
+    }
+
+    /// Flatpak device repositories and device installs are read-only here.
+    pub fn managed_by_device(&self, action: ActionKind) -> bool {
+        match action {
+            ActionKind::FlatpakInstall => matches!(
+                self.source,
+                StoreSource::FlatpakRemote {
+                    user_managed: false,
+                    ..
+                }
+            ),
+            ActionKind::FlatpakUpdate | ActionKind::FlatpakRemove => matches!(
+                self.installed,
+                InstalledState::Installed {
+                    user_managed: false,
+                    ..
+                }
+            ),
+            _ => false,
+        }
+    }
+
+    /// The same availability contract for controls, rows and direct invocation.
+    pub fn unavailable_action(&self, action: ActionKind) -> Option<(&'static str, String)> {
+        if self.managed_by_device(action) {
+            Some((
+                "device_managed_repository",
+                ui::i18n!("store-remote-managed"),
+            ))
+        } else if matches!(action, ActionKind::Open | ActionKind::Update)
+            && matches!(self.source, StoreSource::Tilo { .. })
+            && self.versions.is_empty()
+            && !self.installed.is_installed()
+        {
+            Some((
+                "device_version_unavailable",
+                ui::i18n!("store-device-version-unavailable"),
+            ))
+        } else {
+            None
         }
     }
 
@@ -348,7 +431,8 @@ impl StoreItem {
     /// stale agent result cannot turn an old "Remove" or "Update" offer into
     /// a different package-management operation.
     pub fn allows_action(&self, action: ActionKind, flatpak_available: bool) -> bool {
-        (!action.requires_flatpak_host() || flatpak_available)
+        self.unavailable_action(action).is_none()
+            && (!action.requires_flatpak_host() || flatpak_available)
             && (self.action_kind(flatpak_available) == action
                 || self.pin_action() == Some(action)
                 || self.remove_action() == Some(action))
@@ -430,7 +514,10 @@ impl SourceFilter {
         match self {
             SourceFilter::All => true,
             SourceFilter::Tilo => matches!(item.source, StoreSource::Tilo { .. }),
-            SourceFilter::Flatpak => matches!(item.source, StoreSource::Flathub),
+            SourceFilter::Flatpak => matches!(
+                item.source,
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. }
+            ),
             SourceFilter::Installed => !matches!(item.installed, InstalledState::Not),
             SourceFilter::Updates => item.installed.update_available(),
         }

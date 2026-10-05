@@ -191,11 +191,11 @@ fn badge_line(item: &StoreItem) -> String {
                 format!("Tilo verified · v{v}")
             }
         }
-        StoreSource::Flathub => {
+        StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
             if v.is_empty() {
-                "Flathub distribution".into()
+                format!("{} distribution", item.source.distribution_name())
             } else {
-                format!("Flathub · v{v}")
+                format!("{} · v{v}", item.source.distribution_name())
             }
         }
     }
