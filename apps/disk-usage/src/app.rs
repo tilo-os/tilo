@@ -4,7 +4,7 @@ use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
 use crate::resource::{DiskUsage, DiskUsageEffect, RecentFolders, analyze, folder_row, recent_row};
-use ui::framework::{Dispatcher, EffectCx, Effected, LiveRow, Setting};
+use ui::framework::{Actions, Dispatcher, EffectCx, Effected, LiveRow, Setting};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -265,6 +265,7 @@ pub struct DiskUsageApp {
     scan_cancellation: Option<ScanCancellation>,
     pub(crate) immediate: bool,
     pub(crate) dispatcher: Option<Dispatcher<DiskUsage>>,
+    pub(crate) actions: Option<Actions<DiskUsage>>,
 }
 
 impl DiskUsageApp {
@@ -312,6 +313,7 @@ impl DiskUsageApp {
             scan_cancellation: None,
             immediate: false,
             dispatcher: None,
+            actions: None,
         };
         app.rebuild();
         app
@@ -464,28 +466,39 @@ impl DiskUsageApp {
     }
 
     fn bind(&self, button: Button, effect: &DiskUsageEffect) -> Button {
-        let dispatcher = self.dispatcher.clone();
-        let effect = effect.clone();
-        button
-            .with_enabled(dispatcher.is_some())
-            .on_effect(move || {
-                if let Some(dispatcher) = &dispatcher {
-                    dispatcher.effect(&effect);
-                }
-            })
+        match self
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.effect(effect))
+        {
+            Some(binding) => button.on_action(binding),
+            None => button.with_enabled(false),
+        }
     }
+
+    fn bind_folder(&self, row: ListRow, path: &std::path::Path) -> ListRow {
+        match self
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.effect(&analyze(path)))
+        {
+            Some(binding) => row.on_action(binding),
+            None => row.with_enabled(false),
+        }
+    }
+
     fn place_row(&self, place: &Place) -> Element {
-        let inbox = Rc::clone(&self.inbox);
-        let path = place.path.clone();
         Box::new(
-            ListRow::new(
-                format!("disk-usage.place:{}", place.path.display()),
-                &place.label,
-            )
-            .icon(Icon::Folder)
-            .secondary(place.path.to_string_lossy())
-            .disclosure()
-            .on_activate(move || inbox.borrow_mut().push(Request::Analyze(path.clone()))),
+            self.bind_folder(
+                ListRow::new(
+                    format!("disk-usage.place:{}", place.path.display()),
+                    &place.label,
+                )
+                .icon(Icon::Folder)
+                .secondary(place.path.to_string_lossy())
+                .disclosure(),
+                &place.path,
+            ),
         )
     }
 
@@ -530,9 +543,14 @@ impl DiskUsageApp {
             .with_icon(Icon::FolderOpen)
             .with_action("Choose another folder")
             .with_action_id("disk-usage.error.choose");
-        if let Some(dispatcher) = self.dispatcher.clone() {
-            recover = recover.on_effect(move || dispatcher.effect(&DiskUsageEffect::Choose));
-        }
+        recover = match self
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.effect(&DiskUsageEffect::Choose))
+        {
+            Some(binding) => recover.on_action(binding),
+            None => recover.with_enabled(false),
+        };
         Box::new(recover)
     }
 
@@ -544,13 +562,7 @@ impl DiskUsageApp {
         if !row.interactive {
             return Box::new(list_row);
         }
-        let inbox = Rc::clone(&self.inbox);
-        let path = PathBuf::from(&row.id);
-        Box::new(
-            list_row
-                .disclosure()
-                .on_activate(move || inbox.borrow_mut().push(Request::Analyze(path.clone()))),
-        )
+        Box::new(self.bind_folder(list_row.disclosure(), std::path::Path::new(&row.id)))
     }
 
     fn analysis_view(&self, result: &ScanResult) -> Element {
