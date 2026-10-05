@@ -12,12 +12,12 @@ fn fixture(viewport: (u32, u32), theme: Theme) -> CaptureResult<(FrameHarness, R
     let calls = Rc::new(Cell::new(0_u32));
     let mut column = Column::new();
     for id in ["first", "second"] {
-        let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit", false);
+        let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit");
         resource.id = tilo_actions::ResourceId::new(id);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit")?;
         let counter = calls.clone();
         column = column.push(resource_actions::immediate(
-            Box::new(Button::new(id, "Same label", None).on_action(binding)),
+            Box::new(Button::new(id, "Same label").on_action(binding)),
             resource,
             move |_| {
                 counter.set(counter.get().saturating_add(1));
