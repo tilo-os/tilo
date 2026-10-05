@@ -1335,7 +1335,10 @@ impl Widget for MediaGrid {
         let style = match self.mode {
             GridMode::Columns => Style {
                 display: taffy::Display::Grid,
-                grid_template_columns: vec![taffy::style_helpers::fr(1.0_f32)],
+                grid_template_columns: vec![taffy::style_helpers::minmax(
+                    length(0.0_f32),
+                    taffy::style_helpers::fr(1.0_f32),
+                )],
                 grid_auto_rows: vec![taffy::style_helpers::min_content()],
                 gap: taffy::Size {
                     width: length(crate::num::f32_of_f64(column_gap)),
@@ -1387,7 +1390,18 @@ impl Widget for MediaGrid {
                 // Measure text at the narrowest rounded width so every card's
                 // title still fits its shared row height.
                 let column = card_column_width(width, columns, self.column_gap).floor();
-                let tracks = vec![taffy::style_helpers::fr(1.0_f32); columns];
+                // A bare fraction retains an automatic intrinsic minimum.
+                // MediaCard measures its artwork from the available width,
+                // which during intrinsic sizing may be the whole parent.
+                // Zero-minimum tracks let the chosen columns share that
+                // width instead of each claiming the whole viewport.
+                let tracks = vec![
+                    taffy::style_helpers::minmax(
+                        length(0.0_f32),
+                        taffy::style_helpers::fr(1.0_f32),
+                    );
+                    columns
+                ];
                 if let Ok(current) = taffy.style(node)
                     && current.grid_template_columns != tracks
                 {

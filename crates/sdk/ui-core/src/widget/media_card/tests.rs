@@ -281,6 +281,17 @@ fn equal_column_rows_use_the_remainder_of_odd_viewport_widths() {
             for pair in row.windows(2) {
                 assert!(pair[0].x1 <= pair[1].x0);
             }
+            for card in &cards {
+                assert!(card.x0 >= bounds.x0 && card.x1 <= bounds.x1 + 0.5);
+            }
+            for complete_row in cards.chunks_exact(row.len()) {
+                assert!((complete_row[0].x0 - bounds.x0).abs() < 0.5);
+                assert!((complete_row.last().unwrap().x1 - bounds.x1).abs() < 0.5);
+                for pair in complete_row.windows(2) {
+                    assert!((pair[0].y0 - pair[1].y0).abs() < 0.5);
+                    assert!(pair[0].x1 <= pair[1].x0);
+                }
+            }
         }
     }
 }

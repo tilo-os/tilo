@@ -3018,7 +3018,7 @@ mod tests {
     // --- navigation rail ---
 
     #[test]
-    fn the_rail_stays_docked_and_navigates_through_published_actions() {
+    fn the_rail_adapts_and_navigates_through_published_actions() {
         // Case `route_shot_seeds_the_navigation_authority_with_the_visible_route`.
         {
             let app = TubeApp::new().with_route_shot(Route::Trending);
@@ -3043,10 +3043,12 @@ mod tests {
             })
             .expect("the viewer is mounted");
         }
-        // Case `the_rail_docks_at_every_width`.
+        // The shared shell docks the rail when it fits and exposes a real
+        // hamburger-controlled drawer on narrower windows.
         {
-            for width in [1280, 800, 560] {
-                let framed = ui::headless::Framed::new(
+            use ui::widget::SidebarPlacement::{Docked, Drawer};
+            for (width, placement) in [(1280, Docked), (800, Drawer), (560, Drawer)] {
+                let mut framed = ui::headless::Framed::new(
                     ui::State::new(),
                     TubeApp::new(),
                     (width, 800),
@@ -3054,12 +3056,21 @@ mod tests {
                 );
                 assert_eq!(
                     framed.shell.geometry().sidebar,
-                    ui::widget::SidebarPlacement::Docked,
-                    "the icon rail fits beside the content at {width} px"
+                    placement,
+                    "the shared shell adapts the rail at {width} px"
                 );
+                if placement == Drawer {
+                    assert!(
+                        !framed.sidebar_open_for_test(),
+                        "the narrow drawer starts closed"
+                    );
+                    ui::headless::Framed::harness_mut(&mut framed)
+                        .click_named("nav-shell-sidebar")
+                        .expect("the hamburger opens the narrow rail");
+                }
                 assert!(
                     framed.sidebar_open_for_test(),
-                    "the rail shows at {width} px"
+                    "the rail is reachable at {width} px"
                 );
             }
         }
