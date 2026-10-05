@@ -306,6 +306,22 @@ sys.exit(0 if re.search(pattern, source) else 1)
         || bad "os/Containerfile does not install the compositor-owned 'tools' service."
       continue
     fi
+    # The system interface is no daemon either: it is the launcher's
+    # image-owned system authority grant, served to the image's control panel
+    # when it declares it, at a version the image declares serving.
+    if [ "$svc" = "system" ]; then
+      services="$REPO/crates/packaging/launcher/src/services.rs"
+      authority="$REPO/crates/packaging/launcher/src/system_authority.rs"
+      if grep -Fq 'pub const SYSTEM_SERVICE: &str = "system";' "$services" \
+          && grep -Fq 'services.contains_key(crate::services::SYSTEM_SERVICE)' "$authority" \
+          && grep -Eq '^system *= *\[' "$REPO/os/usr/share/tilo/system-interfaces.toml" \
+          && grep -Eq '^COPY .*os/usr/share/tilo/system-interfaces\.toml .*/usr/share/tilo/' "$CONTAINERFILE"; then
+        ok "apps [$users] require 'system': the launcher grants it and the image declares serving it"
+      else
+        bad "apps [$users] require 'system', but the launcher's grant or the image's system-interfaces.toml does not serve it."
+      fi
+      continue
+    fi
     if [ ! -r "$unit" ]; then
       bad "apps [$users] declare '$svc' as a required service, but $unit_rel does not exist.
       The launcher refuses to start those apps when

@@ -73,6 +73,21 @@ An IP address is only a hint.
   machine reaches devices this way by enrolling as one of the person's
   devices, like any other.
 
+  The route is served by `tilo-device-admin.service` on dev images, a system
+  service rather than the session's endpoint, so a device at the greeter, or
+  one nobody has logged in to since boot, stays reachable. It shares the
+  device key: its endpoint id is derived from it, as tilo-relay's is, since
+  one endpoint id published by two processes would take each other's relay
+  slot, and the device key proves who answers inside the handshake. Both
+  sides present their root-signed certificate and sign a challenge bound to
+  the QUIC connection's two endpoint ids. The device admits only a device of
+  its own identity whose certificate grants `can_administer_devices` and that
+  is not revoked, bridges the session to a fresh `tilo-vmd rpc`, and logs each
+  session and request to its journal. A developer's machine is certified for
+  this with `tilo-enroll certify --capability admin` on the device that holds
+  the identity, which also lists it among the person's devices, where Settings
+  can remove it (`tilo-vm vm enrol-admin`).
+
 ## Updating what it runs
 
 An update is a set of layers, never edits to `/usr`. Every change can be

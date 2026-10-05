@@ -8,22 +8,12 @@ mod open_with_tests {
 
     #[derive(Default)]
     struct RecRunner {
-        calls: Vec<(String, Option<PathBuf>)>,
         /// Paths handed to the system default handler (non-document opens).
         opened: Vec<PathBuf>,
         /// How the desktop answers them; `None` opens.
         refusal: Option<String>,
     }
     impl CommandRunner for RecRunner {
-        fn spawn(&mut self, program: &str, _cwd: &Path) -> std::io::Result<()> {
-            self.calls.push((program.to_string(), None));
-            Ok(())
-        }
-        fn spawn_arg(&mut self, program: &str, arg: &Path, _cwd: &Path) -> std::io::Result<()> {
-            self.calls
-                .push((program.to_string(), Some(arg.to_path_buf())));
-            Ok(())
-        }
         fn open_default(&mut self, path: &Path) -> ui::portal::LaunchChannel {
             self.opened.push(path.to_path_buf());
             let (tx, rx) = std::sync::mpsc::channel();
@@ -117,11 +107,6 @@ mod open_with_tests {
             "the host is asked for every file, with its own path"
         );
         assert!(
-            runner.calls.is_empty(),
-            "the explorer launches nothing itself: {:?}",
-            runner.calls
-        );
-        assert!(
             runner.opened.is_empty(),
             "and does not go behind the host's back to xdg-open"
         );
@@ -163,7 +148,6 @@ mod open_with_tests {
             w.entries = vec![file_entry(f)];
             let mut runner = RecRunner::default();
             assert!(w.open_entry(0, &mut runner).unwrap(), "{f} should open");
-            assert!(runner.calls.is_empty(), "{f} must not spawn a bare binary");
             assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
             assert_eq!(
                 w.status, None,

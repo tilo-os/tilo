@@ -1709,15 +1709,28 @@ onboarding-nearby-code-label = Verification code
 onboarding-nearby-try-again = Try again
 
 # First-login identity setup: pairing with a nearby device
-onboarding-nearby-start-failed = Could not start nearby setup: { $error }
+onboarding-nearby-failed-title = Pairing did not finish
+onboarding-nearby-ended = The pairing window closed or approval was cancelled. Choose Try again.
+onboarding-nearby-unknown = Choose Try again.
+onboarding-nearby-detail = Details: { $detail }
+onboarding-nearby-permission-title = Permission denied: this computer was not allowed to save the pairing
+onboarding-nearby-permission = Tilo could not write where this computer keeps its device identity. Choose Try again once that is fixed.
+onboarding-nearby-storage-full-title = This computer's disk is full
+onboarding-nearby-storage-full = The pairing could not be saved. Free up some space, then choose Try again.
+onboarding-nearby-read-only-title = This computer's storage is read-only
+onboarding-nearby-read-only = The pairing could not be saved. Choose Try again once the storage can be written to.
+onboarding-nearby-unreachable-title = Your other device could not be reached
+onboarding-nearby-unreachable = Check that both devices are on the same network, then choose Try again.
+onboarding-nearby-timed-out-title = No trusted device approved this computer in time
+onboarding-nearby-timed-out = Choose Try again, then approve it on your other device.
+onboarding-nearby-invalid-identity-title = Your other device returned an invalid identity
+onboarding-nearby-invalid-identity = Choose Try again.
+onboarding-nearby-not-started-title = Nearby setup could not start
+onboarding-nearby-not-started = Choose Try again.
 onboarding-nearby-unavailable = Nearby setup is unavailable in this session
 onboarding-nearby-cancelled = Pairing cancelled. Choose Try again to start over.
 onboarding-nearby-code = Check that your other device shows the same code, then approve it there.
 onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
-onboarding-nearby-invalid-identity = Your other device returned an invalid identity. Choose Try again.
-onboarding-nearby-failed = Pairing did not finish: the pairing window closed or approval was cancelled. Choose Try again.
-onboarding-nearby-failed-detail = Pairing did not finish: { $detail }. Choose Try again.
-onboarding-nearby-timed-out = Pairing did not finish: no trusted device approved it in time. Choose Try again.
 
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity

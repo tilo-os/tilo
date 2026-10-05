@@ -400,6 +400,7 @@ mod tests {
                     architecture: std::env::consts::ARCH.into(),
                     isa: "x86_64".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 200,

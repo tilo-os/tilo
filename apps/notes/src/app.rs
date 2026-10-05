@@ -456,7 +456,7 @@ impl NotesApp {
                 .pages()
                 .iter()
                 .filter(|page| page.parent.is_none())
-                .min_by_key(|page| (page.order, page.id))
+                .min_by(|a, b| crate::model::sibling_order(a, b))
                 .map(|page| page.id);
             workspace.set_selected(first);
         }
@@ -1427,8 +1427,7 @@ impl NotesApp {
     }
 
     /// Turn a page-tree change into the matching
-    /// action(s). Deletes are dispatched before upserts so a delete's own sibling
-    /// renumber (which `apply` recomputes in the document) doesn't double-write.
+    /// action(s). Deletes are dispatched before upserts.
     fn dispatch_tree_diff(
         &self,
         doc: &mut AutoCommit,
@@ -3321,7 +3320,7 @@ mod tests {
         let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
         let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
         for action in [
-            actions::new_page_action(page, None, 0, "Shots"),
+            actions::new_page_action(page, None, "a".into(), "Shots"),
             actions::add_image_asset_action(
                 page,
                 bytes,
@@ -3546,7 +3545,7 @@ mod tests {
             |_| None,
         );
         for action in [
-            actions::new_page_action(welcome, None, 0, "Welcome"),
+            actions::new_page_action(welcome, None, "a".into(), "Welcome"),
             actions::write_body_action(welcome, &blocks),
         ] {
             tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
