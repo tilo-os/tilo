@@ -12,11 +12,12 @@
 //!   no provider lists rows for the records open on the room's shared
 //!   desktop, the most recently changed next, up to [`DEFAULT_ROWS_RECORDS`];
 //!   naming a record's provider lists every action that record publishes.
-//! - **Invoke.** The record is mounted headless ([`HostedApp`]) from what the
-//!   service opened of it, the action runs through the app's own door
-//!   (availability, confirmation and argument binding exactly as for a
-//!   person), and the change is sealed and signed as the host device's own,
-//!   so every page receives it as an ordinary durable change.
+//! - **Invoke.** The record is held as a replica of its resource
+//!   ([`Replica`]) from what the service opened of it, the operation runs
+//!   through the resource's own door (permission, confirmation and argument
+//!   binding exactly as for a person), and the change is sealed and signed as
+//!   the host device's own, so every page receives it as an ordinary durable
+//!   change.
 //! - **Tickets.** Invocation ids are idempotent: a retry reports the original
 //!   invocation, a different request under a used id is a conflict, and a
 //!   refused invocation is forgotten (nothing ran). An invocation is
@@ -38,6 +39,9 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 
+use crate::apps::{AppCatalogue, Replica, Seed};
+use crate::host::{CatalogueFactory, HostEndpoint};
+use crate::participant::actions::{RECORD_PROVIDER, record_provider};
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
@@ -53,15 +57,10 @@ use tilo_browser_peer::{
     DocumentRoute, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
 };
 use tilo_user_identity::RevocationList;
-use ui::widget::ResourceOperationStart;
-
-use crate::apps::{AppCatalogue, HostedApp, Seed};
-use crate::host::{CatalogueFactory, HostEndpoint};
-use crate::participant::actions::{RECORD_PROVIDER, record_provider};
 
 /// Records whose rows a catalogue naming no provider lists.
 pub const DEFAULT_ROWS_RECORDS: usize = 12;
-/// Records kept mounted between requests; the least recently used unmounts.
+/// Records kept held between requests; the least recently used is dropped.
 const MAX_MOUNTED: usize = 24;
 /// How long a request waits for the service to join a room and open what
 /// the room's steward admitted it to.
@@ -413,9 +412,9 @@ impl HostActions {
     }
 }
 
-/// One record mounted on the service thread.
+/// One record held on the service thread.
 struct Mounted {
-    app: HostedApp,
+    app: Replica,
     /// Digests of the bodies already merged into it.
     seen: HashSet<[u8; 32]>,
     used: u64,
@@ -568,10 +567,10 @@ fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
     })
 }
 
-/// What a mounted record publishes that its door runs now. A `Launchable`
+/// What a held record publishes that its door runs now. A `Launchable`
 /// action is delivered by launching the app, not by a record already open,
 /// so it is not offered here.
-fn live_actions(app: &mut HostedApp) -> Vec<tilo_actions::ActionDescriptor> {
+fn live_actions(app: &Replica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
         .into_iter()
         .filter(|descriptor| {
@@ -638,9 +637,6 @@ impl Worker {
                     done,
                 } => done.complete(self.invoke(workspace_id, invocation)),
             }
-        }
-        for (_, mounted) in std::mem::take(&mut self.mounted) {
-            mounted.app.close();
         }
     }
 
@@ -722,11 +718,9 @@ impl Worker {
                 else {
                     break;
                 };
-                if let Some(mounted) = self.mounted.remove(&oldest) {
-                    mounted.app.close();
-                }
+                self.mounted.remove(&oldest);
             }
-            let app = HostedApp::open(
+            let app = Replica::open(
                 &self.catalogue,
                 &route.app_id,
                 &route.cluster_id,
@@ -815,7 +809,7 @@ impl Worker {
         for route in &wanted {
             let provider = record_provider(route);
             let descriptors = match self.mount(route, &state) {
-                Ok(mounted) => live_actions(&mut mounted.app),
+                Ok(mounted) => live_actions(&mounted.app),
                 Err(error) => {
                     tracing::warn!(%error, record = %route.record, "room actions: a record did not mount");
                     continue;
@@ -1006,7 +1000,7 @@ impl Worker {
         let mounted = self
             .mount(&route, &state)
             .map_err(|_| Outcome::Rejected(ActionHostError::UnknownAction))?;
-        let descriptor = live_actions(&mut mounted.app)
+        let descriptor = live_actions(&mounted.app)
             .into_iter()
             .find(|descriptor| descriptor.address == target.address)
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
@@ -1017,7 +1011,7 @@ impl Worker {
             (ConfirmationPolicy::Phrase { .. }, _) => false,
             (_, confirmation) => confirmation.is_some(),
         };
-        let started = mounted
+        let output = mounted
             .app
             .invoke(&target.address, &arguments, confirmed)
             .map_err(|error| door_outcome(&error))?;
@@ -1033,10 +1027,7 @@ impl Worker {
                     })
                 })?;
         }
-        Ok(match started {
-            ResourceOperationStart::Completed(output) => output,
-            ResourceOperationStart::Accepted => ActionOutput::default(),
-        })
+        Ok(output)
     }
 
     #[allow(
@@ -1050,7 +1041,7 @@ impl Worker {
         app: &str,
     ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
-        let mut hosted = HostedApp::open(
+        let mut hosted = Replica::open(
             &self.catalogue,
             app,
             room,
@@ -1068,7 +1059,6 @@ impl Worker {
             self.commit(workspace_id, &route, &mutation)
                 .map_err(refused)?;
         }
-        hosted.close();
         Ok(ActionOutput {
             value: Some(serde_json::json!({
                 "provider": record_provider(&route),

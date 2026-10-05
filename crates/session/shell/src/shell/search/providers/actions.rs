@@ -22,7 +22,6 @@ use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, Par
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 mod native_identity;
-mod text_insert;
 
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
@@ -194,8 +193,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Moving a tab between groups is layout, undone by moving it back;
         // a close is undone by `tab.reopen`, which puts it back in place.
-        "text.insert"
-        | "record.bring"
+        "record.bring"
         | "tab.new.terminal.here"
         | "window.new.terminal"
         | "tab.duplicate"
@@ -270,7 +268,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "history.restore"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
-        "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
+        "record.bring" | "peer.invite.named" | "agent.invite" => {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
@@ -1844,15 +1842,6 @@ impl Action {
                 set_language(st, language)
             },
         },
-        // The first exported action that changes a document rather than
-        // the chrome around one, and so the first told *what* to write.
-        Action {
-            id: text_insert::ACTION_ID,
-            label: "search-action-text-insert",
-            subtitle: "search-action-text-insert-subtitle",
-            params: text_insert::PARAMS,
-            apply: text_insert::apply,
-        },
         // The palette does this on Enter over a record row; this is the
         // address for a caller that names a record itself.
         Action {
@@ -2486,7 +2475,7 @@ impl SearchProvider for ActionsProvider {
                 let apply = action.apply;
                 let (on_open, on_begin_invoke) = if action.id == "record.bring" {
                     let on_open = Rc::new(
-                        |_doc: &mut automerge::AutoCommit,
+                        |_doc: &mut ui::widget::Edits<'_>,
                          _root: &automerge::ObjId,
                          _chrome: &Chrome,
                          _args: &ActionArgs| {
@@ -2496,7 +2485,7 @@ impl SearchProvider for ActionsProvider {
                         },
                     ) as Rc<crate::shell::search::OpenFn>;
                     let begin = Rc::new(
-                        |_doc: &mut automerge::AutoCommit,
+                        |_doc: &mut ui::widget::Edits<'_>,
                          _root: &automerge::ObjId,
                          chrome: &Chrome,
                          args: &ActionArgs| {
@@ -2549,7 +2538,7 @@ impl SearchProvider for ActionsProvider {
                 ) {
                     let action_id = action.id;
                     let on_open = Rc::new(
-                        move |_doc: &mut automerge::AutoCommit,
+                        move |_doc: &mut ui::widget::Edits<'_>,
                               _root: &automerge::ObjId,
                               _chrome: &Chrome,
                               _args: &ActionArgs| {
@@ -2559,7 +2548,7 @@ impl SearchProvider for ActionsProvider {
                         },
                     ) as Rc<crate::shell::search::OpenFn>;
                     let begin = Rc::new(
-                        move |_doc: &mut automerge::AutoCommit,
+                        move |_doc: &mut ui::widget::Edits<'_>,
                               _root: &automerge::ObjId,
                               chrome: &Chrome,
                               args: &ActionArgs| {
@@ -2614,7 +2603,7 @@ impl SearchProvider for ActionsProvider {
                 } else {
                     let action_id = action.id;
                     let on_open = Rc::new(
-                        move |_doc: &mut automerge::AutoCommit,
+                        move |_doc: &mut ui::widget::Edits<'_>,
                               _root: &automerge::ObjId,
                               chrome: &Chrome,
                               args: &ActionArgs| {
@@ -3278,7 +3267,13 @@ mod tests {
             .find(|result| result.id == id)
             .unwrap_or_else(|| panic!("action provider did not return {id}"));
         let mut document = AutoCommit::new();
-        (result.on_open)(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap();
+        (result.on_open)(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap();
     }
 
     fn begin_lifecycle_action(
@@ -3295,7 +3290,13 @@ mod tests {
             .as_ref()
             .unwrap_or_else(|| panic!("{id} must use lifecycle dispatch"));
         let mut document = AutoCommit::new();
-        begin(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap()
+        begin(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -3390,8 +3391,13 @@ mod tests {
                 .expect("typing 'activity' must surface the room-activity action");
             assert_eq!(action.title, "Show workspace activity");
             assert!(!c.borrow().overlays.room_activity, "starts closed");
-            (action.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none())
-                .expect("a nullary chrome action must run");
+            (action.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &c,
+                &ActionArgs::none(),
+            )
+            .expect("a nullary chrome action must run");
             assert!(
                 c.borrow().overlays.room_activity,
                 "invoking the exported action opened the sheet"
@@ -3422,13 +3428,13 @@ mod tests {
                 .find(|r| r.id == "notifications.dnd.toggle")
                 .expect("DND action must be present");
             assert!(!c.borrow().dnd(), "DND starts off");
-            let fire = |doc: &mut AutoCommit| {
+            let fire = |doc: &mut ui::widget::Edits<'_>| {
                 (dnd.on_open)(doc, &automerge::ROOT, &c, &ActionArgs::none())
                     .expect("a nullary chrome action must run");
             };
-            fire(&mut doc);
+            fire(&mut ui::widget::Edits::lend(&mut doc));
             assert!(c.borrow().dnd(), "opening the action turns DND on");
-            fire(&mut doc);
+            fire(&mut ui::widget::Edits::lend(&mut doc));
             assert!(!c.borrow().dnd(), "opening it again turns DND back off");
         }
 
@@ -3484,7 +3490,7 @@ mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("record bring has lifecycle admission")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &chrome,
                 &args,
@@ -3899,7 +3905,13 @@ mod tests {
                 .find(|result| result.id == "settings.privacy.open")
                 .expect("privacy governance is directly searchable");
 
-            (result.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none()).unwrap();
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &c,
+                &ActionArgs::none(),
+            )
+            .unwrap();
 
             let state = c.borrow();
             assert!(state.overlays.ws_settings);
@@ -3937,7 +3949,13 @@ mod tests {
             )
             .unwrap();
 
-            (action.on_open)(&mut doc, &automerge::ROOT, &chrome, &args).unwrap();
+            (action.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &args,
+            )
+            .unwrap();
 
             assert_eq!(
                 chrome.borrow_mut().take_presence_requests(),
@@ -3969,7 +3987,13 @@ mod tests {
                 .find(|result| result.id == "desktop-tour.open")
                 .expect("the completed first-use tour must remain discoverable");
 
-            (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
             assert!(chrome.borrow().overlays.desktop_tour);
         }
 
@@ -4083,7 +4107,13 @@ mod tests {
         )
         .expect("language arguments");
         let mut document = AutoCommit::new();
-        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+        (language.on_open)(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .unwrap();
         assert_eq!(
             settings_store::str_at(&settings_store::load(), "appearance", "language"),
             Some("de-DE")
@@ -4130,7 +4160,13 @@ mod tests {
         )
         .expect("language arguments");
         let mut document = AutoCommit::new();
-        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+        (language.on_open)(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .unwrap();
 
         assert_eq!(
             settings_store::str_at(&settings_store::load(), "appearance", "language"),
@@ -4507,8 +4543,13 @@ mod tests {
                 workspace.capabilities.clear();
                 drop(tree);
             }
-            let error = (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none())
-                .expect_err("revocation between discovery and execution must win");
+            let error = (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .expect_err("revocation between discovery and execution must win");
             assert!(matches!(error, ActionError::Refused(_)));
             assert!(!chrome.borrow().dnd());
         }
@@ -4881,8 +4922,13 @@ mod tests {
             for (id, supplied) in cases {
                 let result = results.iter().find(|result| result.id == id).expect(id);
                 let args = ActionArgs::bind(&result.params, supplied).expect("typed args bind");
-                (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &args)
-                    .expect("controlled provider succeeds");
+                (result.on_open)(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &chrome,
+                    &args,
+                )
+                .expect("controlled provider succeeds");
             }
             assert_eq!(
                 recorder.calls.borrow().as_slice(),
@@ -5081,7 +5127,13 @@ mod tests {
             ],
         )
         .unwrap();
-        (save.on_open)(&mut doc, &automerge::ROOT, &chrome, &save_args).unwrap();
+        (save.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &save_args,
+        )
+        .unwrap();
 
         let assign = {
             let state = chrome.borrow();
@@ -5106,7 +5158,13 @@ mod tests {
             ],
         )
         .unwrap();
-        (assign.on_open)(&mut doc, &automerge::ROOT, &chrome, &assign_args).unwrap();
+        (assign.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &assign_args,
+        )
+        .unwrap();
 
         let state = chrome.borrow();
         let tree = state.tree();

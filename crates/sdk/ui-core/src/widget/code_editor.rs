@@ -369,16 +369,10 @@ impl CodeEditor {
         self
     }
 
-    /// Every edit splices into `obj` and [`sync`](Widget::sync) reads
-    /// from it.
+    /// Show the text object `obj`, read on every sync. Edits stay local
+    /// for the owner to take ([`Self::take_dirty`]) and submit as actions.
     pub fn bind_text(&mut self, obj: ObjId) {
         self.inner.bind_text(obj);
-    }
-
-    /// Keep reading the bound text while edits stay local, for an owner
-    /// that submits each edit as an action of its own.
-    pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
-        self.inner.set_direct_crdt_writes(enabled);
     }
 
     /// Detach the bound text, keeping what is shown.
@@ -567,11 +561,11 @@ impl Widget for CodeEditor {
         dyn crate::undo::UndoPoints
     );
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -763,7 +757,7 @@ impl Widget for CodeEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self.read_only && matches!(action, crate::a11y::Action::SetValue(_)) {
@@ -961,12 +955,6 @@ fn edits_text(event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
 }
 
 impl crate::undo::UndoPoints for CodeEditor {
-    fn needs_commit(&self) -> bool {
-        self.inner.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.inner.on_commit();
-    }
     fn get_state(&self) -> Option<String> {
         self.inner.get_state()
     }
@@ -1279,7 +1267,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: crate::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1697,7 +1685,7 @@ mod document_tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut automerge::AutoCommit::new(),
+                state: crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,

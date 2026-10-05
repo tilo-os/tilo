@@ -248,12 +248,12 @@ impl ui::widget::Decorator for SidebarNav {
         &mut self.list
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.refresh();
         Widget::sync(&mut self.list, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.refresh();
         Widget::update(&mut self.list, state, path)
     }

@@ -1,11 +1,12 @@
 //! Pure data model for the API tester.
 //!
 //! Everything here is plain Rust + serde — no rendering, no IO, no CRDT
-//! plumbing. The live document (collections, environments, history, the
-//! request currently being edited) is mirrored into an Automerge document
-//! by [`crate::doc`], which is what makes a workspace collaborative. This
-//! module is the in-memory source of truth the UI reads and the CRDT
-//! layer serialises.
+//! plumbing. The workspace (collections, environments, history, the request
+//! currently being edited) is stored in the resource's document by
+//! [`crate::doc`], which is what makes it collaborative; these are the values
+//! it reads into. Credentials are the exception: a request's auth secret and
+//! a secret variable's value stay on the device ([`Auth::secret`],
+//! [`KeyValue::secret`]) and the document holds the rest.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -83,6 +84,10 @@ pub struct KeyValue {
     pub key: String,
     pub value: String,
     pub enabled: bool,
+    /// A variable whose value is a credential: the document holds its key and
+    /// this flag, and the value stays in the device's secret store.
+    #[serde(default)]
+    pub secret: bool,
 }
 
 impl KeyValue {
@@ -92,17 +97,20 @@ impl KeyValue {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            secret: false,
         }
+    }
+
+    /// A row whose value is a credential kept on the device.
+    #[must_use]
+    pub fn secret(mut self) -> Self {
+        self.secret = true;
+        self
     }
 
     /// A blank, enabled row — the trailing "add a new pair" affordance.
     pub fn blank() -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            key: String::new(),
-            value: String::new(),
-            enabled: true,
-        }
+        Self::new(String::new(), String::new())
     }
 
     pub fn is_blank(&self) -> bool {
@@ -142,7 +150,41 @@ impl Auth {
         }
     }
 
-    pub const LABELS: [&'static str; 4] = ["No auth", "Bearer token", "Basic auth", "API key"];
+    pub const LABELS: [&'static str; 4] = ["No Auth", "Bearer Token", "Basic Auth", "API Key"];
+
+    /// The credential of this scheme: the token, the password, the key.
+    pub fn secret(&self) -> Option<&str> {
+        match self {
+            Auth::None => None,
+            Auth::Bearer { token } => Some(token),
+            Auth::Basic { password, .. } => Some(password),
+            Auth::ApiKey { value, .. } => Some(value),
+        }
+    }
+
+    /// This scheme with its credential replaced by `secret`.
+    #[must_use]
+    pub fn with_secret(&self, secret: &str) -> Self {
+        let secret = secret.to_owned();
+        match self {
+            Auth::None => Auth::None,
+            Auth::Bearer { .. } => Auth::Bearer { token: secret },
+            Auth::Basic { username, .. } => Auth::Basic {
+                username: username.clone(),
+                password: secret,
+            },
+            Auth::ApiKey { header, .. } => Auth::ApiKey {
+                header: header.clone(),
+                value: secret,
+            },
+        }
+    }
+
+    /// This scheme as the document holds it: everything but the credential.
+    #[must_use]
+    pub fn without_secret(&self) -> Self {
+        self.with_secret("")
+    }
 }
 
 /// How the request body is encoded. The Body tab switches between these.

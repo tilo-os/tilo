@@ -197,17 +197,6 @@ pub fn run(_args: &[String]) {
         let _ = state.doc.put(&state.root, "toggle_1", true);
         let _ = state.doc.put(&state.root, "check_1", false);
         let _ = state.doc.put(&state.root, "slider_1", 0.5);
-        match state
-            .doc
-            .put_object(&state.root, "text_1", automerge::ObjType::Text)
-        {
-            Ok(text_id) => {
-                let _ = state.doc.splice_text(&text_id, 0, 0, "Edit me");
-            }
-            Err(err) => {
-                eprintln!("widget_showcase: failed to seed text_1: {err}");
-            }
-        }
     }
 
     let tree = build_tree();
@@ -274,16 +263,14 @@ fn build_column_inner(tree: TreeView<()>) -> Box<dyn Widget> {
             .push(caption("row_basics"))
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(tilo_ui::widget::Button::new(
-                        "btn", "btn_save", None,
-                    )))
+                    .push(Box::new(tilo_ui::widget::Button::new("btn", "btn_save")))
                     .push(Box::new(tilo_ui::widget::Toggle::new("tog", "toggle_1")))
                     .push(Box::new(tilo_ui::widget::Checkbox::new("chk", "check_1")))
                     .push(Box::new(tilo_ui::widget::Slider::new("sld", "slider_1")))
                     .push(Box::new(
-                        tilo_ui::widget::TextInput::new(vec![])
-                            .with_id("txt")
-                            .with_on_change_path("text_1"),
+                        tilo_ui::widget::TextInput::local()
+                            .with_initial_value("Edit me")
+                            .with_id("txt"),
                     )),
             ))
             .push(caption("row_indicators"))

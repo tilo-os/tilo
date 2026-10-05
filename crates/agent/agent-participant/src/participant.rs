@@ -2,14 +2,16 @@
 //! native devices.
 //!
 //! [`AgentParticipant`] holds a certified relay session under the agent's own
-//! device key and joins the room's durable and live planes. It mounts the
-//! apps it works in ([`HostedApp`]), acts only through their published
-//! actions, and commits each resulting change through the session, so the
-//! host orders it with everyone else's and every browser receives it as an
-//! ordinary durable change attributed to the agent. Around each action it
-//! publishes presence — the record it focuses, the control it points at,
-//! and a [`LiveParticipant`] of kind agent with its label, colour and
-//! activity — so every participant draws its cursor. Other participants'
+//! device key and joins the room's durable and live planes. It holds the
+//! records it works in as replicas of their resources ([`Replica`]), acts
+//! only through the operations they publish, and commits each resulting
+//! change through the session, so the host orders it with everyone else's
+//! and every browser receives it as an ordinary durable change attributed to
+//! the agent. Around each action it publishes presence — the record it
+//! focuses, where in it the action left it (the record's own item and
+//! position, [`Replica::presence`]), and a [`LiveParticipant`] of kind agent
+//! with its label, colour and activity — so every participant's window
+//! draws it there as it draws any collaborator. Other participants'
 //! presence arrives the same way and is readable through
 //! [`AgentParticipant::remote_members`].
 //!
@@ -20,6 +22,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
+use crate::apps::{AppCatalogue, Replica, Seed};
+use crate::control::{AgentControl, AgentIdentity};
+use crate::planner::{PlanContext, Planner, Step, StepAction};
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_browser_peer::{
@@ -27,14 +32,8 @@ use tilo_browser_peer::{
     RemoteMember,
 };
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
-use tilo_relay_protocol::live::{LiveParticipant, LiveRecord, ParticipantKind};
+use tilo_relay_protocol::live::{LiveAnchor, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{DeviceCert, RevocationList};
-use ui::headless::ControlInput;
-use ui::widget::ResourceOperationStart;
-
-use crate::apps::{AppCatalogue, HostedApp, Seed};
-use crate::control::{AgentControl, AgentIdentity};
-use crate::planner::{PlanContext, Planner, Step, StepAction};
 
 pub mod actions;
 
@@ -125,7 +124,7 @@ pub struct AgentParticipant {
     workspace_id: u64,
     catalogue: AppCatalogue,
     planner: Box<dyn Planner>,
-    apps: BTreeMap<DocumentRoute, HostedApp>,
+    apps: BTreeMap<DocumentRoute, Replica>,
     /// Durable changes of records the agent has not mounted, in host order.
     durable: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
     /// When each unmounted record last changed, as a count of changes seen.
@@ -133,7 +132,8 @@ pub struct AgentParticipant {
     changes_seen: u64,
     live: LiveState,
     focus: Option<LiveRecord>,
-    pointer: Option<[f32; 2]>,
+    /// Where in the focused record its last operation left it.
+    place: Option<(LiveAnchor, LiveAnchor)>,
     presence_at_ms: u64,
     running: Option<Running>,
     /// The host admitted the room; everything it replayed has arrived.
@@ -202,7 +202,7 @@ impl AgentParticipant {
             changes_seen: 0,
             live: LiveState::starting_now(),
             focus: None,
-            pointer: None,
+            place: None,
             presence_at_ms: 0,
             running: None,
             ready: false,
@@ -428,16 +428,11 @@ impl AgentParticipant {
         };
         match &step.action {
             StepAction::Invoke { address, arguments } => self.invoke(&route, address, arguments),
-            StepAction::Operate { control, input } => {
-                self.operate(&route, control, input).map(|()| None)
-            }
             StepAction::Open | StepAction::Continue(_) => Ok(None),
         }
     }
 
-    /// Commit whatever the open apps changed since the last commit: an
-    /// action's change can land after the invocation returns (a component
-    /// applies it on its next wake).
+    /// Commit whatever the open records changed since the last commit.
     fn publish_changes(&mut self) {
         for (route, app) in &mut self.apps {
             if let Some(mutation) = app.take_mutation() {
@@ -449,20 +444,14 @@ impl AgentParticipant {
         }
     }
 
-    fn plan_context(&mut self) -> PlanContext {
+    fn plan_context(&self) -> PlanContext {
         let open = self
             .apps
-            .iter_mut()
+            .iter()
             .map(|(route, app)| (route.clone(), app.survey()))
-            .collect();
-        let controls = self
-            .apps
-            .iter_mut()
-            .map(|(route, app)| (route.clone(), app.controls()))
             .collect();
         PlanContext {
             open,
-            controls,
             known: people_first(
                 self.durable.keys().cloned().collect(),
                 &desktop_records(&self.durable, &self.room),
@@ -516,7 +505,7 @@ impl AgentParticipant {
             }
             None => Seed::New,
         };
-        let mut app = HostedApp::open(
+        let mut app = Replica::open(
             &self.catalogue,
             app_id,
             &self.room,
@@ -531,28 +520,21 @@ impl AgentParticipant {
         }
         self.apps.insert(route.clone(), app);
         self.generation = self.generation.wrapping_add(1);
-        self.pointer = None;
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
+        self.place = None;
         self.publish_presence();
         Ok(route)
     }
 
-    /// Every action the record at `route` publishes now.
-    pub fn survey(&mut self, route: &DocumentRoute) -> Vec<ActionDescriptor> {
+    /// Every operation the record at `route` publishes now.
+    #[must_use]
+    pub fn survey(&self, route: &DocumentRoute) -> Vec<ActionDescriptor> {
         self.apps
-            .get_mut(route)
-            .map(HostedApp::survey)
-            .unwrap_or_default()
-    }
-
-    /// Every on-screen control the record at `route` shows now.
-    pub fn controls(&mut self, route: &DocumentRoute) -> Vec<ui::headless::Control> {
-        self.apps
-            .get_mut(route)
-            .map(HostedApp::controls)
+            .get(route)
+            .map(Replica::survey)
             .unwrap_or_default()
     }
 
@@ -611,16 +593,9 @@ impl AgentParticipant {
                 descriptor.action_label, descriptor.resource_label
             )
         });
-        // The cursor goes where a person would point before the action
-        // runs: it may remove the control it names.
-        let pointer = match &descriptor {
-            Some(descriptor) => Some(app.pointer_for_action(descriptor)),
-            None => app.pointer_for(address),
-        };
-        let started = app
+        let output = app
             .invoke(address, arguments, confirmed)
             .map_err(Refusal::Door)?;
-        self.pointer = pointer;
         if let Some(mutation) = app.take_mutation() {
             self.generation = self.generation.wrapping_add(1);
             self.peer
@@ -631,63 +606,15 @@ impl AgentParticipant {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
+        self.place = app.presence();
         self.control.set_activity(label);
         self.publish_presence();
-        Ok(match started {
-            ResourceOperationStart::Completed(output) => Some(output),
-            ResourceOperationStart::Accepted => None,
-        })
+        Ok(Some(output))
     }
 
-    /// Operate one on-screen control of the record at `route` as the agent,
-    /// the way a person's input does, commit the change it made, and show
-    /// the agent's pointer on it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the refusal: paused or stopped, outside the delegation, no
-    /// such control, or the action it triggered refused.
-    pub fn operate(
-        &mut self,
-        route: &DocumentRoute,
-        control: &str,
-        input: &ControlInput,
-    ) -> Result<(), String> {
-        if !self.control.may_act() {
-            return Err("the agent is paused or stopped".into());
-        }
-        if !self.identity.delegation.permits_app(&route.app_id) {
-            return Err(format!("the agent is not delegated {}", route.app_id));
-        }
-        let app = self
-            .apps
-            .get_mut(route)
-            .ok_or_else(|| "that record is not open".to_string())?;
-        let target = app.controls().into_iter().find(|c| c.id == control);
-        let label = target.map(|target| {
-            format!(
-                "{} · {}",
-                crate::planner::input_name(input),
-                target.name.unwrap_or_else(|| format!("{:?}", target.role))
-            )
-        });
-        self.pointer = app.pointer_for_control(control);
-        app.operate(control, input)?;
-        if let Some(mutation) = app.take_mutation() {
-            self.peer.publish(route.clone(), &mutation)?;
-        }
-        self.focus = Some(LiveRecord {
-            app: route.app_id.clone(),
-            record: route.record.clone(),
-        });
-        self.control.set_activity(label);
-        self.publish_presence();
-        Ok(())
-    }
-
-    /// The mounted app of `route`.
+    /// The record held at `route`.
     #[must_use]
-    pub fn app(&self, route: &DocumentRoute) -> Option<&HostedApp> {
+    pub fn app(&self, route: &DocumentRoute) -> Option<&Replica> {
         self.apps.get(route)
     }
 
@@ -718,10 +645,11 @@ impl AgentParticipant {
     fn publish_presence(&mut self) {
         let now = now_ms();
         let participant = self.participant();
-        let (focus, pointer) = (self.focus.clone(), self.pointer);
+        let focus = self.focus.clone();
+        let place = self.place.clone();
         match self.live.publish_presence(now, |presence| {
             presence.focus = focus;
-            presence.pointer = pointer;
+            presence.selection = place;
             presence.participant = Some(participant);
         }) {
             Ok(frame) => {
@@ -735,11 +663,9 @@ impl AgentParticipant {
     fn leave(&mut self) {
         self.running = None;
         self.focus = None;
-        self.pointer = None;
+        self.place = None;
         self.publish_presence();
-        for (_, app) in std::mem::take(&mut self.apps) {
-            app.close();
-        }
+        self.apps.clear();
         self.left = true;
     }
 

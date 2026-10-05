@@ -10,19 +10,22 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ChangeHash};
+#[cfg(test)]
+use automerge::AutoCommit;
 use vello::kurbo::{Point, Rect};
 
 use ui::ImageStore;
 use ui::icons::Icon;
 
 use crate::account::AccountStore;
+use ui::framework::Dispatcher;
+
 use crate::actions::{
-    MAIL_ACTION_TYPE, MailAction, move_action, purge_action, save_draft_action, set_read_action,
-    set_starred_action,
+    MailAction, move_action, purge_action, save_draft_action, set_read_action, set_starred_action,
 };
 use crate::engine::EngineRequest;
-use crate::model::{Draft, Folder, Mailbox, Message, MessageId, Thread};
+use crate::model::{Draft, Folder, Mailbox, MessageId, Thread};
+use crate::resource::Mail;
 
 /// Cheap-to-clone handle every pane holds.
 pub type Shared = Rc<RefCell<MailState>>;
@@ -238,12 +241,12 @@ pub struct MailState {
     /// Any pane sets this to request a repaint.
     pub dirty: bool,
 
-    /// Framework-owned action dispatch: every document-mutating message
-    /// operation (mark read/unread, star, move/archive/delete-to-trash) routes
-    /// through here so it brackets one undo boundary, replays byte-identically on
-    /// peers, and shares its [`crate::actions::MailAction`] with the Ctrl+K
-    /// palette. See [`crate::actions`].
-    pub(crate) actions: crate::resource::ActionSink,
+    /// The framework dispatcher every document-mutating message operation
+    /// (mark read/unread, star, move/archive/delete-to-trash) goes through,
+    /// so it is checked, one undo step, replayed on peers and the same
+    /// [`crate::actions::MailAction`] the palette and agents invoke. `None`
+    /// until the surface is attached; edits before then change nothing.
+    pub(crate) dispatcher: Option<Dispatcher<Mail>>,
 
     intents: Vec<Intent>,
     commands: Vec<Command>,
@@ -254,12 +257,24 @@ impl MailState {
         Rc::new(RefCell::new(state))
     }
 
+    /// The bundled sample mailbox and accounts, editing the document it is
+    /// handed.
+    #[cfg(test)]
     pub fn new_sample(images: ImageStore) -> Self {
-        let now = crate::sample::sample_now_min();
-        let mailbox = crate::sample::sample_mailbox_at(now);
-        let accounts = crate::sample::sample_account_store();
-        let mut s = Self::empty(mailbox, accounts, now, images);
-        // Preselect a conversation so the reader is populated on launch.
+        let mut state = Self::from_fixture(&crate::sample::MailFixture::bundled(), images);
+        state.dispatcher = Some(ui::framework::testing::dispatcher("so.tilo.mail"));
+        state
+    }
+
+    /// What a screenshot shows: the fixture's mailbox, accounts and clock,
+    /// with a conversation selected so the reader is populated.
+    pub fn from_fixture(fixture: &crate::sample::MailFixture, images: ImageStore) -> Self {
+        let mut s = Self::empty(
+            fixture.mailbox.clone(),
+            fixture.accounts.clone(),
+            fixture.now_min,
+            images,
+        );
         let threads = s.current_threads();
         let pick = threads
             .iter()
@@ -295,37 +310,38 @@ impl MailState {
             seeded: false,
             last_mouse: Point::ZERO,
             dirty: true,
-            actions: crate::resource::ActionSink::default(),
+            dispatcher: None,
             intents: Vec::new(),
             commands: Vec::new(),
         }
     }
 
-    /// Hand the framework host the heads captured before this event's first
-    /// message action, so the app records one undo boundary bracketing it. Wired
-    /// through [`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action). Rising-edge.
-    pub fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
+    /// Dispatch one [`MailAction`] — the single document-mutation path shared
+    /// with the palette and agents. The in-memory mailbox is updated by the
+    /// caller for immediate feedback and reconciled from the document on the
+    /// next `sync`.
+    fn dispatch_action(&self, doc: &mut ui::widget::Edits<'_>, action: &MailAction) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        let context = tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", action);
+        if let Err(error) = dispatcher.apply_now_with(doc, action, context) {
+            tracing::warn!(%error, "mail: an edit was refused");
+        }
     }
 
-    /// Dispatch one [`MailAction`] — the single CRDT-mutation path shared with the
-    /// Ctrl+K palette. The in-memory mailbox is updated by the caller for
-    /// immediate feedback and reconciled from the document on the next `sync`.
-    fn dispatch_action(&mut self, doc: &mut AutoCommit, action: &MailAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            MAIL_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", action),
-        );
+    /// Record content from outside — what a mail server reported or
+    /// confirmed — as one document action.
+    pub(crate) fn dispatch_external(&self, doc: &mut ui::widget::Edits<'_>, action: &MailAction) {
+        self.dispatch_action(doc, action);
     }
 
-    /// Record server baselines as one document action. Existing flags win, so a
-    /// later fetch cannot overwrite a `MailAction`. Standalone and hosted both
-    /// submit [`MailAction::IngestBaselines`](crate::actions::MailAction::IngestBaselines).
+    /// Record server baselines as one document action
+    /// ([`MailAction::IngestBaselines`](crate::actions::MailAction::IngestBaselines)).
+    /// Existing flags win, so a later fetch cannot overwrite a `MailAction`.
     pub(crate) fn ingest_messages(
-        &mut self,
-        doc: &mut AutoCommit,
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
         messages: &[crate::model::Message],
     ) {
         if messages.is_empty() {
@@ -342,7 +358,29 @@ impl MailState {
         );
     }
 
-    pub(crate) fn register_message_target(&mut self, doc: &mut AutoCommit, id: &str) {
+    /// Record what `account`'s server reported for `messages`: where each
+    /// lives there and its flags ([`IngestBaseline::fetched`](crate::actions::IngestBaseline::fetched)).
+    pub(crate) fn ingest_fetched(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        account: &str,
+        messages: &[crate::model::Message],
+    ) {
+        if messages.is_empty() {
+            return;
+        }
+        self.dispatch_action(
+            doc,
+            &crate::actions::MailAction::IngestBaselines {
+                messages: messages
+                    .iter()
+                    .map(|message| crate::actions::IngestBaseline::fetched(message, account))
+                    .collect(),
+            },
+        );
+    }
+
+    pub(crate) fn register_message_target(&self, doc: &mut ui::widget::Edits<'_>, id: &str) {
         self.dispatch_action(
             doc,
             &crate::actions::MailAction::IngestBaselines {
@@ -355,7 +393,7 @@ impl MailState {
     /// corpus has an eligibility record before emitting its action. Normal UI
     /// flow seeds these records during sync; this tiny idempotent bridge also
     /// covers a just-hydrated message acted on before the next frame.
-    fn register_loaded_target(&mut self, doc: &mut AutoCommit, id: MessageId) {
+    fn register_loaded_target(&self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
         if self.mailbox.get(id).is_some() {
             self.register_message_target(doc, &id.to_string());
         }
@@ -364,7 +402,7 @@ impl MailState {
     /// Persist the in-progress draft as an action (undo boundary + replay + the
     /// same [`MailAction`] the palette's draft actions use). The visible Drafts
     /// message is materialised separately by the app.
-    pub fn save_draft(&mut self, doc: &mut AutoCommit, draft: &Draft) {
+    pub fn save_draft(&mut self, doc: &mut ui::widget::Edits<'_>, draft: &Draft) {
         self.dispatch_action(doc, &save_draft_action(draft));
     }
 
@@ -430,7 +468,7 @@ impl MailState {
     /// keyboard activation, and the admitted resource operation) all use it,
     /// so an unread message produces the same canonical `SetRead` action.
     /// [`Self::preview_message`] is the only read-neutral alternative.
-    pub fn open_message(&mut self, doc: &mut AutoCommit, id: MessageId) -> bool {
+    pub fn open_message(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) -> bool {
         let Some(folder) = self.mailbox.get(id).map(|message| message.folder) else {
             return false;
         };
@@ -452,57 +490,8 @@ impl MailState {
     /// Compatibility entry point for the existing painted list controls.
     /// New code should name the domain boundary explicitly with
     /// [`Self::open_message`].
-    pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
+    pub fn select_message(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
         let _ = self.open_message(doc, id);
-    }
-
-    /// Push a live-path request to mirror a message's flags to the server
-    /// (`UID STORE`). A no-op under the offline stub backend, but it means the
-    /// mark-read/star state genuinely reaches IMAP in the `live` build. Called
-    /// after the local flag mutation so the pushed message carries the new
-    /// state (and its current, source folder for the `SELECT`).
-    fn sync_flag_to_server(&mut self, id: MessageId) {
-        let Some(msg) = self.mailbox.get(id).cloned() else {
-            return;
-        };
-        let account = self.accounts.active_config();
-        if account.email.is_empty() {
-            return;
-        }
-        self.push_intent(Intent::Engine(EngineRequest::store_flag(
-            account,
-            Box::new(msg),
-        )));
-    }
-
-    /// Push a live-path request to move a message to another folder
-    /// (`UID MOVE`). A no-op under the offline stub backend. `source` is the
-    /// message as it was **before** the local move, so the live backend can
-    /// `SELECT` its origin mailbox and locate it by `Message-ID`.
-    fn sync_move_to_server(&mut self, source: Message, to: Folder) {
-        let account = self.accounts.active_config();
-        if account.email.is_empty() {
-            return;
-        }
-        self.push_intent(Intent::Engine(EngineRequest::move_message(
-            account,
-            Box::new(source),
-            to,
-        )));
-    }
-
-    /// Ask the live backend to permanently remove exactly this server message.
-    /// The source snapshot is retained because the local corpus is removed
-    /// immediately and the engine still needs its mailbox and Message-ID.
-    fn sync_purge_to_server(&mut self, source: Message) {
-        let account = self.accounts.active_config();
-        if account.email.is_empty() {
-            return;
-        }
-        self.push_intent(Intent::Engine(EngineRequest::purge(
-            account,
-            Box::new(source),
-        )));
     }
 
     /// Select a device-local account. Account identity/credentials live in the
@@ -518,7 +507,7 @@ impl MailState {
         self.dirty = true;
     }
 
-    pub fn select_folder(&mut self, _doc: &mut AutoCommit, folder: Folder) {
+    pub fn select_folder(&mut self, _doc: &mut ui::widget::Edits<'_>, folder: Folder) {
         self.folder = folder;
         self.selected = self
             .current_threads()
@@ -622,7 +611,11 @@ impl MailState {
     /// messages were affected. Archive/move-to-Trash/purge clear the local selection because
     /// those rows have left the current projection; flag changes intentionally
     /// retain it so a person can triage the same set in successive steps.
-    pub fn apply_bulk_action(&mut self, doc: &mut AutoCommit, action: BulkAction) -> usize {
+    pub fn apply_bulk_action(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        action: BulkAction,
+    ) -> usize {
         let ids = self.selected_bulk_ids();
         if ids.is_empty() {
             return 0;
@@ -652,23 +645,13 @@ impl MailState {
                     self.mailbox.mark_read(*id, read);
                 }
                 self.dispatch_action(doc, &set_read_action(encoded_ids, read));
-                for id in &ids {
-                    self.sync_flag_to_server(*id);
-                }
                 ids.len()
             }
             BulkAction::Archive => {
-                let sources: Vec<Message> = ids
-                    .iter()
-                    .filter_map(|id| self.mailbox.get(*id).cloned())
-                    .collect();
                 for id in &ids {
                     self.mailbox.move_to(*id, Folder::Archive);
                 }
                 self.dispatch_action(doc, &move_action(encoded_ids, Folder::Archive));
-                for source in sources {
-                    self.sync_move_to_server(source, Folder::Archive);
-                }
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -689,10 +672,6 @@ impl MailState {
                             .is_some_and(|mail| mail.folder != Folder::Trash)
                     })
                     .collect();
-                let sources: Vec<Message> = move_to_trash
-                    .iter()
-                    .filter_map(|id| self.mailbox.get(*id).cloned())
-                    .collect();
                 if !move_to_trash.is_empty() {
                     for id in &move_to_trash {
                         self.mailbox.move_to(*id, Folder::Trash);
@@ -705,9 +684,6 @@ impl MailState {
                         ),
                     );
                 }
-                for source in sources {
-                    self.sync_move_to_server(source, Folder::Trash);
-                }
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 move_to_trash.len()
@@ -716,17 +692,10 @@ impl MailState {
                 // `ids` passed the all-Trash preflight above. The action
                 // reducer repeats it against the document to cover a stale
                 // remotely-authored envelope.
-                let sources: Vec<Message> = ids
-                    .iter()
-                    .filter_map(|id| self.mailbox.get(*id).cloned())
-                    .collect();
                 for id in &ids {
                     self.mailbox.purge(*id);
                 }
                 self.dispatch_action(doc, &purge_action(encoded_ids));
-                for source in sources {
-                    self.sync_purge_to_server(source);
-                }
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -736,7 +705,7 @@ impl MailState {
         affected
     }
 
-    pub fn reselect_after_remove(&mut self, _doc: &mut AutoCommit) {
+    pub fn reselect_after_remove(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         self.selected = self
             .current_threads()
             .first()
@@ -770,47 +739,49 @@ impl MailState {
     // Each mutates the in-memory mailbox for immediate feedback AND dispatches
     // the matching [`MailAction`] through the framework host, so the flag change
     // is one undo boundary, replays byte-identically on peers, and is the same
-    // action the Ctrl+K palette dispatches. The `sync_*_to_server` hooks remain
-    // an *external* effect (IMAP UID STORE/MOVE), separate from the CRDT action.
+    // action the Ctrl+K palette dispatches. The mail server learns of it from
+    // the document, as it does of a change the palette or a peer made.
 
     /// Set a message's read flag through the action path.
-    pub fn set_read(&mut self, doc: &mut AutoCommit, id: MessageId, read: bool) {
+    pub fn set_read(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId, read: bool) {
         if self.mailbox.get(id).is_none() {
             return;
         }
         self.register_loaded_target(doc, id);
         self.mailbox.mark_read(id, read);
         self.dispatch_action(doc, &set_read_action(vec![id.to_string()], read));
-        self.sync_flag_to_server(id);
         self.dirty = true;
     }
 
     /// Toggle a message's star through the action path.
-    pub fn toggle_star(&mut self, doc: &mut AutoCommit, id: MessageId) {
+    pub fn toggle_star(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
         let Some(target) = self.mailbox.get(id).map(|m| !m.starred) else {
             return;
         };
         self.register_loaded_target(doc, id);
         self.mailbox.toggle_star(id);
         self.dispatch_action(doc, &set_starred_action(vec![id.to_string()], target));
-        self.sync_flag_to_server(id);
         self.dirty = true;
     }
 
     /// Move a message to `folder` through the action path.
-    pub fn move_message(&mut self, doc: &mut AutoCommit, id: MessageId, folder: Folder) {
-        let Some(source) = self.mailbox.get(id).cloned() else {
+    pub fn move_message(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId, folder: Folder) {
+        if self.mailbox.get(id).is_none() {
             return;
-        };
+        }
         self.register_loaded_target(doc, id);
         self.mailbox.move_to(id, folder);
         self.dispatch_action(doc, &move_action(vec![id.to_string()], folder));
-        self.sync_move_to_server(source, folder);
     }
 
     /// Apply a message action. Reply/forward raise an intent (the app owns the
     /// composer); the rest route through the action path above.
-    pub fn apply_message_action(&mut self, doc: &mut AutoCommit, id: MessageId, action: CtxAction) {
+    pub fn apply_message_action(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        id: MessageId,
+        action: CtxAction,
+    ) {
         match action {
             CtxAction::Reply => self.push_intent(Intent::Reply(id)),
             CtxAction::ReplyAll => self.push_intent(Intent::ReplyAll(id)),
@@ -829,28 +800,19 @@ impl MailState {
             }
             CtxAction::Delete => {
                 let was_selected = self.selected == Some(id);
-                // Snapshot the source before the local move so a live UID MOVE
-                // can find it in its origin mailbox.
-                let source = self.mailbox.get(id).cloned();
                 // Move to Trash, or purge if it was already there. Both are
-                // replayable actions; the live server effect remains a separate
-                // request carrying the pre-mutation message locator.
-                let purging = source
-                    .as_ref()
+                // replayable actions the server learns of from the document.
+                let purging = self
+                    .mailbox
+                    .get(id)
                     .is_some_and(|message| message.folder == Folder::Trash);
                 self.register_loaded_target(doc, id);
                 self.mailbox.delete(id);
                 let moved_to = self.mailbox.get(id).map(|m| m.folder);
                 if let Some(to) = moved_to {
                     self.dispatch_action(doc, &move_action(vec![id.to_string()], to));
-                    if let Some(src) = source {
-                        self.sync_move_to_server(src, to);
-                    }
                 } else if purging {
                     self.dispatch_action(doc, &purge_action(vec![id.to_string()]));
-                    if let Some(src) = source {
-                        self.sync_purge_to_server(src);
-                    }
                 }
                 self.after_remove(doc, was_selected);
             }
@@ -867,7 +829,7 @@ impl MailState {
         }
     }
 
-    fn after_remove(&mut self, doc: &mut AutoCommit, was_selected: bool) {
+    fn after_remove(&mut self, doc: &mut ui::widget::Edits<'_>, was_selected: bool) {
         self.reselect_after_remove(doc);
         // If the open message left the current folder while its detail was
         // pushed on narrow, return to the list.
@@ -876,7 +838,7 @@ impl MailState {
         }
     }
 
-    pub fn move_selection(&mut self, _doc: &mut AutoCommit, delta: i32) {
+    pub fn move_selection(&mut self, _doc: &mut ui::widget::Edits<'_>, delta: i32) {
         let rows = self.list_rows();
         if rows.is_empty() {
             return;
@@ -923,7 +885,6 @@ pub fn now_minutes() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::EngineRequest;
     use automerge::ReadDoc;
 
     fn state() -> MailState {
@@ -934,10 +895,27 @@ mod tests {
         st.mailbox.messages_in(Folder::Inbox).first().map(|m| m.id)
     }
 
-    /// A standalone ingest is the same baseline action a hosted mailbox submits.
+    /// The undo steps written to `doc` since it had `before` versions: what
+    /// each did, leaving out content from outside (fetched baselines).
+    fn steps_since(doc: &AutoCommit, before: usize) -> Vec<String> {
+        ui::tilo_resource::history::versions(&mut doc.clone())
+            .into_iter()
+            .skip(before)
+            .filter_map(|version| version.context)
+            .filter(|context| context.change.is_step())
+            .map(|context| context.action_label)
+            .collect()
+    }
+
+    fn version_count(doc: &AutoCommit) -> usize {
+        ui::tilo_resource::history::versions(&mut doc.clone()).len()
+    }
+
+    /// Fetched messages are recorded as a mail action whose server flags
+    /// are content from outside: in the document, on nobody's undo stack.
     #[test]
-    fn a_standalone_ingest_is_a_mail_action() {
-        let mut st = state();
+    fn ingesting_records_server_baselines_outside_undo() {
+        let st = state();
         let message = st
             .mailbox
             .messages_in(Folder::Inbox)
@@ -946,17 +924,16 @@ mod tests {
             .cloned()
             .expect("sample inbox");
         let mut doc = automerge::AutoCommit::new();
-        assert!(!st.actions.is_hosted());
-        st.ingest_messages(&mut doc, std::slice::from_ref(&message));
-        let recorded = st
-            .actions
-            .last_dispatched()
-            .expect("ingest is submitted through the action sink");
-        assert_eq!(recorded.type_id.as_str(), crate::actions::MAIL_ACTION_TYPE);
+        st.ingest_messages(
+            &mut ui::widget::Edits::lend(&mut doc),
+            std::slice::from_ref(&message),
+        );
         assert_eq!(
             crate::doc::MailDoc::get_read(&doc, &message.id.to_string()),
             Some(message.read)
         );
+        assert_eq!(version_count(&doc), 1, "one ingest is one version");
+        assert!(steps_since(&doc, 0).is_empty(), "and no undo step");
     }
 
     #[test]
@@ -996,11 +973,10 @@ mod tests {
             let delta = if unread_index > 0 { 1 } else { -1 };
             let mut doc = AutoCommit::new();
             let heads_before = doc.get_heads();
-            st.move_selection(&mut doc, delta);
+            st.move_selection(&mut ui::widget::Edits::lend(&mut doc), delta);
             assert_eq!(st.selected, Some(target));
             assert!(st.mailbox.get(target).is_some_and(|message| !message.read));
             assert_eq!(doc.get_heads(), heads_before);
-            assert!(st.actions.last_dispatched().is_none());
         }
 
         // Phase `reply_all_action_raises_distinct_reply_all_intent`.
@@ -1008,7 +984,11 @@ mod tests {
             let mut st = state();
             let mut doc = AutoCommit::new();
             let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::ReplyAll);
+            st.apply_message_action(
+                &mut ui::widget::Edits::lend(&mut doc),
+                id,
+                CtxAction::ReplyAll,
+            );
             let intents = st.take_intents();
             assert!(
                 intents
@@ -1020,77 +1000,95 @@ mod tests {
         }
     }
 
+    /// `id` as `you@example.test`'s server reported it.
+    fn fetch(st: &mut MailState, doc: &mut AutoCommit, id: MessageId) {
+        let message = st.mailbox.get_mut(id).expect("loaded message");
+        message.rfc_message_id = Some(format!("{id}@example.test"));
+        let message = message.clone();
+        st.ingest_fetched(
+            &mut ui::widget::Edits::lend(doc),
+            "you@example.test",
+            std::slice::from_ref(&message),
+        );
+    }
+
+    /// A triage control posts nothing to the engine itself: it changes the
+    /// document, and what the server has to be told follows from that.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn message_actions_emit_exact_server_operations() {
-        // Phase `star_action_emits_server_store_flag`.
-        {
-            let mut st = state();
-            let mut doc = AutoCommit::new();
-            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::ToggleStar);
-            let intents = st.take_intents();
+    fn message_actions_reach_the_server_through_the_document() {
+        use crate::actions::ServerUpdate;
+        let posts_nothing = |st: &mut MailState| {
             assert!(
-                intents
+                !st.take_intents()
                     .iter()
-                    .any(|i| matches!(i, Intent::Engine(EngineRequest::StoreFlag { .. }))),
-                "starring must post a StoreFlag to the engine (UID STORE in the live build)"
+                    .any(|intent| matches!(intent, Intent::Engine(_))),
+                "a control never talks to the engine itself"
             );
-        }
+        };
 
-        // Phase `archive_action_emits_server_move_to_archive`.
-        {
-            let mut st = state();
-            let mut doc = AutoCommit::new();
-            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::Archive);
-            let intents = st.take_intents();
-            assert!(
-                intents.iter().any(|i| matches!(
-                    i,
-                    Intent::Engine(EngineRequest::Move {
-                        to: Folder::Archive,
-                        ..
-                    })
-                )),
-                "archiving must post a Move to Archive to the engine (UID MOVE in live)"
-            );
-        }
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+        fetch(&mut st, &mut doc, id);
+        st.apply_message_action(
+            &mut ui::widget::Edits::lend(&mut doc),
+            id,
+            CtxAction::ToggleStar,
+        );
+        posts_nothing(&mut st);
+        assert!(matches!(
+            crate::doc::MailDoc::server_updates(&doc).as_slice(),
+            [ServerUpdate::Flags {
+                starred: true,
+                folder: Folder::Inbox,
+                ..
+            }]
+        ));
 
-        // Phase `junk_action_emits_server_move_to_junk`.
-        {
-            let mut st = state();
-            let mut doc = AutoCommit::new();
-            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::Junk);
-            let intents = st.take_intents();
-            assert!(intents.iter().any(|i| matches!(
-                i,
-                Intent::Engine(EngineRequest::Move {
-                    to: Folder::Junk,
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+        fetch(&mut st, &mut doc, id);
+        st.apply_message_action(
+            &mut ui::widget::Edits::lend(&mut doc),
+            id,
+            CtxAction::Archive,
+        );
+        posts_nothing(&mut st);
+        assert!(matches!(
+            crate::doc::MailDoc::server_updates(&doc).as_slice(),
+            [ServerUpdate::Move {
+                from: Folder::Inbox,
+                to: Folder::Archive,
+                ..
+            }]
+        ));
+
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+        fetch(&mut st, &mut doc, id);
+        st.apply_message_action(
+            &mut ui::widget::Edits::lend(&mut doc),
+            id,
+            CtxAction::Delete,
+        );
+        st.apply_message_action(
+            &mut ui::widget::Edits::lend(&mut doc),
+            id,
+            CtxAction::Delete,
+        );
+        posts_nothing(&mut st);
+        assert!(
+            matches!(
+                crate::doc::MailDoc::server_updates(&doc).as_slice(),
+                [ServerUpdate::Remove {
+                    folder: Folder::Inbox,
                     ..
-                })
-            )));
-        }
-
-        // Phase `permanent_delete_emits_an_exact_server_purge`.
-        {
-            let mut st = state();
-            let mut doc = AutoCommit::new();
-            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::Delete);
-            st.take_intents();
-
-            st.apply_message_action(&mut doc, id, CtxAction::Delete);
-            let intents = st.take_intents();
-            assert!(intents.iter().any(|intent| matches!(
-                intent,
-                Intent::Engine(EngineRequest::Purge { message, .. }) if message.id == id
-            )));
-        }
+                }]
+            ),
+            "a message deleted for good is removed from where the server has it"
+        );
     }
 
     #[test]
@@ -1114,26 +1112,27 @@ mod tests {
                 assert!(st.toggle_bulk_selection(*id));
             }
             let archive_before = st.mailbox.count(Folder::Archive);
-            assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Archive), 2);
+            let versions_before = version_count(&doc);
+            assert_eq!(
+                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Archive),
+                2
+            );
             assert_eq!(st.mailbox.count(Folder::Archive), archive_before + 2);
             assert!(
                 st.bulk_selection.is_empty(),
                 "moved rows cannot stay selected"
             );
-            let last = st
-                .actions
-                .last_dispatched()
-                .expect("bulk action dispatched");
-            assert_eq!(last.type_id, MAIL_ACTION_TYPE);
             assert_eq!(
-                last.payload,
-                crate::actions::encode(&move_action(
-                    ids.iter().map(ToString::to_string).collect(),
-                    Folder::Archive,
-                ))
-                .payload,
-                "two archives are one deterministic action boundary"
+                steps_since(&doc, versions_before).len(),
+                1,
+                "two archives are one undo step"
             );
+            for id in &ids {
+                assert_eq!(
+                    crate::doc::MailDoc::get_folder_for(&doc, &id.to_string()),
+                    Some(Folder::Archive)
+                );
+            }
             assert!(
                 doc.get(&automerge::ROOT, "bulk_selection")
                     .expect("document remains readable")
@@ -1155,7 +1154,10 @@ mod tests {
             for id in &ids {
                 st.toggle_bulk_selection(*id);
             }
-            assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::MarkRead), 2);
+            assert_eq!(
+                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::MarkRead),
+                2
+            );
             assert!(
                 ids.iter()
                     .all(|id| st.mailbox.get(*id).is_some_and(|m| m.read))
@@ -1184,7 +1186,10 @@ mod tests {
             st.toggle_bulk_selection(already_trash);
             st.toggle_bulk_selection(inbox);
 
-            assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Delete), 1);
+            assert_eq!(
+                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Delete),
+                1
+            );
             assert_eq!(
                 st.mailbox.get(already_trash).map(|message| message.folder),
                 Some(Folder::Trash),
@@ -1194,11 +1199,13 @@ mod tests {
                 st.mailbox.get(inbox).map(|message| message.folder),
                 Some(Folder::Trash)
             );
-            let last = st.actions.last_dispatched().expect("one move action");
             assert_eq!(
-                last.payload,
-                crate::actions::encode(&move_action(vec![inbox.to_string()], Folder::Trash))
-                    .payload
+                crate::doc::MailDoc::get_folder_for(&doc, &inbox.to_string()),
+                Some(Folder::Trash)
+            );
+            assert!(
+                crate::doc::MailDoc::is_present_message(&doc, &already_trash.to_string()),
+                "the row already in Trash is never purged"
             );
         }
 
@@ -1221,7 +1228,10 @@ mod tests {
             st.bulk_selection.push(uuid::Uuid::new_v4());
 
             let heads_before = doc.get_heads();
-            assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Purge), 0);
+            assert_eq!(
+                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Purge),
+                0
+            );
             assert!(st.mailbox.get(trash).is_some());
             assert!(st.mailbox.get(inbox).is_some());
             assert_eq!(
@@ -1229,7 +1239,6 @@ mod tests {
                 heads_before,
                 "a rejected mixed/stale purge never creates a partial document mutation"
             );
-            assert!(st.actions.last_dispatched().is_none());
         }
     }
 }

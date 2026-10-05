@@ -53,32 +53,21 @@ impl Ui {
     }
 
     fn apply(&self, document: Option<&ThemeDocument>) {
-        let message = match document.map(crate::apply::apply) {
-            Some(Ok(())) => format!(
-                "{} is now your {} theme.",
-                document.map_or("", |d| d.name.as_str()),
-                if document.is_some_and(ThemeDocument::is_dark) {
-                    "dark"
-                } else {
-                    "light"
-                }
-            ),
-            Some(Err(reason)) => reason,
-            None => String::from("There is no such theme."),
-        };
-        self.notice.set(message);
+        if let Some(document) = document {
+            self.dispatcher
+                .effect(&crate::effects::ThemesEffect::ApplyTheme {
+                    theme: document.id.clone(),
+                });
+        }
     }
 
     fn export(&self, document: Option<&ThemeDocument>) {
-        let message = match document.map(crate::apply::export) {
-            Some(Ok(json)) => {
-                ui::text_selection::clipboard_copy(&json);
-                String::from("The theme is on the clipboard.")
-            }
-            Some(Err(reason)) => reason,
-            None => String::from("There is no such theme."),
-        };
-        self.notice.set(message);
+        if let Some(document) = document {
+            self.dispatcher
+                .effect(&crate::effects::ThemesEffect::Export {
+                    theme: document.id.clone(),
+                });
+        }
     }
 }
 
@@ -91,6 +80,7 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
         dispatcher: cx.dispatcher(),
         live: cx.live().clone(),
     };
+    crate::effects::install(cx, &ui.notice);
     {
         let ui = ui.clone();
         cx.on_stage(move |scenario| {
@@ -141,7 +131,7 @@ fn sidebar(cx: &ViewCx<Studio>, ui: &Ui) -> Element {
         let page = ui.page.clone();
         ModelView::from_state(&page, move |page| {
             let open = ui.clone();
-            let button = Button::new("themes-gallery", "themes-gallery", None)
+            let button = Button::new("themes-gallery", "themes-gallery")
                 .on_view(move || open.open(Page::Gallery));
             Box::new(if *page == Page::Gallery {
                 button
@@ -177,7 +167,7 @@ fn sidebar(cx: &ViewCx<Studio>, ui: &Ui) -> Element {
                             } else {
                                 name.as_str()
                             };
-                            let button = Button::new(&format!("theme-{id}"), label, None)
+                            let button = Button::new(&format!("theme-{id}"), label)
                                 .on_view(move || target.open(page.clone()));
                             Box::new(if *open {
                                 button
@@ -192,7 +182,7 @@ fn sidebar(cx: &ViewCx<Studio>, ui: &Ui) -> Element {
     };
     let new_theme = {
         let ui = ui.clone();
-        Button::new("themes-new", "themes-new", None).on_view(move || ui.start_from("dark"))
+        Button::new("themes-new", "themes-new").on_view(move || ui.start_from("dark"))
     };
     Box::new(
         Scrollable::new_vertical()
@@ -229,18 +219,14 @@ fn gallery(ui: &Ui) -> Element {
 fn preset_card(ui: &Ui, preset: Preset) -> Element {
     let use_it = {
         let ui = ui.clone();
-        Button::new(&format!("use-{}", preset.id()), "themes-use", None)
-            .on_view(move || ui.apply(Some(&preset.document())))
+        Button::new(&format!("use-{}", preset.id()), "themes-use")
+            .on_effect(move || ui.apply(Some(&preset.document())))
     };
     let customize = {
         let ui = ui.clone();
-        Button::new(
-            &format!("customize-{}", preset.id()),
-            "themes-customize",
-            None,
-        )
-        .role(ButtonRole::Plain)
-        .on_view(move || ui.start_from(preset.id()))
+        Button::new(&format!("customize-{}", preset.id()), "themes-customize")
+            .role(ButtonRole::Plain)
+            .on_view(move || ui.start_from(preset.id()))
     };
     Box::new(
         Container::new()
@@ -409,29 +395,39 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
             let apply = {
                 let ui = ui.clone();
                 let raw = raw.clone();
-                Button::new("theme-apply", "themes-apply", None)
+                Button::new("theme-apply", "themes-apply")
                     .role(ButtonRole::Primary)
                     .with_enabled(*legible)
-                    .on_view(move || ui.apply(ui.document(&raw).as_ref()))
+                    .on_effect(move || ui.apply(ui.document(&raw).as_ref()))
             };
             let export = {
                 let ui = ui.clone();
                 let raw = raw.clone();
-                Button::new("theme-export", "themes-export", None)
+                Button::new("theme-export", "themes-export")
                     .with_enabled(*legible)
-                    .on_view(move || ui.export(ui.document(&raw).as_ref()))
+                    .on_effect(move || ui.export(ui.document(&raw).as_ref()))
             };
             let duplicate = {
                 let ui = ui.clone();
                 let raw = raw.clone();
-                Button::new("theme-duplicate", "themes-duplicate", None)
+                Button::new("theme-duplicate", "themes-duplicate")
                     .role(ButtonRole::Plain)
                     .on_view(move || ui.start_from(&raw))
+            };
+            let reset = {
+                let ui = ui.clone();
+                let raw = raw.clone();
+                Button::new("theme-reset", "themes-reset")
+                    .role(ButtonRole::Plain)
+                    .on_view(move || {
+                        ui.dispatcher
+                            .invoke(Studio::RESET.with(Id::from_raw(raw.clone())));
+                    })
             };
             let delete = {
                 let ui = ui.clone();
                 let raw = raw.clone();
-                Button::new("theme-delete", "themes-delete", None)
+                Button::new("theme-delete", "themes-delete")
                     .role(ButtonRole::Destructive)
                     .on_view(move || {
                         ui.dispatcher
@@ -439,7 +435,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                         ui.open(Page::Gallery);
                     })
             };
-            Box::new(ui::row![apply, export, duplicate, delete])
+            Box::new(ui::row![apply, export, duplicate, reset, delete])
         })
     };
 

@@ -9,16 +9,19 @@
 //! error spans, and the hover tooltip), rendered on top of the shared editor
 //! using its public geometry.
 //!
-//! The source text lives in the Automerge `Text` object the editor is bound to;
-//! every edit splices into it through the shared widget.
+//! The editor shows the source text of the file the app has open and submits
+//! every edit as a splice of it through the file's plain-text child, so a
+//! keystroke is an attributed, undoable, permission-checked action.
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use ui::framework::{Dispatcher, TextControl};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::PlainText;
 use ui::widget::Widget;
 use ui::widget::code_editor::{CodeEditor, Diagnostic as CodeDiagnostic, Language, Severity};
 
@@ -29,8 +32,9 @@ const TAB_WIDTH: usize = 2;
 
 pub struct SourceEditor {
     /// The shared code-editing widget — caret, selection, clipboard, undo,
-    /// gutter, and Typst syntax highlighting all live here.
-    code: CodeEditor,
+    /// gutter, and Typst syntax highlighting all live here — over the open
+    /// file's source.
+    code: TextControl<CodeEditor>,
     /// Whether the source pane holds keyboard focus. Mirrored onto `code` each
     /// frame so its caret paints and its key routing engages.
     pub focused: bool,
@@ -42,12 +46,17 @@ pub struct SourceEditor {
     hover: Option<Point>,
 }
 
-impl Default for SourceEditor {
-    fn default() -> Self {
+impl SourceEditor {
+    /// An editor showing the source text `locate` finds, read only until a
+    /// dispatcher is [attached](Self::attach).
+    pub fn new(locate: impl Fn(&AutoCommit) -> Option<automerge::ObjId> + 'static) -> Self {
         Self {
-            code: CodeEditor::local()
-                .with_language(Language::Typst)
-                .with_tab_width(TAB_WIDTH),
+            code: TextControl::view_only(
+                CodeEditor::local()
+                    .with_language(Language::Typst)
+                    .with_tab_width(TAB_WIDTH),
+                locate,
+            ),
             focused: true,
             rect: Rect::ZERO,
             drag_anchor: None,
@@ -57,44 +66,9 @@ impl Default for SourceEditor {
 }
 
 impl SourceEditor {
-    #[cfg(test)]
-    pub(crate) fn history_test_caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
-        self.code.caret_rect(theme, byte)
-    }
-
-    /// Unbound source presentation with no caret and persistent local scrolling.
-    pub(crate) fn snapshot(source: &str) -> Self {
-        let mut editor = Self::new();
-        editor.focused = false;
-        editor.code.inner_mut().set_preserve_unfocused_scroll(true);
-        editor.set_text(source);
-        editor
-    }
-
-    /// Prepare immutable source geometry using the widget's normal cached
-    /// measurement, including its renderer font/locale epoch invalidation.
-    pub(crate) fn prepare_snapshot_layout(&mut self, tr: &mut TextRenderer) {
-        Widget::measure(
-            &mut self.code,
-            taffy::Size {
-                width: Some(self.rect.width() as f32),
-                height: Some(self.rect.height() as f32),
-            },
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(self.rect.width() as f32),
-                height: taffy::AvailableSpace::Definite(self.rect.height() as f32),
-            },
-            tr,
-        );
-    }
-
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
-        self.code.set_rect(rect);
+        self.code.control_mut().set_rect(rect);
     }
 
     pub fn rect(&self) -> Rect {
@@ -102,46 +76,50 @@ impl SourceEditor {
     }
 
     pub fn line_height(&self) -> f64 {
-        self.code.line_height()
+        self.code.control().line_height()
     }
 
-    /// Bind the editor to the Automerge `Text` object holding the source and
-    /// pull its current content. Called from the app's `sync`.
-    pub fn bind(&mut self, obj: ObjId, doc: &mut AutoCommit) {
-        self.code.bind_text(obj);
+    /// Submit the edits of the open file's source through `dispatcher`.
+    pub fn attach(&mut self, dispatcher: Dispatcher<PlainText>) {
+        self.code.attach(dispatcher);
+    }
+
+    /// Show the open file's source as `doc` holds it. Called from the app's
+    /// `sync`.
+    pub fn pull(&mut self, doc: &AutoCommit) {
         self.code.pull(doc);
     }
 
     /// The caret's byte offset in the source.
     pub fn caret(&self) -> usize {
-        self.code.cursor_pos()
+        self.code.control().cursor_pos()
     }
 
     /// Move the caret to a byte offset (used by the screenshot harness).
     pub fn set_caret(&mut self, byte: usize) {
-        self.code.set_cursor_pos(byte);
+        self.code.control_mut().set_cursor_pos(byte);
     }
 
     /// The current buffer text (mirrors the bound Automerge object).
     pub fn text(&self) -> &str {
-        self.code.value()
+        self.code.control().value()
     }
 
     /// Programmatically set the buffer (local/unbound use — tests, seeding).
     pub fn set_text(&mut self, s: &str) {
-        self.code.set_text(s);
+        self.code.control_mut().set_text(s);
     }
 
     /// Reset the caret to the document start (used when switching documents).
     pub fn reset_cursor(&mut self) {
-        self.code.set_cursor_pos(0);
-        self.code.scroll_by(-1.0e9);
+        self.code.control_mut().set_cursor_pos(0);
+        self.code.control_mut().scroll_by(-1.0e9);
     }
 
     /// Screenshot harness only: select a couple of source lines so a capture
     /// shows a real selection band over highlighted code.
     pub fn demo_select(&mut self) {
-        let text = self.code.value().to_string();
+        let text = self.code.control_mut().value().to_string();
         let start = byte_of_line_col(&text, 1, 0);
         let end = byte_of_line_col(&text, 3, 0).min(text.len());
         let (a, b) = if end > start {
@@ -149,27 +127,22 @@ impl SourceEditor {
         } else {
             (0, text.len().min(24))
         };
-        self.code.set_selection(a, b);
+        self.code.control_mut().set_selection(a, b);
         self.focused = true;
     }
 
     /// Place the caret on a specific 1-based line (used when a diagnostic is
     /// clicked). `_text` is unused — the widget holds the source.
     pub fn goto_line(&mut self, _text: &str, line_1based: usize) {
-        self.code.goto_line(line_1based);
+        self.code.control_mut().goto_line(line_1based);
     }
 
     // ----- scrolling -------------------------------------------------------
 
-    /// Effective bounded offset for immutable History view persistence.
-    pub(crate) fn snapshot_scroll_y(&self) -> f64 {
-        self.code.inner().scroll_y()
-    }
-
     /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
     /// only scrolls vertically.
     pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
-        self.code.scroll_by(f64::from(dy));
+        self.code.control_mut().scroll_by(f64::from(dy));
     }
 
     /// Scroll the caret into view. The shared widget follows the caret after
@@ -180,22 +153,24 @@ impl SourceEditor {
 
     pub fn on_mouse_down(&mut self, p: Point, shift: bool, _text: &str) {
         self.focused = true;
-        self.code.set_focused(true);
-        let byte = self.code.byte_at_point(p);
+        self.code.control_mut().set_focused(true);
+        let byte = self.code.control_mut().byte_at_point(p);
         if shift {
-            let anchor = self.drag_anchor.unwrap_or_else(|| self.code.cursor_pos());
-            self.code.set_selection(anchor, byte);
+            let anchor = self
+                .drag_anchor
+                .unwrap_or_else(|| self.code.control_mut().cursor_pos());
+            self.code.control_mut().set_selection(anchor, byte);
             self.drag_anchor = Some(anchor);
         } else {
-            self.code.set_cursor_pos(byte);
+            self.code.control_mut().set_cursor_pos(byte);
             self.drag_anchor = Some(byte);
         }
     }
 
     pub fn on_mouse_drag(&mut self, p: Point, _text: &str) {
         if let Some(anchor) = self.drag_anchor {
-            let byte = self.code.byte_at_point(p);
-            self.code.set_selection(anchor, byte);
+            let byte = self.code.control_mut().byte_at_point(p);
+            self.code.control_mut().set_selection(anchor, byte);
         }
     }
 
@@ -216,9 +191,9 @@ impl SourceEditor {
 
     // ----- keyboard --------------------------------------------------------
 
-    /// Handle a keyboard event through the shared widget. Returns true if
-    /// consumed. `text_id` is the bound source object; the widget is already
-    /// bound to it, so edits splice there.
+    /// Handle a keyboard event through the shared widget, submitting what it
+    /// edited as one splice of the open file's source. Returns true if
+    /// consumed.
     ///
     /// # Panics
     /// Never panics: `taffy::TaffyTree::new_leaf` cannot return `Err` for a
@@ -228,11 +203,10 @@ impl SourceEditor {
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        text_id: &ObjId,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use taffy::{Style, TaffyTree};
-        self.code.set_focused(self.focused);
+        self.code.control_mut().set_focused(self.focused);
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -241,21 +215,20 @@ impl SourceEditor {
             reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
         )]
         let node = taffy.new_leaf(Style::default()).unwrap();
-        // `text_id` is the object the widget was bound to; pass it as the root so
-        // the resolve falls back to it even if the binding were ever cleared.
-        self.code.handle_event(
+        self.code.control_mut().handle_event(
             event,
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers,
-                state: doc,
-                path: text_id,
+                state: doc.reborrow(),
+                path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
                 node_id: node,
                 taffy: &taffy,
             },
         );
+        self.code.submit(doc);
         handled
     }
 
@@ -274,9 +247,9 @@ impl SourceEditor {
         theme: &Theme,
         diags: &[Diagnostic],
     ) {
-        self.code.set_focused(self.focused);
-        self.code.set_rect(self.rect);
-        let text = self.code.value().to_string();
+        self.code.control_mut().set_focused(self.focused);
+        self.code.control_mut().set_rect(self.rect);
+        let text = self.code.control().value().to_string();
         let spans = diags
             .iter()
             .filter_map(|d| {
@@ -292,10 +265,13 @@ impl SourceEditor {
                 Some(CodeDiagnostic::new(b0..b1, severity, message))
             })
             .collect();
-        self.code.set_diagnostics(spans);
+        self.code.control_mut().set_diagnostics(spans);
         self.code
+            .control_mut()
             .set_pointer(self.hover.filter(|p| self.rect.contains(*p)));
-        self.code.draw_embedded(scene, transform, tr, theme);
+        self.code
+            .control_mut()
+            .draw_embedded(scene, transform, tr, theme);
     }
 
     /// The hover card for the diagnostic under the pointer, drawn in the
@@ -310,6 +286,7 @@ impl SourceEditor {
         window: Rect,
     ) {
         self.code
+            .control()
             .draw_diagnostic_card(scene, transform, tr, theme, window);
     }
 
@@ -356,11 +333,17 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT, ReadDoc};
 
-    fn doc_with(text: &str) -> (AutoCommit, ObjId) {
+    fn doc_with(text: &str) -> (AutoCommit, automerge::ObjId) {
         let mut doc = AutoCommit::new();
         let id = doc.put_object(&ROOT, "source", ObjType::Text).unwrap();
         doc.splice_text(&id, 0, 0, text).unwrap();
         (doc, id)
+    }
+
+    /// An editor over the text `id`.
+    fn editor_on(id: &automerge::ObjId) -> SourceEditor {
+        let id = id.clone();
+        SourceEditor::new(move |_| Some(id.clone()))
     }
 
     #[test]
@@ -427,8 +410,8 @@ mod tests {
                 end_col: Some(6),
                 hints: vec![],
             };
-            let mut ed = SourceEditor::new();
-            ed.code.set_text("a\nbcdefg\n");
+            let mut ed = SourceEditor::new(|_| None);
+            ed.set_text("a\nbcdefg\n");
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
             ed.draw(
                 &mut Scene::new(),
@@ -437,8 +420,13 @@ mod tests {
                 &Theme::dark(),
                 &[warn, err],
             );
-            let severities: Vec<Severity> =
-                ed.code.diagnostics().iter().map(|d| d.severity).collect();
+            let severities: Vec<Severity> = ed
+                .code
+                .control()
+                .diagnostics()
+                .iter()
+                .map(|d| d.severity)
+                .collect();
             assert_eq!(
                 severities,
                 [Severity::Warning, Severity::Error],
@@ -448,17 +436,17 @@ mod tests {
     }
 
     #[test]
-    fn editor_input_edits_document_and_moves_caret() {
-        // Case `typing_edits_the_bound_document`:
-        // Typing through the shell edits the bound Automerge object via the shared
-        // widget's real key path.
+    fn editor_input_without_a_dispatcher_and_caret_moves() {
+        // Case `typing_without_a_dispatcher_changes_nothing`:
+        // An editor nobody attached a dispatcher to only shows the text; the
+        // keys it takes are taken back.
         {
             use winit::event::{ElementState, KeyEvent};
             use winit::keyboard::{Key, SmolStr};
             let (mut doc, id) = doc_with("");
-            let mut ed = SourceEditor::new();
+            let mut ed = editor_on(&id);
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            ed.bind(id.clone(), &mut doc);
+            ed.pull(&doc);
             ed.focused = true;
             for ch in ["h", "i"] {
                 let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
@@ -475,15 +463,20 @@ mod tests {
                     event: ev,
                     is_synthetic: false,
                 };
-                assert!(ed.handle_key(&event, &Modifiers::default(), &mut doc, &id));
+                assert!(ed.handle_key(
+                    &event,
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut doc)
+                ));
             }
-            assert_eq!(doc.text(&id).unwrap(), "hi");
+            assert_eq!(doc.text(&id).unwrap(), "");
+            assert_eq!(ed.text(), "");
         }
         // Case `goto_line_moves_the_caret_to_the_line_start`.
         {
-            let (mut doc, id) = doc_with("one\ntwo\nthree");
-            let mut ed = SourceEditor::new();
-            ed.bind(id, &mut doc);
+            let (doc, id) = doc_with("one\ntwo\nthree");
+            let mut ed = editor_on(&id);
+            ed.pull(&doc);
             ed.goto_line("", 2);
             assert_eq!(ed.caret(), 4, "line 2 starts just after the first newline");
         }

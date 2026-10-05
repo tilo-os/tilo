@@ -129,9 +129,9 @@ impl PdfApp {
         let has_doc = self.has_document;
         if lay.open.contains(p) {
             // A pending open owns the document slot; starting a second picker
-            // would only create a competing request. Consume the press while
-            // the button is visibly disabled.
-            if self.pending_open.is_none() {
+            // would only create a competing request.  Consume the press while
+            // the chrome is visibly disabled.
+            if !self.opening() {
                 return Some(ToolbarHit::Open);
             }
             return Some(ToolbarHit::Inert);
@@ -178,7 +178,7 @@ impl PdfApp {
         Some(ToolbarHit::Inert)
     }
 
-    fn apply_toolbar(&mut self, hit: &ToolbarHit, state: &mut AutoCommit) {
+    fn apply_toolbar(&mut self, hit: &ToolbarHit, state: &mut ui::widget::Edits<'_>) {
         match hit {
             ToolbarHit::Tool(t) => self.set_tool(*t),
             ToolbarHit::MarkerColour => self.open_marker_colours(),
@@ -252,7 +252,7 @@ impl PdfApp {
     fn with_local_ctx<R>(
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         f: impl FnOnce(&mut ui::widget::EventCtx<'_>) -> R,
     ) -> Option<R> {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -262,7 +262,7 @@ impl PdfApp {
         Some(f(&mut ui::widget::EventCtx {
             scale_factor: scale,
             modifiers: &modifiers,
-            state,
+            state: state.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -278,7 +278,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let bar = &mut self.find_bar;
         let took = Self::with_local_ctx(scale, modifiers, state, |ctx| bar.route(event, ctx))
@@ -307,7 +307,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let bar = &mut self.toolbar;
         let took = Self::with_local_ctx(scale, modifiers, state, |ctx| {
@@ -320,7 +320,7 @@ impl PdfApp {
     }
 
     /// Run the command the toolbar activated last, if any.
-    fn drain_toolbar(&mut self, state: &mut AutoCommit) {
+    fn drain_toolbar(&mut self, state: &mut ui::widget::Edits<'_>) {
         if let Some(hit) = self.toolbar.take_activated().and_then(toolbar_command) {
             self.apply_toolbar(&hit, state);
         }
@@ -334,7 +334,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         let input = &mut self.zoom_input;
         let _ = Self::with_local_ctx(scale, modifiers, state, |ctx| {
@@ -360,7 +360,7 @@ impl PdfApp {
 
     /// Resolve the most specific captured sidebar hit (smallest rect wins,
     /// so the resolve-chip beats the comment card it sits inside).
-    fn apply_sidebar(&mut self, p: Point, state: &mut AutoCommit) -> bool {
+    fn apply_sidebar(&mut self, p: Point, state: &mut ui::widget::Edits<'_>) -> bool {
         if !self.show_sidebar || !self.sidebar_rect.contains(p) {
             return false;
         }
@@ -449,6 +449,7 @@ impl PdfApp {
             SidebarHit::SigClear => {
                 self.sig_strokes.clear();
                 self.sig_stroke = None;
+                self.keep_strokes();
             }
             SidebarHit::SigJump(i) => {
                 if let Some(s) = self.signatures.get(i) {
@@ -485,13 +486,13 @@ impl PdfApp {
     }
 
     /// Pointer-down inside the page canvas: dispatch by the active tool.
-    fn apply_canvas_press(&mut self, p: Point, state: &mut AutoCommit) -> bool {
+    fn apply_canvas_press(&mut self, p: Point, state: &mut ui::widget::Edits<'_>) -> bool {
         if !self.canvas_rect.contains(p) {
             return false;
         }
         // Empty state: the only affordance is the centred "Open a PDF…" button.
         if !self.has_document {
-            if self.pending_open.is_none() && self.empty_open_button_rect().contains(p) {
+            if !self.opening() && self.empty_open_button_rect().contains(p) {
                 self.request_open_via_portal();
             }
             return true;
@@ -605,7 +606,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         self.shift_down = modifiers.state().shift_key();
@@ -726,7 +727,7 @@ impl PdfApp {
         p: Point,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         self.last_mouse = p;
         if self.on_cursor_moved_chrome_drags(event, p, scale_factor, modifiers, state) {
@@ -744,7 +745,7 @@ impl PdfApp {
         p: Point,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         // Drawing a signature on the pad: extend the in-progress stroke.
         if self.sig_stroke.is_some() {
@@ -877,7 +878,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let p = self.last_mouse;
@@ -897,7 +898,7 @@ impl PdfApp {
         p: Point,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         // A click inside the active inline editor keeps focus; a click
@@ -968,7 +969,7 @@ impl PdfApp {
     fn on_left_press_rail_and_canvas(
         &mut self,
         p: Point,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // The page rail: its resize grip (a thin strip on the right
@@ -1032,13 +1033,14 @@ impl PdfApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // Finish a signature pad stroke: commit it if it has real ink.
         if let Some(stroke) = self.sig_stroke.take() {
             if stroke.len() >= 2 {
                 self.sig_strokes.push(stroke);
+                self.keep_strokes();
             }
             self.dirty = true;
             *handled = true;
@@ -1135,7 +1137,7 @@ impl PdfApp {
 
     /// `WindowEvent::MouseInput` (right, pressed): the page rail's
     /// duplicate/move/delete menu, else the canvas context menu.
-    fn on_right_press(&mut self, state: &mut AutoCommit, handled: &mut bool) {
+    fn on_right_press(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         let p = self.last_mouse;
         // Right-click a page thumbnail → the shared rail's duplicate /
         // move / delete menu.
@@ -1232,7 +1234,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let Ok(node) = taffy.new_leaf(Style::default()) else {
@@ -1243,7 +1245,7 @@ impl PdfApp {
             &mut ui::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path: &automerge::ROOT,
                 handled: &mut false,
                 focus_target: &mut None,
@@ -1258,7 +1260,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         match self.editing.as_mut().map(|e| &mut e.input) {
             Some(EditInput::Plain(input)) => {
@@ -1286,7 +1288,7 @@ impl PdfApp {
         key_event: &winit::event::KeyEvent,
         modifiers: winit::event::Modifiers,
         scale: f64,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if self.on_key_editing(event, key_event, modifiers, scale, state, handled) {
@@ -1336,7 +1338,7 @@ impl PdfApp {
         key_event: &winit::event::KeyEvent,
         modifiers: winit::event::Modifiers,
         scale: f64,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if self.editing.is_none() {
@@ -1357,17 +1359,25 @@ impl PdfApp {
         true
     }
 
-    /// While the find bar has focus it owns the keyboard (typing, Enter /
-    /// Shift+Enter, F3, Escape); Ctrl+F refocuses its query. While a zoom
-    /// value is being typed the stepper owns it. Returns whether either
-    /// consumed this key.
+    /// While the search strip is open it owns the keyboard. Returns whether
+    /// it consumed this key.
+    fn drive_search_input(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut ui::widget::Edits<'_>,
+    ) {
+        self.route_find_bar(event, scale, modifiers, state);
+    }
+
     fn on_key_search(
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
         ctrl: bool,
         scale: f64,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if self.zoom_input.is_editing() {
@@ -1527,7 +1537,7 @@ impl PdfApp {
     fn on_key_navigation(
         &mut self,
         key_event: &winit::event::KeyEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         match &key_event.logical_key {
@@ -1598,9 +1608,9 @@ mod event_tests {
     use winit::event::{Modifiers, TouchPhase};
 
     fn sample_app() -> (PdfApp, ui::State) {
-        let mut app = PdfApp::sample();
-        let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+        let mut app = crate::scenarios::sample_reader();
+        let mut st = crate::scenarios::sample_state();
+        app.sync_settled(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.measure_toolbar(
             &mut ui::text_render::TextRenderer::new(),
@@ -1700,7 +1710,7 @@ mod event_tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut self.st.doc,
+                    state: Edits::lend(&mut self.st.doc),
                     path: &self.st.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -1849,7 +1859,7 @@ mod event_tests {
         let lay = app.toolbar_layout();
         for (tool, r) in lay.tools {
             let hit = app.toolbar_hit(centre(r)).expect("a toolbar hit");
-            app.apply_toolbar(&hit, &mut st.doc);
+            app.apply_toolbar(&hit, &mut Edits::lend(&mut st.doc));
             assert_eq!(app.tool, tool, "clicking {tool:?} should arm it");
         }
 
@@ -1863,12 +1873,17 @@ mod event_tests {
             .clone();
         app.selected_anno = Some(hl.id.clone());
         app.tool = Tool::Highlight;
-        app.apply_toolbar(&ToolbarHit::Swatch(Swatch::Green), &mut st.doc);
+        app.apply_toolbar(
+            &ToolbarHit::Swatch(Swatch::Green),
+            &mut Edits::lend(&mut st.doc),
+        );
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
         assert!(
-            ui::undo::take_committed_action(&mut app).is_some(),
-            "the recolour dispatched an action and stashed one undo boundary"
+            PdfDoc::list_annotations(&st.doc)
+                .iter()
+                .any(|a| a.id == hl.id && a.color == Swatch::Green),
+            "the recolour landed in the shared document"
         );
 
         // The first and last toolbar controls sit the same distance from their
@@ -1948,7 +1963,7 @@ mod event_tests {
         let (mut app, mut st) = sample_app();
         let well = app.toolbar_layout().colour.expect("the colour well");
         let hit = app.toolbar_hit(centre(well)).expect("a toolbar hit");
-        app.apply_toolbar(&hit, &mut st.doc);
+        app.apply_toolbar(&hit, &mut ui::widget::Edits::lend(&mut st.doc));
         assert!(app.marker_colours.is_some(), "the well opens the popover");
 
         // An 800px window keeps every tool and the colour in the row; Open
@@ -1976,7 +1991,7 @@ mod event_tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut st.doc,
+                state: ui::widget::Edits::lend(&mut st.doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2158,7 +2173,10 @@ mod event_tests {
                 .find(|c| c.id == id)
                 .unwrap()
                 .resolved;
-            assert!(rig.app.apply_sidebar(centre(r), &mut rig.st.doc));
+            assert!(
+                rig.app
+                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
+            );
             let after = rig
                 .app
                 .comments
@@ -2228,7 +2246,10 @@ mod event_tests {
         });
         if let Some((id, r)) = del {
             let n = rig.app.comments.len();
-            assert!(rig.app.apply_sidebar(centre(r), &mut rig.st.doc));
+            assert!(
+                rig.app
+                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
+            );
             assert_eq!(rig.app.comments.len(), n - 1);
             assert!(!rig.app.comments.iter().any(|c| c.id == id));
         }
@@ -2240,7 +2261,10 @@ mod event_tests {
         });
         if let Some((id, r)) = dels {
             let n = rig.app.signatures.len();
-            assert!(rig.app.apply_sidebar(centre(r), &mut rig.st.doc));
+            assert!(
+                rig.app
+                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
+            );
             assert_eq!(rig.app.signatures.len(), n - 1);
             assert!(!rig.app.signatures.iter().any(|s| s.id == id));
         }
@@ -2336,10 +2360,6 @@ mod event_tests {
         assert!(
             rig.app.annotations.len() > before,
             "a highlight drag through handle_event adds an annotation"
-        );
-        assert!(
-            ui::undo::take_committed_action(&mut rig.app).is_some(),
-            "the new highlight dispatched an action and stashed one undo boundary"
         );
         assert!(
             PdfDoc::list_annotations(&rig.st.doc).len() > before,
@@ -2439,9 +2459,9 @@ mod event_tests {
 
         // On a narrow (overlay) window, clicking the canvas scrim beside an
         // open panel dismisses the panels.
-        let mut app = PdfApp::sample();
-        let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+        let mut app = crate::scenarios::sample_reader();
+        let mut st = crate::scenarios::sample_state();
+        app.sync_settled(&mut st.doc, &st.root);
         // Narrow window -> overlay mode; panels auto-close on the transition.
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         app.reconcile_overlay();
@@ -2475,10 +2495,10 @@ mod event_tests {
         let (mut app, mut st) = sample_app();
         let a0 = app.annotations.len();
         let c0 = app.comments.len();
-        app.create_note(&mut st.doc, 1, (120.0, 200.0));
+        app.create_note(&mut Edits::lend(&mut st.doc), 1, (120.0, 200.0));
         assert_eq!(app.comments.len(), c0 + 1);
         assert!(app.editing.is_some());
-        app.commit_edit(&mut st.doc); // committed empty
+        app.commit_edit(&mut Edits::lend(&mut st.doc)); // committed empty
         assert_eq!(app.comments.len(), c0, "empty note thread removed");
         assert_eq!(app.annotations.len(), a0, "and its page marker removed");
 
@@ -2509,7 +2529,7 @@ mod event_tests {
         let replies_before = app.comments[0].replies.len();
         app.begin_edit(EditTarget::Reply(cid.clone()), "");
         app.editing.as_mut().unwrap().set_text("Looks good");
-        app.commit_edit(&mut st.doc);
+        app.commit_edit(&mut Edits::lend(&mut st.doc));
         let after = app.comments.iter().find(|c| c.id == cid).unwrap();
         assert_eq!(
             after.replies.len(),
@@ -2592,7 +2612,7 @@ mod event_tests {
         );
         let (services, recorder) = ui::host::HostServices::recording();
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
         });
         assert!(
             app.portal_rx.is_some(),
@@ -2605,7 +2625,7 @@ mod event_tests {
         // A portal-chosen file loads through the per-frame drain.
         let mut app = PdfApp::empty();
         let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -2617,9 +2637,9 @@ mod event_tests {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
         });
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
         assert!(
             app.has_document,
             "a portal-chosen PDF loads through the frame drain"
@@ -2638,13 +2658,13 @@ mod event_tests {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
         });
         assert!(
             app.portal_rx.is_some(),
             "Open issued a host chooser request"
         );
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
         assert_eq!(
             app.has_document, before,
             "cancel does not change the open state"
@@ -2687,9 +2707,13 @@ mod event_tests {
             .first()
             .expect("sample seeds annotations")
             .clone();
-        let resources = ui::resources::resources(&app, &st.doc);
+        let published = ui::tilo_resource::publish::<crate::PdfViewer>(
+            "pdf.document",
+            "PDF",
+            &<crate::PdfViewer as ui::tilo_resource::Resource>::read(&st.doc).unwrap(),
+        );
         let want_id = format!("pdf.annotation:{}", anno.id);
-        let res = resources[0]
+        let res = published
             .children
             .iter()
             .find(|r| r.id.as_str() == want_id.as_str())
@@ -2701,17 +2725,30 @@ mod event_tests {
                 panic!("delete is an immediate action")
             }
         };
-        // The real affordance path (Delete key / rail button / context menu).
-        app.delete_target(&DeleteTarget::Annotation(anno.id.clone()), &mut st.doc);
-        let dispatched = app
-            .actions
-            .last_dispatched()
-            .cloned()
-            .expect("the affordance dispatched an action");
-        assert_eq!(dispatched.type_id, spec_encoded.type_id);
+        // The palette's delete, applied to a replica of the same document…
+        let mut palette = st.doc.fork();
+        let decoded: crate::actions::PdfViewerAction =
+            serde_json::from_slice(&spec_encoded.payload).expect("the palette's delete decodes");
+        ui::tilo_actions::Action::apply(&decoded, &mut palette).expect("the palette deletes");
+        // …and the real affordance path (Delete key / rail button / context menu).
+        app.delete_target(
+            &DeleteTarget::Annotation(anno.id.clone()),
+            &mut Edits::lend(&mut st.doc),
+        );
+        let ids = |annotations: Vec<Annotation>| -> Vec<String> {
+            annotations.into_iter().map(|a| a.id).collect()
+        };
+        let comment_ids = |comments: Vec<Comment>| -> Vec<String> {
+            comments.into_iter().map(|c| c.id).collect()
+        };
         assert_eq!(
-            dispatched.payload, spec_encoded.payload,
+            ids(PdfDoc::list_annotations(&st.doc)),
+            ids(PdfDoc::list_annotations(&palette)),
             "one source of truth"
+        );
+        assert_eq!(
+            comment_ids(PdfDoc::list_comments(&st.doc)),
+            comment_ids(PdfDoc::list_comments(&palette))
         );
         assert!(
             app.annotations.iter().all(|a| a.id != anno.id),

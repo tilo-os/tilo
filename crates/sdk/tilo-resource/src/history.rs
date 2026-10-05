@@ -65,7 +65,19 @@ fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
 /// Reads every change's metadata (never its operations). For a long history
 /// shown a screen at a time, [`page`] reads only the page.
 pub fn versions(doc: &mut Doc) -> Vec<Version> {
-    doc.get_changes_meta(&[]).iter().map(version_of).collect()
+    // Closes the open transaction, so its change is listed too.
+    doc.get_heads();
+    committed_versions(doc)
+}
+
+/// [`versions`] of the committed document, read through a shared
+/// reference: a transaction still open is not listed.
+pub fn committed_versions(doc: &Doc) -> Vec<Version> {
+    doc.committed_document()
+        .get_changes_meta(&[])
+        .iter()
+        .map(version_of)
+        .collect()
 }
 
 /// Now on the toolkit's wall clock, so a capture that pins the clock stamps

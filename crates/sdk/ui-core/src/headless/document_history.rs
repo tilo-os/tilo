@@ -420,7 +420,7 @@ impl FrameHarness {
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut self.state.doc,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             )?
             .ok_or("Unknown local History operation")?;
@@ -562,7 +562,7 @@ impl FrameHarness {
             crate::widget::controls::refresh_control_action_availability(pane, &allowed);
         }
         self.document_history
-            .sync(&mut self.state.doc, &self.state.root);
+            .sync(&self.state.doc, &self.state.root);
         let reshaped = self.document_history.take_structure_dirty();
         (
             revision != self.document_history.revision(),
@@ -777,7 +777,7 @@ impl FrameHarness {
                             &mut crate::widget::EventCtx {
                                 scale_factor: self.input_scale,
                                 modifiers: &self.modifiers,
-                                state: doc,
+                                state: crate::widget::Edits::lend(doc),
                                 path,
                                 handled,
                                 focus_target: focus,
@@ -796,7 +796,7 @@ impl FrameHarness {
                 &mut crate::widget::EventCtx {
                     scale_factor: self.input_scale,
                     modifiers: &self.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -814,7 +814,7 @@ impl FrameHarness {
                 &mut crate::widget::EventCtx {
                     scale_factor: self.input_scale,
                     modifiers: &self.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -832,7 +832,7 @@ impl FrameHarness {
                 &mut crate::widget::EventCtx {
                     scale_factor: self.input_scale,
                     modifiers: &self.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -864,9 +864,14 @@ impl FrameHarness {
         let handled = self
             .dispatch_node(node, |widget, doc, path| {
                 if let Some(target) = semantic_target {
-                    widget.perform_semantic_action(target, action, doc, path)
+                    widget.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(doc),
+                        path,
+                    )
                 } else {
-                    widget.perform_action(action, doc, path)
+                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), path)
                 }
             })
             .map_err(|error| format!("History action refused: {error:?}"))?;
@@ -950,7 +955,7 @@ mod tests {
         let calls = Rc::new(Cell::new(0));
         let called = calls.clone();
         let root = Box::new(
-            Button::new("app-operation", "App operation", None)
+            Button::new("app-operation", "App operation")
                 .on_view(move || called.set(called.get() + 1)),
         );
         let mut driver = FrameHarness::new_with_controlled_inputs(

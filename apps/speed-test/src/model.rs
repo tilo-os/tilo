@@ -130,6 +130,7 @@ pub(crate) struct Model {
     live: f64,
     /// Finished tests, newest first.
     pub history: Vec<Finished>,
+    current: Option<Finished>,
     pub error: Option<String>,
     /// How far the dial's arc has eased toward its target.
     ring: f64,
@@ -141,13 +142,79 @@ pub(crate) struct Model {
     revision: u64,
 }
 
+/// The canonical runtime's readings and recorded measurements for this frame.
+pub(crate) struct Projection<'a> {
+    pub phase: Phase,
+    pub result: Option<(f64, f64, f64, f64)>,
+    pub live: f64,
+    pub ring: f64,
+    pub history: &'a [crate::resource::Measurement],
+    pub current: Option<&'a crate::resource::Measurement>,
+    pub error: Option<String>,
+    pub server: String,
+}
+
+fn finished(r: &crate::resource::Measurement) -> Finished {
+    Finished {
+        at: r.at_ms / 1000,
+        ping: r.ping,
+        jitter: r.jitter,
+        download: r.download,
+        upload: r.upload,
+    }
+}
+
 impl Model {
+    /// Read-only projection of the canonical resource/runtime, never starts work or records a result.
+    pub(crate) fn present(&mut self, projection: Projection<'_>) {
+        let Projection {
+            phase,
+            result,
+            live,
+            ring,
+            history,
+            current,
+            error,
+            server,
+        } = projection;
+        self.phase = phase;
+        self.live = live;
+        self.ring = ring;
+        self.error = error;
+        self.current = current.map(finished);
+        self.history = history
+            .iter()
+            .map(|r| Finished {
+                at: r.at_ms / 1000,
+                ping: r.ping,
+                jitter: r.jitter,
+                download: r.download,
+                upload: r.upload,
+            })
+            .collect();
+        self.readings = match result {
+            Some((ping, jitter, download, upload)) => Readings {
+                ping: Some(ping),
+                jitter: Some(jitter),
+                download: Some(download),
+                upload: Some(upload),
+                location: Some(server),
+                ..Readings::default()
+            },
+            None => Readings {
+                location: Some(server),
+                ..Readings::default()
+            },
+        };
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             phase: Phase::Idle,
             readings: Readings::default(),
             live: 0.0,
             history: Vec::new(),
+            current: None,
             error: None,
             ring: 0.0,
             last_frame: ui::time::now(),
@@ -331,7 +398,7 @@ impl Model {
     /// The most recent finished test, while it is the one on screen.
     pub(crate) fn latest(&self) -> Option<&Finished> {
         (self.phase == Phase::Complete)
-            .then(|| self.history.first())
+            .then(|| self.current.as_ref().or_else(|| self.history.first()))
             .flatten()
     }
 

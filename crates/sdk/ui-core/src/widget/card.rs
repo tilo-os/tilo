@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::style_helpers::{auto, fr, length, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -496,10 +496,7 @@ impl Card {
 }
 
 impl Widget for Card {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::undo::UndoPoints
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let before = self.parts.rect;
@@ -512,17 +509,13 @@ impl Widget for Card {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -530,7 +523,7 @@ impl Widget for Card {
         changed
     }
 
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -718,7 +711,7 @@ impl Widget for Card {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
         matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
@@ -755,20 +748,6 @@ impl Widget for Card {
 }
 
 activation_controls!(Card, activation);
-
-impl crate::undo::UndoPoints for Card {
-    fn needs_commit(&self) -> bool {
-        self.parts
-            .children
-            .iter()
-            .any(|c| crate::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for child in &mut self.parts.children {
-            crate::undo::on_commit(child.as_mut());
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Actions — a card's or a form's small action group.
@@ -959,13 +938,7 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for card in &mut self.cards {
             changed |= card.update(state, path);
@@ -1093,19 +1066,6 @@ impl Widget for CardGrid {
             dirty |= card.take_structure_dirty();
         }
         dirty
-    }
-}
-
-impl crate::undo::UndoPoints for CardGrid {
-    fn needs_commit(&self) -> bool {
-        self.cards
-            .iter()
-            .any(|c| crate::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for card in &mut self.cards {
-            crate::undo::on_commit(card.as_mut());
-        }
     }
 }
 

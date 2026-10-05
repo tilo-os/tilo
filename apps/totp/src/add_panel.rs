@@ -351,7 +351,7 @@ impl AddForm {
 }
 
 impl Widget for AddForm {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The tree is replaced here, where the window expects a widget to
         // change its structure (and then asks it whether it did), never while
         // the window or the sheet is laying it out.
@@ -382,7 +382,7 @@ impl Widget for AddForm {
         self.tree.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.tree.update(state, path)
     }
 
@@ -524,7 +524,7 @@ fn text_field(
     }
     let mut field = Field::new(label, input).with_label_placement(Some(LabelPlacement::Above));
     if let Some(problem) = sheet.borrow().problem.as_ref().filter(|p| p.field == id) {
-        field = field.with_error(problem.message.clone());
+        field = field.with_error_live(problem.message.clone(), ui::a11y::Politeness::Assertive);
     }
     Box::new(field)
 }
@@ -561,7 +561,7 @@ fn import_section(sheet: &Shared, values: &Values, uri_expanded: bool) -> Vec<El
                 .on_activate(queued(sheet, Msg::PickImage)),
         ),
         Box::new(
-            ListRow::new("totp-link", t("totp-add-link-title"))
+            ListRow::new("totp-paste-link", t("totp-add-link-title"))
                 .icon(Icon::ExternalLink)
                 .secondary(t("totp-add-link-description"))
                 .disclosure()
@@ -1201,5 +1201,349 @@ impl AddAccountPanel {
 }
 
 #[cfg(test)]
-#[path = "add_panel_tests.rs"]
-mod tests;
+pub(crate) mod tests {
+    use super::*;
+    use crate::app::AuthenticatorApp;
+    use crate::resource::{TotpEffect, TotpShell};
+    use ui::prelude::TestApp;
+
+    pub(crate) type Hosted = TestApp<TotpShell>;
+
+    pub(crate) fn settle(app: &mut Hosted) {
+        for _ in 0..5 {
+            app.harness().relayout();
+            app.settle();
+        }
+    }
+
+    pub(crate) fn hosted(viewport: (u32, u32), scenario: Option<&str>) -> Hosted {
+        struct Store(std::sync::Arc<dyn ui::secrets::SecretBackend>);
+        impl ui::host::SecretsProvider for Store {
+            fn store(&self, app_id: &str) -> ui::secrets::SecretStore {
+                ui::secrets::SecretStore::with_backend(app_id, std::sync::Arc::clone(&self.0))
+            }
+        }
+        let backend = ui::secrets::memory_backend();
+        let store =
+            ui::secrets::SecretStore::with_backend("so.tilo.totp", std::sync::Arc::clone(&backend));
+        let mut seeds = crate::secrets::Seeds::new(store, true);
+        let accounts = crate::model::demo_accounts();
+        let missing = usize::from(scenario == Some("missing-secret"));
+        for account in accounts.iter().skip(missing) {
+            seeds.put(account.id, &account.secret);
+        }
+        let mut services = ui::host::current();
+        services.secrets = std::sync::Arc::new(Store(backend));
+        let _host = ui::host::enter(&services);
+        let mut app = Hosted::new().unwrap();
+        for account in &accounts {
+            app.invoke_confirmed(
+                ui::tilo_resource::Invoke::apply(&crate::actions::add_account_action(
+                    account,
+                    account.order,
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        app.harness().resize(viewport).unwrap();
+        settle(&mut app);
+        app
+    }
+
+    pub(crate) fn panel<T>(app: &mut Hosted, visit: impl FnOnce(&mut AddAccountPanel) -> T) -> T {
+        app.harness()
+            .with_widget_mut(|widget: &mut AuthenticatorApp| visit(widget.test_panel()))
+            .unwrap()
+    }
+
+    pub(crate) fn nodes(app: &mut Hosted) -> Vec<ui::a11y::AccessNode> {
+        fn access(node: &ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
+            out.push(node.clone());
+            for child in &node.children {
+                access(child, out);
+            }
+        }
+        fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<ui::a11y::AccessNode>) {
+            if let Some(semantic) = &node.semantics {
+                access(semantic, out);
+            }
+            for child in &node.children {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&app.harness().inspection().root, &mut out);
+        out
+    }
+
+    pub(crate) fn rect(app: &mut Hosted, name: &str) -> Rect {
+        if let Some(bounds) = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some(name) && node.bounds().is_some())
+            .and_then(|(_, node)| node.bounds())
+        {
+            return Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+        }
+        if let Some(rect) = app.harness().targets().get(name).copied() {
+            return rect;
+        }
+        nodes(app)
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some(name) && node.bounds.is_some())
+            .and_then(|node| node.bounds)
+            .map(ui::a11y::AccessBounds::to_rect)
+            .unwrap_or_else(|| panic!("missing actual control {name}"))
+    }
+
+    pub(crate) fn click(app: &mut Hosted, name: &str) {
+        let at = rect(app, name).center();
+        app.harness().click_at(at.x, at.y);
+        settle(app);
+    }
+
+    pub(crate) fn type_into(app: &mut Hosted, name: &str, text: &str) {
+        app.harness().click_named(name).unwrap();
+        app.harness().type_text(text);
+        settle(app);
+    }
+
+    pub(crate) fn opened(viewport: (u32, u32)) -> Hosted {
+        let mut app = hosted(viewport, None);
+        app.effect(&TotpEffect::AddAccount).unwrap();
+        settle(&mut app);
+        app
+    }
+
+    #[test]
+    fn add_panel_metrics_reproduce_and_scale_the_authored_bands() {
+        let mut app = opened((1280, 900));
+        let normal = rect(&mut app, "totp-issuer");
+        app.harness().set_theme(Theme::dark().with_text_scale(2.0));
+        settle(&mut app);
+        let large = rect(&mut app, "totp-issuer");
+        assert!(
+            large.height() > normal.height(),
+            "shared input follows large text"
+        );
+        let issuer = rect(&mut app, "totp-issuer");
+        let label = rect(&mut app, "totp-account-name");
+        let secret = rect(&mut app, "totp-secret-key");
+        assert!(
+            label.y0 >= issuer.y1 && secret.y0 >= label.y1,
+            "labelled fields never overlap"
+        );
+        let cancel = rect(&mut app, "Cancel");
+        let save = rect(&mut app, "Add account");
+        assert!(
+            cancel.intersect(save).area() <= 0.0,
+            "footer targets do not overlap"
+        );
+        assert!(
+            cancel.x0 >= 0.0 && save.x1 <= 1280.0 && save.y1 <= 900.0,
+            "large text footer stays inside window"
+        );
+    }
+
+    #[test]
+    fn add_panel_disclosures_start_collapsed_and_reveal_on_demand() {
+        let mut app = opened((800, 600));
+        assert!(!panel(&mut app, |p| p.sheet.borrow().advanced_open));
+        assert!(!panel(&mut app, |p| p.sheet.borrow().uri_expanded));
+        assert!(!app.harness().targets().contains_key("totp-period"));
+        assert!(!app.harness().targets().contains_key("totp-link"));
+        click(&mut app, "totp-paste-link");
+        assert!(panel(&mut app, |p| p.sheet.borrow().uri_expanded));
+        assert!(
+            panel(&mut app, |p| p.caret().unwrap().1.is_some()),
+            "new setup-link field takes caret"
+        );
+        click(&mut app, "Advanced options");
+        assert!(panel(&mut app, |p| p.sheet.borrow().advanced_open));
+        let period = rect(&mut app, "totp-period");
+        let body = panel(&mut app, |p| {
+            p.dialog
+                .as_mut()
+                .unwrap()
+                .content_mut()
+                .tree
+                .content_viewport_rect()
+        });
+        assert!(
+            period.y0 >= body.y0 - 1.0 && period.y1 <= body.y1 + 1.0,
+            "revealed period is inside scrolled body"
+        );
+        assert!(
+            panel(&mut app, |p| !p
+                .dialog
+                .as_mut()
+                .unwrap()
+                .content_mut()
+                .to_end),
+            "one-shot reveal consumed"
+        );
+        panel(&mut app, |p| {
+            p.dialog
+                .as_mut()
+                .unwrap()
+                .content_mut()
+                .tree
+                .scroll_by(0.0, -10000.0)
+        });
+        settle(&mut app);
+        let offset = panel(&mut app, |p| {
+            p.dialog.as_mut().unwrap().content_mut().offset.get()
+        });
+        settle(&mut app);
+        assert_eq!(
+            panel(&mut app, |p| p
+                .dialog
+                .as_mut()
+                .unwrap()
+                .content_mut()
+                .offset
+                .get()),
+            offset,
+            "ordinary relayout preserves person's scroll"
+        );
+        assert_eq!(
+            panel(&mut app, |p| p.caret().unwrap().0),
+            5,
+            "setup link, issuer, account, secret and period all mounted"
+        );
+    }
+
+    #[test]
+    fn add_panel_fits_scrolls_and_reflows_with_the_window() {
+        let mut app = opened((1280, 900));
+        let wide = rect(&mut app, "totp-add-dialog");
+        assert!(wide.y1 <= 900.0 && wide.x1 <= 1280.0);
+        assert!(
+            !panel(&mut app, |p| p
+                .dialog
+                .as_mut()
+                .unwrap()
+                .content_mut()
+                .overflows),
+            "default form fits tall window"
+        );
+        app.harness().resize((400, 420)).unwrap();
+        settle(&mut app);
+        let small = rect(&mut app, "totp-add-dialog");
+        assert!(
+            small.width() < wide.width() && small.y1 <= 420.0,
+            "same dialog narrows and stays in window"
+        );
+        assert!(
+            panel(&mut app, |p| p
+                .dialog
+                .as_mut()
+                .unwrap()
+                .content_mut()
+                .overflows),
+            "short window scrolls shared form"
+        );
+        let save = rect(&mut app, "Add account");
+        assert!(save.y1 <= 420.0, "footer remains reachable");
+        app.harness().resize((1280, 900)).unwrap();
+        settle(&mut app);
+        assert!(
+            (rect(&mut app, "totp-add-dialog").width() - wide.width()).abs() < 0.5,
+            "widens back"
+        );
+        assert!(!panel(&mut app, |p| p
+            .dialog
+            .as_mut()
+            .unwrap()
+            .content_mut()
+            .overflows));
+    }
+
+    #[test]
+    fn add_panel_uri_build_and_save_fill_and_validate_the_form() {
+        let mut app = opened((1280, 900));
+        panel(&mut app, |p| {
+            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45")
+        });
+        settle(&mut app);
+        assert_eq!(
+            panel(&mut app, |p| p.field_snapshot()),
+            ("Acme".into(), "bob".into(), "JBSWY3DPEHPK3PXP".into())
+        );
+        let account = panel(&mut app, |p| p.build_account().unwrap());
+        assert_eq!(account.algorithm, Algorithm::Sha256);
+        assert_eq!(account.digits, 8);
+        assert_eq!(account.period, 45);
+        assert!(panel(&mut app, |p| p.sheet.borrow().advanced_open));
+        panel(&mut app, |p| p.open());
+        panel(&mut app, |p| {
+            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP")
+        });
+        settle(&mut app);
+        assert!(!panel(&mut app, |p| p.sheet.borrow().advanced_open));
+        panel(&mut app, |p| p.values.secret.set("not base32 !!".into()));
+        assert!(panel(&mut app, |p| p.build_account().is_err()));
+        panel(&mut app, |p| p.values.secret.set("JBSWY3DPEHPK3PXP".into()));
+        assert!(panel(&mut app, |p| p.build_account().is_ok()));
+        let count = app.state().len();
+        app.harness().key("Enter");
+        settle(&mut app);
+        assert!(!panel(&mut app, |p| p.is_open()));
+        assert_eq!(
+            app.state().len(),
+            count + 1,
+            "typed add persists actual account metadata"
+        );
+        assert!(
+            app.state().iter().all(|a| a.secret.is_empty()),
+            "seeds never reach shared document"
+        );
+    }
+
+    #[test]
+    fn add_panel_clicks_drive_cards_chips_fill_cancel_and_save() {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = opened((1280, 900));
+        click(&mut app, "totp-scan");
+        assert_eq!(
+            recorder.pick_requests().len(),
+            1,
+            "pointer QR scan reaches host picker"
+        );
+        click(&mut app, "totp-paste-link");
+        type_into(
+            &mut app,
+            "totp-link",
+            "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP",
+        );
+        assert_eq!(panel(&mut app, |p| p.field_snapshot().0), "Acme");
+        assert_eq!(
+            panel(&mut app, |p| p.field_snapshot().2),
+            "JBSWY3DPEHPK3PXP"
+        );
+        click(&mut app, "Advanced options");
+        click(&mut app, "SHA512");
+        click(&mut app, "8");
+        let account = panel(&mut app, |p| p.build_account().unwrap());
+        assert_eq!(account.algorithm, Algorithm::Sha512);
+        assert_eq!(account.digits, 8);
+        let count = app.state().len();
+        click(&mut app, "Cancel");
+        assert!(!panel(&mut app, |p| p.is_open()));
+        assert_eq!(app.state().len(), count, "cancel creates no account");
+        app.effect(&TotpEffect::AddAccount).unwrap();
+        settle(&mut app);
+        type_into(&mut app, "totp-issuer", "Acme");
+        type_into(&mut app, "totp-secret-key", "JBSWY3DPEHPK3PXP");
+        click(&mut app, "Add account");
+        assert!(!panel(&mut app, |p| p.is_open()));
+        assert_eq!(
+            app.state().len(),
+            count + 1,
+            "pointer Save reaches typed metadata action"
+        );
+    }
+}

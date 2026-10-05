@@ -178,12 +178,12 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
 
     eprintln!("phase slash_conversion_preserves_native_marks_text_identity_undo_and_reopen");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(
             f.child,
             "- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
         );
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let (id, original_marks) = f
             .records
             .read(&checkout.id, |doc| {
@@ -245,12 +245,12 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
     eprintln!("phase typed_block_prefixes_preserve_existing_formatted_contents");
     {
         for (prefix, expected_kind) in [("## ", "heading2"), ("> ", "quote"), ("- ", "bullet:0")] {
-            let f = LegacyFixture::rich();
+            let f = NotebookFixture::rich();
             f.write_page(
                 f.child,
                 "**Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
             );
-            let checkout = imported(&f);
+            let checkout = notebook(&f);
             let (id, marks) = f
                 .records
                 .read(&checkout.id, |doc| {

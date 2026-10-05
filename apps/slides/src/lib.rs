@@ -13,8 +13,8 @@
 //! Architecture mirrors the other native apps: a pure data [`model`], an
 //! Automerge-backed [`doc`] layer, a shared slide [`render`]er, and a root
 //! [`app::SlidesApp`] widget that owns the editor, inspector, thumbnail
-//! rail and a full-screen present mode. `app_root()` is the single
-//! integration point used by both the live event loop and `--shots`.
+//! rail and a full-screen present mode. [`SlidesShell`] is the app every
+//! host launches, and its screenshot scenarios.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -48,7 +48,7 @@ pub mod actions;
 pub mod app;
 pub mod assets;
 pub mod doc;
-pub mod framework_history;
+pub mod effects;
 mod help_overlay;
 pub mod model;
 pub mod odp;
@@ -58,34 +58,15 @@ pub mod pptx;
 mod presentation;
 pub mod render;
 pub mod resource;
-pub mod search_provider;
+pub mod sample;
+pub mod search;
 pub mod strings;
 
 pub use app::{PresentSurface, SlidesApp};
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree for a live launch — opens on a
-/// blank starter slide; the deck's real state comes from the shared CRDT
-/// document.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(SlidesApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.slides", app_root)
-        .history(&framework_history::HISTORY)
-        .component_actions(actions::register)
-        .as_definition("Slides")
-}
-
-/// Root pre-loaded with the hermetic sample deck, optionally jumped to a named
-/// screen (`overview` / `present` / `presenter` / `help` / `narrow` / …). Used
-/// only by the `--shots` capture path so a live launch never shows fabricated
-/// content.
-pub fn app_root_demo(scenario: Option<&str>) -> Box<dyn Widget> {
-    Box::new(SlidesApp::demo(scenario))
+    ui::framework::definition::<SlidesShell>()
 }
 
 pub use actions::SlidesDeck;
@@ -93,5 +74,3 @@ pub use resource::SlidesShell;
 
 #[cfg(test)]
 mod deck_operations_tests;
-#[cfg(test)]
-mod framework_history_tests;

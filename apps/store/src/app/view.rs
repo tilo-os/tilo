@@ -222,7 +222,7 @@ impl StoreApp {
                     )),
             ));
         if self.filters_active() {
-            let mut clear = Button::new("store.filters.clear", "Clear filters", None)
+            let mut clear = Button::new("store.filters.clear", "Clear filters")
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small);
             if let Some(binding) = bindings::effect(&StoreEffect::ClearFilters) {
@@ -345,7 +345,7 @@ impl StoreApp {
                 let count = cards.len();
                 let mut header = SectionHeader::heading(title).count(count);
                 if title == "Updates" {
-                    let mut update = Button::new("store.update-all", "Update all", None)
+                    let mut update = Button::new("store.update-all", "Update all")
                         .with_icon(Icon::Refresh)
                         .with_enabled(self.active_operation.is_none());
                     if let Some(binding) = bindings::effect(&StoreEffect::UpdateAll) {
@@ -371,8 +371,8 @@ impl StoreApp {
     fn paging(page: usize, page_count: usize) -> Element {
         let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Related);
         if page > 0 {
-            let mut previous = Button::new("store.page.previous", "Previous", None)
-                .tooltip("Previous catalogue page");
+            let mut previous =
+                Button::new("store.page.previous", "Previous").tooltip("Previous catalogue page");
             if let Some(binding) = bindings::effect(&StoreEffect::PreviousPage) {
                 previous = previous.on_action(binding);
             }
@@ -385,8 +385,7 @@ impl StoreApp {
                 .numeric(),
         ));
         if page + 1 < page_count {
-            let mut next =
-                Button::new("store.page.next", "Next", None).tooltip("Next catalogue page");
+            let mut next = Button::new("store.page.next", "Next").tooltip("Next catalogue page");
             if let Some(binding) = bindings::effect(&StoreEffect::NextPage) {
                 next = next.on_action(binding);
             }
@@ -439,7 +438,6 @@ impl StoreApp {
         let mut primary = Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
             action.label(),
-            None,
         )
         .role(ButtonRole::Primary)
         .tooltip(format!("{} {}", action.label(), item.name));
@@ -453,7 +451,6 @@ impl StoreApp {
             let mut button = Button::new(
                 &format!("store.app.{}.{}", item.id, action_code(pin_action)),
                 pin_action.label(),
-                None,
             )
             .tooltip(format!("{} {}", pin_action.label(), item.name));
             if let Some(binding) = bindings::package(item, pin_action) {
@@ -462,7 +459,7 @@ impl StoreApp {
             row = row.push(Box::new(button));
         }
         if let Some(remove_action) = item.remove_action() {
-            let mut button = Button::new(&format!("store.app.{}.remove", item.id), "Remove", None)
+            let mut button = Button::new(&format!("store.app.{}.remove", item.id), "Remove")
                 .role(ButtonRole::Destructive)
                 .tooltip(format!("Remove {}", item.name));
             if let Some(binding) = bindings::package(item, remove_action) {
@@ -578,13 +575,12 @@ impl StoreApp {
         let mut report = Button::new(
             &format!("store.report.create.{}", item.id),
             "Create report draft",
-            None,
         )
         .tooltip("Create a local, collaborative report draft");
         if let Some(binding) = bindings::draft_report(item) {
             report = report.on_action(binding);
         }
-        let mut moderation = Button::new("store.safety.detail", "Moderation details", None)
+        let mut moderation = Button::new("store.safety.detail", "Moderation details")
             .role(ButtonRole::Plain)
             .tooltip("Review the Store trust and moderation model");
         if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
@@ -646,7 +642,7 @@ impl StoreApp {
     /// and what can be done with it.
     fn report_form(&self, report: &ReportProjection) -> Element {
         let item = self.items.iter().find(|item| item.id == report.app_id);
-        let mut export = Button::new(&format!("{}.export", report.id), "Export evidence", None)
+        let mut export = Button::new(&format!("{}.export", report.id), "Export evidence")
             .tooltip("Save a bounded JSON evidence envelope through the system file picker");
         if let Some(binding) =
             bindings::report(|app| StoreEffect::ExportEvidence { app }, &report.app_id)
@@ -665,17 +661,16 @@ impl StoreApp {
                     }),
                 ];
                 for (action, label, effect) in case_actions {
-                    let mut button = Button::new(&format!("{}.{action}", report.id), label, None);
+                    let mut button = Button::new(&format!("{}.{action}", report.id), label);
                     if let Some(binding) = bindings::report(effect, &report.app_id) {
                         button = button.on_action(binding);
                     }
                     buttons.push(button);
                 }
             } else {
-                let mut submit =
-                    Button::new(&format!("{}.submit", report.id), "Submit report", None)
-                        .role(ButtonRole::Primary)
-                        .tooltip("Sign and submit this report to the authoritative registry");
+                let mut submit = Button::new(&format!("{}.submit", report.id), "Submit report")
+                    .role(ButtonRole::Primary)
+                    .tooltip("Sign and submit this report to the authoritative registry");
                 if let Some(binding) =
                     bindings::report(|app| StoreEffect::SubmitReport { app }, &report.app_id)
                 {
@@ -743,12 +738,12 @@ impl StoreApp {
     /// Flatpak repositories: the form that adds one and the list of those
     /// configured on this machine.
     pub(super) fn build_remotes(&self, theme: &Theme) -> Element {
-        let mut add = Button::new("store.remote.add", "Add remote", None).role(ButtonRole::Primary);
+        let mut add = Button::new("store.remote.add", "Add remote").role(ButtonRole::Primary);
         if let Some(binding) = bindings::add_remote(&self.remote_name_state, &self.remote_url_state)
         {
             add = add.on_action(binding);
         }
-        let mut refresh = Button::new("store.remote.refresh", "Refresh remotes", None);
+        let mut refresh = Button::new("store.remote.refresh", "Refresh remotes");
         if let Some(binding) = bindings::effect(&StoreEffect::RefreshRemotes) {
             refresh = refresh.on_action(binding);
         }

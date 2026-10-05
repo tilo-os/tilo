@@ -31,7 +31,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -581,17 +583,13 @@ impl Widget for HeaderRow {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -599,7 +597,7 @@ impl Widget for HeaderRow {
         changed
     }
 
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -842,7 +840,7 @@ impl Widget for HeaderRow {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -1035,21 +1033,16 @@ impl Section {
 }
 
 impl Widget for Section {
-    crate::provides!(dyn crate::undo::UndoPoints);
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -1057,7 +1050,7 @@ impl Widget for Section {
         changed
     }
 
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -1310,20 +1303,6 @@ impl Section {
                     next.unwrap_or(false),
                 ));
             }
-        }
-    }
-}
-
-impl crate::undo::UndoPoints for Section {
-    fn needs_commit(&self) -> bool {
-        self.parts
-            .children
-            .iter()
-            .any(|c| crate::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for child in &mut self.parts.children {
-            crate::undo::on_commit(child.as_mut());
         }
     }
 }

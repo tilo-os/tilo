@@ -14,8 +14,12 @@
 mod click_link_navigates;
 #[path = "cold_start.rs"]
 mod cold_start;
+#[path = "complete_capture.rs"]
+mod complete_capture;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
+#[path = "effects.rs"]
+mod effects;
 #[path = "framework_body.rs"]
 mod framework_body;
 #[path = "framework_new_note.rs"]
@@ -40,20 +44,12 @@ mod offscreen_smoke;
 mod outline_commands;
 #[path = "page_edit_persistence.rs"]
 mod page_edit_persistence;
-#[path = "page_file_io.rs"]
-mod page_file_io;
 #[path = "paste_image.rs"]
 mod paste_image;
-#[path = "peer_caret_visual.rs"]
-mod peer_caret_visual;
 #[path = "read_content.rs"]
 mod read_content;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
-#[path = "save_failure_status.rs"]
-mod save_failure_status;
-#[path = "screenshot_critique.rs"]
-mod screenshot_critique;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]
@@ -73,18 +69,12 @@ mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_persistence.rs"]
 mod workspace_persistence;
 
-#[path = "canonical_import.rs"]
-mod canonical_import;
-
 #[path = "canonical_component.rs"]
 mod canonical_component;
-#[path = "support/captures.rs"]
-mod captures;
 #[path = "support/component.rs"]
 mod component_support;
-
-#[path = "framework_history.rs"]
-mod framework_history;
+#[path = "support/framework.rs"]
+mod framework_support;
 
 #[path = "canonical_actions.rs"]
 mod canonical_actions;
@@ -120,11 +110,11 @@ mod code_groups;
 #[path = "format_preservation.rs"]
 mod format_preservation;
 
-#[path = "hosting.rs"]
-mod hosting;
-
 #[path = "capture_runtime.rs"]
 mod capture_runtime;
+
+#[path = "scenarios.rs"]
+mod scenarios;
 
 #[path = "continuation_discovery.rs"]
 mod continuation_discovery;

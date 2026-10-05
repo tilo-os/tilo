@@ -725,7 +725,7 @@ impl Widget for StatTile {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
         matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
@@ -1070,7 +1070,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut tile,
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert_eq!(hits.get(), 1);

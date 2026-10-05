@@ -185,12 +185,6 @@ impl Default for PreviewPane {
 }
 
 impl PreviewPane {
-    #[cfg(test)]
-    pub(crate) fn history_test_point(&self, page: usize, y: f64) -> Point {
-        let b = self.boxes[page];
-        self.viewport.content_to_screen() * Point::new(b.x_off, b.top + y)
-    }
-
     pub fn new() -> Self {
         Self::default()
     }

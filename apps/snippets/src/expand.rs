@@ -6,9 +6,11 @@
 //! window's top layer; it consumes all input while open. Its values are
 //! local to this peer (a transient flow, not part of the shared library).
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -501,7 +503,7 @@ impl ExpandModal {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> Option<ExpandOutcome> {
         if matches!(action, ui::a11y::Action::Activate) {
@@ -526,16 +528,6 @@ impl ExpandModal {
         let accepted = field.input.perform_action(action, state, path);
         field.input.take_dirty();
         accepted.then_some(ExpandOutcome::Stay)
-    }
-
-    pub fn needs_commit(&self) -> bool {
-        self.fields.iter().any(|f| ui::undo::needs_commit(&f.input))
-    }
-
-    pub fn on_commit(&mut self) {
-        for field in &mut self.fields {
-            ui::undo::on_commit(&mut field.input);
-        }
     }
 }
 
@@ -574,7 +566,7 @@ mod tests {
             &mut EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

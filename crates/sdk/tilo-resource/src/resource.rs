@@ -128,12 +128,44 @@ pub trait Resource: Sized + 'static {
         false
     }
 
-    /// Whether `action` only annotates what the action before it in the
-    /// same event wrote (who wrote the text just typed): it joins that
-    /// step, and the next action continues the one it annotates.
-    fn annotates(action: &Self::Action) -> bool {
+    /// Whether a later action may continue `action` ([`coalesces`](Self::coalesces)),
+    /// so its undo step stays open for it. One that never continues — a
+    /// paragraph split after a typed word, a block moved — is a step of its
+    /// own, recorded at once. The default keeps every step open for what may
+    /// follow.
+    fn continuable(action: &Self::Action) -> bool {
         let _ = action;
-        false
+        true
+    }
+
+    /// Where `action`, just applied, leaves the participant who took it, read
+    /// off the state after it: the paragraph an append wrote and the caret
+    /// at its end. Every collaborator's view draws that participant there,
+    /// so one with no pointer or caret of its own (an agent) shows where it
+    /// works. The default places it nowhere in particular.
+    fn lands(state: &Self::State, action: &Self::Action) -> Option<Place> {
+        let _ = (state, action);
+        None
+    }
+
+    /// The least a participant must be allowed to do for `action` to apply:
+    /// [`Write`](PermissionRequirement::Write) by default, `Comment` for a
+    /// reply or a note someone who may only comment can still add. The
+    /// dispatcher a view or surface edits through checks it, and a declared
+    /// action that builds it names the same level with
+    /// [`ActionDecl::requiring`].
+    fn permission(action: &Self::Action) -> PermissionRequirement {
+        let _ = action;
+        PermissionRequirement::Write
+    }
+
+    /// The least any of the resource's actions needs
+    /// ([`permission`](Self::permission)): what the generic [`APPLY`] and
+    /// group actions are offered under, each invocation then checked
+    /// against what its value needs. Writing by default; `Comment` for a
+    /// resource someone who may only comment can still reply in.
+    fn least_permission() -> PermissionRequirement {
+        PermissionRequirement::Write
     }
 
     /// Mutations offered by name. The generic [`APPLY`] action is always
@@ -212,19 +244,12 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
-    /// Entries for the system search index. An entry's `anchor` is what a
-    /// hit opens; the app's view shows it when the hit is chosen
-    /// (`ViewCx::on_open` in the app framework).
-    fn search(_state: &Self::State) -> Vec<SearchEntry> {
+    /// Entries for the system search index.
+    fn search_scopes(_state: &Self::State) -> Vec<ScopeDecl> {
         Vec::new()
     }
 
-    /// The parts of this resource search can be narrowed to — a mailbox, a
-    /// notebook, a playlist. The palette offers each as a "Search in" row and
-    /// its scope pill reads "Only <label>"; an app opens search scoped to one
-    /// with `SearchRequest::within`. A scope holds the entries whose anchor
-    /// is its anchor or lies beneath it (`folder:inbox/msg:12`).
-    fn search_scopes(_state: &Self::State) -> Vec<ScopeDecl> {
+    fn search(_state: &Self::State) -> Vec<SearchEntry> {
         Vec::new()
     }
 
@@ -295,41 +320,6 @@ pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
 
-/// A part of an app that search can be narrowed to: a mailbox, a notebook,
-/// a playlist. `anchor` is that part's id; `label` is what the scope pill
-/// reads ("Only Inbox").
-///
-/// Anchors are paths: a scope contains the anchor that is its own anchor or
-/// begins with `anchor/` — `folder:inbox/msg:12` lies inside `folder:inbox`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
-pub struct ScopeDecl {
-    pub anchor: String,
-    pub label: String,
-}
-
-impl ScopeDecl {
-    pub fn new(anchor: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            anchor: anchor.into(),
-            label: label.into(),
-        }
-    }
-
-    /// Whether the hit anchored at `anchor` lies inside this scope.
-    #[must_use]
-    pub fn contains(&self, anchor: &str) -> bool {
-        scope_contains(&self.anchor, anchor)
-    }
-}
-
-/// Whether `anchor` is `scope` or lies beneath it in the anchor path.
-#[must_use]
-pub fn scope_contains(scope: &str, anchor: &str) -> bool {
-    anchor
-        .strip_prefix(scope)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-}
-
 /// The edits of a resource whose document holds nothing. An app whose data
 /// lives entirely outside any document — credentials in this device's
 /// encrypted vault, a device's hardware — publishes that data as live rows
@@ -349,36 +339,154 @@ impl tilo_actions::Action for NoAction {
 /// `action`, when set, is the published action a hit invokes, so choosing it
 /// goes through the same door, permissions and history as the palette.
 ///
-/// Build one with the fields that apply and `..SearchEntry::default()`:
-///
-/// ```
-/// # use tilo_resource::{SearchEntry, SearchRow};
-/// let entry = SearchEntry {
-///     anchor: Some("contact:42".into()),
-///     title: "Ana Silva".into(),
-///     text: "ana@example.com".into(),
-///     within: Some("group:family".into()),
-///     row: Some(SearchRow::subtitle("ana@example.com").icon("user")),
-///     ..SearchEntry::default()
-/// };
-/// # let _ = entry;
-/// ```
+/// How a hit reads is the entry's too: the result group it is listed under
+/// (the resource's label unless `group` names another, such as "Timeline
+/// markers"), a dimmer `subtitle` line, a named `icon` (a lucide kebab name,
+/// `"star"`), and a `boost` that floats pinned or recent items over an equal
+/// match. Long prose an entry is found by — a book's chapter, a long note —
+/// is its `body`, which the index reads in place rather than the entry
+/// copying it, and whose segments may each be a hit of their own.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchEntry {
+    /// The containing resource scope for a flat anchor.
+    pub within: Option<String>,
+    /// Presentation for the platform-rendered result row.
+    pub row: Option<SearchRow>,
     pub anchor: Option<String>,
     pub title: String,
     pub text: String,
     pub action: Option<tilo_actions::ActionAddress>,
-    /// The scope the entry lies in, when its anchor is a flat id rather than
-    /// a path beneath one: `contact:42` in `group:family`. A scope then holds
-    /// the entry as if its anchor lay beneath it.
-    pub within: Option<String>,
-    /// How the hit reads in the results list beyond its title. `None` reads
-    /// as the generic row: the app's icon, the title and the entry's text.
-    pub row: Option<SearchRow>,
+    pub group: Option<String>,
+    pub subtitle: Option<String>,
+    pub icon: Option<String>,
+    pub boost: i32,
+    pub body: Option<SearchBody>,
+    /// More short text the entry is found by, each ranked by its own
+    /// weight: a sender's address, a book's subject, a message's labels.
+    pub fields: Vec<(String, SearchWeight)>,
+    /// Structured filter values: token key, localized group label, value.
+    pub facets: Vec<(String, String, String)>,
+}
+
+/// How much a match in one of a [`SearchEntry`]'s fields counts. The title
+/// ranks as [`Self::Title`], the subtitle as [`Self::Subtitle`] and the text
+/// as [`Self::Body`]; [`SearchEntry::field`] adds others.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SearchWeight {
+    /// The name a person looks for.
+    Title,
+    /// A stable identity typed verbatim: an address, an id, a path.
+    Identity,
+    /// A secondary line: an author, a sender, a folder.
+    Subtitle,
+    /// Other short fields: labels, tags, a subject.
+    Metadata,
+    /// Long prose.
+    Body,
+    /// Found, but never reorders hits.
+    Unranked,
+}
+
+/// One run of a [`SearchText`] segment: styled text, say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchPiece<'a> {
+    pub text: &'a str,
+    /// Whether a word break separates this piece from the text before it.
+    pub space_before: bool,
+}
+
+/// Long text a search entry is found by, owned by the app: the index reads
+/// it while indexing and never copies it. It is a sequence of segments (the
+/// unit a hit can point at: a paragraph, a block), each a sequence of
+/// pieces. It must not change once handed to an entry; changed prose is a
+/// new body.
+pub trait SearchText: Send + Sync {
+    fn segment_count(&self) -> usize;
+
+    fn piece_count(&self, segment: usize) -> usize;
+
+    fn piece(&self, segment: usize, piece: usize) -> Option<SearchPiece<'_>>;
+
+    /// Whether a match in `segment` is a hit of its own ([`Self::location`])
+    /// rather than the entry's.
+    fn locates(&self, segment: usize) -> bool {
+        let _ = segment;
+        false
+    }
+
+    /// The hit a match in `segment` is — a reading location, invoking the
+    /// action that opens the text there — when [`Self::locates`] says so.
+    fn location(&self, segment: usize) -> Option<SearchEntry> {
+        let _ = segment;
+        None
+    }
+}
+
+/// A [`SearchText`] an entry carries. Cloning one is cheap, and two bodies
+/// are the same body only when they share one text, so an app that rebuilds
+/// its entries over mostly unchanged prose keeps its bodies and hands the
+/// same ones back.
+#[derive(Clone)]
+pub struct SearchBody(Arc<dyn SearchText>);
+
+impl SearchBody {
+    #[must_use]
+    pub fn new(text: Arc<dyn SearchText>) -> Self {
+        Self(text)
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &dyn SearchText {
+        self.0.as_ref()
+    }
+
+    /// The shared text, for an index that reads it later.
+    #[must_use]
+    pub fn shared(&self) -> Arc<dyn SearchText> {
+        Arc::clone(&self.0)
+    }
+}
+
+impl PartialEq for SearchBody {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SearchBody {}
+
+impl std::fmt::Debug for SearchBody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SearchBody")
+            .field("segments", &self.0.segment_count())
+            .finish()
+    }
 }
 
 impl SearchEntry {
+    /// Offer this entry under one value of a platform search facet.
+    #[must_use]
+    pub fn facet(
+        mut self,
+        key: impl Into<String>,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.facets.push((key.into(), label.into(), value.into()));
+        self
+    }
+
+    /// Whether the entry lies in `scope`: its anchor, or the scope it is
+    /// [`within`](Self::within), is the scope or lies beneath it.
+    #[must_use]
+    pub fn in_scope(&self, scope: &str) -> bool {
+        [self.within.as_deref(), self.anchor.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|anchor| scope_contains(scope, anchor))
+    }
+
     /// An entry titled `title` whose body text is `text`.
     pub fn new(title: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
@@ -402,81 +510,66 @@ impl SearchEntry {
         self
     }
 
-    /// Whether the entry lies in `scope`: its anchor, or the scope it is
-    /// [`within`](Self::within), is the scope or lies beneath it.
+    /// List hits under `group` rather than the resource's label.
     #[must_use]
-    pub fn in_scope(&self, scope: &str) -> bool {
-        [self.within.as_deref(), self.anchor.as_deref()]
-            .into_iter()
-            .flatten()
-            .any(|anchor| scope_contains(scope, anchor))
+    pub fn grouped(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
     }
-}
 
-/// How one search hit reads in the results list: a subtitle, a named icon
-/// and what kind of thing it is. Data only; the platform draws it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SearchRow {
-    /// The dimmer line under the title (an address, a path, a date).
-    pub subtitle: Option<String>,
-    /// A named icon from the icon set (`"mail"`, `"calendar"`); `None` draws
-    /// the app's own.
-    pub icon: Option<String>,
-    /// What the hit is, for the row's shape.
-    pub shape: SearchRowShape,
-}
+    /// A secondary line under the title: where the item is, what it is.
+    #[must_use]
+    pub fn subtitled(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
 
-impl SearchRow {
-    /// A generic row with `subtitle` under the title.
-    pub fn subtitle(subtitle: impl Into<String>) -> Self {
-        Self {
-            subtitle: Some(subtitle.into()),
-            ..Self::default()
+    /// The glyph a hit leads with, by its lucide kebab name (`"star"`).
+    #[must_use]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Rank the hit `boost` above an equal match: a nudge, never an
+    /// override of how well it matches.
+    #[must_use]
+    pub fn boosted(mut self, boost: i32) -> Self {
+        self.boost = boost;
+        self
+    }
+
+    /// Find the entry by `text` too, a match in it ranked as `weight`.
+    #[must_use]
+    pub fn field(mut self, text: impl Into<String>, weight: SearchWeight) -> Self {
+        let text = text.into();
+        if !text.trim().is_empty() {
+            self.fields.push((text, weight));
         }
+        self
     }
 
-    /// A row of `shape`.
+    /// Find the entry by `body` too, read in place.
     #[must_use]
-    pub fn shaped(shape: SearchRowShape) -> Self {
-        Self {
-            shape,
-            ..Self::default()
-        }
-    }
-
-    /// The row's named icon.
-    #[must_use]
-    pub fn icon(mut self, name: impl Into<String>) -> Self {
-        self.icon = Some(name.into());
+    pub fn with_body(mut self, body: SearchBody) -> Self {
+        self.body = Some(body);
         self
     }
 }
 
-/// What a search hit is, which decides the shape of its row.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum SearchRowShape {
-    /// Icon, title and subtitle.
-    #[default]
-    Plain,
-    /// A message: who sent it, a snippet, when, and whether it is unread.
-    Message {
-        sender: String,
-        snippet: Option<String>,
-        date: Option<String>,
-        unread: bool,
-    },
-    /// A video, track or other media item: who made it and how long it
-    /// runs. (A provider with artwork answers its own rows, with
-    /// `AppImage::from_image_store` thumbnails.)
-    Media {
-        byline: Option<String>,
-        duration: Option<String>,
-    },
-    /// A match inside a file: the path, the line and the matched line.
-    FileHit {
-        path: String,
-        line: Option<u32>,
-        snippet: String,
+/// Where a participant is inside a resource, in the resource's own terms:
+/// the same on every collaborator's screen whatever its layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// An item (a paragraph, a clip, a row).
+    Item(String),
+    /// A caret at a character position inside an item.
+    Caret { item: String, at: usize },
+    /// Characters `start..end` of an item.
+    Range {
+        item: String,
+        start: usize,
+        end: usize,
     },
 }
 
@@ -494,8 +587,22 @@ pub struct ActionDecl<R: Resource> {
     pub params: Vec<ActionParam>,
     pub permission: PermissionRequirement,
     pub destructive: bool,
-    /// Whether it answers what it made ([`Resource::answer`]).
-    pub answers: bool,
+    /// What the action answers its caller with, beside the change: the state
+    /// it left, as the declaring resource's surface reports it.
+    pub result: Option<tilo_actions::ResultSpec>,
+    /// Contract tags its callers read: a precondition on the invoker's view
+    /// (`ContextRequirement`), a text that may arrive in parts.
+    pub tags: Vec<String>,
+    /// The prompt of an action whose one input is content another action
+    /// produced (an image to place), carried by its callers rather than
+    /// typed: the build reads its content hash as the
+    /// [`PROMPTED_PARAM`](tilo_actions::PROMPTED_PARAM) argument.
+    pub content: Option<String>,
+    /// A bound edit that refines the resource's declared action of the same
+    /// id: it builds the same action from the same arguments, and also
+    /// places its invoker (the caret an append leaves its writer at).
+    /// See [`bind_declaration`].
+    pub refines: bool,
     pub build: BuildAction<R>,
 }
 
@@ -508,7 +615,10 @@ impl<R: Resource> Clone for ActionDecl<R> {
             params: self.params.clone(),
             permission: self.permission,
             destructive: self.destructive,
-            answers: self.answers,
+            result: self.result.clone(),
+            tags: self.tags.clone(),
+            content: self.content.clone(),
+            refines: self.refines,
             build: Arc::clone(&self.build),
         }
     }
@@ -528,14 +638,52 @@ impl<R: Resource> ActionDecl<R> {
             params,
             permission: PermissionRequirement::Write,
             destructive: false,
-            answers: false,
+            result: None,
+            tags: Vec::new(),
+            content: None,
+            refines: false,
             build: Arc::new(build),
         }
+    }
+
+    /// Mark a bound edit as refining the resource's declared action of the
+    /// same id ([`bind_declaration`]).
+    #[must_use]
+    pub fn refining(mut self) -> Self {
+        self.refines = true;
+        self
+    }
+
+    /// Tag the action's contract (`ContextRequirement::Caret.tag()`, an
+    /// incremental-text declaration) for the callers that read it.
+    #[must_use]
+    pub fn tagged(mut self, tag: impl Into<String>) -> Self {
+        let tag = tag.into();
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+        self
+    }
+
+    /// Take content another action produced as the one input, described by
+    /// `prompt`; see [`Self::content`].
+    #[must_use]
+    pub fn collecting_content(mut self, prompt: impl Into<String>) -> Self {
+        self.content = Some(prompt.into());
+        self
     }
 
     #[must_use]
     pub fn describe(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Declare what the action answers its caller with (an outline of the
+    /// state it left), which the hosting surface supplies after it applies.
+    #[must_use]
+    pub fn returns(mut self, result: tilo_actions::ResultSpec) -> Self {
+        self.result = Some(result);
         self
     }
 
@@ -554,9 +702,10 @@ impl<R: Resource> ActionDecl<R> {
     /// Answer the caller with what the action made, from
     /// [`Resource::answer`].
     #[must_use]
-    pub fn answering(mut self) -> Self {
-        self.answers = true;
-        self
+    pub fn answering(self) -> Self {
+        self.returns(tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        })
     }
 }
 
@@ -682,34 +831,72 @@ fn refused<R: Resource>(reason: &str) -> EncodedAction {
 
 /// The published spec of one declared or bound mutation: what the palette,
 /// agents and scripts invoke, building `R::Action` from their arguments.
+///
+/// The action is built when it is invoked, never when it is published: one
+/// that takes no arguments still mints its ids and reads the clock at the
+/// moment it is taken, so two invocations make two distinct actions.
 pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     let build = Arc::clone(&decl.build);
-    let mut spec = ActionSpec::typed(
-        decl.id,
-        decl.label.clone(),
-        decl.label.clone(),
-        ExecutionLocus::ClientLocal,
-        decl.params.clone(),
-        move |args| match build(args, origin_now_ms()) {
-            Ok(action) => {
-                encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
-            }
-            Err(reason) => refused::<R>(&reason),
-        },
-    )
-    .requiring(decl.permission)
-    // Every document action is undone by the host's undo.
-    .reversible();
+    let encoded =
+        move |args: &tilo_actions::ActionArgs| encode_built::<R>(build(args, origin_now_ms()));
+    let spec = if let Some(prompt) = &decl.content {
+        let param = ActionParam::required_owned(
+            tilo_actions::PROMPTED_PARAM,
+            ParamType::Text,
+            prompt.clone(),
+        );
+        ActionSpec::prompted_content(
+            decl.id,
+            decl.label.clone(),
+            prompt.clone(),
+            "content hash",
+            ExecutionLocus::ClientLocal,
+            move |hash| {
+                let supplied = [(
+                    tilo_actions::PROMPTED_PARAM.to_owned(),
+                    tilo_actions::ArgValue::Text(hash.to_owned()),
+                )];
+                match ActionArgs::bind(std::slice::from_ref(&param), supplied) {
+                    Ok(args) => encoded(&args),
+                    Err(error) => refused::<R>(&error.to_string()),
+                }
+            },
+        )
+    } else if decl.params.is_empty() {
+        ActionSpec::deferred(
+            decl.id,
+            decl.label.clone(),
+            ExecutionLocus::ClientLocal,
+            R::ACTION_TYPE,
+            move || encoded(&tilo_actions::ActionArgs::none()),
+        )
+    } else {
+        ActionSpec::typed(
+            decl.id,
+            decl.label.clone(),
+            decl.label.clone(),
+            ExecutionLocus::ClientLocal,
+            decl.params.clone(),
+            encoded,
+        )
+    };
+    let mut spec = spec
+        .requiring(decl.permission)
+        // Every document action is undone by the host's undo.
+        .reversible();
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
     if decl.destructive {
         spec = spec.destructive();
     }
-    if decl.answers {
-        spec.contract.result = tilo_actions::ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
+    if let Some(result) = &decl.result {
+        spec.contract.result = result.clone();
+    }
+    for tag in &decl.tags {
+        if !spec.contract.tags.contains(tag) {
+            spec.contract.tags.push(tag.clone());
+        }
     }
     spec
 }
@@ -822,6 +1009,16 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
     .programmatic()
+    // Offered to whoever may take the least of its edits; each value needs
+    // what that edit needs.
+    .requiring(R::least_permission())
+    .with_permission_of(|args| {
+        let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
+            return PermissionRequirement::Write;
+        };
+        read_apply::<R>(serde_json::Value::Object(value.clone()))
+            .map_or(PermissionRequirement::Write, |action| R::permission(&action))
+    })
     // History names each value after what it did, not after `apply`.
     .with_history_label(apply_label::<R>)
     // Each value is classified: deleting is destructive, trimming is not, so
@@ -835,6 +1032,18 @@ fn apply_spec<R: Resource>() -> ActionSpec {
                 tilo_actions::Action::risk(&action)
             })
     })
+}
+
+/// How much a requirement asks, least first.
+fn permission_rank(requirement: PermissionRequirement) -> u8 {
+    match requirement {
+        PermissionRequirement::None => 0,
+        PermissionRequirement::Read => 1,
+        PermissionRequirement::Comment => 2,
+        PermissionRequirement::Write => 3,
+        PermissionRequirement::Invite => 4,
+        PermissionRequirement::Admin => 5,
+    }
 }
 
 fn group_spec<R: Resource>() -> ActionSpec {
@@ -860,6 +1069,21 @@ fn group_spec<R: Resource>() -> ActionSpec {
     // A gesture's edits, from a surface, a script or an agent; a person picks
     // the named actions it is made of.
     .programmatic()
+    // Needs what its most demanding member needs.
+    .requiring(R::least_permission())
+    .with_permission_of(|args| {
+        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
+            PermissionRequirement::Write,
+            |group| {
+                group
+                    .actions
+                    .iter()
+                    .map(R::permission)
+                    .max_by_key(|requirement| permission_rank(*requirement))
+                    .unwrap_or(PermissionRequirement::Write)
+            },
+        )
+    })
     // As consequential as its most consequential member.
     .with_risk(|args| {
         crate::group::build_group::<R>(&args.to_json(), 0)
@@ -893,15 +1117,13 @@ pub(crate) fn publish_parts<R: Resource>(
     state: Option<&R::State>,
 ) -> tilo_actions::Resource {
     let children = state.map(R::children).unwrap_or_default();
-    let on_items: std::collections::HashSet<&str> = children
-        .iter()
-        .filter(|child| crate::items::item_of_resource::<R>(child.id.as_str()).is_some())
-        .flat_map(|child| child.actions.iter().map(|spec| spec.id.as_str()))
-        .collect();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
         let spec = declaration_spec(&decl);
-        resource = resource.with_action(if on_items.contains(decl.id) {
+        // Offered on the items it acts on, with some of its arguments bound
+        // ([`items::bound`](crate::items::bound)), it stays published here
+        // for scripts that name the item, out of the palette's way.
+        resource = resource.with_action(if crate::items::offered_bound(&children, &decl) {
             spec.programmatic()
         } else {
             spec
@@ -963,4 +1185,158 @@ pub fn build_action<R: Resource>(
         .ok_or_else(|| format!("{} has no action `{id}`", R::LABEL))?;
     let args = ActionArgs::bind_json(&decl.params, arguments).map_err(|error| error.to_string())?;
     (decl.build)(&args, now_ms)
+}
+
+/// `resource` with the bound edit `decl` published on it.
+///
+/// An id the resource does not declare is added. One it declares is kept,
+/// unless `decl` says it refines it ([`ActionDecl::refining`]) and takes the
+/// same parameters with the same permission and risk: then it builds the
+/// same edit from the same arguments and only adds where it was invoked from
+/// (an append that leaves its writer's caret after the text), and replaces
+/// the declared spec while the binding lasts.
+pub fn bind_declaration<R: Resource>(
+    resource: tilo_actions::Resource,
+    decl: &ActionDecl<R>,
+) -> tilo_actions::Resource {
+    let spec = declaration_spec(decl);
+    let mut resource = resource;
+    match resource
+        .actions
+        .iter_mut()
+        .find(|existing| existing.id == decl.id)
+    {
+        Some(declared) => {
+            if decl.refines && same_shape(&spec, declared) {
+                *declared = spec;
+            }
+            resource
+        }
+        None => resource.with_action(spec),
+    }
+}
+
+fn same_shape(bound: &ActionSpec, declared: &ActionSpec) -> bool {
+    let shape = |spec: &ActionSpec| {
+        spec.params()
+            .iter()
+            .map(|param| (param.name.to_string(), param.ty, param.required))
+            .collect::<Vec<_>>()
+    };
+    bound.kind == declared.kind
+        && shape(bound) == shape(declared)
+        && bound.contract.permission == declared.contract.permission
+        && bound.contract.risk == declared.contract.risk
+}
+
+/// A resource of the person's own that one app keeps for every app of
+/// theirs: their accounts, which Settings keeps and Mail signs in to. Each
+/// app holds its copy in its own store; the copies are one record, the same
+/// on every device, and converge over the person's own room. Only the
+/// [`OWNER`](Self::OWNER) and the [`EDITORS`](Self::EDITORS) change it; every
+/// other app reads it (`ViewCx::shared_person` in `tilo-app`).
+pub trait SharedRecord: Resource {
+    /// The app that keeps the record.
+    const OWNER: &'static str;
+    /// The other apps whose edits the record takes.
+    const EDITORS: &'static [&'static str] = &[];
+
+    /// Whether the app `app_id` changes the record.
+    #[must_use]
+    fn edited_by(app_id: &str) -> bool {
+        app_id == Self::OWNER || Self::EDITORS.contains(&app_id)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchRow {
+    /// The dimmer line under the title (an address, a path, a date).
+    pub subtitle: Option<String>,
+    /// A named icon from the icon set (`"mail"`, `"calendar"`); `None` draws
+    /// the app's own.
+    pub icon: Option<String>,
+    /// What the hit is, for the row's shape.
+    pub shape: SearchRowShape,
+}
+
+impl SearchRow {
+    /// A generic row with `subtitle` under the title.
+    pub fn subtitle(subtitle: impl Into<String>) -> Self {
+        Self {
+            subtitle: Some(subtitle.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A row of `shape`.
+    #[must_use]
+    pub fn shaped(shape: SearchRowShape) -> Self {
+        Self {
+            shape,
+            ..Self::default()
+        }
+    }
+
+    /// The row's named icon.
+    #[must_use]
+    pub fn icon(mut self, name: impl Into<String>) -> Self {
+        self.icon = Some(name.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SearchRowShape {
+    /// Icon, title and subtitle.
+    #[default]
+    Plain,
+    /// A message: who sent it, a snippet, when, and whether it is unread.
+    Message {
+        sender: String,
+        snippet: Option<String>,
+        date: Option<String>,
+        unread: bool,
+    },
+    /// A video, track or other media item: who made it and how long it
+    /// runs. (A provider with artwork answers its own rows, with
+    /// `AppImage::from_image_store` thumbnails.)
+    Media {
+        byline: Option<String>,
+        duration: Option<String>,
+    },
+    /// A match inside a file: the path, the line and the matched line.
+    FileHit {
+        path: String,
+        line: Option<u32>,
+        snippet: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+pub struct ScopeDecl {
+    pub anchor: String,
+    pub label: String,
+}
+
+impl ScopeDecl {
+    pub fn new(anchor: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            anchor: anchor.into(),
+            label: label.into(),
+        }
+    }
+
+    /// Whether the hit anchored at `anchor` lies inside this scope.
+    #[must_use]
+    pub fn contains(&self, anchor: &str) -> bool {
+        scope_contains(&self.anchor, anchor)
+    }
+}
+
+/// Whether `anchor` is `scope` or lies beneath it in the anchor path.
+#[must_use]
+pub fn scope_contains(scope: &str, anchor: &str) -> bool {
+    anchor
+        .strip_prefix(scope)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }

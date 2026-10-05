@@ -600,23 +600,18 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     /// Forward the per-frame update pass to both panes, so a pane that
     /// polls a model (a data table, a pending image) keeps updating.
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let left = self.left.update(state, path);
         let right = self.right.update(state, path);
         left || right
     }
 
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         self.left.sync(state, path);
         self.right.sync(state, path);
     }
@@ -754,7 +749,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
         let moved = self.handle.perform_action(action);
@@ -847,19 +842,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 }
 
-impl<L: Widget + 'static, R: Widget + 'static> crate::undo::UndoPoints for ResizableSplit<L, R> {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
-        }
-    }
-}
-
 impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::PublishesPresence
     for ResizableSplit<L, R>
 {
@@ -885,6 +867,7 @@ mod tests {
     struct TestLeaf {
         rect: Rect,
         updates: std::rc::Rc<std::cell::Cell<u32>>,
+        changes: bool,
         width: Option<f32>,
     }
 
@@ -893,6 +876,7 @@ mod tests {
             Self {
                 rect: Rect::ZERO,
                 updates: std::rc::Rc::default(),
+                changes: true,
                 width: None,
             }
         }
@@ -918,11 +902,11 @@ mod tests {
 
         fn update(
             &mut self,
-            _state: &mut crate::widget::AppModel,
+            _state: &crate::widget::AppModel,
             _path: &crate::widget::ModelPath,
         ) -> bool {
             self.updates.set(self.updates.get() + 1);
-            true
+            self.changes
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1025,7 +1009,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1037,6 +1021,19 @@ mod tests {
 
     fn split(orientation: SplitOrientation) -> ResizableSplit<TestLeaf, TestLeaf> {
         ResizableSplit::new(TestLeaf::new(), TestLeaf::new(), orientation)
+    }
+
+    #[test]
+    fn both_panes_receive_the_update_pass() {
+        let mut s = split(SplitOrientation::Horizontal);
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        s.left.changes = false;
+        s.right.changes = false;
+        assert!(!s.update(&doc, &root), "nothing changed");
+        s.right.changes = true;
+        assert!(s.update(&doc, &root), "a pane's change is the split's");
+        assert_eq!((s.left.updates.get(), s.right.updates.get()), (2, 2));
     }
 
     #[test]
@@ -1112,7 +1109,11 @@ mod tests {
         assert_eq!(node_access.name.as_deref(), Some("Resize preview"));
         assert_eq!(node_access.value.as_deref(), Some("55%"));
         let mut doc = AutoCommit::new();
-        assert!(s.perform_action(&crate::a11y::Action::Decrement, &mut doc, &automerge::ROOT));
+        assert!(s.perform_action(
+            &crate::a11y::Action::Decrement,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
         assert!((s.split_position() - 0.5).abs() < 1e-4);
     }
 

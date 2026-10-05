@@ -815,7 +815,7 @@ impl ProcessesPane {
 }
 
 impl Widget for ProcessesPane {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt();
         for child in self.children_mut() {
             child.sync(state, path);
@@ -1114,7 +1114,7 @@ impl Widget for ProcessesPane {
         self.children().iter().any(|c| c.wants_pointer_capture())
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in self.children_mut() {
             changed |= child.update(state, path);
@@ -1503,7 +1503,7 @@ impl ResourcesPane {
 }
 
 impl Widget for ResourcesPane {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt();
         if let Some(page) = &mut self.page {
             page.sync(state, path);
@@ -1709,7 +1709,7 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
         ),
     ] {
         let requests = Rc::clone(&detail.requests);
-        let button = Button::new(id, label, None)
+        let button = Button::new(id, label)
             .role(role)
             .on_view(move || requests.borrow_mut().push(request.clone()));
         actions = actions.push(Box::new(button));

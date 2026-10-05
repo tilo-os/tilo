@@ -28,7 +28,7 @@ fn items_sit_a_sibling_step_apart_and_the_header_closer() {
     .with_header(
         SectionHeader::heading("Changes")
             .count(3)
-            .action(Button::new("stage-all", "Stage all", None)),
+            .action(Button::new("stage-all", "Stage all")),
     );
     let harness = FrameHarness::new_with_theme(
         crate::State::new(),
@@ -73,7 +73,7 @@ fn a_header_is_one_height_with_or_without_an_action() {
     };
     let plain = height(SectionHeader::group("Recent"));
     let with_action =
-        height(SectionHeader::group("Recent").action(Button::new("clear", "Clear all", None)));
+        height(SectionHeader::group("Recent").action(Button::new("clear", "Clear all")));
     assert!(
         (plain - with_action).abs() < 0.5,
         "{plain} vs {with_action}"
@@ -200,7 +200,11 @@ fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     assert_eq!(node.state.expanded, Some(false));
     assert!(header.is_focusable());
     let mut doc = AutoCommit::new();
-    assert!(header.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+    assert!(header.perform_action(
+        &crate::a11y::Action::Activate,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT
+    ));
     assert!(header.take_structure_dirty(), "the section relays out");
     assert_eq!(opened.get(), Some(true));
     assert!(section.is_expanded());

@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -401,21 +401,20 @@ impl Widget for Container {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         // This container owns no operation handler: offer each child once.
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),
             None => false,
@@ -578,7 +577,7 @@ impl Widget for Container {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
@@ -712,21 +711,7 @@ impl Widget for Container {
     }
 }
 
-impl crate::undo::UndoPoints for Container {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
-        }
-    }
-}
-
 crate::widget::activation::activation_controls!(Container, activation);
-
 impl crate::presence::capability::PublishesPresence for Container {
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
@@ -917,7 +902,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(hits.get(), 1);

@@ -28,7 +28,6 @@ mod tests {
     use automerge::{AutoCommit, ROOT, ReadDoc};
     use ui::framework::LiveRow;
     use ui::tilo_resource::Resource as _;
-    use ui::widget::Widget;
 
     use crate::app::ContainersApp;
     use crate::model::ContainerStatus;
@@ -69,46 +68,39 @@ mod tests {
     /// document is the draft alone.
     #[test]
     fn navigation_and_lifecycle_verbs_leave_the_document_alone() {
-        let mut app = ContainersApp::sample();
-        let mut doc = AutoCommit::new();
-        Containers::initialize(&mut doc).unwrap();
-        doc.commit();
-        let heads = doc.get_heads();
-
-        // Search and agents select a container through its `select`
-        // operation.
-        let expected = app.engine.containers[1].id.clone();
-        let payload = serde_json::to_vec(&["select", expected.as_str()]).unwrap();
-        assert!(
-            app.answer_resource_operation(
-                ui::tilo_actions::OperationKind::View,
-                "containers.container",
-                &payload,
-            )
-            .unwrap()
-        );
-        assert_eq!(app.selected(), Some(expected.as_str()));
-
-        // An offline lifecycle verb changes the sample engine.
-        let running = app
-            .engine
-            .containers
-            .iter()
-            .find(|c| c.status.is_running())
-            .expect("sample engine has a running container")
-            .id
-            .clone();
-        app.apply_action(Lifecycle::Stop, &running);
-        assert_eq!(
-            app.engine.find(&running).map(|c| c.status),
-            Some(ContainerStatus::Exited)
-        );
-
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        let mut host = ui::prelude::TestApp::<crate::ContainersShell>::capture(None).unwrap();
+        let heads = host.harness().state_mut().doc.get_heads();
+        let expected = host
+            .with_widget::<ContainersApp, _>(|app| app.engine.containers[0].id.clone())
+            .unwrap();
+        host.effect(&crate::resource::ContainersEffect::SelectContainer {
+            id: Some(expected.clone()),
+        })
+        .unwrap();
+        host.with_widget::<ContainersApp, _>(|app| {
+            assert_eq!(app.view.selected.as_deref(), Some(expected.as_str()));
+            // The sample engine exercises the same lifecycle implementation,
+            // while the public offline row correctly refuses machine effects.
+            let running = app
+                .engine
+                .containers
+                .iter()
+                .find(|c| c.status.is_running())
+                .expect("sample engine has a running container")
+                .id
+                .clone();
+            app.apply_action(Lifecycle::Stop, &running);
+            assert_eq!(
+                app.engine.find(&running).map(|c| c.status),
+                Some(ContainerStatus::Exited)
+            );
+        })
+        .unwrap();
+        let doc = &mut host.harness().state_mut().doc;
         assert_eq!(doc.get_heads(), heads, "nothing was written");
         let keys: Vec<String> = doc.keys(ROOT).collect();
         assert_eq!(keys, ["create"], "the document is the draft");
-        assert_eq!(Containers::read(&doc).unwrap(), ContainersState::default());
+        assert_eq!(Containers::read(doc).unwrap(), ContainersState::default());
     }
 
     /// The rows carry only view and effect operations; offline they are
@@ -123,7 +115,10 @@ mod tests {
         let effects: Vec<_> = rows
             .iter()
             .flat_map(|row| row.actions.iter())
-            .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+            .filter(|action| {
+                action.kind == ui::tilo_actions::OperationKind::Effect
+                    && action.contract.permission == ui::tilo_actions::PermissionRequirement::Admin
+            })
             .collect();
         assert!(
             effects

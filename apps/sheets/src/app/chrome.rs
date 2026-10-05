@@ -415,7 +415,7 @@ impl SheetsApp {
         let before = *ctx.handled;
         self.toolbar
             .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-        let ran = self.drain_command_bar(ctx.state);
+        let ran = self.drain_command_bar(&mut ctx.state);
         let consumed = *ctx.handled && !before;
         if consumed || ran {
             self.pending.redraw = true;
@@ -432,7 +432,7 @@ impl SheetsApp {
     }
 
     /// Run the command the bar or one of its menus reported, if any.
-    pub(super) fn drain_command_bar(&mut self, doc: &mut AutoCommit) -> bool {
+    pub(super) fn drain_command_bar(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let item = self
             .command_slot
             .lock()

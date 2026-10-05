@@ -19,7 +19,7 @@ use crate::app::ReportEnvelope;
 use crate::config::{RegistriesFile, RegistryConfig};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
-use crate::search_provider::StoreSearchIndex;
+use crate::search::StoreDirectory;
 use crate::sources::{
     flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
     installed_tilo_to_store_item, merge, tilo_to_store_item,
@@ -128,7 +128,7 @@ impl StoreWorker {
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; the surface attaching the worker has no fallible path to report it on"
     )]
-    pub fn spawn(search_index: StoreSearchIndex, wake: WakeHandle) -> Self {
+    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
@@ -142,7 +142,7 @@ impl StoreWorker {
                         wake,
                         pending,
                     };
-                    run(&request_rx, &snapshots, search_index);
+                    run(&request_rx, &snapshots, directory);
                 }
             })
             .expect("spawn store worker");
@@ -223,17 +223,13 @@ struct State {
     /// The current palette/action directory. Rebuilding it is linear in a
     /// catalogue snapshot, so it belongs on this serialized worker rather
     /// than in the UI's snapshot-drain loop.
-    search_index: StoreSearchIndex,
+    directory: StoreDirectory,
     /// The catalogue's names and descriptions, indexed while they stay the
     /// same.
     item_index: ui::search::ListIndex,
 }
 
-fn run(
-    requests: &mpsc::Receiver<QueuedRequest>,
-    snapshots: &Snapshots,
-    search_index: StoreSearchIndex,
-) {
+fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, directory: StoreDirectory) {
     let staging = crate::actions::tapp_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
@@ -250,7 +246,7 @@ fn run(
         remotes: Vec::new(),
         searches: LruCache::new(CACHE_CAP),
         details: LruCache::new(CACHE_CAP),
-        search_index,
+        directory,
         item_index: ui::search::ListIndex::default(),
     };
     refresh(&mut state);
@@ -817,7 +813,7 @@ fn refresh(state: &mut State) {
 /// or resource resolution. This executes on the serialized worker directly
 /// after a true `base_items` refresh, never on the UI thread.
 fn sync_authoritative_catalogue(state: &State) {
-    state.search_index.sync(&state.base_items);
+    state.directory.sync(&state.base_items);
 }
 
 fn collect_items(
@@ -910,7 +906,6 @@ mod tests {
 
     use super::*;
     use crate::{InstalledState, StoreItemVersion, StoreTrust};
-    use ui::search::SearchProvider;
 
     fn item(id: &str, name: &str) -> StoreItem {
         StoreItem {
@@ -941,7 +936,7 @@ mod tests {
         }
     }
 
-    fn state_with_items(items: Vec<StoreItem>, search_index: StoreSearchIndex) -> State {
+    fn state_with_items(items: Vec<StoreItem>, directory: StoreDirectory) -> State {
         State {
             host: None,
             opened_ref: None,
@@ -950,7 +945,7 @@ mod tests {
             remotes: Vec::new(),
             searches: LruCache::new(CACHE_CAP),
             details: LruCache::new(CACHE_CAP),
-            search_index,
+            directory,
             item_index: ui::search::ListIndex::default(),
         }
     }
@@ -960,7 +955,7 @@ mod tests {
     fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
         // Case `request_and_drain_are_non_blocking`.
         {
-            let worker = StoreWorker::spawn(StoreSearchIndex::default(), WakeHandle::new());
+            let worker = StoreWorker::spawn(StoreDirectory::default(), WakeHandle::new());
             let started = ui::time::now();
             assert!(worker.request(Request::Search("editor".into())));
             assert!(started.elapsed() < Duration::from_millis(50));
@@ -971,13 +966,13 @@ mod tests {
 
         // Case `filtered_snapshot_never_truncates_authoritative_action_directory`.
         {
-            let search_index = StoreSearchIndex::default();
+            let directory = StoreDirectory::default();
             let state = state_with_items(
                 vec![
                     item("dev.example.alpha", "Alpha"),
                     item("dev.example.beta", "Beta"),
                 ],
-                search_index.clone(),
+                directory.clone(),
             );
             sync_authoritative_catalogue(&state);
             let (sender, received) = mpsc::channel();
@@ -998,33 +993,39 @@ mod tests {
             ));
             assert_eq!(received.recv().expect("filtered snapshot").items.len(), 1);
 
-            let provider = search_index.provider();
-            assert_eq!(provider.search_limited("Beta", 10).len(), 1);
+            assert!(
+                directory
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.title == "Beta"),
+                "the directory keeps the app the filtered snapshot left out"
+            );
         }
 
         // Case `authoritative_catalogue_replacement_updates_and_removes_directory_rows`.
         {
-            let search_index = StoreSearchIndex::default();
+            let directory = StoreDirectory::default();
             let mut state = state_with_items(
                 vec![
                     item("dev.example.alpha", "Alpha"),
                     item("dev.example.beta", "Beta"),
                 ],
-                search_index.clone(),
+                directory.clone(),
             );
             sync_authoritative_catalogue(&state);
-            let provider = search_index.provider();
-            let cursor = provider
-                .search_page(&ui::search::SearchQuery::new(""), None, 1, 1)
-                .next
-                .expect("two directory rows produce a continuation");
+            assert!(directory.app("dev.example.beta").is_some());
 
             state.base_items = vec![item("dev.example.gamma", "Gamma")];
             sync_authoritative_catalogue(&state);
 
-            assert!(provider.search_limited("Beta", 10).is_empty());
-            assert_eq!(provider.search_limited("Gamma", 10).len(), 1);
-            assert!(!provider.action_directory_cursor_is_current(&cursor));
+            assert!(directory.app("dev.example.beta").is_none());
+            assert!(directory.app("dev.example.gamma").is_some());
+            let titles: Vec<String> = directory
+                .entries()
+                .into_iter()
+                .map(|entry| entry.title)
+                .collect();
+            assert_eq!(titles, ["Gamma"]);
         }
     }
 }

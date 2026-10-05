@@ -1,17 +1,15 @@
 [
   {
     "perform": {
-      "target": "PhotosApp[0]",
-      "semantic_target": "photos:toolbar:photos-library",
+      "target": "photos:library:timeline",
       "action": "activate"
     }
   },
   {
     "expect": {
-      "target": "PhotosApp[0]",
-      "semantic_target": "photos:toolbar:photos-library",
-      "role": "button",
-      "name": "Library",
+      "target": "photos:library:timeline",
+      "role": "tree_item",
+      "name": "Timeline",
       "enabled": true
     }
   }

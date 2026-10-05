@@ -1,4 +1,5 @@
 use super::*;
+use automerge::transaction::Transactable as _;
 
 #[test]
 fn retained_block_batches_include_empty_rows_and_refuse_interleaved_peers() {
@@ -325,7 +326,6 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         let source = "![Scan](assets/scan.png)";
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph(source)]);
-        editor.set_action_interception(true);
         let id = editor.blocks[0].id.clone();
         let mut renderer = TextRenderer::new();
         let mut doc = AutoCommit::new();
@@ -341,15 +341,15 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             "shared edit button is host-discoverable"
         );
         assert_control(&editor, &format!("notes.image-edit:{id}"));
-        editor.begin_action_intercept();
+        editor.begin_edit();
         assert!(editor.perform_semantic_action(
             &format!("notes.image-edit:{id}"),
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(
-            editor.take_intercepted_ops().is_empty(),
+            editor.take_edit_ops().is_empty(),
             "presentation mode is not a document action"
         );
         layout_image_editor(&mut editor, 640.0, &mut renderer);
@@ -373,21 +373,21 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             "last valid preview stays in place"
         );
         editor.blocks[0].line.set_text(source);
-        editor.begin_action_intercept();
+        editor.begin_edit();
         assert!(editor.perform_semantic_action(
             &format!("notes.image-done:{id}"),
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         layout_image_editor(&mut editor, 640.0, &mut renderer);
         assert_eq!(editor.blocks[0].line.get_rect().height(), 0.0);
         assert_eq!(editor.blocks[0].text(), source);
         assert!(!editor.perform_semantic_action(
             &format!("notes.image-source:{id}"),
             &crate::a11y::Action::SetValue("hidden overwrite".into()),
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
     }
@@ -397,7 +397,6 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         let source = "![Scan](assets/scan.png)";
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph(source)]);
-        editor.set_action_interception(true);
         let mut renderer = TextRenderer::new();
         layout_image_editor(&mut editor, 640.0, &mut renderer);
         editor.focus_block(0, CursorPlacement::Start);
@@ -415,7 +414,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             event,
             is_synthetic: false,
         };
-        editor.begin_action_intercept();
+        editor.begin_edit();
         for event in [character, WindowEvent::Ime(Ime::Commit("hidden".into()))] {
             let mut handled = false;
             editor.handle_event(
@@ -423,7 +422,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut None,
@@ -434,7 +433,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             assert!(handled);
             assert_eq!(editor.blocks[0].text(), source);
         }
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         let mut key: KeyEvent = unsafe { std::mem::zeroed() };
         key.logical_key = Key::Named(NamedKey::Backspace);
         key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
@@ -447,13 +446,13 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             event: key,
             is_synthetic: false,
         };
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.handle_event(
             &event,
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut false,
                 focus_target: &mut None,
@@ -466,7 +465,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             "",
             "Delete removes the attachment rather than one hidden character"
         );
-        assert!(!editor.take_intercepted_ops().is_empty());
+        assert!(!editor.take_edit_ops().is_empty());
     }
 
     image_attachment_sizes_to_available_width_without_layout_feedback();
@@ -528,7 +527,6 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
     fn accessible_block_reorder_controls_are_stable_and_action_owned() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
-        editor.set_action_interception(true);
         let first_id = editor.blocks()[0].id.clone();
         let second_id = editor.blocks()[1].id.clone();
         let node = Widget::accessibility(&editor).expect("document semantics");
@@ -549,7 +547,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
             &mut editor,
             &down_target,
             &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(editor.blocks()[1].id, first_id);
@@ -576,7 +574,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
                 &mut editor,
                 "notes.block-move:missing:down",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ),
             "a stale stable id must refuse instead of moving another block"
@@ -592,12 +590,11 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
         ]);
         let first_id = editor.blocks()[0].id.clone();
         let second_id = editor.blocks()[1].id.clone();
-        editor.set_action_interception(true);
-        editor.begin_action_intercept();
+        editor.begin_edit();
         assert!(editor.move_block_to(0, 2));
         assert_eq!(editor.blocks()[2].id, first_id);
         assert!(editor.take_structure_dirty());
-        let ops = editor.take_intercepted_ops();
+        let ops = editor.take_edit_ops();
         assert!(ops.contains(&BlockEditOp::Move {
             block_id: second_id,
             after: None,
@@ -649,7 +646,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -707,7 +704,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &ctrl_shift,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -774,7 +771,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -812,82 +809,142 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     slash_menu_owns_ime_without_committing_filter_text_into_the_document();
 }
 
-#[test]
-fn editor_binds_seeds_and_converges_blocks_through_the_doc() {
-    fn editor_adopts_blocks_from_doc() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
-        let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
-        let b0 = doc.insert_object(&list, 0, ObjType::Map).unwrap();
-        doc.put(&b0, "kind", "heading1").unwrap();
-        let t0 = doc.put_object(&b0, "text", ObjType::Text).unwrap();
-        doc.splice_text(&t0, 0, 0, "Title").unwrap();
+/// Seed a canonical block list the way an action owner stores it.
+fn seed_canonical_blocks(doc: &mut AutoCommit, blocks: &[(&str, &str)]) -> (ObjId, Vec<String>) {
+    use automerge::transaction::Transactable;
+    let list = doc
+        .put_object(automerge::ROOT, "blocks", ObjType::List)
+        .unwrap();
+    let mut ids = Vec::with_capacity(blocks.len());
+    for (index, (kind, text)) in blocks.iter().enumerate() {
+        let map = doc.insert_object(&list, index, ObjType::Map).unwrap();
+        let id = Uuid::new_v4().to_string();
+        doc.put(&map, "id", id.as_str()).unwrap();
+        doc.put(&map, "kind", *kind).unwrap();
+        let body = doc.put_object(&map, "text", ObjType::Text).unwrap();
+        doc.splice_text(&body, 0, 0, text).unwrap();
+        ids.push(id);
+    }
+    (list, ids)
+}
 
+/// Replay text and structure operations the way an owner would, over
+/// `(id, text)` rows.
+fn replay_edit_ops(rows: &mut Vec<(String, String)>, ops: &[BlockEditOp]) {
+    let position = |rows: &[(String, String)], id: &str| {
+        rows.iter()
+            .position(|(row, _)| row == id)
+            .unwrap_or_else(|| panic!("op addresses unknown block {id}"))
+    };
+    let slot_after = |rows: &[(String, String)], after: &Option<String>| {
+        after.as_ref().map_or(0, |after| position(rows, after) + 1)
+    };
+    for op in ops {
+        match op {
+            BlockEditOp::TextSplice {
+                block_id,
+                start,
+                end,
+                text,
+            } => {
+                let index = position(rows, block_id);
+                rows[index].1.replace_range(*start..*end, text);
+            }
+            BlockEditOp::Insert {
+                block_id,
+                after,
+                text,
+                ..
+            } => {
+                let slot = slot_after(rows, after);
+                rows.insert(slot, (block_id.clone(), text.clone()));
+            }
+            BlockEditOp::Delete { block_id } => {
+                let index = position(rows, block_id);
+                rows.remove(index);
+            }
+            BlockEditOp::Move { block_id, after } => {
+                let index = position(rows, block_id);
+                let row = rows.remove(index);
+                let slot = slot_after(rows, after);
+                rows.insert(slot, row);
+            }
+            BlockEditOp::SetKind { .. }
+            | BlockEditOp::SetChecklist { .. }
+            | BlockEditOp::SetNesting { .. }
+            | BlockEditOp::SetCodeGroup { .. } => {}
+        }
+    }
+}
+
+#[test]
+fn editor_adopts_canonical_blocks_and_reports_structure_edits_as_ops() {
+    fn editor_adopts_blocks_from_doc() {
+        let mut doc = AutoCommit::new();
+        let (list, ids) = seed_canonical_blocks(&mut doc, &[("heading1", "Title")]);
         let mut ed = BlockEditor::new();
-        ed.bind_blocks(&mut doc, list);
-        // Non-empty doc -> adopt it.
+        ed.bind_existing_blocks(&doc, list).unwrap();
         assert_eq!(ed.blocks().len(), 1);
         assert_eq!(ed.blocks()[0].text(), "Title");
+        assert_eq!(ed.blocks()[0].id, ids[0]);
         assert!(matches!(ed.blocks()[0].kind, BlockKind::Heading(1)));
     }
 
-    fn editor_seeds_empty_doc_from_local_blocks() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
-        let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
-
-        let mut ed = BlockEditor::new();
-        ed.set_blocks(vec![Block::paragraph("hello")]);
-        ed.bind_blocks(&mut doc, list.clone());
-
-        // Empty doc -> seeded from local blocks.
-        assert_eq!(doc.length(&list), 1);
-        let t = doc_text_obj(&doc, &list, 0).unwrap();
-        assert_eq!(doc.text(&t).unwrap(), "hello");
-    }
-
-    fn two_editors_converge_on_block_text() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
+    fn late_joining_peer_adopts_the_same_blocks() {
+        use automerge::ROOT;
         let mut a_doc = AutoCommit::new();
-        let a_list = a_doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let (a_list, ids) = seed_canonical_blocks(&mut a_doc, &[("paragraph", "from-A")]);
         let mut a = BlockEditor::new();
-        a.set_blocks(vec![Block::paragraph("from-A")]);
-        a.bind_blocks(&mut a_doc, a_list);
+        a.bind_existing_blocks(&a_doc, a_list).unwrap();
 
         // Peer B joins from A's full state (the late-join handshake).
-        let mut b_doc = AutoCommit::load(&a_doc.save()).unwrap();
+        let b_doc = AutoCommit::load(&a_doc.save()).unwrap();
         let Ok(Some((Value::Object(ObjType::List), b_list))) = b_doc.get(&ROOT, "blocks") else {
             panic!("blocks list should exist in B's adopted doc");
         };
         let mut b = BlockEditor::new();
-        b.bind_blocks(&mut b_doc, b_list);
+        b.bind_existing_blocks(&b_doc, b_list).unwrap();
 
         assert_eq!(b.blocks()[0].text(), "from-A", "B adopts A's block text");
+        assert_eq!(b.blocks()[0].id, a.blocks()[0].id);
+        assert_eq!(b.blocks()[0].id, ids[0]);
     }
 
-    fn split_then_sync_mirrors_structure_into_doc() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
+    fn split_reports_the_new_block_as_ops_without_writing_the_doc() {
         let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let (list, ids) = seed_canonical_blocks(&mut doc, &[("paragraph", "abcdef")]);
+        doc.commit();
+        let heads = (doc.base_heads(), doc.pending_ops());
         let mut ed = BlockEditor::new();
-        ed.set_blocks(vec![Block::paragraph("abcdef")]);
-        ed.bind_blocks(&mut doc, list.clone());
-        assert_eq!(doc.length(&list), 1);
+        ed.bind_existing_blocks(&doc, list.clone()).unwrap();
 
+        ed.begin_edit();
         ed.split_at_cursor(0, 3);
-        ed.sync(&mut doc, &ROOT);
-
-        assert_eq!(doc.length(&list), 2, "doc gained the split block");
-        let t0 = doc_text_obj(&doc, &list, 0).unwrap();
-        let t1 = doc_text_obj(&doc, &list, 1).unwrap();
-        assert_eq!(doc.text(&t0).unwrap(), "abc");
-        assert_eq!(doc.text(&t1).unwrap(), "def");
+        let new_id = ed.blocks()[1].id.clone();
+        assert_eq!(
+            ed.take_edit_ops(),
+            vec![
+                BlockEditOp::TextSplice {
+                    block_id: ids[0].clone(),
+                    start: 3,
+                    end: 6,
+                    text: String::new(),
+                },
+                BlockEditOp::Insert {
+                    block_id: new_id,
+                    after: Some(ids[0].clone()),
+                    kind: "paragraph".into(),
+                    text: "def".into(),
+                },
+            ]
+        );
+        assert_eq!(doc.length(&list), 1, "the owner applies structure edits");
+        assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
     }
 
     editor_adopts_blocks_from_doc();
-    editor_seeds_empty_doc_from_local_blocks();
-    two_editors_converge_on_block_text();
-    split_then_sync_mirrors_structure_into_doc();
+    late_joining_peer_adopts_the_same_blocks();
+    split_reports_the_new_block_as_ops_without_writing_the_doc();
 }
 
 #[test]
@@ -989,14 +1046,10 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
         assert_eq!(e.blocks()[0].line.cursor_pos(), 6);
         assert_eq!(e.document_selection(), None);
         assert!(
-            crate::undo::needs_commit(&e),
-            "replacement arms one undo boundary"
+            !e.take_edit_ops().is_empty(),
+            "the replacement reaches the owner"
         );
-        crate::undo::on_commit(&mut e);
-        assert!(
-            !crate::undo::needs_commit(&e),
-            "the boundary is rising-edge"
-        );
+        assert!(e.take_edit_ops().is_empty(), "and only once");
     }
 
     fn multiline_paste_replaces_range_and_uses_enter_continuation_kinds() {
@@ -1053,7 +1106,7 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state,
+                    state: crate::widget::Edits::lend(state),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -1095,38 +1148,51 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
         assert_eq!(editor.blocks().len(), 1);
         assert_eq!(editor.blocks()[0].text(), "X");
         assert_eq!(editor.blocks()[0].kind, BlockKind::Paragraph);
-        assert!(crate::undo::needs_commit(&editor));
+        assert!(!editor.take_edit_ops().is_empty());
     }
 
-    fn cross_block_replacement_syncs_as_one_coherent_document_state() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
-
+    fn cross_block_replacement_emits_one_coherent_document_state() {
         let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let (list, ids) = seed_canonical_blocks(
+            &mut doc,
+            &[
+                ("paragraph", "left OLD"),
+                ("paragraph", "remove"),
+                ("paragraph", "OLD right"),
+            ],
+        );
         let mut e = BlockEditor::new();
-        e.set_blocks(vec![
-            Block::paragraph("left OLD"),
-            Block::paragraph("remove"),
-            Block::paragraph("OLD right"),
-        ]);
-        e.bind_blocks(&mut doc, list.clone());
+        e.bind_existing_blocks(&doc, list).unwrap();
         e.paint_cross_block_selection(0, 5, 2, 3);
 
+        e.begin_edit();
         assert!(e.replace_document_selection("new\nline"));
-        e.sync(&mut doc, &ROOT);
+        let ops = e.take_edit_ops();
 
-        assert_eq!(doc.length(&list), 2);
-        let first = doc_text_obj(&doc, &list, 0).unwrap();
-        let second = doc_text_obj(&doc, &list, 1).unwrap();
-        assert_eq!(doc.text(&first).unwrap(), "left new");
-        assert_eq!(doc.text(&second).unwrap(), "line right");
+        let mut rows = ids
+            .iter()
+            .cloned()
+            .zip(["left OLD", "remove", "OLD right"].map(String::from))
+            .collect::<Vec<_>>();
+        replay_edit_ops(&mut rows, &ops);
+        assert_eq!(
+            rows.iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            ["left new", "line right"],
+            "one batch of ops reproduces the replacement: {ops:?}"
+        );
+        assert_eq!(
+            rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            e.blocks().iter().map(|b| b.id.as_str()).collect::<Vec<_>>()
+        );
     }
 
     cross_block_selection_serializes_plain_text_in_document_order();
     deleting_cross_block_selection_merges_prefix_and_suffix();
     multiline_paste_replaces_range_and_uses_enter_continuation_kinds();
     ctrl_a_then_typing_replaces_the_document_through_the_real_event_path();
-    cross_block_replacement_syncs_as_one_coherent_document_state();
+    cross_block_replacement_emits_one_coherent_document_state();
 }
 
 #[test]
@@ -1473,10 +1539,11 @@ fn code_fences_copy_highlight_and_render_formulas() {
             .unwrap()
             .editor
             .type_char('+');
+        editor.begin_edit();
         editor.commit_visual_formula_edit(0, 0, crate::math::FormulaSyntax::Typst);
         assert!(editor.blocks[0].text().starts_with("vec("));
         assert!(editor.blocks[0].text().ends_with('+'));
-        assert!(crate::undo::needs_commit(&editor));
+        assert!(!editor.take_edit_ops().is_empty());
     }
 
     code_copy_targets_are_bounded_and_copy_complete_runs();
@@ -1944,9 +2011,9 @@ fn canonical_existing_list_restore_and_empty_baseline() {
         editor.focus_block(0, CursorPlacement::Start);
         let id = editor.blocks()[0].id.clone();
         for _ in 0..3 {
-            editor.begin_action_intercept();
-            assert!(editor.take_intercepted_ops().is_empty());
-            editor.sync(&mut doc, &automerge::ROOT);
+            editor.begin_edit();
+            assert!(editor.take_edit_ops().is_empty());
+            editor.sync(&doc, &automerge::ROOT);
             assert_eq!(editor.blocks()[0].id, id);
             assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
             assert_eq!(editor.focused_index(), Some(0));
@@ -1957,12 +2024,7 @@ fn canonical_existing_list_restore_and_empty_baseline() {
 
     fn canonical_existing_list_returns_to_empty_baseline_after_removal() {
         let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(automerge::ROOT, "blocks", ObjType::List)
-            .unwrap();
-        let mut seed = BlockEditor::new();
-        seed.set_blocks(vec![Block::paragraph("old")]);
-        seed.bind_blocks(&mut doc, list.clone());
+        let (list, _) = seed_canonical_blocks(&mut doc, &[("paragraph", "old")]);
         doc.commit();
         let mut editor = BlockEditor::new();
         editor.bind_existing_blocks(&doc, list.clone()).unwrap();
@@ -1971,21 +2033,21 @@ fn canonical_existing_list_restore_and_empty_baseline() {
         doc.delete(&list, 0).unwrap();
         doc.commit();
         let before = (doc.base_heads(), doc.pending_ops());
-        editor.sync(&mut doc, &automerge::ROOT);
+        editor.sync(&doc, &automerge::ROOT);
         let placeholder = editor.blocks()[0].id.clone();
         for _ in 0..3 {
-            editor.begin_action_intercept();
-            assert!(editor.take_intercepted_ops().is_empty());
-            editor.sync(&mut doc, &automerge::ROOT);
+            editor.begin_edit();
+            assert!(editor.take_edit_ops().is_empty());
+            editor.sync(&doc, &automerge::ROOT);
             assert_eq!(editor.blocks()[0].id, placeholder);
             assert_eq!(editor.focused_index(), Some(0));
             assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
             assert_eq!((doc.base_heads(), doc.pending_ops()), before);
         }
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.blocks_mut()[0].line.set_text("é");
         assert_eq!(
-            editor.take_intercepted_ops(),
+            editor.take_edit_ops(),
             vec![BlockEditOp::Insert {
                 block_id: placeholder,
                 after: None,
@@ -1993,28 +2055,18 @@ fn canonical_existing_list_restore_and_empty_baseline() {
                 text: "é".into(),
             }]
         );
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-        // Switching back to the legacy API still seeds its empty durable list.
-        editor.bind_blocks(&mut doc, list.clone());
-        assert_eq!(doc.length(&list), 1);
-        assert_eq!(editor.blocks()[0].text(), "é");
     }
 
-    fn canonical_existing_list_nonempty_adoption_is_readonly_and_legacy_still_seeds() {
+    fn canonical_existing_list_nonempty_adoption_is_readonly() {
         let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(automerge::ROOT, "blocks", ObjType::List)
-            .unwrap();
-        let mut legacy = BlockEditor::new();
-        legacy.set_blocks(vec![Block::paragraph("retained")]);
-        legacy.bind_blocks(&mut doc, list.clone());
-        assert_eq!(doc.length(&list), 1);
+        let (list, _) = seed_canonical_blocks(&mut doc, &[("paragraph", "retained")]);
         doc.commit();
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut canonical = BlockEditor::new();
         canonical.bind_existing_blocks(&doc, list).unwrap();
-        canonical.sync(&mut doc, &automerge::ROOT);
+        canonical.sync(&doc, &automerge::ROOT);
         assert_eq!(canonical.blocks()[0].text(), "retained");
         assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
     }
@@ -2022,7 +2074,7 @@ fn canonical_existing_list_restore_and_empty_baseline() {
     canonical_readonly_restore_rejects_shape_before_installing_editor();
     canonical_existing_list_empty_noop_retains_caret_and_heads();
     canonical_existing_list_returns_to_empty_baseline_after_removal();
-    canonical_existing_list_nonempty_adoption_is_readonly_and_legacy_still_seeds();
+    canonical_existing_list_nonempty_adoption_is_readonly();
 }
 
 #[test]
@@ -2037,10 +2089,10 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
         let mut editor = BlockEditor::new();
         editor.bind_existing_blocks(&doc, list).unwrap();
         let id = editor.blocks()[0].id.clone();
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.blocks_mut()[0].line.set_text("first é");
         assert_eq!(
-            editor.take_intercepted_ops(),
+            editor.take_edit_ops(),
             vec![BlockEditOp::Insert {
                 block_id: id,
                 after: None,
@@ -2048,7 +2100,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
                 text: "first é".into()
             }]
         );
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
     }
 
@@ -2061,7 +2113,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
         editor.bind_existing_blocks(&doc, list).unwrap();
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.split_at_cursor(0, 0);
         let ids = editor
             .blocks()
@@ -2069,7 +2121,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
             .map(|b| b.id.clone())
             .collect::<Vec<_>>();
         assert_eq!(
-            editor.take_intercepted_ops(),
+            editor.take_edit_ops(),
             vec![
                 BlockEditOp::Insert {
                     block_id: ids[0].clone(),
@@ -2097,7 +2149,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
         let before = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
         editor.bind_existing_blocks(&doc, list).unwrap();
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.blocks_mut()[0].line.set_text("first ésecond");
         editor.blocks_mut()[0]
             .line
@@ -2117,7 +2169,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
             .map(|block| block.id.clone())
             .collect::<Vec<_>>();
         assert_eq!(
-            editor.take_intercepted_ops(),
+            editor.take_edit_ops(),
             vec![
                 BlockEditOp::Insert {
                     block_id: ids[0].clone(),
@@ -2133,18 +2185,14 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
                 },
             ]
         );
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
     }
 
     fn canonical_object_projection_preserves_text_identity_and_ignores_storage_order() {
         let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(automerge::ROOT, "blocks", ObjType::List)
-            .unwrap();
-        let mut legacy = BlockEditor::new();
-        legacy.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
-        legacy.bind_blocks(&mut doc, list.clone());
+        let (list, _) =
+            seed_canonical_blocks(&mut doc, &[("paragraph", "first"), ("paragraph", "second")]);
         let first = list_map(&doc, &list, 0).unwrap();
         let second = list_map(&doc, &list, 1).unwrap();
         let first_text = doc_text_obj(&doc, &list, 0).unwrap();
@@ -2156,7 +2204,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
             .bind_existing_block_objects(&doc, &[second, first.clone()])
             .unwrap();
         editor.focus_block(1, CursorPlacement::Byte(3));
-        editor.sync(&mut doc, &automerge::ROOT);
+        editor.sync(&doc, &automerge::ROOT);
         assert_eq!(
             editor.blocks().iter().map(Block::text).collect::<Vec<_>>(),
             ["second", "first"]
@@ -2182,60 +2230,22 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
 }
 
 #[test]
-fn action_bridge_emits_uuid_ops_and_reads_legacy_ids_without_mutation() {
-    fn action_bridge_emits_uuid_ops_and_unicode_boundaries() {
-        let mut editor = BlockEditor::new();
-        editor.set_blocks(vec![Block::paragraph("café")]);
-        editor.set_action_interception(true);
-        let id = editor.blocks()[0].id.clone();
-        editor.begin_action_intercept();
-        editor.blocks_mut()[0].line.set_text("cafe");
-        let ops = editor.take_intercepted_ops();
-        assert_eq!(
-            ops,
-            vec![BlockEditOp::TextSplice {
-                block_id: id,
-                start: 3,
-                end: 5,
-                text: "e".into(),
-            }]
-        );
-    }
-
-    fn action_interception_reads_legacy_ids_without_mutating_document() {
-        use automerge::ROOT;
-
-        let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(&ROOT, "notes", ObjType::List)
-            .expect("notes list");
-        let block = doc
-            .insert_object(&list, 0, ObjType::Map)
-            .expect("legacy block");
-        doc.put(&block, "kind", "paragraph").expect("legacy kind");
-        let text = doc
-            .put_object(&block, "text", ObjType::Text)
-            .expect("legacy text");
-        doc.splice_text(&text, 0, 0, "legacy")
-            .expect("legacy content");
-
-        let mut editor = BlockEditor::new();
-        editor.set_action_interception(true);
-        editor.bind_blocks(&mut doc, list.clone());
-
-        assert_eq!(
-            read_block_id(&doc, &block),
-            None,
-            "action interception derives a legacy UUID but never writes it"
-        );
-        assert_eq!(
-            editor.blocks()[0].id,
-            legacy_block_id(&list, 0, "paragraph", "legacy")
-        );
-    }
-
-    action_bridge_emits_uuid_ops_and_unicode_boundaries();
-    action_interception_reads_legacy_ids_without_mutating_document();
+fn action_bridge_emits_uuid_ops_at_unicode_boundaries() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("café")]);
+    let id = editor.blocks()[0].id.clone();
+    editor.begin_edit();
+    editor.blocks_mut()[0].line.set_text("cafe");
+    let ops = editor.take_edit_ops();
+    assert_eq!(
+        ops,
+        vec![BlockEditOp::TextSplice {
+            block_id: id,
+            start: 3,
+            end: 5,
+            text: "e".into(),
+        }]
+    );
 }
 
 #[test]
@@ -2276,7 +2286,7 @@ fn find_matches_unicode_safely_and_navigates_without_editing() {
         editor.step_find(true);
         assert_eq!(editor.focused_index(), Some(1));
         assert_eq!(editor.to_markdown(), before);
-        assert!(!crate::undo::needs_commit(&editor));
+        assert!(editor.take_edit_ops().is_empty());
     }
 
     find_ranges_are_case_insensitive_and_unicode_byte_safe();
@@ -2431,7 +2441,7 @@ fn focused_block_ime_repaints_after_an_idle_paint() {
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut AutoCommit::new(),
+            state: crate::widget::Edits::lend(&mut AutoCommit::new()),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut None,

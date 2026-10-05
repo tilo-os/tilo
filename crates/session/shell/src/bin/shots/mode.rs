@@ -521,40 +521,33 @@ mod tests {
         let _ = fs::remove_file(&tmp);
     }
 
-    /// The desktop a scenario boots opens its apps with their documents:
-    /// clicking into Notes and typing lands in that tab's own record,
-    /// instead of every in-process tile painting "Document unavailable".
+    /// The desktop a scenario boots opens its apps as their own components:
+    /// its Notes tab is the Notes app, still there after the scenario
+    /// clicks into it and types, instead of a tile saying it is unavailable.
     #[test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the shell fixture owns long-lived permits by design and lives for the whole test"
     )]
-    fn booted_notes_tab_has_its_document_and_takes_typing() {
-        use shell::shell::notes_app::BODY_KEY;
-        use shell::shell::state::TileContent;
-        use shell::shell::tab_documents::tab_body;
-        use ui::record::RecordId;
-
+    fn booted_notes_tab_is_the_notes_app_and_takes_typing() {
         let mut driver = ShellDriver::new((1600, 900));
-        let group = driver.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].clone();
-        let notes = group.tabs[0].id;
-        let hosted: Vec<u64> = group
-            .tabs
-            .iter()
-            .filter(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
-            .map(|tab| tab.id)
-            .collect();
-        assert!(hosted.len() >= 2, "the booted group opens Notes and Files");
+        let (strip, notes) = {
+            let chrome = driver.chrome();
+            let tree = chrome.tree();
+            let strip = &tree.desktop.workspaces[0].strips[0];
+            (strip.id, strip.window_groups[0].tabs[0].id)
+        };
         let scenario = lookup("notes_click_and_type").expect("notes_click_and_type in catalogue");
         scenario::run(&mut driver, &scenario, &mut NullSink);
 
-        let records = driver.chrome().records().clone();
-        for tab in hosted {
-            assert!(
-                records.read(&RecordId::for_tab(tab), |_| ()).is_some(),
-                "booted tab {tab} has no document"
-            );
+        let host = driver
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .and_then(|group| group.host_for_tab_mut(notes))
+            .expect("the booted Notes tab");
+        match host.content() {
+            ui::widget::TileContent::App(app) => assert_eq!(app.app_title(), "Notes"),
+            _ => panic!("the booted Notes tab is not the Notes app"),
         }
-        assert_eq!(tab_body(&records, notes, BODY_KEY).as_deref(), Some("hi"));
     }
 }

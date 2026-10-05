@@ -1603,9 +1603,8 @@ impl State {
 /// `from_heads` — the paragraph a collaborator typed into after the action
 /// that created it — is left standing, so undo takes back only the action.
 ///
-/// The caller commits. That is deliberate: a `ui` app signals `needs_commit()`
-/// and lets `App::commit_action` do the commit, so a restore performed from
-/// inside a widget lands on the undo stack with the right author and timestamp
+/// The caller commits. That is deliberate: the owner's action records the
+/// restore, so it lands on the undo stack with the right author and timestamp
 /// exactly like any other edit. [`State::restore_to_heads`] is the equivalent
 /// for a host that owns a whole [`State`].
 pub fn write_revert_patches(

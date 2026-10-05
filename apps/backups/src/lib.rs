@@ -46,7 +46,7 @@ pub mod engine;
 mod i18n;
 pub mod model;
 pub mod resource;
-pub mod search_provider;
+pub mod search;
 mod view;
 
 pub use app::BackupsApp;

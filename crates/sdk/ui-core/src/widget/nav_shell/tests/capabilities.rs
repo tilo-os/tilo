@@ -4,7 +4,7 @@ use super::*;
 use crate::widget::{FilterCount, Filterable};
 
 fn labelled(id: &'static str, label: &str, icon: Icon) -> Element {
-    Box::new(Button::new(id, label, None).with_icon(icon).on_view(|| {}))
+    Box::new(Button::new(id, label).with_icon(icon).on_view(|| {}))
 }
 
 fn icon(id: &'static str, icon: Icon, name: &str) -> Element {
@@ -175,7 +175,7 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
             labelled("forward", "Forward", Icon::Send),
             labelled("archive", "Archive", Icon::Archive),
             Box::new(
-                Button::new("delete", "Delete message", None)
+                Button::new("delete", "Delete message")
                     .with_icon(Icon::Trash2)
                     .on_view(move || deleted.set(true)),
             ) as Element,
@@ -252,11 +252,7 @@ fn a_leading_fill_stands_between_the_toggle_and_the_actions() {
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0)
         .content_header("", vec![icon("new", Icon::Plus, "New folder")])
-        .content_header_leading(Box::new(Button::new(
-            "path",
-            "Home › Documents › Taxes",
-            None,
-        )));
+        .content_header_leading(Box::new(Button::new("path", "Home › Documents › Taxes")));
     let mut h = harness(shell, 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
     let g = geometry(&h);
@@ -602,9 +598,7 @@ fn typed_access_controls_and_the_filter_reach_the_apps_widgets() {
         .overview(Box::new(list))
         .content(Probe::boxed("content").0)
         .overview_header("Contacts", Vec::new())
-        .overview_controls(Box::new(
-            Button::new("sort", "Sort by name", None).on_view(|| {}),
-        ))
+        .overview_controls(Box::new(Button::new("sort", "Sort by name").on_view(|| {})))
         .with_filter(SearchField::filter());
     let mut h = harness(shell, 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);

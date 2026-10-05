@@ -18,7 +18,7 @@ use crate::apply::Editor;
 use crate::model::{Chooser, Route};
 use crate::plan::{self, Block, ConfirmationEvidence, Instruction, Plan};
 use crate::providers::default_selection;
-use crate::surface::{self, AppContract, View};
+use crate::surface::{self, AppContract};
 use crate::wire::Link;
 
 mod agent_loop;
@@ -64,10 +64,6 @@ struct TaskAction {
 struct StepOutcome {
     /// The application-declared result returned by the broker.
     output: tilo_actions::ActionOutput,
-    /// A local document's app-derived product. Local document actions predate
-    /// `ActionOutput`; this preserves their existing honest hand-off without
-    /// pretending the model or the generic action door produced it.
-    product: Option<surface::Product>,
 }
 
 impl StepOutcome {
@@ -82,26 +78,17 @@ impl StepOutcome {
         Ok(Self {
             output: serde_json::from_value(output.clone())
                 .map_err(|_| "the committed step output is not valid".to_string())?,
-            product: None,
         })
     }
 
     fn content_hash(&self) -> Result<&str, String> {
         match self.output.resources.as_slice() {
-            [] => {}
-            [resource] => {
-                return tilo_actions::content_hash(resource).ok_or_else(|| {
-                    "the previous action produced a resource that is not tilo.content".into()
-                });
-            }
-            _ => {
-                return Err("the previous action must produce exactly one content resource".into());
-            }
+            [] => Err("the previous action produced no content resource".into()),
+            [resource] => tilo_actions::content_hash(resource).ok_or_else(|| {
+                "the previous action produced a resource that is not tilo.content".into()
+            }),
+            _ => Err("the previous action must produce exactly one content resource".into()),
         }
-        if let Some(surface::Product::Content { hash }) = &self.product {
-            return Ok(hash);
-        }
-        Err("the previous action produced no content resource".into())
     }
 }
 
@@ -381,9 +368,6 @@ pub struct Config {
     /// person is actively typing into, where every keystroke would else
     /// race the agent's own read.
     pub settle: Duration,
-    /// The directory the agent is browsing, for an app whose subject is
-    /// the filesystem rather than a document.
-    pub directory: Option<PathBuf>,
     /// What the agent may enumerate and perform. A denied operation is
     /// absent from what it discovers, never merely refused — see
     /// [`crate::surface::offers`].
@@ -1374,10 +1358,9 @@ impl Session {
             self.publish_task_interaction(run, action, &update, interaction_sequence)?;
         }
         match update {
-            tilo_actions::InvocationUpdate::Succeeded { output, .. } => Ok(Ok(StepOutcome {
-                output,
-                product: None,
-            })),
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+                Ok(Ok(StepOutcome { output }))
+            }
             tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
                 Ok(Err(TaskActionStop::Cancelled(message)))
             }
@@ -1810,7 +1793,6 @@ impl Session {
     fn offers(
         &self,
         held: &[(&'static AppContract, &automerge::AutoCommit)],
-        view: &View,
     ) -> Vec<surface::Offer> {
         if is_chat_app_id(&self.cfg.app_id) {
             // Canonical Chat acts only through package-primary routes in its
@@ -1835,7 +1817,7 @@ impl Session {
         // (an edit at the caret). The tree read off the held replica stands
         // in only for an app whose publication has not arrived yet.
         let live: HashSet<String> = offers.iter().map(|offer| offer.app.clone()).collect();
-        let mut local = surface::offers(held, view, &self.cfg.permissions);
+        let mut local = surface::offers(held, &offers, &self.cfg.permissions);
         local.retain(|offer| {
             surface::for_namespace(&offer.app)
                 .is_none_or(|contract| !live.contains(contract.app_id()))
@@ -1862,18 +1844,6 @@ impl Session {
                 surface::permitted_descriptor(permissions, &offer.app, &offer.descriptor)
             })
             .collect()
-    }
-
-    /// Where the agent is looking: `focus` on a document, and the
-    /// directory it was configured to browse, when it has one.
-    fn view(&self, focus: Option<String>) -> View {
-        View {
-            focus_block: focus.clone(),
-            target_blocks: focus.into_iter().collect(),
-            subject: None,
-            directory: self.cfg.directory.clone(),
-            content: self.cfg.content.clone(),
-        }
     }
 
     /// Perform the discovered operation `id` names, through the broker, as
@@ -2166,6 +2136,7 @@ impl Session {
         let invocation = tilo_actions::InvocationId::new();
         self.link.send(&CollabRequest::RemoteAction {
             message: RemoteActionMessage::Invoke(tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
                 invocation,
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider,
@@ -2251,10 +2222,7 @@ impl Session {
             tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
                 tracing::info!(%id, invocation = %invocation.0, ?output, "broker action completed");
                 std::thread::sleep(self.cfg.pace);
-                Ok(Ok(StepOutcome {
-                    output,
-                    product: None,
-                }))
+                Ok(Ok(StepOutcome { output }))
             }
             _ => Ok(Err(format!(
                 "action {} was admitted but did not reach a terminal state in time",
@@ -2460,9 +2428,8 @@ impl Session {
     /// those, only in the single catalogue request that never needed it.
     fn decide(&mut self, ins_id: &str, asked: &str, blocks: &[Block]) -> Plan {
         let held = self.held();
-        let view = self.view(Some(ins_id.to_string()));
         let catalogue = surface::Catalogue {
-            offers: self.offers(&held, &view),
+            offers: self.offers(&held),
             facts: surface::facts(&held),
             held: held
                 .iter()
@@ -2729,8 +2696,8 @@ impl Session {
             payload: PresencePayload::Caret { pos: caret_pos },
         })?;
         let editor = self.editor.as_mut().context("no document yet")?;
-        let actions = crate::apply::authored(action, &self.cfg.agent_id);
-        let delta = editor.apply::<word_processor::framework::Document>(&actions)?;
+        let delta =
+            editor.apply::<word_processor::framework::Document>(std::slice::from_ref(action))?;
         if let Some(data) = delta {
             self.link.send(&CollabRequest::document_incremental(data))?;
             if let RichTextAction::SpliceText { at, ins, .. } = action
@@ -2874,6 +2841,7 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         | RichTextAction::GenerateToc { .. }
         | RichTextAction::ReplaceBody { .. }
         | RichTextAction::ReplaceFormatted { .. }
+        | RichTextAction::NoteFileWritten { .. }
         | RichTextAction::EnsureRegionBlock { .. } => tilo_actions::InteractionAnchor::Resource,
         RichTextAction::SetStyleProperty { style, .. }
         | RichTextAction::DeleteStyle { style, .. } => object_anchor(style),
@@ -3330,7 +3298,6 @@ mod tests {
                         model_timeout: Duration::ZERO,
                         await_document: Duration::ZERO,
                         settle: Duration::ZERO,
-                        directory: None,
                         permissions: PermissionContext::from_capabilities(
                             ui::permissions::Actor::agent("agent-1"),
                             vec![],
@@ -3584,7 +3551,6 @@ mod tests {
                     model_timeout: Duration::ZERO,
                     await_document: Duration::ZERO,
                     settle: Duration::ZERO,
-                    directory: None,
                     permissions: PermissionContext::from_capabilities(
                         ui::permissions::Actor::agent("agent-1"),
                         vec![],
@@ -3945,12 +3911,7 @@ mod tests {
                         .expect("the producer returned a valid content hash"),
                 ],
             };
-            let previous = StepOutcome {
-                output,
-                product: Some(surface::Product::Content {
-                    hash: "legacy-derived-product".into(),
-                }),
-            };
+            let previous = StepOutcome { output };
             let planned = serde_json::Map::from_iter([(
                 tilo_actions::PROMPTED_PARAM.to_string(),
                 serde_json::Value::String("model-invented".into()),
@@ -3961,7 +3922,7 @@ mod tests {
             assert_eq!(
                 bound.get(tilo_actions::PROMPTED_PARAM),
                 Some(&serde_json::Value::String("abc123".into())),
-                "the preceding app result must replace model input and its legacy product fallback"
+                "the preceding app result must replace model input"
             );
             assert!(
                 arguments_for_step(true, &planned, None).is_err(),
@@ -3976,7 +3937,6 @@ mod tests {
                     value: None,
                     resources: vec!["tilo.content:first".into(), "tilo.content:second".into()],
                 },
-                product: None,
             };
             assert!(
                 arguments_for_step(true, &serde_json::Map::new(), Some(&ambiguous)).is_err(),
@@ -3988,7 +3948,6 @@ mod tests {
                     value: None,
                     resources: vec!["files.entry:/tmp/picture.png".into()],
                 },
-                product: None,
             };
             assert!(
                 arguments_for_step(true, &serde_json::Map::new(), Some(&wrong_kind)).is_err(),
@@ -3996,19 +3955,12 @@ mod tests {
             );
         }
 
-        // Case `a_local_apps_declared_product_can_feed_the_next_content_step`.
+        // Case `an_empty_result_feeds_no_content_step`.
         {
-            let previous = StepOutcome {
-                output: tilo_actions::ActionOutput::default(),
-                product: Some(surface::Product::Content {
-                    hash: "rendered-photo".into(),
-                }),
-            };
-            let bound = arguments_for_step(true, &serde_json::Map::new(), Some(&previous))
-                .expect("the app, not the agent, declared the local document's product");
-            assert_eq!(
-                bound.get(tilo_actions::PROMPTED_PARAM),
-                Some(&serde_json::Value::String("rendered-photo".into()))
+            let previous = StepOutcome::default();
+            assert!(
+                arguments_for_step(true, &serde_json::Map::new(), Some(&previous)).is_err(),
+                "a step that produced nothing cannot feed a content input"
             );
         }
 
@@ -4156,7 +4108,7 @@ mod tests {
             caret: &str,
             content: &ContentStore,
         ) -> Vec<tilo_actions::Resource> {
-            wp::provide_resources(
+            wp::published_for(
                 &wp::WpResourceCtx {
                     caret_block: caret.into(),
                     caret_offset: 0,
@@ -4218,12 +4170,17 @@ mod tests {
                 &[(PHOTOS, PRODUCE), (PHOTOS, "view"), (WRITER, "place-image")],
             );
             let mut photo = automerge::AutoCommit::new();
-            photos::doc::PhotosDoc::seed(&mut photo);
             let source = photos::pixels::encode_png(&photos::shots_pattern(3, 2)).unwrap();
             let source_hash = content.put(&source).unwrap();
-            let open = photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash);
-            photos::doc::PhotosDoc::set_image(&mut photo, Some(&open));
-            let image_id = photos::actions::resource_id(&open);
+            let held = photos::model::LibraryPhoto::from_image(
+                photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash),
+            );
+            let image_id = held.id.clone();
+            tilo_actions::Action::apply(
+                &photos::actions::PhotosAction::ImportPhoto { photo: held },
+                &mut photo,
+            )
+            .unwrap();
             let mut document = automerge::AutoCommit::new();
             let model = tilo_doc::model::init(&mut document, &automerge::ROOT);
             let mut ids = tilo_doc::model::seeded_id_gen(&document, &model);
@@ -4380,7 +4337,6 @@ mod tests {
                 model_timeout: Duration::from_millis(1),
                 await_document: Duration::from_secs(5),
                 settle: Duration::ZERO,
-                directory: None,
                 permissions,
                 content: content.clone(),
             })
@@ -4488,8 +4444,10 @@ mod tests {
                         _ => None,
                     })
                     .collect(),
-                rotation: photos::doc::PhotosDoc::edits(session.peers["photos"].doc())
-                    .rotate_quarters,
+                rotation: photos::doc::PhotosDoc::library(session.peers["photos"].doc())
+                    .photos
+                    .first()
+                    .map_or(0, |photo| photo.edits.rotate_quarters),
             }
         }
 

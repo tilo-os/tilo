@@ -7,20 +7,64 @@
 //! Times are relative to the clock (`ui::clock`), which a capture pins, so a
 //! shot shows the same mailbox on every run.
 
-use uuid::Uuid;
-
 use crate::account::{Account, AccountStore};
 use crate::model::{AccountConfig, Addr, Attachment, Folder, Mailbox, Message};
 use crate::transport::parse_eml;
 
-/// "Now" for the sample corpus: the clock, in minutes since the epoch.
-pub fn sample_now_min() -> i64 {
-    crate::state::now_minutes()
-}
-
-/// The mailbox owner of the sample corpus.
 const OWNER_NAME: &str = "Sam Rivera";
 const OWNER_EMAIL: &str = "sam@rivera.example";
+
+/// What a screenshot shows in place of the person's mail: a mailbox, the
+/// accounts beside it and the clock it is read at. Never the person's own.
+#[derive(Clone)]
+pub struct MailFixture {
+    pub mailbox: Mailbox,
+    pub accounts: AccountStore,
+    pub now_min: i64,
+}
+
+impl MailFixture {
+    /// The bundled sample mailbox and two sample accounts.
+    pub fn bundled() -> Self {
+        Self {
+            mailbox: sample_mailbox(),
+            accounts: sample_account_store(),
+            now_min: SAMPLE_NOW_MIN,
+        }
+    }
+
+    /// Nobody has added an account yet.
+    pub fn without_accounts() -> Self {
+        Self {
+            mailbox: Mailbox::new(AccountConfig::default()),
+            accounts: AccountStore::new(),
+            now_min: SAMPLE_NOW_MIN,
+        }
+    }
+
+    /// A configured account before any message has arrived.
+    pub fn before_first_fetch() -> Self {
+        let accounts = sample_account_store();
+        Self {
+            mailbox: Mailbox::new(accounts.active_config()),
+            accounts,
+            now_min: SAMPLE_NOW_MIN,
+        }
+    }
+}
+
+/// Deterministic "now" for the sample corpus so relative timestamps render
+/// identically every run. 2026-06-30 14:05 UTC.
+pub const SAMPLE_NOW_MIN: i64 = {
+    // Equals util::minutes_of(2026, 6, 30, 14, 5); pinned by a test so the
+    // literal can never silently drift from the civil-date math.
+    29_713_805
+};
+
+/// The clock of the hermetic sample corpus.
+pub fn sample_now_min() -> i64 {
+    SAMPLE_NOW_MIN
+}
 
 /// A metadata-only (projected, not yet downloaded) sample attachment. Its
 /// bytes aren't present, so the reader shows it but a save requires
@@ -44,7 +88,12 @@ struct SampleMessage<'a> {
 impl SampleMessage<'_> {
     fn build(self, now: i64) -> Message {
         Message {
-            id: Uuid::new_v4(),
+            id: crate::transport::stable_message_id(&format!(
+                "{}/{}/{}",
+                self.folder.as_key(),
+                self.ago_min,
+                self.subject
+            )),
             rfc_message_id: None,
             in_reply_to: None,
             from: self.from,

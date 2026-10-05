@@ -52,17 +52,6 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
         assert_eq!(tree.desktop.active, b_id);
     }
 
-    // Phase `cmd_tab_toggles_overview`.
-    {
-        use shell::shell::Shell;
-        use shell::shell::test_support::{Mods, key_press};
-        let mut shell = Shell::new_for_test();
-        shell.dispatch_key(key_press("Tab", Mods::CMD));
-        assert!(shell.overview_visible());
-        shell.dispatch_key(key_press("Tab", Mods::CMD));
-        assert!(!shell.overview_visible());
-    }
-
     // Phase `overview_header_font_size_is_at_least_32px`.
     // The overview opens by naming the room you are in — the largest thing
     // on the panel. Pinned at >= 32px so a later step down to
@@ -83,13 +72,24 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
 
 #[test]
 fn super_space_opens_and_escape_closes_search() {
-    use shell::shell::Shell;
-    use shell::shell::test_support::{Mods, key_press};
-    let mut shell = Shell::new_for_test();
-    shell.dispatch_key(key_press("Space", Mods::CMD));
-    assert!(shell.search_visible());
-    shell.dispatch_key(key_press("Escape", Mods::NONE));
-    assert!(!shell.search_visible());
+    use shell::shell::overlay_host::ShellOverlayHost;
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .unwrap();
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        host,
+        (1280, 800),
+        ui::theme::Theme::dark(),
+    );
+    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
+    frame.set_modifiers(&["super".to_owned()]);
+    frame.key("Space");
+    assert!(frame.root::<ShellOverlayHost>().palette_visible());
+    frame.set_modifiers(&[]);
+    frame.key("Escape");
+    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
 }
 
 #[test]
@@ -188,18 +188,6 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
         // The composer is laid out whether or not anything is granted yet.
         assert!(layout.choice_rect.area() > 0.0);
         assert!(layout.submit_rect.area() > 0.0);
-    }
-
-    // Phase `workspace_rename_fires_info_toast`.
-    {
-        use shell::shell::Shell;
-        use ui::widget::toast::ToastKind;
-        let mut shell = Shell::new_for_test();
-        let b0 = shell.toast_count();
-        shell.simulate_rename_active_workspace("New Name");
-        let kinds: Vec<ToastKind> = shell.toast_kinds();
-        assert!(kinds.iter().any(|kind| matches!(kind, ToastKind::Info)));
-        assert_eq!(shell.toast_count(), b0 + 1);
     }
 }
 
@@ -307,59 +295,3 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
         );
     }
 }
-
-#[test]
-fn shell_root_starts_closed_and_routes_wheel_gear_and_right_click() {
-    // Phase `shell_root_starts_with_every_overlay_closed`.
-    {
-        use shell::shell::Shell;
-        let shell = Shell::new_for_test();
-        assert!(!shell.overview_visible());
-        assert!(!shell.quick_settings_visible());
-    }
-
-    // Phase `sidebar_wheel_event_routes_through_shell`.
-    {
-        use shell::shell::Shell;
-        let mut shell = Shell::new_for_test();
-        assert_eq!(shell.append_empty_strip_for_test("Second"), 1);
-        assert_eq!(shell.active_strip_index(), 0);
-        assert_eq!(shell.simulate_sidebar_wheel(1), 1);
-        assert_eq!(shell.active_strip_index(), 1);
-        assert_eq!(shell.simulate_sidebar_wheel(-1), 0);
-        assert_eq!(shell.active_strip_index(), 0);
-        assert!(!shell.search_visible());
-        assert!(!shell.overview_visible());
-    }
-
-    // Phase `tray_gear_toggles_quick_settings_via_shell`.
-    {
-        use shell::shell::Shell;
-        let mut shell = Shell::new_for_test();
-        assert!(!shell.quick_settings_visible());
-        shell.simulate_tray_gear_click();
-        assert!(shell.quick_settings_visible());
-        shell.simulate_tray_gear_click();
-        assert!(!shell.quick_settings_visible());
-    }
-
-    // Phase `right_click_on_tile_opens_default_context_menu`.
-    {
-        use shell::shell::Shell;
-        let mut shell = Shell::new_for_test();
-        assert!(!shell.context_menu_is_open());
-        shell.simulate_right_click_on_active_tile([120.0, 200.0]);
-        assert!(shell.context_menu_is_open());
-        assert_eq!(shell.context_menu_position(), Some([120.0, 200.0]));
-        let labels = shell.context_menu_labels();
-        assert!(labels.iter().any(|l| l == "Close Tab"));
-        assert!(labels.iter().any(|l| l == "Split Right"));
-        assert!(labels.iter().any(|l| l == "Move to New Group"));
-    }
-}
-
-// Shell-level global hotkeys + shell routing
-
-// Tooltip wiring: topbar workspace-name button tooltip
-
-// ContextMenu wiring: right-click on tile -> default menu

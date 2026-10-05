@@ -828,5 +828,83 @@ const SET_UP_LABEL: &str = "Set up";
 const UNKEYED_CAPTION: &str = "Not set up on this device";
 
 #[cfg(test)]
-#[path = "list_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+    use crate::model::demo_accounts;
+    use crate::test_events::{cursor_at, left_press, wheel};
+
+    fn list(width: f64, height: f64, scale: f32) -> AccountList {
+        let mut list = AccountList::new();
+        let rect = Rect::new(0.0, 0.0, width, height);
+        list.set_viewport(rect, rect.inset(-16.0));
+        list.set_accounts(demo_accounts());
+        let theme = Theme::dark().with_text_scale(scale);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let mut scene = vello::Scene::new();
+        list.draw(&mut PaintCtx::new(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &theme,
+        ));
+        list
+    }
+
+    #[test]
+    fn row_metrics_stack_and_grow_with_text_scale() {
+        for width in [390.0, 600.0, 732.0] {
+            let normal = list(width, 800.0, 1.0);
+            let scaled = list(width, 800.0, 2.0);
+            assert!(scaled.row_rect(0).height() > normal.row_rect(0).height());
+            for list in [&normal, &scaled] {
+                for row in 0..list.len() {
+                    let rect = list.row_rect(row);
+                    if row > 0 {
+                        assert!(rect.y0 >= list.row_rect(row - 1).y1);
+                    }
+                    let code = list.at(row, list.layouts[row].code);
+                    assert!(code.x0 >= rect.x0 && code.x1 <= rect.x1);
+                    assert!(code.y0 >= rect.y0 && code.y1 <= rect.y1);
+                    assert_eq!(list.hit(code.center()), Some((row, Zone::Code)));
+                    assert_eq!(list.account_bounds(list.accounts[row].id), Some(rect));
+                }
+            }
+        }
+        assert!(AccountList::new().is_empty());
+    }
+
+    fn dispatch(list: &mut AccountList, event: &WindowEvent) -> bool {
+        let mut handled = false;
+        list.handle_event(event, 1.0, &mut handled);
+        handled
+    }
+
+    #[test]
+    fn row_hit_testing_and_pointer_events_emit_actions_and_scroll() {
+        for (width, scale) in [(390.0, 1.0), (732.0, 2.0)] {
+            let mut list = list(width, 800.0, scale);
+            let row = 1;
+            let id = list.accounts[row].id;
+            let copy = list.at(row, list.layouts[row].code).center();
+            assert!(dispatch(&mut list, &cursor_at(copy)));
+            assert!(dispatch(&mut list, &left_press()));
+            assert_eq!(list.take_events(), vec![ListEvent::Copy(id)]);
+            assert_eq!(list.selected(), Some(id));
+            for (index, command) in commands(row, list.len()).iter().enumerate() {
+                let point = list.at(row, list.layouts[row].actions[index]).center();
+                dispatch(&mut list, &cursor_at(point));
+                assert_eq!(list.hit(point), Some((row, Zone::Action(index))));
+                assert!(dispatch(&mut list, &left_press()));
+                assert_eq!(list.take_events(), vec![command.event(id)]);
+            }
+        }
+        let mut list = list(600.0, 220.0, 1.0);
+        assert!(list.max_scroll() > 0.0);
+        dispatch(&mut list, &cursor_at(Point::new(300.0, 110.0)));
+        assert!(dispatch(&mut list, &wheel(-100.0)));
+        assert!((list.scroll - list.max_scroll()).abs() < 0.001);
+        assert!(dispatch(&mut list, &wheel(100.0)));
+        assert!(list.scroll.abs() < 0.001);
+    }
+}

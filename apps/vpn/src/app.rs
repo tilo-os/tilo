@@ -1432,7 +1432,7 @@ impl ui::widget::Decorator for VpnApp {
         Some("vpn_app")
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.mode.is_live() {
             self.probe_device();
             self.apply_pending_tool_intent();
@@ -1443,7 +1443,7 @@ impl ui::widget::Decorator for VpnApp {
         self.shell.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.drain_intents();
         self.refresh_view();
         self.refresh_sheet();
@@ -1471,7 +1471,13 @@ impl ui::widget::Decorator for VpnApp {
         // The open sheet is modal: it takes every event, and nothing reaches
         // the window behind its scrim.
         if let Some(dialog) = self.dialog.as_mut() {
-            dialog.handle_detached(event, ctx.scale_factor, *ctx.modifiers, ctx.state, ctx.path);
+            dialog.handle_detached(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                &mut ctx.state,
+                ctx.path,
+            );
             *ctx.handled = true;
             // The sheet's hover and press faces repaint with the window.
             self.dirty = true;

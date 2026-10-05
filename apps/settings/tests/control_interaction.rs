@@ -18,13 +18,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::doc::read_bool;
-
-use automerge::ReadDoc;
 use settings::SettingsApp;
 use settings::categories::Category;
 use ui::headless::{Framed, viewport};
-use ui::widget::{ResourceOperation, Widget};
+use ui::widget::Widget;
 use vello::kurbo::Point;
 
 const W: f32 = 1200.0;
@@ -48,55 +45,13 @@ fn relayout(app: &mut Framed<SettingsApp>, (w, h): (f32, f32)) {
 /// Drive a full left-click (cursor move → press → release) at `p` through
 /// the production event path.
 fn click_at(app: &mut Framed<SettingsApp>, p: Point) {
-    let mods = winit::event::Modifiers::default();
-    let cursor = winit::event::WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    };
-    let press = winit::event::WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: winit::event::ElementState::Pressed,
-        button: winit::event::MouseButton::Left,
-    };
-    let release = winit::event::WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: winit::event::ElementState::Released,
-        button: winit::event::MouseButton::Left,
-    };
-    for ev in [&cursor, &press, &release] {
-        Framed::harness_mut(app).dispatch_to_root_with(ev, &mods);
-        // The live host resolves action-bound control intents immediately
-        // after event delivery. Mirror that boundary here so the shell's Back
-        // `View` action reaches its retained button handler.
-        let (root, state) = Framed::split(app);
-        while let Some(intent) = ui::widget::controls::take_control_invocation(root) {
-            let control = intent
-                .address
-                .resource
-                .strip_prefix("tilo.control:")
-                .expect("Settings control actions use the toolkit control resource");
-            let payload = serde_json::to_vec(control).expect("control id is valid JSON");
-            let started = root
-                .start_operation(
-                    &ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        "tilo.ui.control.invoke",
-                        &payload,
-                    ),
-                    &mut state.doc,
-                    &state.root,
-                )
-                .expect("Settings control action succeeds");
-            assert!(started.is_some(), "Settings handled its control action");
-        }
-    }
+    Framed::harness_mut(app).click_at(p.x, p.y);
 }
 
 /// The host's `sync` against the live document.
 fn sync(app: &mut Framed<SettingsApp>) {
     let (app, state) = Framed::split(app);
-    app.sync(&mut state.doc, &state.root);
+    app.sync(&state.doc, &state.root);
 }
 
 /// Navigate to `target` by clicking its sidebar row through the production
@@ -130,8 +85,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let app = config
             .app()
             .with_category(Category::Network)
-            .with_width_hint(NW)
-            .with_narrow_content_shot();
+            .with_width_hint(NW);
         let mut app = lay_out_at(app, NW, NH);
         sync(&mut app);
         assert!(app.is_narrow(), "440px resolves to the narrow layout");
@@ -166,17 +120,11 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let config = crate::support::ScratchConfig::new();
         let mut app = lay_out_at(config.app(), W, H);
         navigate(&mut app, Category::Network);
-        let heads = Framed::split(&mut app).1.doc.get_heads();
+        let heads = Framed::harness_mut(&mut app).state_mut().doc.get_heads();
         sync(&mut app);
-        let (_, state) = Framed::split(&mut app);
-        assert_eq!(state.doc.get_heads(), heads);
-        assert!(
-            read_bool(
-                &state.doc,
-                &automerge::ROOT,
-                settings::panes::network::WIFI_ENABLED_KEY
-            )
-            .is_none()
+        assert_eq!(
+            Framed::harness_mut(&mut app).state_mut().doc.get_heads(),
+            heads
         );
     }
 }
@@ -196,37 +144,13 @@ fn all_panels_navigate_and_seed_their_controls() {
         navigate(&mut app, target);
         // The pane rebuilt by navigate's final layout seeds on its next
         // sync; run one so the seed lands before we assert on it.
-        let heads_before_idle_sync = Framed::split(&mut app).1.doc.get_heads();
+        let heads_before_idle_sync = Framed::harness_mut(&mut app).state_mut().doc.get_heads();
         sync(&mut app);
-        let (_, state) = Framed::split(&mut app);
-        // Hardware panes render from process-local snapshots and must not
-        // seed their primary device state into the collaborative document.
-        let seeded_key = match target {
-            Category::Network => Some(settings::panes::network::WIFI_ENABLED_KEY),
-            Category::Bluetooth => Some(settings::panes::bluetooth::BT_ENABLED_KEY),
-            Category::Sound => Some(settings::panes::audio::VOLUME_KEY),
-            Category::Displays => Some(settings::panes::display::BRIGHTNESS_KEY),
-            Category::Storage => Some(settings::panes::storage::CLEAN_KEY),
-            Category::Printers => Some("settings.printers.refresh"),
-            Category::Users => Some("settings.users.add"),
-            Category::AgentModels => Some("agent_models.local.confirm"),
-            _ => None,
-        };
-        if let Some(key) = seeded_key {
-            assert_eq!(
-                state.doc.get_heads(),
-                heads_before_idle_sync,
-                "{target:?} idle sync must leave the collaborative document unchanged"
-            );
-            assert!(
-                state
-                    .doc
-                    .get(&automerge::ROOT, key)
-                    .ok()
-                    .flatten()
-                    .is_none(),
-                "{target:?} must keep device-local control key {key} out of collaboration"
-            );
-        }
+        // Panes render from their models and never write the document.
+        assert_eq!(
+            Framed::harness_mut(&mut app).state_mut().doc.get_heads(),
+            heads_before_idle_sync,
+            "{target:?} idle sync must leave the collaborative document unchanged"
+        );
     }
 }

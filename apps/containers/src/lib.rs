@@ -41,9 +41,8 @@ mod create_form;
 pub mod doc;
 pub mod model;
 pub mod podman;
-mod published;
 pub mod resource;
-pub mod search_provider;
+pub mod search;
 pub mod terminal;
 mod view;
 

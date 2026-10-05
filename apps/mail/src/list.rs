@@ -280,7 +280,7 @@ impl MessageList {
             .scroll_into_view(band - vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0));
     }
 
-    fn press(&mut self, doc: &mut AutoCommit, point: Point) -> bool {
+    fn press(&mut self, doc: &mut ui::widget::Edits<'_>, point: Point) -> bool {
         let Some(slot) = self.slot_at(point).cloned() else {
             return false;
         };
@@ -552,7 +552,7 @@ impl Widget for MessageList {
                 ..
             } => {
                 if let Some(point) = self.pointer
-                    && self.press(ctx.state, point)
+                    && self.press(&mut ctx.state, point)
                 {
                     *ctx.handled = true;
                     self.dirty = true;
@@ -568,7 +568,7 @@ impl Widget for MessageList {
                     let row_w = self.rect.width();
                     if row_w > 0.0 && press.offset >= row_w / 4.0 {
                         self.shared.borrow_mut().apply_message_action(
-                            ctx.state,
+                            &mut ctx.state,
                             press.id,
                             CtxAction::Archive,
                         );
@@ -673,7 +673,7 @@ mod tests {
         // A press on the second row opens it.
         let (second, rect) = rows[1];
         let mut doc = automerge::AutoCommit::new();
-        assert!(list.press(&mut doc, rect.center()));
+        assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), rect.center()));
         assert_eq!(shared.borrow().selected, Some(second));
 
         // The archive action under the pointer archives that row only.
@@ -682,7 +682,7 @@ mod tests {
         draw(&mut list);
         let slot = list.slot_at(rect.center()).cloned().expect("first row");
         let archive = slot.actions[1];
-        assert!(list.press(&mut doc, archive.center()));
+        assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), archive.center()));
         assert_eq!(
             shared.borrow().mailbox.get(first).map(|m| m.folder),
             Some(Folder::Archive)

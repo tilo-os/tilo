@@ -261,6 +261,17 @@ impl Studio {
         edit(self, &theme, |t| t.name = name)
     }
 
+    /// Reset the editable properties to the graphite preset, preserving its name.
+    #[action]
+    pub fn reset(&mut self, theme: Id) -> Result<(), Refusal> {
+        let document = base_document(self, "dark-graphite")?;
+        edit(self, &theme, |current| {
+            let name = current.name.clone();
+            *current = Theme::from_document(&document);
+            current.name = name;
+        })
+    }
+
     /// Delete a theme.
     #[action(destructive)]
     pub fn delete(&mut self, theme: Id) -> Result<(), Refusal> {

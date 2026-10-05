@@ -171,7 +171,8 @@ impl BooksDoc {
         !Self::root_maps(doc, "settings").is_empty()
     }
 
-    pub fn write_settings(doc: &mut AutoCommit, s: &Settings) {
+    #[cfg(test)]
+    pub(crate) fn write_settings(doc: &mut AutoCommit, s: &Settings) {
         let m = Self::root_map(doc, "settings");
         let _ = doc.put(&m, "font_scale", f64::from(s.font_scale));
         let _ = doc.put(&m, "line_spacing", f64::from(s.line_spacing));
@@ -185,7 +186,7 @@ impl BooksDoc {
     /// Write only fields changed by one authored settings gesture. This keeps
     /// concurrent changes to unrelated preferences (for example theme and
     /// line spacing) as independent Automerge register updates.
-    pub fn write_settings_delta(doc: &mut AutoCommit, before: &Settings, after: &Settings) {
+    pub(crate) fn write_settings_delta(doc: &mut AutoCommit, before: &Settings, after: &Settings) {
         let m = Self::root_map(doc, "settings");
         if before.font_scale.to_bits() != after.font_scale.to_bits() {
             let _ = doc.put(&m, "font_scale", f64::from(after.font_scale));
@@ -310,7 +311,7 @@ impl BooksDoc {
 
     /// Upsert one stable font entity. Tombstoned ids are never resurrected by
     /// a delayed peer edit; a newly-added face always receives a fresh id.
-    pub fn upsert_font(doc: &mut AutoCommit, font: &FontEntry) {
+    pub(crate) fn upsert_font(doc: &mut AutoCommit, font: &FontEntry) {
         if Self::has_tombstone(doc, "font_tombstones", &font.id) {
             return;
         }
@@ -323,7 +324,7 @@ impl BooksDoc {
         let _ = doc.put(&entry, "shown", font.shown);
     }
 
-    pub fn remove_font(doc: &mut AutoCommit, id: &str) {
+    pub(crate) fn remove_font(doc: &mut AutoCommit, id: &str) {
         let tombstones = Self::root_map(doc, "font_tombstones");
         let _ = doc.put(&tombstones, id, true);
         let entries = Self::root_map(doc, "font_entries");
@@ -341,7 +342,8 @@ impl BooksDoc {
         clippy::expect_used,
         reason = "put_object/insert_object on a freshly-created list cannot fail short of document corruption, which has no meaningful ObjId fallback"
     )]
-    pub fn write_fonts(doc: &mut AutoCommit, fonts: &[FontEntry]) {
+    #[cfg(test)]
+    pub(crate) fn write_fonts(doc: &mut AutoCommit, fonts: &[FontEntry]) {
         let list = doc
             .put_object(&ROOT, "fonts", ObjType::List)
             .expect("put_object list never fails");
@@ -366,7 +368,7 @@ impl BooksDoc {
             .unwrap_or_default()
     }
 
-    pub fn write_default_font(doc: &mut AutoCommit, id: &str) {
+    pub(crate) fn write_default_font(doc: &mut AutoCommit, id: &str) {
         let m = Self::root_map(doc, "settings");
         let _ = doc.put(&m, "default_font", id);
     }
@@ -392,16 +394,17 @@ impl BooksDoc {
         p
     }
 
-    pub fn write_library_prefs(doc: &mut AutoCommit, p: &LibraryPrefs) {
+    #[cfg(test)]
+    pub(crate) fn write_library_prefs(doc: &mut AutoCommit, p: LibraryPrefs) {
         let m = Self::root_map(doc, "settings");
         let _ = doc.put(&m, "library_sort", p.sort.as_str());
         let _ = doc.put(&m, "library_hide_read", p.hide_read);
     }
 
-    pub fn write_library_prefs_delta(
+    pub(crate) fn write_library_prefs_delta(
         doc: &mut AutoCommit,
-        before: &LibraryPrefs,
-        after: &LibraryPrefs,
+        before: LibraryPrefs,
+        after: LibraryPrefs,
     ) {
         let m = Self::root_map(doc, "settings");
         if before.sort != after.sort {
@@ -418,7 +421,7 @@ impl BooksDoc {
     /// content id) refreshes its public metadata while preserving the original
     /// "added" time. Source paths are device-private capability grants and
     /// must never be written to the shared document.
-    pub fn upsert_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
+    pub(crate) fn upsert_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
         // Only an explicit, user-consented import may restore a removed shelf
         // row. Ordinary delayed metadata upserts must not resurrect it.
         if Self::library_is_removed(doc, &e.id) {
@@ -450,7 +453,7 @@ impl BooksDoc {
 
     /// Drop a book from the library. Its annotations + progress are left in place
     /// (keyed by content id) so re-adding the same file restores them.
-    pub fn remove_library_entry(doc: &mut AutoCommit, id: &str) {
+    pub(crate) fn remove_library_entry(doc: &mut AutoCommit, id: &str) {
         let tombstones = Self::root_map(doc, "library_tombstones");
         let _ = doc.put(&tombstones, id, true);
         for lib in Self::root_maps(doc, "library") {
@@ -461,7 +464,7 @@ impl BooksDoc {
     /// A fresh, user-consented import is the sole restore path for a shelf
     /// tombstone. This keeps delayed metadata writes from reviving a removed
     /// book while retaining the intentional "remove then re-add" workflow.
-    pub fn restore_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
+    pub(crate) fn restore_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
         for tombstones in Self::root_maps(doc, "library_tombstones") {
             let _ = doc.delete(&tombstones, &e.id);
         }
@@ -569,7 +572,7 @@ impl BooksDoc {
         })
     }
 
-    pub fn upsert_scheme(doc: &mut AutoCommit, scheme: &ColorScheme) {
+    pub(crate) fn upsert_scheme(doc: &mut AutoCommit, scheme: &ColorScheme) {
         if Self::has_tombstone(doc, "scheme_tombstones", &scheme.id) {
             return;
         }
@@ -585,7 +588,7 @@ impl BooksDoc {
         let _ = doc.put(&entry, "builtin", scheme.builtin);
     }
 
-    pub fn remove_scheme(doc: &mut AutoCommit, id: &str) {
+    pub(crate) fn remove_scheme(doc: &mut AutoCommit, id: &str) {
         let tombstones = Self::root_map(doc, "scheme_tombstones");
         let _ = doc.put(&tombstones, id, true);
         let entries = Self::root_map(doc, "scheme_entries");
@@ -603,7 +606,8 @@ impl BooksDoc {
         clippy::expect_used,
         reason = "put_object/insert_object on a freshly-created list cannot fail short of document corruption, which has no meaningful ObjId fallback"
     )]
-    pub fn write_schemes(doc: &mut AutoCommit, schemes: &[ColorScheme]) {
+    #[cfg(test)]
+    pub(crate) fn write_schemes(doc: &mut AutoCommit, schemes: &[ColorScheme]) {
         let list = doc
             .put_object(&ROOT, "schemes", ObjType::List)
             .expect("put_object list never fails");
@@ -624,7 +628,7 @@ impl BooksDoc {
 
     // --- progress ----------------------------------------------------------
 
-    pub fn write_progress(doc: &mut AutoCommit, book_id: &str, p: &Progress) {
+    pub(crate) fn write_progress(doc: &mut AutoCommit, book_id: &str, p: &Progress) {
         for entry in Self::get_or_make_keyed_maps(doc, "progress", book_id) {
             let _ = doc.put(&entry, "chapter", p.chapter as i64);
             let _ = doc.put(&entry, "block", p.block as i64);
@@ -715,7 +719,7 @@ impl BooksDoc {
         }
     }
 
-    pub fn upsert_annotation(doc: &mut AutoCommit, a: &Annotation) {
+    pub(crate) fn upsert_annotation(doc: &mut AutoCommit, a: &Annotation) {
         // IDs and logical highlight groups are minted exactly once. Never let
         // a delayed duplicate/add resurrect something a collaborator deleted.
         if Self::annotation_is_deleted(doc, a.id) || Self::group_is_deleted(doc, a.group) {
@@ -753,7 +757,7 @@ impl BooksDoc {
 
     /// Replace only the note's text, preserving concurrent anchor/colour
     /// edits made by another reader.
-    pub fn write_annotation_note(doc: &mut AutoCommit, id: Uuid, note: &str) -> bool {
+    pub(crate) fn write_annotation_note(doc: &mut AutoCommit, id: Uuid, note: &str) -> bool {
         let entries = Self::keyed_map_entries(doc, "annotations")
             .remove(&id.to_string())
             .unwrap_or_default();
@@ -794,7 +798,7 @@ impl BooksDoc {
         (String::new(), Vec::new())
     }
 
-    pub fn write_annotation_created(doc: &mut AutoCommit, id: Uuid, created: u64) -> bool {
+    pub(crate) fn write_annotation_created(doc: &mut AutoCommit, id: Uuid, created: u64) -> bool {
         let entries = Self::keyed_map_entries(doc, "annotations")
             .remove(&id.to_string())
             .unwrap_or_default();
@@ -819,7 +823,7 @@ impl BooksDoc {
         !entries.is_empty()
     }
 
-    pub fn write_annotation_color(doc: &mut AutoCommit, id: Uuid, color: HiColor) -> bool {
+    pub(crate) fn write_annotation_color(doc: &mut AutoCommit, id: Uuid, color: HiColor) -> bool {
         let entries = Self::keyed_map_entries(doc, "annotations")
             .remove(&id.to_string())
             .unwrap_or_default();
@@ -829,13 +833,13 @@ impl BooksDoc {
         !entries.is_empty()
     }
 
-    pub fn remove_annotation(doc: &mut AutoCommit, id: Uuid) {
+    pub(crate) fn remove_annotation(doc: &mut AutoCommit, id: Uuid) {
         Self::mark_tombstone(doc, "annotation_tombstones", id);
     }
 
     /// Remove every annotation row belonging to one logical group — a highlight
     /// (its per-block pieces) together with all of its comments.
-    pub fn remove_group(doc: &mut AutoCommit, group: Uuid) {
+    pub(crate) fn remove_group(doc: &mut AutoCommit, group: Uuid) {
         // Capture current children while they are still visible, then write
         // both the durable group marker and child markers. The operation is
         // atomic on this replica; the group marker still hides any offline
@@ -1042,7 +1046,7 @@ mod tests {
                 sort: LibrarySort::Recent,
                 hide_read: true,
             };
-            BooksDoc::write_library_prefs(&mut doc, &p);
+            BooksDoc::write_library_prefs(&mut doc, p);
             assert_eq!(BooksDoc::read_library_prefs(&doc), p);
         }
 

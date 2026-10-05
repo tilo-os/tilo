@@ -92,7 +92,7 @@ fn test_column(
     } else {
         ("Run speed test", ButtonRole::Primary)
     };
-    let button = Button::new("run", label, None).role(role);
+    let button = Button::new("run", label).role(role);
     let run = match run {
         Some(binding) => button.on_action(binding),
         None => button.with_enabled(false),
@@ -267,7 +267,7 @@ impl Decorator for Dial {
         &mut self.ring
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let dial = self.shared.borrow().dial();
         let moved = dial != self.shown;
         if moved {

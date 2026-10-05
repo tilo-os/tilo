@@ -78,6 +78,9 @@ pub(super) struct InputRuntime {
     pub(super) tooltip_host: crate::widget::TooltipHost,
     /// Pen samples on their way to the pointer events they describe.
     pub(super) pen: crate::pen::PenInput,
+    /// The app is shown inside a host whose focus order continues past it:
+    /// Tab at either end of the app's order leaves it for the host.
+    pub(super) tab_order_continues_in_host: bool,
 }
 
 impl InputRuntime {
@@ -90,6 +93,7 @@ impl InputRuntime {
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
+            tab_order_continues_in_host: false,
         }
     }
 }
@@ -143,6 +147,15 @@ pub(super) struct ActionRuntime {
     /// Background operations admitted by the retained widget tree.
     pub(super) directed_invocations:
         std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
+    /// The invoker of each delivered invocation still running, for the
+    /// edits its effect submits.
+    pub(super) acting_for: std::collections::HashMap<
+        tilo_actions::InvocationId,
+        crate::invocation_scope::Continuation,
+    >,
+    /// Each edit an effect submitted for its invoker that the host is still
+    /// admitting, by broker request, to the effect invocation it continues.
+    pub(super) follow_ups: std::collections::HashMap<u64, tilo_actions::InvocationId>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -199,6 +212,8 @@ impl ActionRuntime {
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
+            acting_for: std::collections::HashMap::new(),
+            follow_ups: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),

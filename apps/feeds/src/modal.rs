@@ -120,7 +120,7 @@ impl ModalBody {
 }
 
 impl Widget for ModalBody {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(input) = &mut self.input {
             input.sync(state, path);
         }

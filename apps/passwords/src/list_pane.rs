@@ -470,7 +470,7 @@ impl Widget for ListPane {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut ui::widget::AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {

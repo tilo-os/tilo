@@ -17,7 +17,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, Sender};
 
 use automerge::{AutoCommit, ObjId};
 use ui::LocalState;
@@ -28,7 +27,7 @@ use ui::widget::{
 };
 use winit::event::WindowEvent;
 
-use crate::actions::{self, API_TESTER_ACTION_TYPE, ApiTesterAction};
+use crate::actions::{self, ApiTesterAction, ApiTesterEffect, RowSection};
 use crate::commands::{AuthField, Cmd, FormMode, FormTarget, RowEdit, Sink, Table};
 use crate::dialog::{self, Fields};
 use crate::doc::ApiDoc;
@@ -38,7 +37,12 @@ use crate::model::{
     Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
     RequestTab, ResponseData, ResponseView,
 };
-use crate::request::{self, BlankRows, METHOD_PATH};
+use crate::request::{self, BlankRows};
+use crate::resource::{ApiTester, Workspace};
+use ui::framework::{Actions, Dispatcher, EffectAnswer, EffectCx, Effected, SurfaceCx};
+use ui::secrets::SecretStore;
+const CREDENTIAL: &str = "request-credential";
+const SECRET_VARIABLE: &str = "variable-value";
 use crate::response;
 use crate::sidebar::{self, SidebarView};
 use crate::swap::{Swap, SwapHandle};
@@ -125,27 +129,6 @@ fn in_known_order<T: Keyed>(known: &[T], mut fresh: Vec<T>) -> Vec<T> {
 /// What stands where a sheet goes while none is open.
 fn no_dialog() -> Element {
     Box::new(Spacer::token(ui::tokens::SpacingStep::S0))
-}
-
-/// The send action of the request being composed.
-#[allow(
-    clippy::expect_used,
-    reason = "the static active-request resource always publishes its nullary send operation"
-)]
-pub(crate) fn active_send_binding() -> tilo_actions::ActionBinding<()> {
-    let resource = actions::active_request_resource();
-    tilo_actions::ActionBinding::unit_for(&resource, "send")
-        .expect("active request resource publishes a nullary send action")
-}
-
-/// Outcome of the background send worker.
-enum SendOutcome {
-    Ok {
-        response: ResponseData,
-        method: HttpMethod,
-        url: String,
-    },
-    Err(String),
 }
 
 /// What to rebuild at the next synchronization.
@@ -245,17 +228,10 @@ pub struct ApiTesterApp {
     /// environment or variable, select the active environment) is encoded and
     /// applied through this host, which brackets the undo boundary and remembers
     /// the last action — the same path a Ctrl+K palette dispatch takes.
-    actions: crate::resource::ActionSink,
-    search_provider: crate::search_provider::ApiSearchProvider,
-    search_error: Option<ui::search::SearchCatalogError>,
-
-    // --- Worker plumbing ---
-    tx: Sender<SendOutcome>,
-    rx: Receiver<SendOutcome>,
-    resource_send_invocation: Option<tilo_actions::InvocationId>,
-    resource_send_result: Option<tilo_actions::InvocationUpdate>,
-    pending_history: Vec<HistoryEntry>,
-
+    dispatcher: Option<Dispatcher<ApiTester>>,
+    secrets: Option<SecretStore>,
+    credentials: HashMap<uuid::Uuid, String>,
+    read_only: bool,
     seeded: bool,
     adopted: bool,
     /// Mounted on a record another participant created: its content is
@@ -280,10 +256,17 @@ impl ApiTesterApp {
     }
 
     fn build(demo: bool) -> Self {
+        Self::build_with_actions(demo, None)
+    }
+    pub(crate) fn new_with_actions(actions: &Actions<ApiTester>) -> Self {
+        Self::build_with_actions(false, Some(actions.clone()))
+    }
+    fn build_with_actions(demo: bool, actions: Option<Actions<ApiTester>>) -> Self {
         crate::locales::install();
-        let (tx, rx) = std::sync::mpsc::channel();
         let model = Self::build_model(demo);
-        let sink: Sink = Rc::new(RefCell::new(Vec::new()));
+        let sink = Sink::default();
+        *sink.actions.borrow_mut() = actions;
+        sink.method.set(model.request.method.as_str().to_owned());
         let blanks = BlankRows::new();
         let env_vars = Rc::new(RefCell::new(HashMap::new()));
         let response = demo.then(http::sample_response);
@@ -325,7 +308,7 @@ impl ApiTesterApp {
                 ))],
             );
 
-        let mut app = Self {
+        let app = Self {
             nav,
             collections: model.collections,
             environments: model.environments,
@@ -356,22 +339,17 @@ impl ApiTesterApp {
             env_vars,
             env_state,
             sink,
-            actions: crate::resource::ActionSink::default(),
-            search_provider: crate::search_provider::ApiSearchProvider::new(),
-            search_error: None,
-            tx,
-            rx,
-            resource_send_invocation: None,
-            resource_send_result: None,
-            pending_history: Vec::new(),
+            dispatcher: None,
+            secrets: None,
+            credentials: HashMap::new(),
+            read_only: false,
             seeded: false,
             adopted: false,
-            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
+            joined: false,
             dirty: true,
             persisted_once: false,
         };
         app.refresh_env_vars();
-        app.refresh_search();
         app
     }
 
@@ -419,7 +397,7 @@ impl ApiTesterApp {
             let (slot, handle) = Swap::new(built.element);
             (slot, handle, Some(built.body))
         } else {
-            let (slot, handle) = Swap::new(response::empty());
+            let (slot, handle) = Swap::new(response::empty(sink));
             (slot, handle, None)
         }
     }
@@ -691,11 +669,11 @@ impl ApiTesterApp {
                 self.slots.response_body = Some(built.body);
             }
             (None, Some(error)) => {
-                self.slots.response.set(response::failed(error));
+                self.slots.response.set(response::failed(error, &self.sink));
                 self.slots.response_body = None;
             }
             (None, None) => {
-                self.slots.response.set(response::empty());
+                self.slots.response.set(response::empty(&self.sink));
                 self.slots.response_body = None;
             }
         }
@@ -707,106 +685,41 @@ impl ApiTesterApp {
     // -----------------------------------------------------------------------
 
     /// The active environment's variable map (for `{{var}}` substitution).
+
     fn env_vars(&self) -> HashMap<String, String> {
         match self
             .active_env
             .and_then(|id| self.environments.iter().find(|e| e.id == id))
         {
-            Some(env) => vars::var_map(&env.variables),
+            Some(env) => {
+                let variables: Vec<_> = env
+                    .variables
+                    .iter()
+                    .map(|variable| {
+                        let mut variable = variable.clone();
+                        if variable.secret {
+                            variable.value = self
+                                .secret(SECRET_VARIABLE, &variable.id)
+                                .unwrap_or_default();
+                        }
+                        variable
+                    })
+                    .collect();
+                vars::var_map(&variables)
+            }
             None => HashMap::new(),
         }
     }
 
     /// Resolve the request being composed against the active environment.
-    fn outgoing(&self, doc: &AutoCommit, root: &ObjId) -> Outgoing {
-        let mut req = self.request.clone();
-        req.url = ApiDoc::read_text(doc, root, "url");
-        req.body_text = ApiDoc::read_text(doc, root, "body");
-        http::build_outgoing(&req, &self.env_vars())
+
+    fn outgoing(&self) -> Outgoing {
+        http::build_outgoing(&self.request, &self.env_vars())
     }
 
     /// Kick off a real request on the app runtime.
-    fn send(&mut self, doc: &AutoCommit, root: &ObjId) {
-        if self.sending {
-            return;
-        }
-        let out = self.outgoing(doc, root);
-        let method = self.request.method;
-        self.sending = true;
-        self.error = None;
-        self.dirty = true;
-        self.stale.response = true;
-        let tx = self.tx.clone();
-        drop(ui::rt::app().spawn(async move {
-            let outcome = match http::send(&out).await {
-                Ok(response) => SendOutcome::Ok {
-                    response,
-                    method,
-                    url: out.url,
-                },
-                Err(e) => SendOutcome::Err(e),
-            };
-            let _ = tx.send(outcome);
-        }));
-    }
 
     /// Drain any finished send result from the worker.
-    fn poll_worker(&mut self) {
-        while let Ok(outcome) = self.rx.try_recv() {
-            self.sending = false;
-            self.dirty = true;
-            match outcome {
-                SendOutcome::Ok {
-                    response: resp,
-                    method,
-                    url,
-                } => {
-                    if let Some(invocation) = self.resource_send_invocation.take() {
-                        self.resource_send_result =
-                            Some(tilo_actions::InvocationUpdate::Succeeded {
-                                invocation,
-                                output: tilo_actions::ActionOutput::default(),
-                            });
-                    }
-                    self.history.insert(
-                        0,
-                        HistoryEntry {
-                            id: uuid::Uuid::new_v4(),
-                            method,
-                            url,
-                            status: resp.status,
-                            duration_ms: resp.duration_ms,
-                            when: "just now".into(),
-                        },
-                    );
-                    self.history.truncate(50);
-                    if let Some(entry) = self.history.first() {
-                        self.pending_history.push(entry.clone());
-                    }
-                    self.response = Some(resp);
-                    self.response_view = ResponseView::Pretty;
-                    self.stale.response = true;
-                    self.stale.sidebar = true;
-                }
-                SendOutcome::Err(e) => {
-                    if let Some(invocation) = self.resource_send_invocation.take() {
-                        self.resource_send_result = Some(tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "api_tester.request_failed".into(),
-                                message: e.clone(),
-                                details: None,
-                                retryable: false,
-                            },
-                        });
-                    }
-                    self.error = Some(e);
-                    self.response = None;
-                    self.stale.response = true;
-                }
-            }
-        }
-    }
 
     // -----------------------------------------------------------------------
     // The saved workspace
@@ -833,9 +746,16 @@ impl ApiTesterApp {
 
     /// Load a saved request from a collection into the builder and the
     /// document.
-    fn load_request(&mut self, state: &mut AutoCommit, path: &ObjId, ci: usize, ri: usize) {
-        self.load_saved(ci, ri);
-        self.write_request_fields(state, path);
+
+    fn load_request(&mut self, _state: &AutoCommit, _path: &ObjId, ci: usize, ri: usize) {
+        if let Some(request) = self
+            .collections
+            .get(ci)
+            .and_then(|c| c.requests.get(ri))
+            .cloned()
+        {
+            self.submit(&ApiTesterAction::OpenRequest { request });
+        }
         self.dismiss_drawer();
     }
 
@@ -847,51 +767,11 @@ impl ApiTesterApp {
     }
 
     /// Mirror the composed request's method, URL and body into the document.
-    fn write_request_fields(&self, state: &mut AutoCommit, path: &ObjId) {
-        ApiDoc::set_text(state, path, "url", &self.request.url);
-        ApiDoc::set_text(state, path, "body", &self.request.body_text);
-        ApiDoc::set_text(state, path, METHOD_PATH, self.request.method.as_str());
-    }
 
     /// Seed a previously empty document through the native per-resource
     /// writers. Normal interactions use precise actions and never call this.
-    fn seed_workspace(&self, state: &mut AutoCommit, root: &ObjId) {
-        ApiDoc::set_request(state, root, &self.request);
-        ApiDoc::set_collections(state, root, &self.collections);
-        ApiDoc::set_environments(state, root, &self.environments);
-        ApiDoc::set_active_env(
-            state,
-            root,
-            self.active_env.map(|id| id.to_string()).as_deref(),
-        );
-        ApiDoc::set_history(state, root, &self.history);
-    }
 
     /// Adopt a peer's workspace from the shared CRDT.
-    fn adopt(&mut self, state: &AutoCommit, root: &ObjId) {
-        let cols = ApiDoc::collections(state, root);
-        if !cols.is_empty() {
-            self.collections = in_known_order(&self.collections, cols);
-        }
-        let envs = ApiDoc::environments(state, root);
-        if !envs.is_empty() {
-            self.environments = in_known_order(&self.environments, envs);
-        }
-        if let Some(id) = ApiDoc::active_env(state, root) {
-            self.active_env = self.existing_environment(id.parse().ok());
-        }
-        if let Some(req) = ApiDoc::request(state, root) {
-            self.request = req;
-            self.stale.request = true;
-        }
-        let hist = ApiDoc::history(state, root);
-        if !hist.is_empty() {
-            self.history = hist;
-        }
-        self.adopted = true;
-        self.dirty = true;
-        self.workspace_changed();
-    }
 
     /// The collections, environments or history changed: rebuild what shows
     /// them.
@@ -901,99 +781,27 @@ impl ApiTesterApp {
         self.stale.header = true;
         self.show_active_environment();
         self.refresh_env_vars();
-        self.refresh_search();
     }
 
     /// Show collection and environment names the framework resource holds.
     /// An empty projection does not wipe a workspace that has not been published yet.
     /// Requests stay on the document; `sync` reads those full records.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::WorkspaceState) {
-        if state.collections.is_empty()
-            && state.environments.is_empty()
-            && (!self.collections.is_empty() || !self.environments.is_empty())
-        {
-            return;
-        }
-        let mut changed = false;
-        for (id, name) in &state.collections {
-            let Ok(id) = id.parse::<crate::model::Id>() else {
-                continue;
-            };
-            if let Some(collection) = self
-                .collections
-                .iter_mut()
-                .find(|collection| collection.id == id)
-                && collection.name != *name
-            {
-                collection.name.clone_from(name);
-                changed = true;
-            }
-        }
-        for (id, name) in &state.environments {
-            let Ok(id) = id.parse::<crate::model::Id>() else {
-                continue;
-            };
-            if let Some(environment) = self
-                .environments
-                .iter_mut()
-                .find(|environment| environment.id == id)
-                && environment.name != *name
-            {
-                environment.name.clone_from(name);
-                changed = true;
-            }
-        }
-        if changed {
-            self.workspace_changed();
-        }
-    }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::ApiTester>,
-    ) {
-        self.actions.attach(dispatcher);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn actions_are_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_actions_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
 
     /// Dispatch one canonical action against the document's current projection.
     /// Presentation commands never flush the in-memory workspace first; the
     /// action owns the precise durable record it mutates, then we re-adopt the
     /// authoritative result.
-    fn perform(&mut self, state: &mut AutoCommit, path: &ObjId, action: &ApiTesterAction) {
-        self.actions.dispatch_with_context(
-            state,
-            API_TESTER_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.api-tester", "API Tester", action),
-        );
-        self.adopt_workspace(state, path);
-        self.dirty = true;
+
+    fn perform(&mut self, _state: &AutoCommit, _path: &ObjId, action: &ApiTesterAction) {
+        self.submit(action);
     }
 
     /// Re-read the collaborative workspace snapshots (collections, environments,
     /// the selected environment) from the document after an action mutated them.
     /// Deliberately leaves the request being composed and per-peer view state
     /// untouched — those are not what an action changed.
-    fn adopt_workspace(&mut self, state: &AutoCommit, path: &ObjId) {
-        let kept = self.selected_request().map(|(_, request)| request);
-        self.collections = in_known_order(&self.collections, ApiDoc::collections(state, path));
-        self.environments = in_known_order(&self.environments, ApiDoc::environments(state, path));
-        self.active_env = self
-            .existing_environment(ApiDoc::active_env(state, path).and_then(|id| id.parse().ok()));
-        self.selected = kept.and_then(|id| self.position_of(id));
-        self.workspace_changed();
-    }
 
     /// `id`, when an environment with it still exists: the document keeps the
     /// id of an environment that has since been deleted.
@@ -1015,40 +823,13 @@ impl ApiTesterApp {
             })
     }
 
-    fn refresh_search(&mut self) {
-        self.search_error = self
-            .search_provider
-            .refresh(&self.collections, &self.environments, &self.history)
-            .err();
-    }
-
-    pub(crate) fn resource_from_catalog(&self, id: &str) -> Option<tilo_actions::Resource> {
-        self.search_provider.resource(id)
-    }
-
-    pub(crate) fn search_error_message(&self) -> Option<String> {
-        self.search_error.as_ref().map(ToString::to_string)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn refresh_search_records(
-        &mut self,
-        collections: &[Collection],
-        environments: &[Environment],
-    ) {
-        self.search_error = self
-            .search_provider
-            .refresh(collections, environments, &[])
-            .err();
-    }
-
     // -----------------------------------------------------------------------
     // Commands
     // -----------------------------------------------------------------------
 
     /// Drain the command sink and apply each command, persisting when a
     /// command changes shared state. Returns `true` if anything was applied.
-    fn drain_commands(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn drain_commands(&mut self, state: &AutoCommit, path: &ObjId) -> bool {
         let cmds: Vec<Cmd> = self.sink.borrow_mut().drain(..).collect();
         if cmds.is_empty() {
             return false;
@@ -1076,6 +857,7 @@ impl ApiTesterApp {
                         && mode != self.request.body_mode
                     {
                         self.request.body_mode = mode;
+                        self.submit(&ApiTesterAction::SetBodyMode { mode });
                         self.stale.body_inner = true;
                     }
                 }
@@ -1094,7 +876,7 @@ impl ApiTesterApp {
         true
     }
 
-    fn replay_history(&mut self, state: &mut AutoCommit, path: &ObjId, index: usize) {
+    fn replay_history(&mut self, _state: &AutoCommit, _path: &ObjId, index: usize) {
         if let Some(entry) = self.history.get(index).cloned() {
             // History keeps what was sent, not the rest of the request: it
             // opens as a new request.
@@ -1105,7 +887,9 @@ impl ApiTesterApp {
             self.selected = None;
             self.error = None;
             self.active_tab = RequestTab::Params;
-            self.write_request_fields(state, path);
+            self.submit(&ApiTesterAction::OpenRequest {
+                request: self.request.clone(),
+            });
             self.stale.request = true;
             self.stale.header = true;
             self.stale.sidebar = true;
@@ -1130,18 +914,34 @@ impl ApiTesterApp {
         };
         if self.request.auth.label() != next.label() {
             self.request.auth = next;
+            self.submit(&ApiTesterAction::SetAuth {
+                auth: self.request.auth.without_secret(),
+            });
             self.stale.auth_inner = true;
         }
     }
 
     fn edit_auth(&mut self, field: AuthField, text: String) {
+        let secret = matches!(
+            field,
+            AuthField::Token | AuthField::Password | AuthField::Value
+        );
         match (&mut self.request.auth, field) {
-            (Auth::Bearer { token }, AuthField::Token) => *token = text,
-            (Auth::Basic { username, .. }, AuthField::Username) => *username = text,
-            (Auth::Basic { password, .. }, AuthField::Password) => *password = text,
-            (Auth::ApiKey { header, .. }, AuthField::Header) => *header = text,
-            (Auth::ApiKey { value, .. }, AuthField::Value) => *value = text,
-            _ => {}
+            (Auth::Bearer { token }, AuthField::Token) => *token = text.clone(),
+            (Auth::Basic { username, .. }, AuthField::Username) => *username = text.clone(),
+            (Auth::Basic { password, .. }, AuthField::Password) => *password = text.clone(),
+            (Auth::ApiKey { header, .. }, AuthField::Header) => *header = text.clone(),
+            (Auth::ApiKey { value, .. }, AuthField::Value) => *value = text.clone(),
+            _ => return,
+        }
+        if secret {
+            if let Some(dispatcher) = &self.dispatcher {
+                dispatcher.effect(&ApiTesterEffect::SetCredential { secret: text });
+            }
+        } else {
+            self.submit(&ApiTesterAction::SetAuth {
+                auth: self.request.auth.without_secret(),
+            });
         }
     }
 
@@ -1172,6 +972,10 @@ impl ApiTesterApp {
                     if pair.is_blank() {
                         return;
                     }
+                    self.submit(&ApiTesterAction::SetRow {
+                        section: row_section(table),
+                        row: pair.clone(),
+                    });
                     self.rows_mut(table).push(pair);
                     let next = self.blanks.renew(table);
                     if let Some(queue) = &queue {
@@ -1184,6 +988,10 @@ impl ApiTesterApp {
         }
         match edit {
             RowEdit::Remove => {
+                self.submit(&ApiTesterAction::RemoveRow {
+                    section: row_section(table),
+                    row_id: row.to_owned(),
+                });
                 self.rows_mut(table).retain(|pair| pair.id != row);
                 if let Some(queue) = queue {
                     queue.push(KvChange::Remove(row.to_owned()));
@@ -1192,6 +1000,11 @@ impl ApiTesterApp {
             other => {
                 if let Some(pair) = self.rows_mut(table).iter_mut().find(|pair| pair.id == row) {
                     apply_edit(pair, other);
+                    let pair = pair.clone();
+                    self.submit(&ApiTesterAction::SetRow {
+                        section: row_section(table),
+                        row: pair,
+                    });
                 }
             }
         }
@@ -1329,7 +1142,7 @@ impl ApiTesterApp {
         clippy::too_many_lines,
         reason = "one exhaustive form-to-canonical-action mapping makes contextual management easy to audit"
     )]
-    fn submit_form(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn submit_form(&mut self, state: &AutoCommit, path: &ObjId) {
         let Some(form) = self.form.take() else {
             return;
         };
@@ -1366,10 +1179,9 @@ impl ApiTesterApp {
                     } else {
                         name
                     };
-                    request.url = ApiDoc::read_text(state, path, "url");
-                    request.body_text = ApiDoc::read_text(state, path, "body");
-                    request.method =
-                        HttpMethod::from_str(&ApiDoc::read_text(state, path, METHOD_PATH));
+                    request.url.clone_from(&self.request.url);
+                    request.body_text.clone_from(&self.request.body_text);
+                    request.method = self.request.method;
                     self.request = request.clone();
                     self.perform(
                         state,
@@ -1437,11 +1249,18 @@ impl ApiTesterApp {
                         .find(|env| env.id == env_id)
                         .and_then(|env| env.variables.iter().find(|row| row.key == key))
                         .map_or_else(|| uuid::Uuid::new_v4().to_string(), |row| row.id.clone());
-                    self.perform(
-                        state,
-                        path,
-                        &actions::set_variable_action(env_id, stable_id, &key, &value),
-                    );
+                    let secret = fields.secret.get();
+                    if secret
+                        && let Err(error) = self.keep_secret(SECRET_VARIABLE, &stable_id, &value)
+                    {
+                        self.error =
+                            Some(format!("Couldn't keep the value on this device: {error}"));
+                        self.stale.response = true;
+                        return;
+                    }
+                    self.submit(&actions::set_variable_action(
+                        env_id, stable_id, &key, &value, secret,
+                    ));
                 }
             }
             FormMode::DeleteVariable => {
@@ -1468,16 +1287,6 @@ impl ApiTesterApp {
     /// have changed the document. The method feeds the *request being
     /// composed* (presentation until a whole-request save), so it updates the
     /// model directly.
-    fn reconcile_pickers(&mut self, state: &AutoCommit, path: &ObjId) {
-        let method = ApiDoc::read_text(state, path, METHOD_PATH);
-        if !method.is_empty() {
-            let method = HttpMethod::from_str(&method);
-            if method != self.request.method {
-                self.request.method = method;
-                self.dirty = true;
-            }
-        }
-    }
 
     /// The person chose from the environment picker: an environment, or one
     /// of the commands that manage them. Selecting the active environment is
@@ -1485,7 +1294,7 @@ impl ApiTesterApp {
     /// is routed through the action host, the same
     /// [`SetActiveEnvironment`](ApiTesterAction::SetActiveEnvironment) a
     /// Ctrl+K palette dispatch would apply.
-    fn pick_environment(&mut self, state: &mut AutoCommit, path: &ObjId, choice: &str) {
+    fn pick_environment(&mut self, state: &AutoCommit, path: &ObjId, choice: &str) {
         if let Some((_, mode)) = ENVIRONMENT_COMMANDS
             .iter()
             .find(|(label, _)| *label == choice)
@@ -1517,163 +1326,11 @@ impl ApiTesterApp {
             .set(Self::environment_name(&self.environments, self.active_env).to_owned());
     }
 
-    /// Seed the method picker's CRDT string from the model.
-    fn seed_pickers(&self, state: &mut AutoCommit, path: &ObjId) {
-        ApiDoc::set_text(state, path, METHOD_PATH, self.request.method.as_str());
-    }
-
-    fn synchronize(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if self.joined && !self.adopted && ApiDoc::is_empty(state, path) {
-            return;
-        }
-        if !self.adopted {
-            if ApiDoc::is_empty(state, path) {
-                if !self.seeded {
-                    self.seed_workspace(state, path);
-                    ApiDoc::set_text(state, path, "url", &self.request.url);
-                    ApiDoc::set_text(state, path, "body", &self.request.body_text);
-                    self.seed_pickers(state, path);
-                    self.seeded = true;
-                    self.adopted = true;
-                    self.persisted_once = true;
-                }
-            } else {
-                self.adopt(state, path);
-                // Ensure the pickers have a value even for a doc seeded before
-                // this version existed.
-                if ApiDoc::read_text(state, path, METHOD_PATH).is_empty() {
-                    self.seed_pickers(state, path);
-                }
-            }
-        }
-
-        // Apply any commands an assistive technology queued by activating a
-        // control directly through `perform_action` (which bypasses the
-        // container's `handle_event`, where pointer/keyboard activations are
-        // drained). Draining here too means Orca / the built-in reader can
-        // Send, switch tabs, and open rows just like the keyboard.
-        self.drain_commands(state, path);
-        self.reconcile_pickers(state, path);
-
-        // Keep the widgets in step with app state the app itself drives.
-        self.poll_worker();
-        if !self.pending_history.is_empty() {
-            for entry in std::mem::take(&mut self.pending_history) {
-                self.perform(state, path, &ApiTesterAction::RecordHistory { entry });
-            }
-            self.history = ApiDoc::history(state, path);
-            self.workspace_changed();
-        }
-        self.refresh_views();
-    }
+    // Method selection uses the typed request dispatcher.
 
     // -----------------------------------------------------------------------
     // Resource operations
     // -----------------------------------------------------------------------
-
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::API_TESTER_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::ApiTesterOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match operation {
-            crate::actions::ApiTesterOperation::SendActiveRequest => {
-                if kind != tilo_actions::OperationKind::Effect {
-                    return Ok(false);
-                }
-                self.send(doc, path);
-            }
-            crate::actions::ApiTesterOperation::SendRequest {
-                collection_id,
-                request_id,
-            } => {
-                if kind != tilo_actions::OperationKind::Effect {
-                    return Ok(false);
-                }
-                let collection_id = uuid::Uuid::parse_str(&collection_id)
-                    .map_err(|_| "invalid API Tester collection id".to_string())?;
-                let request_id = uuid::Uuid::parse_str(&request_id)
-                    .map_err(|_| "invalid API Tester request id".to_string())?;
-                let Some((collection_index, request_index)) = self
-                    .collections
-                    .iter()
-                    .enumerate()
-                    .find_map(|(collection_index, collection)| {
-                        (collection.id == collection_id).then(|| {
-                            collection
-                                .requests
-                                .iter()
-                                .position(|request| request.id == request_id)
-                                .map(|request_index| (collection_index, request_index))
-                        })
-                    })
-                    .flatten()
-                else {
-                    return Err("saved request no longer exists".to_string());
-                };
-                self.load_request(doc, path, collection_index, request_index);
-                self.send(doc, path);
-            }
-            crate::actions::ApiTesterOperation::ReplayHistory { history_id } => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Ok(false);
-                }
-                let history_id = uuid::Uuid::parse_str(&history_id)
-                    .map_err(|_| "invalid API Tester history id".to_string())?;
-                let Some(index) = self.history.iter().position(|entry| entry.id == history_id)
-                else {
-                    return Err("history entry no longer exists".to_string());
-                };
-                self.replay_history(doc, path, index);
-                self.dirty = true;
-            }
-            crate::actions::ApiTesterOperation::RequestMenu { action } => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Ok(false);
-                }
-                self.open_request_menu_action(&action)?;
-            }
-            crate::actions::ApiTesterOperation::EnvironmentMenu { action } => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Ok(false);
-                }
-                self.open_environment_menu_action(&action)?;
-            }
-        }
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect
-            || type_id != crate::actions::API_TESTER_OPERATION_TYPE
-        {
-            return Ok(None);
-        }
-        if self.sending || self.resource_send_invocation.is_some() {
-            return Err("another API request is already running".into());
-        }
-        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        self.resource_send_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
 }
 
 /// Apply a field edit to one pair.
@@ -1699,13 +1356,6 @@ impl Default for ApiTesterApp {
 impl ui::widget::Decorator for ApiTesterApp {
     type Inner = NavShell;
 
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource;
-        inner = nav
-    );
-
     fn inner(&self) -> &NavShell {
         &self.nav
     }
@@ -1714,86 +1364,13 @@ impl ui::widget::Decorator for ApiTesterApp {
         &mut self.nav
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::API_TESTER_OPERATION_TYPE]
-    }
-
-    fn resource_operation_handlers(&self) -> HashSet<String> {
-        let mut handlers = self.nav.resource_operation_handlers();
-        handlers.insert(crate::actions::API_TESTER_OPERATION_TYPE.to_owned());
-        handlers
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
-        self.synchronize(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.refresh_views();
         self.nav.sync(state, path);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.nav.handle_event(event, ctx);
-        // Apply what the controls queued, then reconcile the pickers.
-        let did = self.drain_commands(ctx.state, ctx.path);
-        self.reconcile_pickers(ctx.state, ctx.path);
-        if did || *ctx.handled {
-            self.dirty = true;
-        }
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return self.nav.start_operation(op, doc, path);
-        };
-        if let Some(started) = self.nav.start_operation(op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(update) =
-            self.nav
-                .poll_resource_operation(invocation, cancellation_requested, doc, path)
-        {
-            return Some(update);
-        }
-        self.poll_worker();
-        if self
-            .resource_send_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_send_result.take()
-        } else {
-            None
-        }
     }
 
     fn draw_with_presence(
@@ -1836,50 +1413,254 @@ impl ui::widget::Decorator for ApiTesterApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.sending
-            || !self.pending_history.is_empty()
-            || !self.adopted
-            || !self.sink.borrow().is_empty()
+        self.sending || !self.sink.borrow().is_empty() || self.nav.needs_idle_sync()
     }
 
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        self.drain_commands(edits.doc(), path);
+        self.refresh_views();
+        self.nav.settle(edits, path);
+    }
     fn name(&self) -> &'static str {
         "ApiTesterApp"
     }
 }
 
-impl ui::search::capability::SearchSource for ApiTesterApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-}
-
-impl ui::resources::PublishesResources for ApiTesterApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
-    /// workspace door — keep only the search-catalog diagnostic when present.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return crate::actions::live_search_status_resources(self.search_error_message());
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.actions.is_hosted() && id == "api_tester.workspace" {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
-}
-
-impl ui::undo::CommittedActions for ApiTesterApp {
-    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
-    /// this event so the shell records exactly one undo point per dispatched
-    /// action — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
 #[cfg(test)]
 mod tests;
+
+impl ApiTesterApp {
+    fn secret(&self, purpose: &'static str, item: &str) -> Option<String> {
+        let secret = self
+            .secrets
+            .as_ref()?
+            .item(purpose, item)
+            .get_blocking()
+            .ok()??;
+        String::from_utf8(secret.expose().to_vec()).ok()
+    }
+}
+
+impl ApiTesterApp {
+    fn keep_secret(&self, purpose: &'static str, item: &str, value: &str) -> Result<(), String> {
+        let secrets = self
+            .secrets
+            .as_ref()
+            .ok_or_else(|| "this window keeps no secrets".to_string())?;
+        secrets
+            .item(purpose, item)
+            .put_blocking(value.as_bytes())
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl ApiTesterApp {
+    fn credential(&mut self, id: uuid::Uuid) -> String {
+        if let Some(known) = self.credentials.get(&id) {
+            return known.clone();
+        }
+        let found = self.secret(CREDENTIAL, &id.to_string()).unwrap_or_default();
+        self.credentials.insert(id, found.clone());
+        found
+    }
+}
+
+impl ApiTesterApp {
+    fn submit(&self, action: &ApiTesterAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
+        }
+    }
+}
+
+impl ApiTesterApp {
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: ApiTesterEffect,
+        cx: &mut EffectCx<ApiTester, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            ApiTesterEffect::Send => {
+                let method = self.request.method;
+                let out = self.outgoing();
+                self.start_send(method, out, cx)
+            }
+            ApiTesterEffect::SendSaved { request } => {
+                let Some(saved) = self
+                    .collections
+                    .iter()
+                    .flat_map(|collection| &collection.requests)
+                    .find(|saved| saved.id.to_string() == request)
+                    .cloned()
+                else {
+                    return Err("saved request no longer exists".to_string());
+                };
+                cx.apply(&ApiTesterAction::OpenRequest {
+                    request: saved.clone(),
+                });
+                let mut outgoing = saved;
+                let credential = self.credential(outgoing.id);
+                outgoing.auth = outgoing.auth.with_secret(&credential);
+                let out = http::build_outgoing(&outgoing, &self.env_vars());
+                self.start_send(outgoing.method, out, cx)
+            }
+            ApiTesterEffect::SetCredential { secret } => {
+                let id = self.request.id;
+                self.keep_secret(CREDENTIAL, &id.to_string(), &secret)?;
+                self.credentials.insert(id, secret.clone());
+                self.request.auth = self.request.auth.with_secret(&secret);
+                self.dirty = true;
+                Ok(Effected::done())
+            }
+            ApiTesterEffect::SetSecretValue { variable, value } => {
+                let secret = self
+                    .environments
+                    .iter()
+                    .flat_map(|environment| &environment.variables)
+                    .find(|row| row.id == variable)
+                    .map(|row| row.secret);
+                match secret {
+                    Some(true) => {
+                        self.keep_secret(SECRET_VARIABLE, &variable, &value)?;
+                        self.dirty = true;
+                        Ok(Effected::done())
+                    }
+                    Some(false) => {
+                        Err("this variable's value is shared; set it as a document edit".into())
+                    }
+                    None => Err("no such variable".into()),
+                }
+            }
+            ApiTesterEffect::RequestMenu { action } => {
+                self.open_request_menu_action(&action)?;
+                Ok(Effected::done())
+            }
+            ApiTesterEffect::EnvironmentMenu { action } => {
+                self.open_environment_menu_action(&action)?;
+                Ok(Effected::done())
+            }
+        }
+    }
+}
+
+impl ApiTesterApp {
+    fn start_send(
+        &mut self,
+        method: HttpMethod,
+        out: Outgoing,
+        cx: &mut EffectCx<ApiTester, Self>,
+    ) -> EffectAnswer {
+        if self.sending {
+            return Err("another API request is already running".into());
+        }
+        self.sending = true;
+        self.error = None;
+        self.dirty = true;
+        let url = out.url.clone();
+        Ok(cx.spawn(
+            move |_| async move { http::send(&out).await },
+            move |app: &mut Self, sent, cx| {
+                app.sending = false;
+                app.dirty = true;
+                match sent {
+                    Ok(response) => {
+                        cx.apply(&ApiTesterAction::RecordHistory {
+                            entry: HistoryEntry {
+                                id: uuid::Uuid::new_v4(),
+                                method,
+                                url,
+                                status: response.status,
+                                duration_ms: response.duration_ms,
+                                when: "just now".into(),
+                            },
+                        });
+                        app.response = Some(response);
+                        app.response_view = ResponseView::Pretty;
+                        app.stale.response = true;
+                        app.stale.response_body = true;
+
+                        Ok(Effected::done())
+                    }
+                    Err(error) => {
+                        app.error = Some(error.clone());
+                        app.stale.response = true;
+                        Err(error)
+                    }
+                }
+            },
+        ))
+    }
+}
+
+impl ApiTesterApp {
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+        self.dirty = true;
+    }
+}
+
+impl ApiTesterApp {
+    pub(crate) fn present_workspace(&mut self, state: &Workspace) {
+        let workspace_changed = self.collections != state.collections
+            || self.environments != state.environments
+            || self.active_env != state.active_env
+            || self.history != state.history;
+        let mut request = state.request.clone();
+        request.auth = request.auth.with_secret(&self.credential(request.id));
+        let replaced = self.request.id != request.id;
+        let body_changed = self.request.body_mode != request.body_mode;
+        let auth_changed =
+            std::mem::discriminant(&self.request.auth) != std::mem::discriminant(&request.auth);
+        let rows_changed = self.request.params != request.params
+            || self.request.headers != request.headers
+            || self.request.form != request.form;
+        self.collections.clone_from(&state.collections);
+        self.environments.clone_from(&state.environments);
+        self.active_env = state.active_env;
+        self.history.clone_from(&state.history);
+        self.sink.method.set(request.method.as_str().to_owned());
+        self.request = request;
+        self.selected = self.collections.iter().enumerate().find_map(|(ci, c)| {
+            c.requests
+                .iter()
+                .position(|r| r.id == self.request.id)
+                .map(|ri| (ci, ri))
+        });
+        if workspace_changed {
+            self.workspace_changed();
+        }
+        self.stale.request |= replaced;
+        self.stale.tab_panel |= rows_changed;
+        self.stale.body_inner |= body_changed;
+        self.stale.auth_inner |= auth_changed;
+        self.stale.header = true;
+        self.adopted = true;
+    }
+    pub(crate) fn attach_surface(&mut self, cx: &SurfaceCx<ApiTester>) {
+        let dispatcher = cx.dispatcher();
+        self.read_only = dispatcher.read_only();
+        *self.sink.dispatcher.borrow_mut() = Some(dispatcher.clone());
+        *self.sink.actions.borrow_mut() = Some(cx.actions());
+        self.dispatcher = Some(dispatcher);
+        self.secrets = Some(cx.secrets());
+        self.credentials.clear();
+    }
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        self.response = scenario
+            .filter(|s| *s != "empty")
+            .map(|_| http::sample_response());
+        if let Some(name) = scenario {
+            let mapped = if name == "rail-open" { "drawer" } else { name };
+            self.stage(mapped);
+        }
+        self.stale.response = true;
+    }
+}
+
+fn row_section(table: Table) -> RowSection {
+    match table {
+        Table::Params => RowSection::Params,
+        Table::Headers => RowSection::Headers,
+        Table::Form => RowSection::Form,
+    }
+}

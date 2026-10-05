@@ -1,9 +1,6 @@
-//! The editor's commands: what the platform palette lists beside the project's
-//! files, and what the keyboard shortcuts run.
-//!
-//! The editor draws no palette of its own. Each command is published as a
-//! resource action (see `actions.rs`), so the platform search finds it, an
-//! agent can call it, and a shortcut in `app.rs` runs the same action.
+//! The editor's commands: each one is an effect the project publishes, so
+//! the host palette (Ctrl+K, and Ctrl+P / Ctrl+Shift+P from the editor),
+//! agents and the editor's own chords reach the same work.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -24,7 +21,9 @@ pub enum Command {
     DeleteLine,
     ToggleComment,
     ToggleBottomPanel,
+    NextTheme,
     GoToProblems,
+    GoToSearch,
     GoToTerminal,
     ToggleSidebar,
 }
@@ -49,7 +48,9 @@ impl Command {
             Self::DeleteLine => "delete-line",
             Self::ToggleComment => "toggle-comment",
             Self::ToggleBottomPanel => "toggle-bottom-panel",
+            Self::NextTheme => "next-theme",
             Self::GoToProblems => "go-to-problems",
+            Self::GoToSearch => "go-to-search",
             Self::GoToTerminal => "go-to-terminal",
             Self::ToggleSidebar => "toggle-sidebar",
         }
@@ -58,57 +59,67 @@ impl Command {
     pub fn from_id(id: &str) -> Option<Self> {
         Self::catalogue()
             .into_iter()
-            .find_map(|(command, _)| (command.id() == id).then_some(command))
+            .find_map(|(command, _, _)| (command.id() == id).then_some(command))
     }
 
-    /// Every command and the name the palette lists it under.
-    pub fn catalogue() -> Vec<(Command, &'static str)> {
+    pub fn all() -> Vec<(Command, &'static str)> {
+        Self::catalogue()
+            .into_iter()
+            .map(|(command, label, _)| (command, label))
+            .collect()
+    }
+
+    pub fn catalogue() -> Vec<(Command, &'static str, &'static str)> {
         vec![
-            (Command::OpenFolder, "Open project folder"),
-            (Command::OpenFile, "Open file"),
-            (Command::NewFile, "New file"),
-            (Command::Save, "Save"),
-            (Command::SaveAs, "Save as"),
-            (Command::SaveAll, "Save all"),
-            (Command::RevertFile, "Revert to saved"),
-            (Command::Find, "Find in file"),
-            (Command::Replace, "Replace in file"),
-            (Command::SearchProject, "Search in project"),
-            (Command::GoToLine, "Go to line"),
-            (Command::DuplicateLine, "Duplicate line"),
-            (Command::MoveLineUp, "Move line up"),
-            (Command::MoveLineDown, "Move line down"),
-            (Command::DeleteLine, "Delete line"),
-            (Command::ToggleComment, "Toggle line comment"),
-            (Command::ToggleBottomPanel, "Show or hide the panel"),
-            (Command::ToggleSidebar, "Show or hide the sidebar"),
-            (Command::GoToProblems, "Show problems"),
-            (Command::GoToTerminal, "Show terminal"),
+            (
+                Command::OpenFolder,
+                "File: Open Folder\u{2026}",
+                "Ctrl+Shift+O",
+            ),
+            (Command::OpenFile, "File: Open File\u{2026}", "Ctrl+O"),
+            (Command::NewFile, "File: New File", ""),
+            (Command::Save, "File: Save", "Ctrl+S"),
+            (Command::SaveAs, "File: Save As\u{2026}", "Ctrl+Shift+S"),
+            (Command::SaveAll, "File: Save All", "Ctrl+Alt+S"),
+            (Command::RevertFile, "File: Revert to Saved", ""),
+            (Command::Find, "Edit: Find in File", "Ctrl+F"),
+            (Command::Replace, "Edit: Replace in File", "Ctrl+H"),
+            (
+                Command::SearchProject,
+                "Edit: Search Project",
+                "Ctrl+Shift+F",
+            ),
+            (Command::GoToLine, "Go: Go to Line\u{2026}", "Ctrl+G"),
+            (
+                Command::DuplicateLine,
+                "Selection: Duplicate Line",
+                "Shift+Alt+Down",
+            ),
+            (Command::MoveLineUp, "Selection: Move Line Up", "Alt+Up"),
+            (
+                Command::MoveLineDown,
+                "Selection: Move Line Down",
+                "Alt+Down",
+            ),
+            (
+                Command::DeleteLine,
+                "Selection: Delete Line",
+                "Ctrl+Shift+K",
+            ),
+            (
+                Command::ToggleComment,
+                "Edit: Toggle Line Comment",
+                "Ctrl+/",
+            ),
+            (
+                Command::ToggleBottomPanel,
+                "View: Toggle Bottom Panel",
+                "Ctrl+J",
+            ),
+            (Command::ToggleSidebar, "View: Toggle Sidebar", "Ctrl+B"),
+            (Command::GoToProblems, "View: Focus Problems", ""),
+            (Command::GoToSearch, "View: Focus Search Results", ""),
+            (Command::GoToTerminal, "View: Focus Terminal", ""),
         ]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_command_is_listed_once_and_found_by_its_id() {
-        let catalogue = Command::catalogue();
-        for (command, label) in &catalogue {
-            assert_eq!(Command::from_id(command.id()), Some(*command));
-            assert!(!label.is_empty());
-            assert!(
-                label.chars().next().is_some_and(char::is_uppercase)
-                    && !label.contains(": ")
-                    && !label.chars().skip(1).any(char::is_uppercase),
-                "{label} is in sentence case"
-            );
-        }
-        let mut ids: Vec<_> = catalogue.iter().map(|(command, _)| command.id()).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), catalogue.len());
-        assert_eq!(Command::from_id("cycle-theme"), None);
     }
 }

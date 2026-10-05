@@ -15,6 +15,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::tilo_resource::Resource as _;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -41,7 +42,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::actions::{self, FeedsAction, FeedsResourceCtx};
 use crate::chrome::{Anchor, HeaderButton, reader_settings_panel};
-use crate::doc::FeedsDoc;
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::list_pane::{ListPane, ListState};
 use crate::modal::{ModalBody, ModalIntent};
@@ -380,9 +380,11 @@ pub(crate) struct Core {
     background_poll_deadline: Cell<Option<Instant>>,
     pub(crate) worker: Option<FetchWorker>,
     synced: bool,
-    pub(crate) actions: crate::resource::ActionSink,
+    pub(crate) dispatcher: Option<ui::framework::Dispatcher<crate::resource::Feeds>>,
+    read_settings: Option<ui::framework::Setting<ReadSettings>>,
+    refresh_reply: Option<ui::framework::EffectReply>,
     /// The document heads the mirrored store was last reconciled against.
-    store_heads: Vec<automerge::ChangeHash>,
+
     /// The hermetic `--shots`/demo build seeds the bundled sample library;
     /// the live app starts empty on the person's document.
     demo: bool,
@@ -424,8 +426,10 @@ impl Core {
             background_poll_deadline: Cell::new(None),
             worker: None,
             synced: false,
-            actions: crate::resource::ActionSink::default(),
-            store_heads: Vec::new(),
+            dispatcher: None,
+            read_settings: None,
+            refresh_reply: None,
+
             demo,
             pointer: Point::ZERO,
             window: Rect::ZERO,
@@ -526,7 +530,7 @@ impl Core {
         self.show_pane = Some(NavPane::Overview);
     }
 
-    pub(crate) fn select_article(&mut self, id: Id, doc: &mut AutoCommit) {
+    pub(crate) fn select_article(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         self.selected = Some(id);
         self.reader.scroll_to_top();
         self.list.reveal = true;
@@ -537,7 +541,7 @@ impl Core {
         self.show_pane = Some(NavPane::Content);
     }
 
-    fn move_selection(&mut self, delta: i64, doc: &mut AutoCommit) {
+    fn move_selection(&mut self, delta: i64, doc: &mut ui::widget::Edits<'_>) {
         let ids: Vec<Id> = self
             .store
             .articles_for(self.filter)
@@ -559,7 +563,7 @@ impl Core {
         }
     }
 
-    pub(crate) fn toggle_star(&mut self, id: Id, doc: &mut AutoCommit) {
+    pub(crate) fn toggle_star(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         if self.store.toggle_star(id) {
             let starred = self.store.article(id).is_some_and(|a| a.starred);
             self.perform_action(doc, &actions::set_starred_action(id, starred));
@@ -571,7 +575,7 @@ impl Core {
         }
     }
 
-    fn toggle_read(&mut self, doc: &mut AutoCommit) {
+    fn toggle_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(id) = self.selected {
             let now_read = self.store.article(id).is_none_or(|a| !a.read);
             if self.store.mark_read(id, now_read) {
@@ -593,7 +597,7 @@ impl Core {
         self.open_modal(modal);
     }
 
-    pub(crate) fn mark_all_read(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn mark_all_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let ids = self.store.mark_all_read(self.filter);
         if !ids.is_empty() {
             self.perform_action(doc, &actions::mark_all_read_action(&ids));
@@ -610,16 +614,18 @@ impl Core {
     /// the palette. It is applied through the action executor (a pinned
     /// actor and a committed change, so it replays on peers), and the
     /// document heads captured before it bracket one undo step.
-    pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: &FeedsAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            actions::FEEDS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.feeds", "Feeds", action),
-        );
-        // This widget already mirrored the change; keep the reload watermark
-        // ahead of it.
-        self.store_heads = doc.get_heads();
+    pub(crate) fn perform_action(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        action: &FeedsAction,
+    ) {
+        let Some(dispatcher) = self.dispatcher.as_ref() else {
+            self.set_toast("The library is not attached to its resource.");
+            return;
+        };
+        if let Err(error) = dispatcher.apply_now(edits, action) {
+            self.set_toast(format!("The library was not changed: {error}"));
+        }
     }
 
     /// The presentation context the palette needs to build the reader,
@@ -627,7 +633,6 @@ impl Core {
     pub(crate) fn feeds_resource_ctx(&self) -> FeedsResourceCtx {
         actions::resource_ctx_from_library_with_limits(
             &self.store,
-            self.settings,
             actions::MAX_CONTEXT_FOLDER_RESOURCES,
             actions::MAX_CONTEXT_FEED_RESOURCES,
             actions::MAX_CONTEXT_ARTICLE_RESOURCES,
@@ -641,18 +646,7 @@ impl Core {
         if id == "feeds.reader" || id == "feeds.reader-settings" {
             return Some(self.feeds_resource_ctx());
         }
-        let mut ctx = FeedsResourceCtx {
-            next_feed_order: self.store.next_feed_order(None),
-            next_folder_order: self
-                .store
-                .folders
-                .iter()
-                .map(|folder| folder.order)
-                .max()
-                .map_or(0, |order| order.saturating_add(1)),
-            settings: self.settings,
-            ..FeedsResourceCtx::default()
-        };
+        let mut ctx = FeedsResourceCtx::default();
         if let Some(raw) = id.strip_prefix("feeds.folder:") {
             let folder_id = raw.parse::<Id>().ok()?;
             let folder = self.store.folder(folder_id)?;
@@ -702,21 +696,20 @@ impl Core {
 
     /// Change the reading settings and persist them, so the change survives
     /// restarts and converges with collaborators.
-    pub(crate) fn bump_setting(&mut self, doc: &mut AutoCommit, f: impl FnOnce(&mut ReadSettings)) {
-        let mut s = self.settings;
-        f(&mut s);
-        s = s.clamped();
-        if s == self.settings {
-            return;
+    pub(crate) fn bump_setting(
+        &mut self,
+        _edits: &mut ui::widget::Edits<'_>,
+        change: impl FnOnce(&mut ReadSettings),
+    ) {
+        if let Err(error) = self.change_read_settings(change) {
+            self.set_toast(error);
         }
-        self.settings = s;
-        self.perform_action(doc, &actions::set_read_settings_action(s));
     }
 
     // --- folders and subscriptions -----------------------------------------
 
     /// Add a folder through the same replayable action the palette uses.
-    fn add_folder(&mut self, name: &str, doc: &mut AutoCommit) {
+    fn add_folder(&mut self, name: &str, doc: &mut ui::widget::Edits<'_>) {
         let name = name.trim();
         if name.is_empty() {
             return;
@@ -780,7 +773,7 @@ impl Core {
     /// Add a subscription. The record is a deterministic action (the id is
     /// minted here, the feed starts titled with its address); fetching its
     /// title and articles is external, not an action.
-    pub(crate) fn subscribe(&mut self, url: &str, doc: &mut AutoCommit) {
+    pub(crate) fn subscribe(&mut self, url: &str, doc: &mut ui::widget::Edits<'_>) {
         let url = url.trim().to_string();
         if url.is_empty() {
             return;
@@ -864,7 +857,7 @@ impl Core {
 
     /// Drain an in-flight import. A chosen file is read and parsed, every
     /// feed in it subscribed, and a background fetch started.
-    fn drain_import(&mut self, doc: &mut AutoCommit) -> bool {
+    fn drain_import(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let Some(rx) = &self.import_rx else {
             return false;
         };
@@ -913,7 +906,11 @@ impl Core {
     /// Merge OPML `text` into the store (folders as needed, de-duplicated by
     /// address) and subscribe to what it added as one action. Returns the
     /// newly subscribed feeds.
-    pub(crate) fn apply_opml_import(&mut self, text: &str, doc: &mut AutoCommit) -> Vec<Id> {
+    pub(crate) fn apply_opml_import(
+        &mut self,
+        text: &str,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> Vec<Id> {
         let parsed = opml::parse(text);
         let had_feeds: std::collections::HashSet<Id> =
             self.store.feeds.iter().map(|f| f.id).collect();
@@ -1075,7 +1072,11 @@ impl Core {
         );
     }
 
-    pub(crate) fn apply_menu_action(&mut self, action: MenuAction, doc: &mut AutoCommit) {
+    pub(crate) fn apply_menu_action(
+        &mut self,
+        action: MenuAction,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         match action {
             MenuAction::MarkFeedRead(feed_id) => {
                 let ids = self.store.mark_all_read(Filter::Feed(feed_id));
@@ -1122,7 +1123,7 @@ impl Core {
         }
         if let Some(action) = chosen {
             self.menu = None;
-            self.apply_menu_action(action, ctx.state);
+            self.apply_menu_action(action, &mut ctx.state);
         }
     }
 
@@ -1157,7 +1158,7 @@ impl Core {
         &mut self,
         intent: ModalIntent,
         value: &str,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let value = value.trim().to_string();
         if intent.requires_input() && value.is_empty() {
@@ -1185,7 +1186,7 @@ impl Core {
 
     /// Delete a feed and its articles from the store and the document, and
     /// recover a place or selection that pointed at it.
-    pub(crate) fn unsubscribe_feed(&mut self, feed_id: Id, doc: &mut AutoCommit) {
+    pub(crate) fn unsubscribe_feed(&mut self, feed_id: Id, doc: &mut ui::widget::Edits<'_>) {
         let title = self
             .store
             .feed(feed_id)
@@ -1203,7 +1204,7 @@ impl Core {
         self.set_toast(format!("Unsubscribed from {title}"));
     }
 
-    pub(crate) fn rename_feed(&mut self, feed_id: Id, name: &str, doc: &mut AutoCommit) {
+    pub(crate) fn rename_feed(&mut self, feed_id: Id, name: &str, doc: &mut ui::widget::Edits<'_>) {
         let name = name.trim().to_string();
         if name.is_empty() {
             return;
@@ -1295,25 +1296,14 @@ impl Core {
             && self.refresh.finished_at.is_none()
         {
             self.refresh.finished_at = Some(ui::time::now());
-            if let Some(invocation) = self.resource_refresh_invocation.take() {
-                self.resource_refresh_result = Some(if self.refresh.failed_feeds > 0 {
-                    tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "feeds.refresh_incomplete".into(),
-                            message: format!(
-                                "{} of {} subscriptions failed to refresh",
-                                self.refresh.failed_feeds, self.refresh.total
-                            ),
-                            details: None,
-                            retryable: true,
-                        },
-                    }
+            if let Some(reply) = self.refresh_reply.take() {
+                reply.finish(if self.refresh.failed_feeds > 0 {
+                    Err(format!(
+                        "{} of {} subscriptions failed to refresh",
+                        self.refresh.failed_feeds, self.refresh.total
+                    ))
                 } else {
-                    tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    }
+                    Ok(tilo_actions::ActionOutput::default())
                 });
             }
         }
@@ -1321,7 +1311,7 @@ impl Core {
 
     /// Persist what the live drain queued, at most [`FLUSH_BUDGET`] writes per
     /// call, so a big refresh never stalls a frame.
-    pub(crate) fn flush_doc_writes(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn flush_doc_writes(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if self.pending_doc_writes.is_empty() {
             return;
         }
@@ -1339,66 +1329,20 @@ impl Core {
 
     /// Reconcile with the document: seed or adopt it on the first pass, then
     /// persist queued writes, drain portals and follow out-of-band changes.
-    fn sync_document(&mut self, doc: &mut AutoCommit) {
+    fn sync_document(&mut self, _doc: &AutoCommit) {
         self.background_poll_deadline.set(None);
         self.now = ui::clock::local_now().timestamp();
-        if !self.synced {
-            if FeedsDoc::is_empty(doc) {
-                // Only the hermetic demo seeds the bundled sample library.
-                if self.demo {
-                    FeedsDoc::seed(doc, &self.store);
-                }
-            } else {
-                self.store = FeedsDoc::load(doc);
-                self.ensure_selection();
-                if self.selected.is_none() {
-                    self.select_featured();
-                }
-            }
-            // Adopt the persisted (and possibly collaborator-updated)
-            // preferences; until someone changes one, the defaults stand
-            // without being written.
-            if FeedsDoc::has_settings(doc) {
-                self.settings = FeedsDoc::read_settings(doc);
-            }
-            self.synced = true;
-            self.store_heads = doc.get_heads();
-        }
-        self.flush_doc_writes(doc);
+        self.synced = true;
+        self.adopt_read_settings();
         self.drain_fetches_live();
-        self.flush_doc_writes(doc);
-        for action in std::mem::take(&mut self.pending_resource_actions) {
-            self.perform_action(doc, &action);
-        }
-        self.drain_import(doc);
         self.drain_export();
         self.drain_open_link();
-        // A palette action (or any other out-of-band write) mutates the
-        // document directly. Once the fetch backlog is persisted, reload the
-        // store if the document moved since it was last mirrored.
-        if self.pending_doc_writes.is_empty() {
-            let heads = doc.get_heads();
-            if heads != self.store_heads {
-                self.store = FeedsDoc::load(doc);
-                self.settings = FeedsDoc::read_settings(doc);
-                if let Some(sel) = self.selected
-                    && self.store.article(sel).is_none()
-                {
-                    self.selected = None;
-                }
-                self.store_heads = heads;
-            }
-        }
     }
 
     /// Show the library the framework resource already holds. An empty
     /// projection does not wipe feeds that have not been published yet.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::FeedsState) {
-        if state.store.is_empty() {
-            return;
-        }
         self.store.clone_from(&state.store);
-        self.settings = state.settings;
         self.ensure_selection();
     }
 
@@ -1448,7 +1392,7 @@ impl Core {
     // --- requests -----------------------------------------------------------
 
     /// Apply what a retained control asked for.
-    fn apply(&mut self, request: Request, doc: &mut AutoCommit) {
+    fn apply(&mut self, request: Request, doc: &mut ui::widget::Edits<'_>) {
         match request {
             Request::Show(filter) => self.set_filter(filter),
             Request::AddSubscription => self.open_add_subscription(),
@@ -1523,78 +1467,8 @@ impl Core {
         true
     }
 
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match (kind, operation) {
-            (tilo_actions::OperationKind::View, actions::FeedsOperation::ImportOpml) => {
-                self.request_import();
-            }
-            (tilo_actions::OperationKind::View, actions::FeedsOperation::ExportOpml) => {
-                self.export_opml();
-            }
-            (tilo_actions::OperationKind::Effect, actions::FeedsOperation::RefreshAll) => {
-                if self.store.feeds.is_empty() {
-                    return Err("there are no subscriptions to refresh".into());
-                }
-                self.refresh_all();
-            }
-            (tilo_actions::OperationKind::View, actions::FeedsOperation::RevealFeed { id }) => {
-                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
-                if self.store.feed(id).is_none() {
-                    return Err("feed no longer exists".into());
-                }
-                self.set_filter(Filter::Feed(id));
-            }
-            (tilo_actions::OperationKind::View, actions::FeedsOperation::RevealArticle { id }) => {
-                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
-                if !self.reveal_article(id) {
-                    return Err("article no longer exists".into());
-                }
-            }
-            (tilo_actions::OperationKind::View, actions::FeedsOperation::RevealTag { tag }) => {
-                let tag = actions::normalize_tags([tag.as_str()])
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| "invalid empty tag".to_string())?;
-                if !self.store.has_tag(&tag) {
-                    return Err("tag no longer exists".into());
-                }
-                self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect || type_id != actions::FEEDS_OPERATION_TYPE {
-            return Ok(None);
-        }
-        if self.resource_refresh_invocation.is_some() || self.refresh.in_progress() {
-            return Err("a feed refresh is already running".into());
-        }
-        if !self.answer_resource_operation(kind, type_id, payload)? {
-            return Ok(None);
-        }
-        self.resource_refresh_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
-
     /// The reader's single-key shortcuts. Returns whether the key was used.
-    fn handle_key(&mut self, key: &Key, modified: bool, doc: &mut AutoCommit) -> bool {
+    fn handle_key(&mut self, key: &Key, modified: bool, doc: &mut ui::widget::Edits<'_>) -> bool {
         match key {
             Key::Named(NamedKey::ArrowDown) => self.move_selection(1, doc),
             Key::Named(NamedKey::ArrowUp) => self.move_selection(-1, doc),
@@ -1982,19 +1856,23 @@ impl FeedsApp {
         &self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
     ) {
-        self.core.borrow_mut().actions.attach(dispatcher);
+        self.core.borrow_mut().dispatcher = Some(dispatcher);
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
-        self.core.borrow().actions.is_hosted()
+        self.core.borrow().dispatcher.is_some()
     }
 
     pub(crate) fn published_reader(&self) -> Vec<tilo_actions::Resource> {
         let core = self.core.borrow();
-        crate::resource::provide_resources(&crate::resource::FeedsState {
-            store: core.store.clone(),
-            settings: core.settings,
-        })
+        ui::tilo_resource::publish::<crate::resource::Feeds>(
+            crate::resource::Feeds::KIND,
+            "Feeds",
+            &crate::resource::FeedsState {
+                store: core.store.clone(),
+            },
+        )
+        .children
     }
 
     pub(crate) fn feeds_resource_ctx_for(&self, id: &str) -> Option<FeedsResourceCtx> {
@@ -2004,7 +1882,7 @@ impl FeedsApp {
     /// Test-only: mark the sink hosted without constructing a dispatcher.
     #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&self) {
-        self.core.borrow_mut().actions.mark_hosted_for_test();
+        // The production host supplies the dispatcher; this helper is detached.
     }
 
     // --- observation --------------------------------------------------------------
@@ -2119,17 +1997,22 @@ impl FeedsApp {
             && ke.state == ElementState::Pressed
             && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
         {
-            self.submit_modal(ctx.state);
+            self.submit_modal(&mut ctx.state);
             return;
         }
         if let Some(m) = self.modal.as_mut() {
-            m.dialog
-                .handle_detached(event, ctx.scale_factor, *ctx.modifiers, ctx.state, ctx.path);
+            m.dialog.handle_detached(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                &mut ctx.state,
+                ctx.path,
+            );
         }
-        self.drain_modal_actions(ctx.state);
+        self.drain_modal_actions(&mut ctx.edits());
     }
 
-    fn drain_modal_actions(&mut self, doc: &mut AutoCommit) {
+    fn drain_modal_actions(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(modal) = self.modal.as_ref() else {
             return;
         };
@@ -2143,7 +2026,7 @@ impl FeedsApp {
 
     /// Run the open dialog's primary action, then close it. An input dialog
     /// with an empty required field stays open.
-    pub(crate) fn submit_modal(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn submit_modal(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some((intent, value)) = self
             .modal
             .as_ref()
@@ -2195,7 +2078,7 @@ impl FeedsApp {
 
     /// Apply what retained controls asked for, bring the screen a choice
     /// asked for to the front, and keep the column titles current.
-    fn settle(&mut self, doc: &mut AutoCommit) {
+    fn settle_controls(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let opened = std::mem::take(&mut *self.opened.borrow_mut());
         for anchor in opened {
             self.core.borrow_mut().open_anchor(&anchor);
@@ -2270,7 +2153,7 @@ impl FeedsApp {
         &self,
         target: &str,
         action: &A11yAction,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> Option<bool> {
         let mut core = self.core.borrow_mut();
         if let Some(index) = target
@@ -2354,93 +2237,37 @@ impl ui::widget::Decorator for FeedsApp {
     }
 
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
-        } else if request.wants::<dyn ui::search::capability::SearchSource>() {
-            request.provide::<dyn ui::search::capability::SearchSource>(self);
+        if request.wants::<dyn ui::undo::LocalUndo>() {
+            request.provide::<dyn ui::undo::LocalUndo>(self);
         } else {
             Widget::provide(&self.shell, request);
         }
     }
-
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::undo::CommittedActions>() {
-            request.provide::<dyn ui::undo::CommittedActions>(self);
-        } else if request.wants::<dyn ui::undo::LocalUndo>() {
+        if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
-        } else if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
-        } else if request.wants::<dyn ui::search::capability::SearchSource>() {
-            request.provide::<dyn ui::search::capability::SearchSource>(self);
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
     }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[actions::FEEDS_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in Widget::children_mut(self) {
+            child.settle(edits, path);
         }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        let started = {
-            let mut core = self.core.borrow_mut();
-            if let Some(started) = core.admit_resource_operation(
-                request.invocation,
-                request.kind,
-                request.type_id,
-                request.payload,
-            )? {
-                Some(started)
-            } else {
-                core.answer_resource_operation(request.kind, request.type_id, request.payload)?
-                    .then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            ui::tilo_actions::ActionOutput::default(),
-                        )
-                    })
-            }
-        };
-        self.settle(doc);
-        Ok(started)
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        let mut core = self.core.borrow_mut();
-        core.drain_fetches_live();
-        if core
-            .resource_refresh_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            core.resource_refresh_result.take()
-        } else {
-            None
+        self.core.borrow_mut().flush_doc_writes(edits);
+        self.core.borrow_mut().drain_import(edits);
+        let actions = std::mem::take(&mut self.core.borrow_mut().pending_resource_actions);
+        for action in actions {
+            self.core.borrow_mut().perform_action(edits, &action);
         }
+        self.drain_modal_actions(edits);
+        self.settle_controls(edits);
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
-            let (doc, _) = ui::doc::document(state, path);
+            let (doc, _) = ui::doc::document_ref(state, path);
             self.core.borrow_mut().sync_document(doc);
-            self.drain_modal_actions(doc);
-            self.settle(doc);
         }
         Widget::sync(&mut self.shell, state, path);
         if let Some(modal) = self.modal.as_mut() {
@@ -2453,11 +2280,9 @@ impl ui::widget::Decorator for FeedsApp {
         !core.synced || core.needs_frames() || Widget::needs_idle_sync(&self.shell)
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         {
-            let (doc, _) = ui::doc::document(state, path);
-            self.core.borrow_mut().flush_doc_writes(doc);
-            self.settle(doc);
+            let (doc, _) = ui::doc::document_ref(state, path);
         }
         if self.settled_layouts >= SETTLED_LAYOUTS {
             self.stage_pending_scenario();
@@ -2659,11 +2484,11 @@ impl ui::widget::Decorator for FeedsApp {
             self.core.borrow_mut().pointer =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        self.core.borrow_mut().flush_doc_writes(ctx.state);
+        self.core.borrow_mut().flush_doc_writes(&mut ctx.state);
         if self.modal.is_some() {
             self.route_modal_event(event, ctx);
             *ctx.handled = true;
-            self.settle(ctx.state);
+            self.settle_controls(&mut ctx.edits());
             return;
         }
         if let Some(panel) = self.settings_panel.as_mut() {
@@ -2671,7 +2496,7 @@ impl ui::widget::Decorator for FeedsApp {
             if !panel.is_open() {
                 self.close_settings_panel();
             }
-            self.settle(ctx.state);
+            self.settle_controls(&mut ctx.edits());
             return;
         }
         let menu_open = self.core.borrow().menu.is_some();
@@ -2689,7 +2514,7 @@ impl ui::widget::Decorator for FeedsApp {
             if !matches!(event, WindowEvent::CursorMoved { .. }) {
                 *ctx.handled = true;
             }
-            self.settle(ctx.state);
+            self.settle_controls(&mut ctx.edits());
             return;
         }
         if menu_open {
@@ -2714,12 +2539,12 @@ impl ui::widget::Decorator for FeedsApp {
             if self
                 .core
                 .borrow_mut()
-                .handle_key(logical_key, modified, ctx.state)
+                .handle_key(logical_key, modified, &mut ctx.edits())
             {
                 *ctx.handled = true;
             }
         }
-        self.settle(ctx.state);
+        self.settle_controls(&mut ctx.edits());
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -2826,28 +2651,16 @@ impl ui::widget::Decorator for FeedsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AppModel,
+        edits: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let handled = {
-            let (doc, _) = ui::doc::document(state, path);
-            let handled = self.handle_semantic(target, action, doc);
-            if handled.is_some() {
-                self.settle(doc);
-            }
-            handled
-        };
-        if let Some(handled) = handled {
+        if let Some(handled) = self.handle_semantic(target, action, edits) {
+            self.settle_controls(edits);
             return handled;
         }
-        let handled = Widget::perform_semantic_action(&mut self.shell, target, action, state, path);
-        let (doc, _) = ui::doc::document(state, path);
-        self.settle(doc);
+        let handled = Widget::perform_semantic_action(&mut self.shell, target, action, edits, path);
+        self.settle_controls(edits);
         handled
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.core.borrow_mut().actions.take_committed()
     }
 
     fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
@@ -2859,48 +2672,122 @@ impl ui::widget::Decorator for FeedsApp {
     }
 }
 
-impl ui::search::capability::SearchSource for FeedsApp {
-    /// Fold the reader's articles and subscriptions into the platform search,
-    /// from the store, without touching the network.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
-            &self.core.borrow().store,
-        ))]
-    }
-}
-
-impl ui::resources::PublishesResources for FeedsApp {
-    /// Publish the reader with its folders and subscriptions for the
-    /// palette. When the framework hosts the surface it already owns the
-    /// reader door, so the hosted app publishes nothing of its own.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return Vec::new();
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() && id == crate::resource::READER_RESOURCE_ID {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
-}
-
 impl ui::undo::LocalUndo for FeedsApp {
     fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
         self.core.borrow().menu.is_some() || self.settings_panel.is_some()
     }
 }
 
-impl ui::undo::CommittedActions for FeedsApp {
-    /// Hand the host the heads captured before an on-screen control
-    /// dispatched its action, so it records one undo step for it.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.core.borrow_mut().actions.take_committed()
+#[cfg(test)]
+mod tests;
+
+impl Core {
+    pub(crate) fn follow_read_settings(&mut self, setting: ui::framework::Setting<ReadSettings>) {
+        self.settings = setting.get().clamped();
+        self.read_settings = Some(setting);
+    }
+    fn adopt_read_settings(&mut self) {
+        if let Some(setting) = &self.read_settings {
+            let stored = setting.state().with(|s| s.clamped());
+            if stored != self.settings {
+                self.settings = stored;
+            }
+        }
+    }
+    pub(crate) fn change_read_settings(
+        &mut self,
+        change: impl FnOnce(&mut ReadSettings),
+    ) -> Result<(), String> {
+        let mut s = self.settings;
+        change(&mut s);
+        let s = s.clamped();
+        if let Some(setting) = &self.read_settings {
+            setting
+                .set(s)
+                .map_err(|error| format!("Couldn't save the reading settings: {error}"))?;
+        }
+        self.settings = s;
+        Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests;
+impl FeedsApp {
+    pub(crate) fn present_library(&mut self, store: Store) {
+        let mut core = self.core.borrow_mut();
+        let first = !core.synced;
+        core.store = store;
+        core.ensure_selection();
+        if first && core.selected.is_none() {
+            core.select_featured();
+        }
+        core.synced = true;
+    }
+    pub(crate) fn attach_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
+    ) {
+        self.attach_framework(dispatcher);
+    }
+    pub(crate) fn follow_read_settings(&mut self, setting: ui::framework::Setting<ReadSettings>) {
+        self.core.borrow_mut().follow_read_settings(setting);
+    }
+    pub(crate) fn change_read_settings(
+        &mut self,
+        change: impl FnOnce(&mut ReadSettings),
+    ) -> Result<(), String> {
+        self.core.borrow_mut().change_read_settings(change)
+    }
+    pub(crate) fn read_settings_for_test(&self) -> ReadSettings {
+        self.core.borrow().settings
+    }
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        if let Some(name) = scenario {
+            self.stage(name);
+        }
+    }
+    pub(crate) fn refresh_for(&mut self, reply: ui::framework::EffectReply) {
+        let mut core = self.core.borrow_mut();
+        core.refresh_all();
+        core.refresh_reply = Some(reply);
+    }
+    pub(crate) fn refresh_unavailable(&self) -> Option<(&'static str, &'static str)> {
+        let core = self.core.borrow();
+        if core.store.feeds.is_empty() {
+            Some(("no_subscriptions", "There are no subscriptions to refresh"))
+        } else if core.refresh.in_progress() {
+            Some(("refreshing", "A refresh is already running"))
+        } else {
+            None
+        }
+    }
+    pub(crate) fn request_import(&mut self) {
+        self.core.borrow_mut().request_import();
+    }
+    pub(crate) fn export_opml(&mut self) {
+        self.core.borrow_mut().export_opml();
+    }
+    pub(crate) fn reveal(&mut self, item: &str) -> Result<(), String> {
+        let mut core = self.core.borrow_mut();
+        if let Some(raw) = item.strip_prefix("feeds.subscription:") {
+            let id = raw.parse::<Id>().map_err(|_| "invalid feed id")?;
+            if core.store.feed(id).is_none() {
+                return Err("feed no longer exists".into());
+            }
+            core.set_filter(Filter::Feed(id));
+        } else if let Some(raw) = item.strip_prefix("feeds.article:") {
+            let id = raw.parse::<Id>().map_err(|_| "invalid article id")?;
+            if !core.reveal_article(id) {
+                return Err("article no longer exists".into());
+            }
+        } else if item.starts_with("feeds.tag:") {
+            let tag = actions::tag_from_resource_id(item).ok_or("invalid tag")?;
+            if !core.store.has_tag(&tag) {
+                return Err("tag no longer exists".into());
+            }
+            core.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
+        } else {
+            return Err("unknown library item".into());
+        }
+        Ok(())
+    }
+}

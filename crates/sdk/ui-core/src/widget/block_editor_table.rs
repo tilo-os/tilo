@@ -1,11 +1,10 @@
-//! `DocumentTable` — the block editor's CRDT-native **editable grid**: a
-//! table *inside a document*. Apps show tabular data with
-//! [`crate::widget::data_table::DataTable`], the one table widget; this is
-//! the document engine's structural editor, where the user types into cells
-//! and adds / removes rows and columns via hover affordances in the
-//! gutters, every mutation writing straight through to the Automerge
-//! document. It wears the table look of `DataTable`: no ground of its own,
-//! rules and bands derived from the ground it sits on.
+//! `Table` — a CRDT-native **editable grid**. Unlike
+//! [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
+//! sortable list view), this is a structural editor: the user types into
+//! cells and adds / removes rows and columns anywhere via hover affordances
+//! in the gutters. The widget only reads the document: every change the user
+//! makes is a [`TableEdit`] its owner takes ([`Table::take_edits`]) and
+//! submits as an action, applying it with [`apply`].
 //!
 //! # Data model (under the widget's `path`, a Map)
 //!
@@ -33,9 +32,7 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::TaffyTreeExt;
-use automerge::{
-    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
-};
+use automerge::{ObjId, ObjType};
 use taffy::style_helpers::length;
 use taffy::{Display, NodeId, Rect as TaffyRect, Size, Style, TaffyTree};
 use vello::Scene;
@@ -47,9 +44,12 @@ use winit::keyboard::{Key, NamedKey};
 use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
+pub use crate::table_model::*;
+use crate::table_model::{
+    DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width, usize_to_f64,
+};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::{TextInput, Widget};
 
 // ---------------------------------------------------------------------------
@@ -63,9 +63,6 @@ const TOP_GUTTER: f64 = 24.0;
 /// Trailing padding so the far-edge insert pill isn't clipped.
 const RIGHT_PAD: f64 = 12.0;
 const BOTTOM_PAD: f64 = 12.0;
-const DEFAULT_COL_W: f64 = 152.0;
-/// Columns never shrink below this when dragged.
-const MIN_COL_W: f64 = 56.0;
 /// Row height. Must match [`TextInput`]'s intrinsic cell height so the editor
 /// fills its grid track exactly.
 const ROW_H: f64 = 40.0;
@@ -75,279 +72,6 @@ const BOUNDARY_HIT: f64 = 11.0;
 const RESIZE_HIT: f64 = 4.0;
 const PILL_R: f64 = 8.0;
 const DELETE_SIDE: f64 = 15.0;
-/// Cell type, a deliberate off-scale value between `base` (14) and `lg` (16):
-/// the authored default of this grid, kept exact at 1×. `TextInput` takes a
-/// *base* size and applies the renderer's text scale itself, so the cells
-/// still follow the accessibility text scale.
-
-// ---------------------------------------------------------------------------
-// CRDT keys
-// ---------------------------------------------------------------------------
-
-const K_ROWS: &str = "rows";
-const K_COLS: &str = "cols";
-const K_CELLS: &str = "cells";
-const K_WIDTHS: &str = "widths";
-const K_HEADER: &str = "header";
-const K_SEQ: &str = "seq";
-
-// ===========================================================================
-// Model operations — the production path. These are pure functions over the
-// document, so tests exercise exactly what the widget's event handler runs.
-// ===========================================================================
-
-/// Cell key for `(row_id, col_id)`. Row/col ids are `"{actor}.{n}"`, which
-/// never contain `|`, so this concatenation is unambiguous.
-fn cell_key(rid: &str, cid: &str) -> String {
-    format!("{rid}|{cid}")
-}
-
-fn child_obj(doc: &AutoCommit, parent: &ObjId, key: &str, ty: ObjType) -> Option<ObjId> {
-    match doc.get(parent, key) {
-        Ok(Some((Value::Object(t), id))) if t == ty => Some(id),
-        _ => None,
-    }
-}
-
-fn rows_list(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
-    child_obj(doc, t, K_ROWS, ObjType::List)
-}
-fn cols_list(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
-    child_obj(doc, t, K_COLS, ObjType::List)
-}
-fn cells_map(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
-    child_obj(doc, t, K_CELLS, ObjType::Map)
-}
-fn widths_map(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
-    child_obj(doc, t, K_WIDTHS, ObjType::Map)
-}
-
-/// Create the `rows` / `cols` / `cells` / `widths` containers if the table has
-/// never been initialised. Idempotent — safe to call every `sync`.
-pub fn ensure(doc: &mut AutoCommit, t: &ObjId) {
-    if rows_list(doc, t).is_none() {
-        let _ = doc.put_object(t, K_ROWS, ObjType::List);
-    }
-    if cols_list(doc, t).is_none() {
-        let _ = doc.put_object(t, K_COLS, ObjType::List);
-    }
-    if cells_map(doc, t).is_none() {
-        let _ = doc.put_object(t, K_CELLS, ObjType::Map);
-    }
-    if widths_map(doc, t).is_none() {
-        let _ = doc.put_object(t, K_WIDTHS, ObjType::Map);
-    }
-}
-
-fn list_ids(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
-    let n = doc.length(list);
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        if let Ok(Some((Value::Scalar(s), _))) = doc.get(list, i)
-            && let ScalarValue::Str(v) = s.as_ref()
-        {
-            out.push(v.to_string());
-        }
-    }
-    out
-}
-
-/// Row ids in display order.
-pub fn row_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
-    rows_list(doc, t)
-        .map(|l| list_ids(doc, &l))
-        .unwrap_or_default()
-}
-
-/// Column ids in display order.
-pub fn col_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
-    cols_list(doc, t)
-        .map(|l| list_ids(doc, &l))
-        .unwrap_or_default()
-}
-
-/// `(rows, cols)` dimensions.
-#[cfg(test)]
-pub fn dims(doc: &AutoCommit, t: &ObjId) -> (usize, usize) {
-    (
-        rows_list(doc, t).map_or(0, |l| doc.length(&l)),
-        cols_list(doc, t).map_or(0, |l| doc.length(&l)),
-    )
-}
-
-/// Mint a globally-unique, stable id: `"{actor_hex}.{seq}"`. The actor prefix
-/// keeps ids distinct across replicas; the counter keeps them distinct within
-/// one.
-fn next_id(doc: &mut AutoCommit, t: &ObjId) -> String {
-    let seq = match doc.get(t, K_SEQ) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Int(n) => *n,
-            ScalarValue::Uint(n) => i64::try_from(*n).unwrap_or(i64::MAX),
-            _ => 0,
-        },
-        _ => 0,
-    };
-    // A monotonic per-document counter; saturate rather than wrap on the
-    // practically-unreachable chance it ever hits `i64::MAX`.
-    let _ = doc.put(t, K_SEQ, seq.saturating_add(1));
-    let actor = doc.get_actor().to_hex_string();
-    format!("{actor}.{seq}")
-}
-
-/// Resolve the `Text` object backing cell `(r, c)` in display coordinates.
-#[cfg(test)]
-pub fn cell_obj(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> Option<ObjId> {
-    let rid = row_ids(doc, t).into_iter().nth(r)?;
-    let cid = col_ids(doc, t).into_iter().nth(c)?;
-    child_obj(
-        doc,
-        &cells_map(doc, t)?,
-        &cell_key(&rid, &cid),
-        ObjType::Text,
-    )
-}
-
-/// Current text of cell `(r, c)`; empty string when the cell has no content.
-#[cfg(test)]
-pub fn cell_text(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> String {
-    match cell_obj(doc, t, r, c) {
-        Some(obj) => doc.text(&obj).unwrap_or_default(),
-        None => String::new(),
-    }
-}
-
-/// Replace the whole content of cell `(row, col)`. Creates the backing
-/// `Text` if it does not exist yet.
-#[cfg(test)]
-pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, row: usize, col: usize, text: &str) {
-    ensure(doc, t);
-    let (Some(rid), Some(cid)) = (
-        row_ids(doc, t).into_iter().nth(row),
-        col_ids(doc, t).into_iter().nth(col),
-    ) else {
-        return;
-    };
-    let Some(cells) = cells_map(doc, t) else {
-        return;
-    };
-    let key = cell_key(&rid, &cid);
-    let obj = match child_obj(doc, &cells, &key, ObjType::Text) {
-        Some(obj) => obj,
-        None => match doc.put_object(&cells, key.as_str(), ObjType::Text) {
-            Ok(obj) => obj,
-            Err(_) => return,
-        },
-    };
-    crate::doc::splice_text_diffed(doc, &obj, text);
-}
-
-/// Insert a fresh empty row at display index `at` (clamped to `0..=rows`).
-/// Every current column gets an empty backing cell.
-pub fn insert_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
-    ensure(doc, t);
-    let rid = next_id(doc, t);
-    let cols = col_ids(doc, t);
-    let (Some(rows), Some(cells)) = (rows_list(doc, t), cells_map(doc, t)) else {
-        return;
-    };
-    let at = at.min(doc.length(&rows));
-    let _ = doc.insert(&rows, at, rid.as_str());
-    for cid in &cols {
-        let _ = doc.put_object(&cells, cell_key(&rid, cid).as_str(), ObjType::Text);
-    }
-}
-
-/// Insert a fresh empty column at display index `at` (clamped to `0..=cols`).
-pub fn insert_column(doc: &mut AutoCommit, t: &ObjId, at: usize) {
-    ensure(doc, t);
-    let cid = next_id(doc, t);
-    let rows = row_ids(doc, t);
-    let (Some(cols), Some(cells)) = (cols_list(doc, t), cells_map(doc, t)) else {
-        return;
-    };
-    let at = at.min(doc.length(&cols));
-    let _ = doc.insert(&cols, at, cid.as_str());
-    for rid in &rows {
-        let _ = doc.put_object(&cells, cell_key(rid, &cid).as_str(), ObjType::Text);
-    }
-    if let Some(w) = widths_map(doc, t) {
-        let _ = doc.put(&w, cid.as_str(), DEFAULT_COL_W);
-    }
-}
-
-/// Remove the row at display index `at`, deleting its cells.
-pub fn remove_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
-    let rows_v = row_ids(doc, t);
-    let Some(rid) = rows_v.get(at).cloned() else {
-        return;
-    };
-    let cols = col_ids(doc, t);
-    if let Some(rows) = rows_list(doc, t) {
-        let _ = doc.delete(&rows, at);
-    }
-    if let Some(cells) = cells_map(doc, t) {
-        for cid in &cols {
-            let _ = doc.delete(&cells, cell_key(&rid, cid).as_str());
-        }
-    }
-}
-
-/// Remove the column at display index `at`, deleting its cells + width.
-pub fn remove_column(doc: &mut AutoCommit, t: &ObjId, at: usize) {
-    let cols_v = col_ids(doc, t);
-    let Some(cid) = cols_v.get(at).cloned() else {
-        return;
-    };
-    let rows = row_ids(doc, t);
-    if let Some(cols) = cols_list(doc, t) {
-        let _ = doc.delete(&cols, at);
-    }
-    if let Some(cells) = cells_map(doc, t) {
-        for rid in &rows {
-            let _ = doc.delete(&cells, cell_key(rid, &cid).as_str());
-        }
-    }
-    if let Some(w) = widths_map(doc, t) {
-        let _ = doc.delete(&w, cid.as_str());
-    }
-}
-
-/// Whether the first row renders as a header band.
-pub fn header(doc: &AutoCommit, t: &ObjId) -> bool {
-    matches!(
-        doc.get(t, K_HEADER),
-        Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), ScalarValue::Boolean(true))
-    )
-}
-
-fn col_width(doc: &AutoCommit, t: &ObjId, cid: &str) -> f64 {
-    match widths_map(doc, t).and_then(|w| doc.get(&w, cid).ok().flatten()) {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::F64(v) => *v,
-            // Widen via `i32` first: that conversion to `f64` is always
-            // lossless, unlike a direct `i64 -> f64` cast.
-            ScalarValue::Int(v) => {
-                f64::from(i32::try_from(*v).unwrap_or(if *v > 0 { i32::MAX } else { i32::MIN }))
-            }
-            _ => DEFAULT_COL_W,
-        },
-        _ => DEFAULT_COL_W,
-    }
-}
-
-/// Lossless `usize -> f64` widening for grid dimensions. Row/column counts
-/// are bounded far below `u32::MAX`, so routing through `u32` (which `f64`
-/// represents exactly) avoids the precision loss a direct cast risks.
-fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-fn set_col_width(doc: &mut AutoCommit, t: &ObjId, cid: &str, w: f64) {
-    if let Some(m) = widths_map(doc, t) {
-        let _ = doc.put(&m, cid, w.max(MIN_COL_W));
-    }
-}
-
 // ===========================================================================
 // Interaction state
 // ===========================================================================
@@ -391,14 +115,7 @@ struct Resize {
 // Widget
 // ===========================================================================
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag is an independent dirty/seed marker read and cleared on its own \
-              schedule (sync seed, per-frame redraw, per-frame layout, pending-commit); they \
-              are never combined into a state machine, so a bitflags/enum encoding would not \
-              simplify the call sites"
-)]
-pub struct DocumentTable {
+pub struct Table {
     id: String,
 
     // --- model mirror (refreshed each `sync`) ---
@@ -410,8 +127,12 @@ pub struct DocumentTable {
     /// Cell editors in row-major order (`len == rows * cols`). Rebuilt only
     /// when the set of `(row, col)` ids changes.
     cells: Vec<TextInput>,
+    /// What each cell showed at the last sync, so only a change is an edit.
+    synced: Vec<String>,
     /// Resolved `cells` map, so children are rooted correctly.
     cells_obj: Option<ObjId>,
+    /// The user's changes, waiting for the owner.
+    edits: Vec<TableEdit>,
 
     // --- layout ---
     rect: Rect,
@@ -422,11 +143,10 @@ pub struct DocumentTable {
     resize: Option<Resize>,
     dirty: bool,
     structure_dirty: bool,
-    pending_commit: bool,
     projection_exit: Option<bool>,
 }
 
-impl DocumentTable {
+impl Table {
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -435,15 +155,43 @@ impl DocumentTable {
             col_widths: Vec::new(),
             header: false,
             cells: Vec::new(),
+            synced: Vec::new(),
             cells_obj: None,
+            edits: Vec::new(),
             rect: Rect::ZERO,
             last_cursor: None,
             hover: Hover::None,
             resize: None,
             dirty: true,
             structure_dirty: false,
-            pending_commit: false,
             projection_exit: None,
+        }
+    }
+
+    /// The user's changes since the last call, in the order made, for the
+    /// owner to submit as actions (each applied with [`apply`]).
+    pub fn take_edits(&mut self) -> Vec<TableEdit> {
+        std::mem::take(&mut self.edits)
+    }
+
+    /// Hand each cell's typing since the last sync to the owner.
+    fn collect_cell_edits(&mut self) {
+        let columns = self.n_cols();
+        for (index, cell) in self.cells.iter_mut().enumerate() {
+            let Some(text) = cell.take_dirty() else {
+                continue;
+            };
+            if self.synced.get(index) == Some(&text) || columns == 0 {
+                continue;
+            }
+            if let Some(seen) = self.synced.get_mut(index) {
+                seen.clone_from(&text);
+            }
+            self.edits.push(TableEdit::SetCell {
+                row: index / columns,
+                column: index % columns,
+                text,
+            });
         }
     }
 
@@ -469,13 +217,10 @@ impl DocumentTable {
     }
 
     fn make_cell(rid: &str, cid: &str) -> TextInput {
-        let mut cell = TextInput::new(vec![])
+        TextInput::new(vec![])
             .with_id(&format!("cell_{rid}_{cid}"))
-            .with_on_change_path(&cell_key(rid, cid))
             .with_plain_chrome()
-            .with_text_role(TextRole::Body);
-        cell.keep_document_inset();
-        cell
+            .with_text_role(crate::tokens::TextRole::Body)
     }
 
     /// Local projection for hosts whose canonical table is already represented
@@ -493,9 +238,10 @@ impl DocumentTable {
             self.col_ids = (0..columns).map(|column| column.to_string()).collect();
             self.cells = (0..rows.len().saturating_mul(columns))
                 .map(|_| {
-                    let mut input = TextInput::local().with_plain_chrome();
+                    let mut input = TextInput::local()
+                        .with_plain_chrome()
+                        .with_text_role(crate::tokens::TextRole::Body);
                     input.set_multiline(true);
-                    input.keep_document_inset();
                     input
                 })
                 .collect();
@@ -910,7 +656,7 @@ impl DocumentTable {
         let r = self.empty_add_rect();
         let hovered = self.hover == Hover::EmptyAdd;
         let box_color = if hovered {
-            tk.colors.lift_on(tk.colors.surfaces.raised, 0.5)
+            theme.tokens.colors.intent.selection
         } else {
             tk.colors.surfaces.raised
         };
@@ -993,7 +739,7 @@ impl DocumentTable {
         let line = Stroke::new(1.0);
         // Rules derive from the body surface they cross (HIG §9.5): a white
         // veneer vanishes on a light table, a declared border on a dark one.
-        let line_color = crate::surface::edge_on(tk.colors.surfaces.content);
+        let line_color = crate::surface::edge_on(tk.colors.surfaces.raised);
         // A 1 px rule centred on an integer edge smears over two half-alpha
         // columns; the edges are whole pixels (see `draw`), so centre each
         // rule on the pixel just inside the body.
@@ -1030,7 +776,7 @@ impl DocumentTable {
             scene.stroke(
                 &line,
                 transform,
-                crate::surface::edge_on_with(tk.colors.surfaces.content, crate::chrome::GLOW_ALPHA),
+                crate::surface::edge_on_with(tk.colors.surfaces.raised, crate::chrome::GLOW_ALPHA),
                 None,
                 &Line::new((gl, y), (gr, y)),
             );
@@ -1072,7 +818,11 @@ impl DocumentTable {
         // it is derived against that chip rather than assumed to be white: on
         // the high-contrast accent white lands a hair under the non-text floor,
         // which is the palette that can least afford it.
-        let on_accent_mark = tk.colors.intent.on_inverted;
+        let on_accent_mark = tk.colors.ink_on_any(
+            &[accent],
+            tk.colors.text_primary,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
         let danger = tk.colors.semantic.danger;
         let on_danger_mark = tk.colors.ink_on_any(
             &[danger],
@@ -1171,55 +921,39 @@ impl DocumentTable {
     /// currently over. Returns `true` when the press was fully consumed by a
     /// table-level affordance (insert/delete/resize) — in that case the
     /// caller must not also forward the event to the cell editors.
-    fn handle_press(
-        &mut self,
-        p: Point,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-    ) -> bool {
+    fn handle_press(&mut self, p: Point, handled: &mut bool) -> bool {
         match self.hit(p) {
             Hover::EmptyAdd => {
                 if self.n_cols() == 0 {
-                    insert_column(state, path, 0);
+                    self.edits.push(TableEdit::InsertColumn { at: 0 });
                 }
                 if self.n_rows() == 0 {
-                    insert_row(state, path, 0);
+                    self.edits.push(TableEdit::InsertRow { at: 0 });
                 }
-                self.structure_dirty = true;
-                self.pending_commit = true;
                 self.dirty = true;
                 *handled = true;
                 true
             }
             Hover::InsertCol(i) => {
-                insert_column(state, path, i);
-                self.structure_dirty = true;
-                self.pending_commit = true;
+                self.edits.push(TableEdit::InsertColumn { at: i });
                 self.dirty = true;
                 *handled = true;
                 true
             }
             Hover::InsertRow(i) => {
-                insert_row(state, path, i);
-                self.structure_dirty = true;
-                self.pending_commit = true;
+                self.edits.push(TableEdit::InsertRow { at: i });
                 self.dirty = true;
                 *handled = true;
                 true
             }
             Hover::DeleteCol(c) => {
-                remove_column(state, path, c);
-                self.structure_dirty = true;
-                self.pending_commit = true;
+                self.edits.push(TableEdit::RemoveColumn { at: c });
                 self.dirty = true;
                 *handled = true;
                 true
             }
             Hover::DeleteRow(r) => {
-                remove_row(state, path, r);
-                self.structure_dirty = true;
-                self.pending_commit = true;
+                self.edits.push(TableEdit::RemoveRow { at: r });
                 self.dirty = true;
                 *handled = true;
                 true
@@ -1228,13 +962,13 @@ impl DocumentTable {
                 let Some(col) = i.checked_sub(1) else {
                     return false;
                 };
-                let Some(cid) = self.col_ids.get(col) else {
+                let Some(&orig_w) = self.col_widths.get(col) else {
                     return false;
                 };
                 self.resize = Some(Resize {
                     col,
                     start_x: p.x,
-                    orig_w: col_width(state, path, cid),
+                    orig_w,
                 });
                 *handled = true;
                 true
@@ -1316,12 +1050,10 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
     );
 }
 
-impl Widget for DocumentTable {
-    crate::provides!(dyn crate::undo::UndoPoints);
+impl Widget for Table {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
-        ensure(state, path);
         let new_rows = row_ids(state, path);
         let new_cols = col_ids(state, path);
         self.header = header(state, path);
@@ -1346,12 +1078,27 @@ impl Widget for DocumentTable {
             self.dirty = true;
         }
 
-        // Pull each cell's text from the `cells` map.
+        // Each cell shows its text in the `cells` map; typing stays local.
         if let Some(cells_obj) = self.cells_obj.clone() {
-            for cell in &mut self.cells {
+            let keys: Vec<String> = self
+                .row_ids
+                .iter()
+                .flat_map(|rid| self.col_ids.iter().map(move |cid| cell_key(rid, cid)))
+                .collect();
+            for (cell, key) in self.cells.iter_mut().zip(&keys) {
+                match child_obj(state, &cells_obj, key, ObjType::Text) {
+                    Some(obj) if cell.bound_obj() != Some(&obj) => cell.bind_text(obj),
+                    Some(_) => {}
+                    None => cell.clear_text_binding(),
+                }
                 cell.sync(state, &cells_obj);
             }
         }
+        self.synced = self
+            .cells
+            .iter()
+            .map(|cell| cell.value().to_owned())
+            .collect();
     }
 
     #[allow(
@@ -1432,7 +1179,17 @@ impl Widget for DocumentTable {
         presence: &PresenceCtx,
     ) {
         let tk = &theme.tokens;
-        let radius = f64::from(tk.radii.control);
+        let radius = f64::from(tk.radii.item);
+
+        // Outer frame (spans the gutters too).
+        let frame = RoundedRect::from_rect(self.rect, radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tk.colors.surfaces.base,
+            None,
+            &frame,
+        );
 
         if self.is_empty() {
             self.draw_empty_state(scene, transform, text_renderer, theme, radius);
@@ -1443,10 +1200,14 @@ impl Widget for DocumentTable {
         let (ys, body) = (&grid.ys, grid.body);
         let (gl, gr) = (body.x0, body.x1);
 
-        // The table stands on its document's ground: header band and zebra
-        // rows are derived tiers of that ground, as in `DataTable`.
-        let ground = tk.colors.surfaces.content;
-        let _ = body;
+        // Grid body surface + header band + zebra rows.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tk.colors.surfaces.raised,
+            None,
+            &body,
+        );
         for (r, w) in ys.windows(2).enumerate() {
             let [y0, y1] = *w else { continue };
             let row_rect = Rect::new(gl, y0, gr, y1);
@@ -1455,9 +1216,15 @@ impl Widget for DocumentTable {
             // surface (HIG §9.5), so they flip polarity on a light palette
             // instead of laying a white veneer over a white table.
             let fill = if is_header {
-                crate::widget::data_table::tier_on(ground, crate::chrome::HAIRLINE_ALPHA)
+                crate::widget::data_table::tier_on(
+                    tk.colors.surfaces.raised,
+                    crate::chrome::HAIRLINE_ALPHA,
+                )
             } else if r % 2 == 1 {
-                crate::widget::data_table::zebra_on(theme, ground)
+                crate::widget::data_table::tier_on(
+                    tk.colors.surfaces.raised,
+                    crate::chrome::HAIRLINE_ALPHA,
+                )
             } else {
                 continue;
             };
@@ -1484,8 +1251,10 @@ impl Widget for DocumentTable {
                     let p =
                         Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                     let new_w = (rz.orig_w + (p.x - rz.start_x)).max(MIN_COL_W);
-                    if let Some(cid) = self.col_ids.get(rz.col).cloned() {
-                        set_col_width(ctx.state, ctx.path, &cid, new_w);
+                    // The column follows the pointer here; the owner gets
+                    // the width when the drag ends.
+                    if let Some(width) = self.col_widths.get_mut(rz.col) {
+                        *width = new_w;
                     }
                     self.structure_dirty = true; // re-run build_layout with new tracks
                     self.dirty = true;
@@ -1496,8 +1265,14 @@ impl Widget for DocumentTable {
                     state: ElementState::Released,
                     ..
                 } => {
-                    self.resize = None;
-                    self.pending_commit = true;
+                    if let Some(rz) = self.resize.take()
+                        && let Some(&width) = self.col_widths.get(rz.col)
+                    {
+                        self.edits.push(TableEdit::ResizeColumn {
+                            column: rz.col,
+                            width,
+                        });
+                    }
                     *ctx.handled = true;
                     return;
                 }
@@ -1522,7 +1297,7 @@ impl Widget for DocumentTable {
                 ..
             } => {
                 if let Some(p) = self.last_cursor
-                    && self.handle_press(p, ctx.state, ctx.path, ctx.handled)
+                    && self.handle_press(p, ctx.handled)
                 {
                     return;
                 }
@@ -1554,6 +1329,7 @@ impl Widget for DocumentTable {
         }
 
         self.forward_to_cells(event, ctx, &child_nodes);
+        self.collect_cell_edits();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1572,7 +1348,7 @@ impl Widget for DocumentTable {
     }
 
     fn name(&self) -> &'static str {
-        "DocumentTable"
+        "Table"
     }
     fn test_id(&self) -> Option<&str> {
         Some(&self.id)
@@ -1626,22 +1402,6 @@ impl Widget for DocumentTable {
     }
 }
 
-impl crate::undo::UndoPoints for DocumentTable {
-    fn needs_commit(&self) -> bool {
-        self.pending_commit
-            || self
-                .cells
-                .iter()
-                .any(|cell| crate::undo::needs_commit(cell))
-    }
-    fn on_commit(&mut self) {
-        self.pending_commit = false;
-        for c in &mut self.cells {
-            c.on_commit();
-        }
-    }
-}
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -1649,7 +1409,7 @@ impl crate::undo::UndoPoints for DocumentTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ROOT;
+    use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Size as TSize};
     use winit::dpi::PhysicalPosition;
@@ -1805,11 +1565,7 @@ mod tests {
         reason = "test-only layout size is a small pixel value; f32 precision loss is \
                   immaterial"
     )]
-    fn layout(
-        table: &mut DocumentTable,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-    ) -> (TaffyTree<()>, NodeId) {
+    fn layout(table: &mut Table, doc: &AutoCommit, root: &ObjId) -> (TaffyTree<()>, NodeId) {
         table.sync(doc, root);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -1881,7 +1637,7 @@ mod tests {
     }
 
     fn dispatch(
-        table: &mut DocumentTable,
+        table: &mut Table,
         taffy: &TaffyTree<()>,
         node: NodeId,
         doc: &mut AutoCommit,
@@ -1896,7 +1652,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: doc,
+                state: crate::widget::Edits::lend(doc),
                 path: root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1904,6 +1660,10 @@ mod tests {
                 taffy,
             },
         );
+        // The owner applies what the table hands it, as an app's action does.
+        for edit in table.take_edits() {
+            apply(doc, root, &edit);
+        }
         (handled, focus_target)
     }
 
@@ -1919,8 +1679,8 @@ mod tests {
             set_cell_text(&mut doc, &t, 0, 0, "A");
             set_cell_text(&mut doc, &t, 0, 1, "B");
 
-            let mut table = DocumentTable::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             // Boundary between col 0 and col 1: xs[1] = LEFT_GUTTER + DEFAULT_COL_W.
             let bx = LEFT_GUTTER + DEFAULT_COL_W;
@@ -1959,8 +1719,8 @@ mod tests {
                 insert_row(&mut doc, &t, usize::MAX);
                 set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
             }
-            let mut table = DocumentTable::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             // Delete handle for row 1 sits in the left gutter at that row's centre.
             let cy = TOP_GUTTER + 1.5 * ROW_H;
@@ -1987,8 +1747,8 @@ mod tests {
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 2);
-            let mut table = DocumentTable::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             let cid0 = col_ids(&doc, &t)[0].clone();
             let before = col_width(&doc, &t, &cid0);
@@ -2027,6 +1787,16 @@ mod tests {
                 &cursor(bx + 40.0, by),
                 mods,
             );
+            assert!(
+                (col_width(&doc, &t, &cid0) - before).abs() < 0.5,
+                "the column follows the pointer; the owner gets the width when the drag ends"
+            );
+            let release = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            };
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &release, mods);
 
             let after = col_width(&doc, &t, &cid0);
             assert!(
@@ -2038,8 +1808,8 @@ mod tests {
         // Case `empty_table_add_affordance_creates_a_cell`.
         {
             let (mut doc, t) = doc_with_table();
-            let mut table = DocumentTable::new("t"); // no seed → empty
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let mut table = Table::new("t"); // no seed → empty
+            let (taffy, node) = layout(&mut table, &doc, &t);
             assert!(table.is_empty());
 
             let mods = Modifiers::default();
@@ -2063,15 +1833,15 @@ mod tests {
 
     #[test]
     fn cell_editing_splices_only_changed_text_and_moves_focus() {
-        // Case `typing_into_a_focused_cell_writes_through_to_the_doc`.
+        // Case `typing_into_a_focused_cell_reaches_the_owner_as_cell_edits`.
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 1);
             // Clear the seeded content so we assert on exactly what we type.
             set_cell_text(&mut doc, &t, 0, 0, "");
 
-            let mut table = DocumentTable::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             // Focus the only cell (emulating the App's focus dispatch).
             table.cells[0].set_focus(true);
@@ -2083,7 +1853,7 @@ mod tests {
             assert_eq!(
                 cell_text(&doc, &t, 0, 0),
                 "hi",
-                "keystrokes splice into the cell's Text"
+                "keystrokes reach the cell's Text through the owner"
             );
         }
 
@@ -2091,8 +1861,8 @@ mod tests {
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 2, 2);
-            let mut table = DocumentTable::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let mut table = Table::new("t");
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             // Focus the top-left cell (index 0). Cell below is index n_cols == 2.
             table.cells[0].set_focus(true);
@@ -2160,3 +1930,6 @@ mod tests {
         }
     }
 }
+
+/// The block editor’s structural table renderer.
+pub(crate) type DocumentTable = Table;

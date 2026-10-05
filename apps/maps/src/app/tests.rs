@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::Category;
+use automerge::AutoCommit;
 
 /// Effects answer from the window's state: locating reports what the
 /// location service really answered, and is unavailable while it can't be
@@ -553,7 +554,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
                 &mut a,
                 "maps.offline.download",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ),
             "no actionable Download target while saving areas is refused"
@@ -847,8 +848,8 @@ fn platform_search_opens_finds_and_activates_places() {
             category: Category::Bar,
             ..demo_poi("bar1", a.model.center.lat, a.model.center.lon)
         }];
-        let providers = ui::search::capability::SearchSource::search_providers(&a);
-        let provider = providers.first().expect("maps provides place search");
+        let provider = a.place_search.provider(a.local_places());
+        use ui::search::SearchProvider as _;
         let recents = provider.search_page(&SearchQuery::new(""), None, 10, 10);
         assert!(
             recents
@@ -953,7 +954,7 @@ fn platform_search_opens_finds_and_activates_places() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &ctrl,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2382,7 +2383,7 @@ fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut state,
+            state: ui::widget::Edits::lend(&mut state),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -2594,7 +2595,7 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
             &mut a,
             "maps.navigation.end",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(a.model.route.is_none());
@@ -2916,7 +2917,7 @@ fn semantic_controls_are_stable_modal_and_operable() {
             &mut a,
             "maps.control:traffic",
             &ui::a11y::Action::ToggleCheck,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(a.map_controls.traffic_enabled());
@@ -2966,7 +2967,7 @@ fn semantic_controls_are_stable_modal_and_operable() {
             &mut a,
             "maps.offline.close",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(!a.offline_panel.is_open());

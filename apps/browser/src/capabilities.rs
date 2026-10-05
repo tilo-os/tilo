@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
-use ui::widget::{Actions, Button, ButtonRole, Column, EmptyState, ListRow, Text, Widget};
+use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, Widget};
 
 pub(crate) struct Capabilities {
     permissions: BTreeMap<u32, (String, String)>,
@@ -118,7 +118,7 @@ impl Capabilities {
                     .unwrap_or(0)
                     .min(100);
                 return Some(format!(
-                    "{count} {} at {percent}%",
+                    "{count} {} · {percent}%",
                     if count == 1 { "download" } else { "downloads" }
                 ));
             }
@@ -280,59 +280,51 @@ impl Capabilities {
     }
     pub fn prompt(&self, engine: &SharedEngine) -> Option<Box<dyn Widget>> {
         let downloads = self.downloads.borrow();
-        let (id, title, detail, permission) =
+        let (id, title, permission) =
             if let Some((&id, (origin, rights))) = self.permissions.first_key_value() {
                 (
                     id,
-                    format!("{origin} requests {rights}"),
-                    "The request expires in 60 seconds.".to_owned(),
+                    format!("{origin} requests {rights}. Expires in 60 seconds."),
                     true,
                 )
             } else if let Some((&id, (url, name))) = downloads.prompts.first_key_value() {
                 (
                     id,
-                    format!("Download {name}?"),
-                    format!("From {url}. It is saved in a new folder in Downloads."),
+                    format!("Download {name} from {url}? Save in a new folder in Downloads."),
                     false,
                 )
             } else {
                 return None;
             };
         drop(downloads);
-        let decide = |label: &str, allow: bool| {
+        let mut row = Row::new();
+        for (label, allow) in [
+            (if permission { "Allow" } else { "Save" }, true),
+            ("Deny", false),
+        ] {
             let engine = engine.clone();
-            Button::new(
-                &format!("browser.decision.{permission}.{id}.{allow}"),
-                label,
-                None,
-            )
-            .on_effect(move || {
-                engine.send(if permission {
-                    WebViewCommand::PermissionDecision { id, allow }
-                } else {
-                    WebViewCommand::DownloadDecision { id, allow }
-                });
-            })
-        };
-        let (accept, decline) = if permission {
-            ("Allow", "Deny")
-        } else {
-            ("Save", "Don’t save")
-        };
-        // Content of the popover the browser anchors to the control the
-        // question concerns: what is asked, then the decision.
+            row = row.push(Box::new(
+                Button::new(
+                    &format!("browser.decision.{permission}.{id}.{allow}"),
+                    label,
+                )
+                .control_size(ui::widget::ControlSize::Regular)
+                .on_effect(move || {
+                    engine.send(if permission {
+                        WebViewCommand::PermissionDecision { id, allow }
+                    } else {
+                        WebViewCommand::DownloadDecision { id, allow }
+                    });
+                }),
+            ));
+        }
         Some(Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(Text::new(&title).with_role(TextRole::Subheading)))
-                .push(Box::new(
-                    Text::new(&detail).with_role(TextRole::Caption).dimmed(),
-                ))
-                .push(Box::new(
-                    Actions::new(decide(accept, true).role(ButtonRole::Primary))
-                        .secondary(decide(decline, false)),
-                )),
+            Container::new().with_background().with_child(Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .push(Box::new(Text::new(&title).with_role(ui::TextRole::Body)))
+                    .push(Box::new(row)),
+            )),
         ))
     }
     /// Whether the question on offer is a site's permission request, rather
@@ -408,10 +400,11 @@ impl Capabilities {
                     (d.total > 0).then_some(d.total),
                 ));
                 buttons.push(
-                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel", None)
-                        .on_effect(move || {
+                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel").on_effect(
+                        move || {
                             engine.send(WebViewCommand::CancelNativeDownload { id });
-                        }),
+                        },
+                    ),
                 );
             }
             if d.state == "complete" && !d.path.is_empty() {
@@ -421,8 +414,8 @@ impl Capabilities {
                     let path = std::path::PathBuf::from(&d.path);
                     let notice = self.notice.writer();
                     buttons.push(
-                        Button::new(&format!("browser.download.{name}.{id}"), label, None)
-                            .on_effect(move || match open_download(&path, reveal) {
+                        Button::new(&format!("browser.download.{name}.{id}"), label).on_effect(
+                            move || match open_download(&path, reveal) {
                                 Err(message) => notice.set(message),
                                 Ok(channel) => {
                                     let notice = notice.clone();
@@ -440,7 +433,8 @@ impl Capabilities {
                                             });
                                         });
                                 }
-                            }),
+                            },
+                        ),
                     );
                 }
             }
@@ -448,10 +442,11 @@ impl Capabilities {
                 if d.retryable {
                     let engine = engine.clone();
                     buttons.push(
-                        Button::new(&format!("browser.download.retry.{id}"), "Retry", None)
-                            .on_effect(move || {
+                        Button::new(&format!("browser.download.retry.{id}"), "Retry").on_effect(
+                            move || {
                                 engine.send(WebViewCommand::RetryDownload { id });
-                            }),
+                            },
+                        ),
                     );
                 } else {
                     row = row.meta("Can’t retry");
@@ -481,6 +476,7 @@ impl Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::framework::HostDelivery as _;
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         widget.test_id() == Some(id) || widget.children().iter().any(|child| contains(*child, id))
     }
@@ -514,16 +510,13 @@ mod tests {
                 error: String::new(),
             });
             assert!(capabilities.downloads_changed());
-            let mut rows = capabilities.downloads(&engine, &ui::theme::Theme::dark());
+            let mut rows = capabilities.downloads(&engine, &ui::Theme::dark());
             assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
             let result = rows
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.download.cancel.7").unwrap(),
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.download.cancel.7").unwrap(),
                     &mut automerge::AutoCommit::new(),
                     &automerge::ROOT,
                 )
@@ -546,9 +539,7 @@ mod tests {
                 error: String::new(),
             });
             assert!(contains(
-                capabilities
-                    .downloads(&engine, &ui::theme::Theme::dark())
-                    .as_ref(),
+                capabilities.downloads(&engine, &ui::Theme::dark()).as_ref(),
                 "browser.download.open.7"
             ));
             for id in 8..150 {
@@ -609,7 +600,7 @@ mod tests {
                     total: 8,
                     error: String::new(),
                 });
-                let view = capabilities.downloads(&engine, &ui::theme::Theme::dark());
+                let view = capabilities.downloads(&engine, &ui::Theme::dark());
                 assert_eq!(
                     contains(view.as_ref(), "browser.download.open.7"),
                     state == "complete"
@@ -647,7 +638,7 @@ mod tests {
             }
             assert_eq!(
                 capabilities.toolbar_status().as_deref(),
-                Some("4 downloads at 50%")
+                Some("4 downloads · 50%")
             );
         }
 
@@ -669,7 +660,7 @@ mod tests {
             });
             assert_eq!(
                 capabilities.toolbar_status().as_deref(),
-                Some("1 download at 25%")
+                Some("1 download · 25%")
             );
 
             capabilities.apply(WebViewEvent::DownloadUpdated {
@@ -683,16 +674,13 @@ mod tests {
                 total: 0,
                 error: "connection reset".into(),
             });
-            let mut rows = capabilities.downloads(&engine, &ui::theme::Theme::dark());
+            let mut rows = capabilities.downloads(&engine, &ui::Theme::dark());
             assert!(contains(rows.as_ref(), "browser.download.retry.41"));
             let result = rows
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.download.retry.41").unwrap(),
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.download.retry.41").unwrap(),
                     &mut automerge::AutoCommit::new(),
                     &automerge::ROOT,
                 )
@@ -746,9 +734,7 @@ mod tests {
             });
             assert!(capabilities.exit_cleanup_complete());
             assert!(contains(
-                capabilities
-                    .downloads(&engine, &ui::theme::Theme::dark())
-                    .as_ref(),
+                capabilities.downloads(&engine, &ui::Theme::dark()).as_ref(),
                 "browser.download.terminal-status"
             ));
         }

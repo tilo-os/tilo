@@ -13,6 +13,7 @@ use ui::widget::{
     Avatar, AvatarSize, Chip, Column, Element, Property, PropertyList, Row, Scrollable, Text,
 };
 
+use crate::form::Slot;
 use crate::model::{Address, Contact};
 use crate::view::{Request, Shared, queue};
 
@@ -142,36 +143,65 @@ pub(crate) fn contact_page(
         contact
             .phones
             .iter()
-            .filter(|phone| !phone.value.trim().is_empty())
-            .map(|phone| {
+            .enumerate()
+            .filter(|(_, phone)| !phone.value.trim().is_empty())
+            .map(|(index, phone)| {
                 Property::new(phone_label(&phone.label), phone.value.clone())
                     .with_kind(TextKind::Numeric)
                     .copyable()
+                    .action(
+                        Icon::Pencil,
+                        "Edit phone",
+                        queue(shared, Request::EditField(contact.id, Slot::Phone(index))),
+                    )
             }),
     );
     facts.extend(
         contact
             .emails
             .iter()
-            .filter(|email| !email.value.trim().is_empty())
-            .map(|email| {
+            .enumerate()
+            .filter(|(_, email)| !email.value.trim().is_empty())
+            .map(|(index, email)| {
                 Property::new(qualified(&email.label, "email"), email.value.clone())
                     .with_kind(TextKind::Identifier)
                     .copyable()
+                    .action(
+                        Icon::Pencil,
+                        "Edit email",
+                        queue(shared, Request::EditField(contact.id, Slot::Email(index))),
+                    )
             }),
     );
     facts.extend(
         contact
             .addresses
             .iter()
-            .filter(|address| !address.is_empty())
-            .map(|address| {
+            .enumerate()
+            .filter(|(_, address)| !address.is_empty())
+            .map(|(index, address)| {
                 Property::new(qualified(&address.label, "address"), address_lines(address))
                     .copyable()
+                    .action(
+                        Icon::Pencil,
+                        "Edit address",
+                        queue(
+                            shared,
+                            Request::EditField(contact.id, Slot::AddrStreet(index)),
+                        ),
+                    )
             }),
     );
     if let Some(birthday) = &contact.birthday {
-        facts.push(Property::new("Birthday", birthday.pretty()).with_kind(TextKind::Numeric));
+        facts.push(
+            Property::new("Birthday", birthday.pretty())
+                .with_kind(TextKind::Numeric)
+                .action(
+                    Icon::Pencil,
+                    "Edit birthday",
+                    queue(shared, Request::EditField(contact.id, Slot::Birthday)),
+                ),
+        );
     }
     let website = contact.website.trim();
     if !website.is_empty() {
@@ -187,7 +217,11 @@ pub(crate) fn contact_page(
     }
     let notes = contact.notes.trim();
     if !notes.is_empty() {
-        facts.push(Property::new("Notes", notes));
+        facts.push(Property::new("Notes", notes).action(
+            Icon::Pencil,
+            "Edit notes",
+            queue(shared, Request::EditField(contact.id, Slot::Notes)),
+        ));
     }
     if !facts.is_empty() {
         page = page.push(Box::new(PropertyList::new(facts)));

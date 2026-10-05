@@ -763,7 +763,7 @@ fn modal_control_inventory_hides_backdrop_action_emitters() {
         )
         .unwrap(),
     );
-    let button = Button::new("go", "Go", None)
+    let button = Button::new("go", "Go")
         .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)

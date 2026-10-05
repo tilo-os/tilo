@@ -1,16 +1,15 @@
 //! Three-way merge view.
 //!
 //! Top band: three columns — base / ours / theirs — rendered hunk-by-hunk so a
-//! conflict shows the same vertical span across all three. Every change takes
-//! a status badge and a segmented resolution (take ours / theirs / both).
-//! Bottom band: the merged result, mirrored from the Automerge `Text` so it is
-//! the collaboratively-editable authoritative output. Choosing a resolution
-//! re-composes the merged buffer and writes it into the CRDT.
+//! conflict shows the same vertical span across all three. Conflicts get
+//! per-hunk action chips (take ours / take theirs / take both). Bottom band:
+//! the merged result, the document's text, which every collaborator edits
+//! through a [`TextControl`]. Clicking an action chip submits the hunk's
+//! resolution, which recomposes the merged result.
 
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::AutoCommit;
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -18,10 +17,12 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use ui::framework::{Dispatcher, TextControl};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::PlainText;
 use ui::tokens::TextRole;
 use ui::widget::code_editor::Span;
 use ui::widget::toggle_group::SegmentedStyle;
@@ -30,8 +31,8 @@ use ui::widget::{
     SegmentedFace, ToggleGroup, Tone, Widget,
 };
 
-use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
-use crate::doc::{MergeDoc, SharedMerge};
+use crate::actions::{self, DiffmergeAction, HunkChoice};
+use crate::doc::{MergeDoc, MergeInputs, MergeState};
 use crate::highlight;
 use crate::i18n::{count, t, t_args};
 use crate::model::{MergeHunk, MergeModel, Resolution};
@@ -140,6 +141,14 @@ impl SourcePane {
         }
     }
 
+    fn a11y_id(self) -> &'static str {
+        match self {
+            Self::Base => "diffmerge.source.base",
+            Self::Ours => "diffmerge.source.ours",
+            Self::Theirs => "diffmerge.source.theirs",
+        }
+    }
+
     fn previous(self) -> Self {
         match self {
             Self::Base => Self::Theirs,
@@ -186,8 +195,13 @@ struct ActionHit {
 /// The three-way merge panel.
 pub struct MergeView {
     model: MergeModel,
-    /// Last three-way inputs loaded locally (projected into the document).
-    shared: Option<SharedMerge>,
+    /// The inputs shown, as the document holds them.
+    inputs: Option<MergeInputs>,
+    /// Whether the merged result is what the recorded sides compose, so a
+    /// side may still be taken ([`MergeState::composed`]).
+    composed: bool,
+    /// The participant may only view.
+    read_only: bool,
     base_label: String,
     ours_label: String,
     theirs_label: String,
@@ -215,26 +229,17 @@ pub struct MergeView {
     /// the change under review when fresh inputs were loaded.
     reveal: Option<usize>,
     dirty: bool,
-    /// Set when a fresh set of inputs was loaded: the next `sync` seeds the
-    /// merged buffer (a projection of the external inputs, not a replayable
-    /// action) and clears any stale per-hunk resolutions.
-    pending_seed: bool,
-    /// When the framework hosts this view, seed writes are queued here instead
-    /// of being written into the document directly.
-    hosted: bool,
-    seed_request: Option<String>,
-    expected_content: Option<crate::doc::AuthoredSnapshot>,
-    merged_output: String,
-    /// A conflict resolution the user just triggered, waiting to be drained by
-    /// the parent app and dispatched as a [`DiffmergeAction`] through the
-    /// shared action path (so a click and Ctrl+K produce one undo boundary).
+    /// A conflict resolution the user just triggered via a chip, waiting to be
+    /// drained by the parent app and submitted through its dispatcher (so a
+    /// chip and Ctrl+K produce the same action).
     pending_action: Option<DiffmergeAction>,
     /// Last measured row metrics (see [`Metrics`]); an estimate until the
     /// first draw.
     metrics: Metrics,
-    /// The authoritative merged CRDT text, edited through the same shared
-    /// caret/selection/IME/clipboard implementation as every code surface.
-    merged_editor: CodeEditor,
+    /// The merged result, edited through the same caret/selection/IME/
+    /// clipboard implementation as every code surface, every edit a splice
+    /// of the document's text.
+    merged_editor: TextControl<CodeEditor>,
 }
 
 impl Default for MergeView {
@@ -247,7 +252,9 @@ impl MergeView {
     pub fn new() -> Self {
         Self {
             model: MergeModel::default(),
-            shared: None,
+            inputs: None,
+            composed: false,
+            read_only: false,
             base_label: String::new(),
             ours_label: String::new(),
             theirs_label: String::new(),
@@ -265,120 +272,54 @@ impl MergeView {
             widest: 0,
             reveal: None,
             dirty: true,
-            pending_seed: false,
-            hosted: false,
-            seed_request: None,
-            expected_content: None,
-            merged_output: String::new(),
             pending_action: None,
             metrics: Metrics::unmeasured(&Theme::dark()),
-            merged_editor: CodeEditor::new(Vec::new())
-                .with_language(Language::PlainText)
-                .with_id("diffmerge_merged_editor"),
+            merged_editor: TextControl::view_only(
+                CodeEditor::new(Vec::new())
+                    .with_language(Language::PlainText)
+                    .with_id("diffmerge_merged_editor"),
+                MergeDoc::merged_text_id,
+            ),
         }
     }
 
-    pub(crate) fn context_matches(&self, doc: &AutoCommit) -> bool {
-        self.expected_content
-            .as_ref()
-            .is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
-    }
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
-        self.hosted = hosted;
+    /// Submit edits of the merged result through `edits`.
+    pub(crate) fn attach(&mut self, edits: Dispatcher<PlainText>) {
+        self.merged_editor.attach(edits);
     }
 
-    /// The provisional buffer a hosted view wants written as [`DiffmergeAction::SeedMerge`].
-    pub(crate) fn take_seed_request(&mut self) -> Option<String> {
-        self.seed_request.take()
-    }
-
-    /// Show the merged buffer the framework resource already holds.
-    pub(crate) fn adopt_merged(&mut self, merged: &str) {
-        if self.merged_output != merged {
-            self.merged_output = merged.to_string();
-        }
-    }
-
-    pub(crate) fn acknowledge_content(&mut self, doc: &AutoCommit) {
-        self.expected_content = Some(crate::doc::authored_snapshot(doc));
-        self.merged_output = MergeDoc::merged_text(doc);
-    }
-    /// Historical/remote content cannot identify the unsaved original input hunks.
-    pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
-        if !self.pending_seed && !self.context_matches(doc) {
-            let adoptable = SharedMerge::read(doc).filter(|shared| {
-                let mut model = shared.into_model();
-                crate::doc::apply_resolutions(&mut model, doc);
-                model.merged_text() == MergeDoc::merged_text(doc)
-            });
-            if let Some(shared) = adoptable {
-                self.adopt_shared(&shared, doc);
-            } else {
-                // Missing shared projection, or a restored merged buffer that no
-                // longer matches the three-way compose — drop actionable hunks
-                // so a queued ResolveHunk cannot overwrite the restored output.
-                self.model = MergeModel::default();
-                self.shared = None;
-                self.base_label.clear();
-                self.ours_label.clear();
-                self.theirs_label.clear();
-                self.source_spans.clear();
-                self.pending_action = None;
-                self.action_hits.clear();
-                self.hunk_spans.clear();
-                self.active_hunk = None;
-                self.expected_content = None;
-                self.dirty = true;
-            }
-        }
-        self.merged_output = MergeDoc::merged_text(doc);
-    }
-
-    /// Adopt a shared three-way projection from the document (or present).
-    pub(crate) fn adopt_shared_model(&mut self, title: &str, model: &MergeModel) {
-        let _ = title;
-        if self.model.hunks.is_empty() && !model.hunks.is_empty() {
-            self.model = model.clone();
-            self.source_spans = HunkSpans::for_model(
-                &self.model,
-                [&self.base_label, &self.ours_label, &self.theirs_label],
-            );
-            self.recompute_spans();
-            self.active_hunk = self
-                .first_conflict()
-                .or_else(|| self.model.change_indices().first().copied());
+    /// The participant may only view: no side can be taken.
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only != read_only {
+            self.read_only = read_only;
             self.dirty = true;
         }
     }
 
-    fn adopt_shared(&mut self, shared: &SharedMerge, doc: &AutoCommit) {
-        self.base_label.clone_from(&shared.base_label);
-        self.ours_label.clone_from(&shared.ours_label);
-        self.theirs_label.clone_from(&shared.theirs_label);
-        self.shared = Some(shared.clone());
-        self.model = shared.into_model();
-        crate::doc::apply_resolutions(&mut self.model, doc);
-        self.source_spans = HunkSpans::for_model(
-            &self.model,
-            [&self.base_label, &self.ours_label, &self.theirs_label],
-        );
-        self.recompute_spans();
-        self.active_hunk = self
-            .first_conflict()
-            .or_else(|| self.model.change_indices().first().copied());
-        self.expected_content = Some(crate::doc::authored_snapshot(doc));
+    /// Show `state`: the inputs when they changed, the side recorded for
+    /// each hunk, and whether sides can still be taken.
+    pub(crate) fn present(&mut self, state: &MergeState) {
+        if self.inputs != state.merge {
+            match &state.merge {
+                Some(inputs) => self.set_inputs(inputs),
+                None => self.clear_inputs(),
+            }
+        }
+        if self.model.hunks.len() == state.model.hunks.len() {
+            for (shown, stored) in self.model.hunks.iter_mut().zip(&state.model.hunks) {
+                shown.resolution = stored.resolution;
+            }
+        } else {
+            self.model = state.model.clone();
+            self.recompute_spans();
+        }
+        self.composed = state.composed;
         self.pending_action = None;
-        self.action_hits.clear();
         self.dirty = true;
     }
 
-    pub(crate) fn shared_merge(&self) -> Option<&SharedMerge> {
-        self.shared.as_ref()
-    }
-
-    /// Place the panel at `rect` directly (the parent app reserves the status
-    /// bar below it and re-places the view whenever that band's measured
+    /// Place the panel at `rect` directly (the parent app owns the toolbar
+    /// band above it and re-places the view whenever that band's measured
     /// height changes, so paint and layout agree within one frame).
     pub(crate) fn place(&mut self, rect: Rect) {
         if rect != self.rect {
@@ -404,29 +345,16 @@ impl MergeView {
         self.content_height()
     }
 
-    pub fn set_inputs(
-        &mut self,
-        base_label: &str,
-        base: &str,
-        ours_label: &str,
-        ours: &str,
-        theirs_label: &str,
-        theirs: &str,
-    ) {
-        self.shared = Some(SharedMerge {
-            base: base.to_string(),
-            ours: ours.to_string(),
-            theirs: theirs.to_string(),
-            base_label: base_label.to_string(),
-            ours_label: ours_label.to_string(),
-            theirs_label: theirs_label.to_string(),
-        });
-        self.model = MergeModel::compute(base, ours, theirs);
-        self.base_label = base_label.to_string();
-        self.ours_label = ours_label.to_string();
-        self.theirs_label = theirs_label.to_string();
-        self.source_spans =
-            HunkSpans::for_model(&self.model, [base_label, ours_label, theirs_label]);
+    fn set_inputs(&mut self, inputs: &MergeInputs) {
+        self.inputs = Some(inputs.clone());
+        self.model = inputs.model();
+        self.base_label.clone_from(&inputs.base_label);
+        self.ours_label.clone_from(&inputs.ours_label);
+        self.theirs_label.clone_from(&inputs.theirs_label);
+        self.source_spans = HunkSpans::for_model(
+            &self.model,
+            [&inputs.base_label, &inputs.ours_label, &inputs.theirs_label],
+        );
         // Spans depend on the model as much as on the metrics; a new input
         // set at an unchanged rect must not paint against stale spans.
         self.recompute_spans();
@@ -437,7 +365,20 @@ impl MergeView {
             .or_else(|| self.model.change_indices().first().copied());
         self.reveal = self.active_hunk;
         self.dirty = true;
-        self.pending_seed = true;
+    }
+
+    fn clear_inputs(&mut self) {
+        self.inputs = None;
+        self.model = MergeModel::default();
+        self.base_label.clear();
+        self.ours_label.clear();
+        self.theirs_label.clear();
+        self.source_spans.clear();
+        self.recompute_spans();
+        self.action_hits.clear();
+        self.scroll_y = 0.0;
+        self.active_hunk = None;
+        self.dirty = true;
     }
 
     pub fn model(&self) -> &MergeModel {
@@ -453,7 +394,7 @@ impl MergeView {
     }
 
     pub(crate) fn merged_editor_focused(&self) -> bool {
-        self.merged_editor.is_focused()
+        self.merged_editor.control().is_focused()
     }
 
     fn is_compact(&self) -> bool {
@@ -511,22 +452,8 @@ impl MergeView {
             .collect()
     }
 
-    /// Presentation context for the Ctrl+K resource tree: the merge title plus a
-    /// snapshot of the model the per-hunk specs compose from. `None` when there
-    /// is nothing to resolve.
-    pub(crate) fn resource_ctx(&self) -> Option<MergeResourceCtx> {
-        if self.model.change_count() == 0 {
-            return None;
-        }
-        let title = crate::doc::merge_title(&self.ours_label, &self.theirs_label);
-        Some(MergeResourceCtx {
-            title,
-            model: self.model.clone(),
-        })
-    }
-
-    /// Take the pending resolution, if any, so the parent app can dispatch it
-    /// through the shared action path. Rising-edge: cleared on read.
+    /// Take the pending chip-triggered resolution, if any, so the parent app can
+    /// dispatch it through the shared action path. Rising-edge: cleared on read.
     pub(crate) fn take_pending_action(&mut self) -> Option<DiffmergeAction> {
         self.pending_action.take()
     }
@@ -596,25 +523,24 @@ impl MergeView {
             .position(|h| h.resolution.is_conflict())
     }
 
-    /// Resolve `hunk` by taking `choice`. Updates the in-memory model for
-    /// immediate feedback and queues the matching [`DiffmergeAction`] (with the
-    /// recomposed merged output baked in) for the parent app to dispatch through
-    /// the shared action path — so a click and the Ctrl+K row produce the
-    /// same replayable action under one undo boundary. The document write itself
-    /// happens via that action, not here.
+    /// Whether a side can be taken for `hunk` now.
+    pub(crate) fn can_resolve(&self, hunk: usize) -> bool {
+        self.composed && !self.read_only && self.model.hunks.get(hunk).is_some_and(|h| h.is_change)
+    }
+
+    /// Resolve `hunk` by taking `choice`: shows the choice at once and queues
+    /// the matching [`DiffmergeAction`] for the parent app to submit — the
+    /// same action the palette's row builds. The document changes through
+    /// that action; if it is refused, the stored state is presented again.
     pub fn resolve(&mut self, hunk: usize, choice: HunkChoice) {
-        if hunk >= self.model.hunks.len() {
+        if !self.can_resolve(hunk) {
             return;
         }
-        // Compose the resulting merged output BEFORE mutating so the queued
-        // action is composed from the same model state the palette spec is —
-        // guaranteeing a byte-identical envelope from either entry point.
-        let merged = actions::compose_choice(&self.model, hunk, choice);
         if let Some(h) = self.model.hunks.get_mut(hunk) {
             h.resolution = choice.to_resolution();
         }
         self.active_hunk = Some(hunk);
-        self.pending_action = Some(actions::resolve_hunk_action(hunk, choice, merged));
+        self.pending_action = Some(actions::resolve_hunk_action(hunk, choice));
         self.dirty = true;
     }
 
@@ -1034,7 +960,7 @@ impl MergeView {
             }
 
             // Status and resolution for change hunks.
-            if h.is_change {
+            if h.is_change && self.can_resolve(hi) {
                 let band_y = block.y1 + m.gap;
                 let (status_x, status_y, strip_x, strip_y) = if compact {
                     (r.x0 + pad, band_y, r.x0 + pad, band_y + m.badge_h + m.gap)
@@ -1086,7 +1012,7 @@ impl MergeView {
             header,
             None,
         );
-        if self.expected_content.is_some() {
+        if self.inputs.is_some() {
             let conflicts = self.model.conflict_count();
             let (label, tone) = if conflicts == 0 {
                 (t("merged-resolved"), Tone::Success)
@@ -1119,59 +1045,17 @@ impl MergeView {
         // Merged buffer body. The shared editor owns text, caret, selection,
         // scrolling, clipboard, IME, accessibility, and CRDT splices.
         let merged_body = Rect::new(merged.x0, header.y1, merged.x1, merged.y1);
-        self.merged_editor.set_rect(merged_body);
+        self.merged_editor.control_mut().set_rect(merged_body);
         self.merged_editor
+            .control_mut()
             .draw_embedded(ctx.scene, ctx.transform, ctx.text, theme);
     }
 }
 
 impl Widget for MergeView {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
-        if self.hosted {
-            if self.pending_seed {
-                self.seed_request = Some(self.model.merged_text());
-                self.pending_seed = false;
-            } else {
-                self.reconcile_content(state);
-                if !MergeDoc::has_merged(state) {
-                    self.seed_request = Some(self.model.merged_text());
-                }
-            }
-        } else if self.pending_seed {
-            // Fresh inputs: seed the provisional merged output and drop any
-            // stale per-hunk resolutions whose indices no longer correspond.
-            // The hosted path queues this as `SeedMerge` instead.
-            MergeDoc::clear_resolutions(state);
-            MergeDoc::set_merged(state, &self.model.merged_text());
-            self.pending_seed = false;
-            self.acknowledge_content(state);
-        } else {
-            self.reconcile_content(state);
-        }
-        if !self.hosted && !MergeDoc::has_merged(state) {
-            MergeDoc::set_merged(state, &self.model.merged_text());
-        }
-        let merged = MergeDoc::merged_text_obj(state);
-        self.merged_editor.bind_text(merged);
-        self.merged_editor.pull(state);
-        // Reconcile chip state from resolutions recorded by (possibly remote)
-        // actions, so a reload or a peer shows the same take-a-side selections.
-        // The merged `Text` itself stays authoritative — the actions already
-        // wrote it — so this only tints the in-memory hunks.
-        for (hunk, choice) in MergeDoc::resolutions(state) {
-            if let (Some(h), Some(c)) = (
-                self.model.hunks.get_mut(hunk),
-                HunkChoice::from_tag(&choice),
-            ) && h.is_change
-            {
-                let res = c.to_resolution();
-                if h.resolution != res {
-                    h.resolution = res;
-                    self.dirty = true;
-                }
-            }
-        }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document_ref(state, path);
+        self.merged_editor.pull(doc);
     }
 
     fn build_layout(
@@ -1208,7 +1092,7 @@ impl Widget for MergeView {
         ));
         self.recompute_spans();
         let merged = self.merged_band_rect();
-        self.merged_editor.set_rect(Rect::new(
+        self.merged_editor.control_mut().set_rect(Rect::new(
             merged.x0,
             merged.y0 + self.metrics.merged_header_h,
             merged.x1,
@@ -1266,24 +1150,14 @@ impl Widget for MergeView {
             transform,
             &band_clip,
         );
-        if self.expected_content.is_none() && !self.merged_output.is_empty() {
-            let title = t("merged-unavailable");
-            let content = EmptyStateContent {
-                icon: Some(Icon::TriangleAlert),
-                ..EmptyStateContent::new(&title)
-            };
-            EmptyState::paint(&mut ctx, band_clip, &content, Point::new(-1.0, -1.0));
-        } else {
-            self.draw_hunks(&mut ctx);
-            let tracks: Vec<Rect> = self
-                .source_columns()
-                .into_iter()
-                .map(|(x0, x1)| {
-                    let view = Rect::new(x0 + m.code.pad, band_top, x1 - m.code.pad, band_bot);
-                    HScroll::track_in(view, theme)
-                })
-                .collect();
-            self.across.draw(&mut ctx, &tracks);
+        self.draw_hunks(&mut ctx);
+        if self.inputs.is_none() {
+            EmptyState::paint(
+                &mut ctx,
+                band_clip,
+                &EmptyStateContent::new(&t("empty-title")),
+                Point::new(-1.0, -1.0),
+            );
         }
         ctx.scene.pop_layer();
 
@@ -1303,8 +1177,13 @@ impl Widget for MergeView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.merged_editor.is_focused() || self.merged_editor.rect().contains(self.cursor) {
-            self.merged_editor.handle_event(event, ctx);
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
+        let editor = self.merged_editor.control();
+        if editor.is_focused() || editor.rect().contains(self.cursor) {
+            self.merged_editor.control_mut().handle_event(event, ctx);
+            self.merged_editor.submit(&mut ctx.state);
             if *ctx.handled {
                 return;
             }
@@ -1411,11 +1290,11 @@ impl Widget for MergeView {
     }
 
     fn set_focus(&mut self, focused: bool) {
-        self.merged_editor.set_focused(focused);
+        self.merged_editor.control_mut().set_focused(focused);
     }
 
     fn is_focused(&self) -> bool {
-        self.merged_editor.is_focused()
+        self.merged_editor.control().is_focused()
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
@@ -1431,17 +1310,98 @@ impl Widget for MergeView {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, Role};
-        let description = if self.is_compact() {
-            "One source is visible at a time. Use Left and Right Arrow to switch source."
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut node = AccessNode::new(Role::Group).with_name("Three-way merge");
+        let mut children = Vec::new();
+        if self.is_compact() {
+            children.extend(SourcePane::ALL.into_iter().map(|source| {
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(format!("Show {} source", source.label()))
+                    .with_description("Switch the visible merge source")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(source == self.selected_source),
+                    )
+                    .with_hashed_key(source.a11y_id())
+            }));
+            node = node.with_description(
+                "One source is visible at a time. Use Left and Right Arrow to switch source.",
+            );
         } else {
-            "Base, ours, and theirs are shown side by side."
+            node = node.with_description("Base, ours, and theirs are shown side by side.");
+        }
+        children.extend(self.action_hits.iter().map(|hit| {
+            let choice = match hit.choice {
+                HunkChoice::Ours => "ours",
+                HunkChoice::Theirs => "theirs",
+                HunkChoice::Both => "both",
+            };
+            let label = match hit.choice {
+                HunkChoice::Ours => "Take ours",
+                HunkChoice::Theirs => "Take theirs",
+                HunkChoice::Both => "Take both",
+            };
+            AccessNode::new(Role::Button)
+                .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
+                .with_description("Resolve this shared merge hunk")
+                .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
+                .with_bounds(hit.rect)
+                .with_state(
+                    AccessState::new().focusable(true).selected(
+                        self.model
+                            .hunks
+                            .get(hit.hunk)
+                            .is_some_and(|hunk| chip_is_selected(hunk.resolution, hit.choice)),
+                    ),
+                )
+        }));
+        if !children.is_empty() {
+            node = node.with_children(children);
+        }
+        Some(node)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let index = *path.first()?;
+        self.source_selector_rects().get(index).map(|hit| hit.rect)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let Some(&index) = path.first() else {
+            return false;
         };
-        Some(
-            AccessNode::new(Role::Group)
-                .with_name("Three-way merge")
-                .with_description(description),
-        )
+        let Some(source) = SourcePane::ALL.get(index).copied() else {
+            return false;
+        };
+        self.select_source(source);
+        true
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
+    ) -> bool {
+        use ui::a11y::hash_key;
+        if !self.is_compact()
+            || !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
+        {
+            return false;
+        }
+        let Some(&key) = key_path.first() else {
+            return false;
+        };
+        let Some(source) = SourcePane::ALL
+            .into_iter()
+            .find(|source| hash_key(&source.a11y_id()) == key)
+        else {
+            return false;
+        };
+        self.select_source(source);
+        true
     }
 
     fn needs_redraw(&self) -> bool {

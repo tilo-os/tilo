@@ -29,7 +29,7 @@ use ui::widget::{
     RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt, Widget,
 };
 
-use crate::form::{RowKind, TypeTarget};
+use crate::form::{RowKind, Slot, TypeTarget};
 use crate::model::ContactId;
 
 /// Two presses on one row within this interval open it for editing.
@@ -54,6 +54,8 @@ pub(crate) enum Request {
     Select(ContactId),
     /// A row was opened (double-click): edit it.
     Edit(ContactId),
+    /// Edit the chosen fact through the same retained form.
+    EditField(ContactId, Slot),
     /// A row's actions were asked for: at the pointer's window point, or
     /// (from the keyboard or assistive technology) under the row.
     ContextMenu(ContactId, Option<Point>),
@@ -550,8 +552,8 @@ impl Widget for ContactList {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
     ) -> bool {
         let Some(id) = target
             .strip_prefix("contacts.select:")
@@ -638,7 +640,12 @@ impl ui::widget::Decorator for EmptyPane {
         self.drain();
     }
 
-    fn perform_action(&mut self, action: &Action, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn perform_action(
+        &mut self,
+        action: &Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
         let done = Widget::perform_action(&mut self.state, action, state, path);
         self.drain();
         done
@@ -648,8 +655,8 @@ impl ui::widget::Decorator for EmptyPane {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AppModel,
-        path: &ModelPath,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
     ) -> bool {
         let done = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
         self.drain();

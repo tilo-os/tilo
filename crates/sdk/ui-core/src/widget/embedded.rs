@@ -245,7 +245,7 @@ impl<W: Widget + 'static> Embedded<W> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -281,7 +281,7 @@ impl<W: Widget + 'static> Embedded<W> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled,
                 focus_target: &mut focus,
@@ -305,7 +305,7 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// Bring the widget up to date with the document.
-    pub fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    pub fn sync(&mut self, state: &AutoCommit, path: &ObjId) {
         self.widget.sync(state, path);
     }
 }
@@ -316,7 +316,7 @@ mod tests {
     use crate::widget::{BlockContent, BlockEditor};
     use winit::event::{ElementState, MouseButton};
 
-    fn click(host: &mut Embedded<BlockEditor>, doc: &mut AutoCommit, at: Point) {
+    fn click(host: &mut Embedded<BlockEditor>, doc: &mut crate::widget::Edits<'_>, at: Point) {
         let device_id = unsafe { std::mem::zeroed() };
         for event in [
             WindowEvent::CursorMoved {
@@ -364,7 +364,7 @@ mod tests {
         // A click where the box is drawn lands in it.
         click(
             &mut host,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             Point::new(drawn.x0 + 20.0, drawn.y0 + 4.0),
         );
         assert!(host.widget().is_focused(), "the click reached the box");

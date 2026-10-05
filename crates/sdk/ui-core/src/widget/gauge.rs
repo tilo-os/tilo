@@ -567,7 +567,7 @@ impl ProgressRing {
 }
 
 impl Widget for ProgressRing {
-    fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         if let Some(reading) = self.source.as_mut().and_then(|read| read()) {
             self.apply_reading(reading);
         }

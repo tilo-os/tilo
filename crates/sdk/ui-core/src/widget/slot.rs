@@ -84,12 +84,12 @@ impl super::Decorator for Slot {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt();
         self.content.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let before = self.structure_dirty;
         self.adopt();
         self.content.update(state, path) || (self.structure_dirty && !before)
@@ -196,12 +196,12 @@ impl<K: PartialEq + 'static> super::Decorator for Switch<K> {
         self.parts[self.current].1.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.observe();
         self.parts[self.current].1.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let before = self.current;
         self.observe();
         self.parts[self.current].1.update(state, path) || before != self.current

@@ -18,12 +18,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use automerge::AutoCommit;
-use automerge::transaction::Transactable;
-
+use settings::accounts::AccountKind;
 use settings::accounts::AccountRoot;
-use settings::panes::accounts::{ADD_MAIL_KEY, AccountsPane};
-use ui::widget::Widget;
+use settings::panes::accounts::{AccountViewCommand, AccountsPane};
 
 struct AcceptAccount;
 
@@ -53,12 +50,9 @@ fn adding_an_email_account_in_settings_lands_in_the_shared_store() {
     // Drive the real Settings pane exactly as the UI would.
     let mut pane = AccountsPane::in_root(AccountRoot::at(&tilo_root))
         .with_account_tester(std::sync::Arc::new(AcceptAccount));
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
 
     // 1) Click "Add" → the inline email form opens.
-    let _ = doc.put(&root, ADD_MAIL_KEY, true);
-    pane.sync(&mut doc, &root);
+    pane.command(AccountViewCommand::Add(AccountKind::Mail));
     assert!(pane.form_open(), "Add opens the inline form");
 
     // 2) Fill the form (a Gmail address so IMAP/SMTP autofill kicks in).
@@ -69,7 +63,7 @@ fn adding_an_email_account_in_settings_lands_in_the_shared_store() {
     //    persists it to the shared store, and seals the password in the vault.
     pane.submit_form_for_test();
     assert!(
-        pane.finish_form_submission_for_test(&mut doc, &root),
+        pane.finish_form_submission_for_test(),
         "bounded account probe and disk transaction complete"
     );
     assert!(!pane.form_open(), "a successful save closes the form");

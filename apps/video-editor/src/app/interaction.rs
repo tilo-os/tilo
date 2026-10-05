@@ -16,7 +16,7 @@ impl VideoEditorApp {
         &mut self,
         key: &Key,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         r: &Regions,
     ) -> bool {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
@@ -153,7 +153,7 @@ impl VideoEditorApp {
                 if self.selection.is_empty() {
                     self.step_frame(if shift { -self.project.fps } else { -1.0 });
                 } else {
-                    self.nudge_selected(state, -step);
+                    self.nudge_selected(-step);
                 }
                 true
             }
@@ -166,7 +166,7 @@ impl VideoEditorApp {
                 if self.selection.is_empty() {
                     self.step_frame(if shift { self.project.fps } else { 1.0 });
                 } else {
-                    self.nudge_selected(state, step);
+                    self.nudge_selected(step);
                 }
                 true
             }
@@ -187,9 +187,9 @@ impl VideoEditorApp {
             // Shift+Delete ripples (closes the gap); plain Delete lifts.
             Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 if shift {
-                    self.ripple_delete_selected(state);
+                    self.ripple_delete_selected();
                 } else {
-                    self.delete_selected(state);
+                    self.delete_selected();
                 }
                 true
             }
@@ -225,16 +225,16 @@ impl VideoEditorApp {
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("x") => {
-                self.cut_selected(state);
+                self.cut_selected();
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("v") => {
-                self.paste_clip(state);
+                self.paste_clip();
                 true
             }
             // Ctrl+D drops a copy of the selection immediately after it.
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => {
-                self.duplicate_selected(state);
+                self.duplicate_selected();
                 true
             }
             // Ctrl+A selects every clip on the timeline.
@@ -263,28 +263,28 @@ impl VideoEditorApp {
             // with them — the range is a property of the timeline, the trim
             // one of a clip, and they are not the same decision.
             Key::Character(c) if shift && !ctrl && c.eq_ignore_ascii_case("i") => {
-                self.mark_in_here(state);
+                self.mark_in_here();
                 true
             }
             Key::Character(c) if shift && !ctrl && c.eq_ignore_ascii_case("o") => {
-                self.mark_out_here(state);
+                self.mark_out_here();
                 true
             }
             Key::Character(c) if shift && !ctrl && c.eq_ignore_ascii_case("x") => {
-                self.clear_marks(state);
+                self.clear_marks();
                 true
             }
             // I / O set the selected clip's in / out point to the playhead.
             Key::Character(c) if c.eq_ignore_ascii_case("i") && !ctrl => {
-                self.set_in_at_playhead(state);
+                self.set_in_at_playhead();
                 true
             }
             Key::Character(c) if c.eq_ignore_ascii_case("o") && !ctrl => {
-                self.set_out_at_playhead(state);
+                self.set_out_at_playhead();
                 true
             }
             Key::Character(c) if c.eq_ignore_ascii_case("s") && !ctrl => {
-                self.split_selected(state);
+                self.split_selected();
                 true
             }
             // Toggle the media bin flap. Useful on narrow windows where the
@@ -296,12 +296,12 @@ impl VideoEditorApp {
             // M drops a marker at the playhead and opens it for naming — an
             // unnamed tick is a marker you cannot find again.
             Key::Character(c) if c.eq_ignore_ascii_case("m") && !ctrl => {
-                self.add_marker_here(state);
+                self.add_marker_here();
                 true
             }
             // T makes a title, places it and puts the caret in its words.
             Key::Character(c) if c.eq_ignore_ascii_case("t") && !ctrl => {
-                self.add_title(state);
+                self.add_title();
                 true
             }
             // , and . step between marked instants, the project's own and
@@ -441,7 +441,7 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "one hit test per pressable region, in paint order"
     )]
-    pub(super) fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions, shift: bool) {
+    pub(super) fn handle_press(&mut self, state: &AutoCommit, r: &Regions, shift: bool) {
         let p = self.last_mouse;
 
         // Modals own all clicks. The unsaved-work question is asked over the
@@ -524,7 +524,7 @@ impl VideoEditorApp {
         // An open inspector overlay owns its own rect, before the preview and
         // timeline underneath it get a look.
         if r.inspector_overlay && self.inspector_is_visible(r) && r.inspector.contains(p) {
-            self.press_inspector(state, r, p);
+            self.press_inspector(r, p);
             return;
         }
         // Top bar buttons.
@@ -545,7 +545,7 @@ impl VideoEditorApp {
             return;
         }
         if r.split_btn.contains(p) {
-            self.split_selected(state);
+            self.split_selected();
             return;
         }
         // Empty-bin "Import media" affordance.
@@ -557,7 +557,7 @@ impl VideoEditorApp {
         }
         // "+ Title" in the bin header.
         if self.bin_is_visible(r) && self.add_title_rect(r).contains(p) {
-            self.add_title(state);
+            self.add_title();
             return;
         }
         // Media bin (only when it's on-screen: docked, or overlay open).
@@ -587,7 +587,7 @@ impl VideoEditorApp {
                         Some(ms) if (BIN_DOUBLE_CLICK_MS..BIN_RENAME_WINDOW_MS).contains(&ms)
                     );
                     if dbl {
-                        self.add_media_to_timeline(state, mid);
+                        self.add_media_to_timeline(mid);
                         self.last_click_media = None;
                         self.pending_rename = None;
                     } else {
@@ -613,7 +613,7 @@ impl VideoEditorApp {
         }
         // Inspector controls.
         if self.inspector_is_visible(r) && r.inspector.contains(p) {
-            self.press_inspector(state, r, p);
+            self.press_inspector(r, p);
             return;
         }
         // Transport controls.
@@ -666,12 +666,13 @@ impl VideoEditorApp {
                 .clamp(0.0, self.project.duration());
             return;
         }
-        // The add-track buttons under the last lane, which run out past the
-        // gutter when it is narrower than the two of them.
-        for (kind, rect) in self.add_track_buttons(r) {
-            if rect.contains(p) {
-                self.add_track(state, kind);
-                return;
+        // Timeline gutter: add-track buttons and per-track mute pills.
+        if r.gutter.contains(p) {
+            for (kind, rect) in self.add_track_buttons(r) {
+                if rect.contains(p) {
+                    self.add_track(kind);
+                    return;
+                }
             }
         }
         // Timeline gutter: per-track mute, lock and solo.
@@ -683,11 +684,11 @@ impl VideoEditorApp {
                     // so the pill under the pointer is the pill that was drawn.
                     let head = self.track_head_layout(header);
                     if head.mute.contains(p) {
-                        self.toggle_track_mute(state, tid);
+                        self.toggle_track_mute(tid);
                     } else if head.lock.contains(p) {
-                        self.toggle_track_lock(state, tid);
+                        self.toggle_track_lock(tid);
                     } else if head.solo.contains(p) {
-                        self.toggle_track_solo(state, tid);
+                        self.toggle_track_solo(tid);
                     }
                     return;
                 }
@@ -846,7 +847,7 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "the inspector hit test deliberately mirrors its ordered, scroll-clipped control layout"
     )]
-    pub(super) fn press_inspector(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
+    pub(super) fn press_inspector(&mut self, r: &Regions, p: Point) {
         // The fixed identity card is context, not a hidden control surface.
         // Do not let a translated row behind it receive a click, nor a row
         // the body leaves out because it is only part-way in view.
@@ -871,7 +872,7 @@ impl VideoEditorApp {
             }
             let (_, note_btn, rename, del) = marker_row_parts(row);
             if del.contains(p) {
-                self.delete_marker(state, m);
+                self.delete_marker(m);
             } else if note_btn.contains(p) {
                 self.begin_marker_edit(m, MarkerField::Note);
             } else if rename.contains(p) {
@@ -884,7 +885,7 @@ impl VideoEditorApp {
         if let Some(rect) = l.add_marker
             && rect.contains(p)
         {
-            self.add_marker_here(state);
+            self.add_marker_here();
             return;
         }
         // The project's format is project-level too, so it answers whether or
@@ -892,20 +893,20 @@ impl VideoEditorApp {
         // marks "a clip's controls were laid out".
         for ((w, h), rect) in l.project_frames.clone() {
             if rect.contains(p) {
-                self.set_project_frame_size(state, w, h);
+                self.set_project_frame_size(w, h);
                 return;
             }
         }
         for (rate, rect) in l.project_rates.clone() {
             if rect.contains(p) {
-                self.set_project_fps(state, rate);
+                self.set_project_fps(rate);
                 return;
             }
         }
         if let Some(rect) = l.project_match
             && rect.contains(p)
         {
-            self.match_project_format(state);
+            self.match_project_format();
             return;
         }
         if !l.valid {
@@ -962,19 +963,19 @@ impl VideoEditorApp {
         }
         for (t, rect) in &l.transitions {
             if rect.contains(p) {
-                self.set_transition(state, *t);
+                self.set_transition(*t);
                 return;
             }
         }
         if let Some(rect) = l.link
             && rect.contains(p)
         {
-            self.toggle_link_selected(state);
+            self.toggle_link_selected();
             return;
         }
         for (pal, rect) in &l.colors {
             if rect.contains(p) {
-                self.set_palette(state, *pal);
+                self.set_palette(*pal);
                 return;
             }
         }
@@ -982,15 +983,15 @@ impl VideoEditorApp {
         for (i, row) in l.effect_rows.iter().enumerate() {
             let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
             if up.contains(p) {
-                self.move_effect_selected(state, i, true);
+                self.move_effect_selected(i, true);
                 return;
             }
             if down.contains(p) {
-                self.move_effect_selected(state, i, false);
+                self.move_effect_selected(i, false);
                 return;
             }
             if remove.contains(p) {
-                self.remove_effect_from_selected(state, i);
+                self.remove_effect_from_selected(i);
                 return;
             }
             if hit_slider(slider, p) {
@@ -1031,14 +1032,14 @@ impl VideoEditorApp {
         if let Some(canvas) = l.curve_canvas
             && canvas.contains(p)
         {
-            self.press_curve(state, canvas, p);
+            self.press_curve(canvas, p);
             return;
         }
         if let Some(rect) = l.curve_reset
             && rect.contains(p)
         {
             let ch = self.curve_channel;
-            self.edit_selected(state, move |c| {
+            self.edit_selected(move |c| {
                 *c.curves.spline_mut(ch) = crate::curve::Spline::identity();
             });
             return;
@@ -1050,7 +1051,7 @@ impl VideoEditorApp {
         for (param, rect) in &l.keys {
             if rect.contains(p) {
                 if self.key_state(*param) == KeyState::Off {
-                    self.key_here(state, *param);
+                    self.key_here(*param);
                 } else {
                     self.open_key_menu(*param, p);
                 }
@@ -1069,7 +1070,7 @@ impl VideoEditorApp {
         // Picture-in-picture presets, and the way back to filling the frame.
         for (_, corner, rect) in l.pip.clone() {
             if rect.contains(p) {
-                self.edit_selected(state, move |c| {
+                self.edit_selected(move |c| {
                     c.transform = crate::model::Transform::pip(PIP_SCALE, corner, PIP_INSET);
                 });
                 return;
@@ -1077,7 +1078,7 @@ impl VideoEditorApp {
         }
         for (anchor, rect) in l.anchor.clone() {
             if rect.contains(p) {
-                self.edit_selected(state, move |c| {
+                self.edit_selected(move |c| {
                     c.transform.anchor_x = anchor.0;
                     c.transform.anchor_y = anchor.1;
                 });
@@ -1087,14 +1088,14 @@ impl VideoEditorApp {
         if let Some(rect) = l.reset_transform
             && rect.contains(p)
         {
-            self.edit_selected(state, |c| c.transform = crate::model::Transform::default());
+            self.edit_selected(|c| c.transform = crate::model::Transform::default());
             return;
         }
         for (rate, rect) in l.speed_presets.clone() {
             if rect.contains(p) {
                 let rev = self.selected_clip().map(|c| c.speed.reverse);
                 if let Some(rev) = rev {
-                    self.set_speed_selected(state, rate, rev);
+                    self.set_speed_selected(rate, rev);
                 }
                 return;
             }
@@ -1106,7 +1107,7 @@ impl VideoEditorApp {
                 .selected_clip()
                 .map(|c| (c.speed.rate(), c.speed.reverse));
             if let Some((rate, rev)) = now {
-                self.set_speed_selected(state, rate, !rev);
+                self.set_speed_selected(rate, !rev);
             }
             return;
         }
@@ -1114,12 +1115,12 @@ impl VideoEditorApp {
         if let Some(rect) = l.key_enable
             && rect.contains(p)
         {
-            self.toggle_key_enabled(state);
+            self.toggle_key_enabled();
             return;
         }
         for (col, rect) in l.key_colors.clone() {
             if rect.contains(p) {
-                self.edit_selected(state, move |c| c.key.color = col);
+                self.edit_selected(move |c| c.key.color = col);
                 return;
             }
         }
@@ -1130,14 +1131,14 @@ impl VideoEditorApp {
             // to read one from; with none the button is drawn disabled
             // and this is a no-op rather than a made-up sample.
             if let Some(col) = self.preview_pixel(0.5, 0.5) {
-                self.edit_selected(state, move |c| c.key.color = col);
+                self.edit_selected(move |c| c.key.color = col);
             }
             return;
         }
         // Mask.
         for (shape, rect) in l.mask_shapes.clone() {
             if rect.contains(p) {
-                self.set_mask_shape(state, shape);
+                self.set_mask_shape(shape);
                 return;
             }
         }
@@ -1145,7 +1146,7 @@ impl VideoEditorApp {
             && rect.contains(p)
         {
             let (src_aspect, frame_aspect) = self.selected_aspects();
-            self.edit_selected(state, move |c| {
+            self.edit_selected(move |c| {
                 let shape = c.mask.shape;
                 let (feather, invert) = (c.mask.feather, c.mask.invert);
                 c.mask = crate::model::Mask::over(shape, &c.transform, src_aspect, frame_aspect);
@@ -1157,13 +1158,13 @@ impl VideoEditorApp {
         if let Some(rect) = l.mask_invert
             && rect.contains(p)
         {
-            self.edit_selected(state, |c| c.mask.invert = !c.mask.invert);
+            self.edit_selected(|c| c.mask.invert = !c.mask.invert);
             return;
         }
         if let Some(rect) = l.mix_reset
             && rect.contains(p)
         {
-            self.reset_selected_track_mix(state);
+            self.reset_selected_track_mix();
             return;
         }
         // Title properties.
@@ -1177,7 +1178,7 @@ impl VideoEditorApp {
         }
         for (align, rect) in l.title_align.clone() {
             if rect.contains(p) {
-                self.edit_title(state, move |t| t.align = align);
+                self.edit_title(move |t| t.align = align);
                 return;
             }
         }
@@ -1190,28 +1191,28 @@ impl VideoEditorApp {
         }
         for (col, rect) in l.title_colors.clone() {
             if rect.contains(p) {
-                self.edit_title(state, move |t| t.color = col);
+                self.edit_title(move |t| t.color = col);
                 return;
             }
         }
         if let Some(rect) = l.title_bold
             && rect.contains(p)
         {
-            self.edit_title(state, |t| t.bold = !t.bold);
+            self.edit_title(|t| t.bold = !t.bold);
             return;
         }
         if let Some(rect) = l.title_italic
             && rect.contains(p)
         {
-            self.edit_title(state, |t| t.italic = !t.italic);
+            self.edit_title(|t| t.italic = !t.italic);
             return;
         }
         if l.split.contains(p) {
-            self.split_selected(state);
+            self.split_selected();
             return;
         }
         if l.delete.contains(p) {
-            self.delete_selected(state);
+            self.delete_selected();
         }
     }
 
@@ -1222,7 +1223,7 @@ impl VideoEditorApp {
     /// separate "add point" button would need somewhere to add it, and the
     /// answer is always "where I clicked". A click too close to an existing
     /// point grabs that one instead, so points cannot be stacked.
-    pub(super) fn press_curve(&mut self, doc: &mut AutoCommit, canvas: Rect, p: Point) {
+    pub(super) fn press_curve(&mut self, canvas: Rect, p: Point) {
         let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
             return;
         };
@@ -1235,7 +1236,7 @@ impl VideoEditorApp {
             // A new point is a discrete edit, so it commits now; the drag
             // that follows previews and commits again on release.
             let mut placed = None;
-            self.edit_selected(doc, |c| {
+            self.edit_selected(|c| {
                 placed = c.curves.spline_mut(ch).set_point(x, y);
             });
             if let Some(i) = placed {

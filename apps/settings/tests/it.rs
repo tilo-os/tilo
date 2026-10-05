@@ -96,8 +96,8 @@ mod narrow_navigation;
 mod no_app_title_header;
 #[path = "scroll.rs"]
 mod scroll;
-#[path = "shots_smoke.rs"]
-mod shots_smoke;
+#[path = "search_focus.rs"]
+mod search_focus;
 
 #[path = "composition_balance.rs"]
 mod composition_balance;

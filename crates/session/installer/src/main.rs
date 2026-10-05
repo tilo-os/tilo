@@ -14,9 +14,6 @@
 //     time-zone dropdown popped open; `keyboard` renders the keyboard step
 //     seeded with a non-default (German) layout so the visual preview shows
 //     the remapped keys. Defaults to `disk`.
-//   * `--headless-drive '<json>'` — the live widget tree with no window
-//     (docs/headless-testing.md); scenarios click named controls or invoke
-//     the installer's published actions by address.
 //
 // A live run also answers the tilo-control action protocol (actions list,
 // actions invoke, state-dump) on its console endpoints — see
@@ -49,8 +46,7 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// # Errors
 ///
 /// Returns an error when `--shots` is passed and rendering the requested
-/// step fails: seeding the offscreen CRDT document, computing the taffy
-/// layout, or writing the PNG to `--shots <path>` (see
+/// step fails: computing the taffy layout, or writing the PNG to `--shots <path>` (see
 /// [`render_shot_to_png`]).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _detached = ui::wake::WakeScope::enter_detached();
@@ -61,21 +57,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let name = parse_step_arg(&args).unwrap_or_else(|| "disk".to_string());
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let text_scale = parse_text_scale_arg(&args);
-        let Some((widget, seed)) = build_shot(&name) else {
+        let Some(widget) = build_shot(&name) else {
             eprintln!("tilo-installer: unknown --step '{name}'");
             std::process::exit(2);
         };
-        render_shot_to_png(widget, viewport, text_scale, &out, seed)?;
+        render_shot_to_png(widget, viewport, text_scale, &out)?;
         return Ok(());
-    }
-
-    // `--headless-drive '<json>'`: the same widget tree and the same
-    // published actions, driven with no window and no GPU (see
-    // docs/headless-testing.md). Scenarios address controls by name or
-    // invoke published actions by address.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        let code = ui::headless::run(&spec, Box::new(InstallerApp::new()), HEADLESS_MANIFEST_ID);
-        std::process::exit(code);
     }
 
     let wake_scope = ui::wake::WakeScope::new();
@@ -104,9 +91,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     Ok(())
 }
-
-/// Package namespace for `--headless-drive` runs (never the live medium).
-const HEADLESS_MANIFEST_ID: &str = "org.tilo.Installer";
 
 /// Start the console endpoints that exist on this machine: the private
 /// runtime socket, and the virtio port when a hypervisor attached one. Each
@@ -168,31 +152,31 @@ fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
     (scale.is_finite() && (0.75..=2.0).contains(&scale)).then_some(scale)
 }
 
-/// Build the widget for a `--shots --step <name>` render, plus whether to
-/// seed sample credentials (so input fields show representative text).
+/// Build the widget for a `--shots --step <name>` render. The shot app
+/// carries sample account details so input fields show representative text.
 /// Returns `None` for an unrecognised name.
-fn build_shot(name: &str) -> Option<(Box<dyn Widget>, bool)> {
+fn build_shot(name: &str) -> Option<Box<dyn Widget>> {
     if name == "disk-alongside" {
         let mut app = InstallerApp::for_shot(Step::Disk);
         app.shot_alongside();
-        return Some((Box::new(app), false));
+        return Some(Box::new(app));
     }
     if name == "review-alongside" {
         let mut app = InstallerApp::for_shot(Step::Review);
         app.shot_alongside_review();
-        return Some((Box::new(app), true));
+        return Some(Box::new(app));
     }
     // `options-open` renders the Options step with the time-zone dropdown
     // popped open, capturing the overlay popup state.
     if name == "options-open" {
         let mut app = InstallerApp::for_shot(Step::Options);
         app.shot_open_timezone();
-        return Some((Box::new(app), true));
+        return Some(Box::new(app));
     }
     if name == "profile-locale-repair" {
         let mut app = InstallerApp::for_shot(Step::Options);
         app.shot_locale_repair();
-        return Some((Box::new(app), true));
+        return Some(Box::new(app));
     }
 
     // `keyboard` seeds a non-default layout so the visual preview clearly
@@ -200,23 +184,23 @@ fn build_shot(name: &str) -> Option<(Box<dyn Widget>, bool)> {
     if name == "keyboard" {
         let mut app = InstallerApp::for_shot(Step::Keyboard);
         app.shot_keymap("German (QWERTZ)");
-        return Some((Box::new(app), true));
+        return Some(Box::new(app));
     }
 
     if name == "finish-recovery" {
         let mut app = InstallerApp::for_shot(Step::Install);
         app.shot_finished_with_recovery();
-        return Some((Box::new(app), true));
+        return Some(Box::new(app));
     }
     if name == "finish-recovery-saved" {
         let mut app = InstallerApp::for_shot(Step::Install);
         app.shot_finished_with_saved_recovery();
-        return Some((Box::new(app), true));
+        return Some(Box::new(app));
     }
     if name == "failed-recovery" {
         let mut app = InstallerApp::for_shot(Step::Install);
         app.shot_failed_with_recovery();
-        return Some((Box::new(app), true));
+        return Some(Box::new(app));
     }
 
     let (step, terminal): (Step, Option<bool>) = match name {
@@ -237,8 +221,7 @@ fn build_shot(name: &str) -> Option<(Box<dyn Widget>, bool)> {
         Some(false) => app.shot_failed(),
         None => {}
     }
-    let seed = !matches!(step, Step::Disk);
-    Some((Box::new(app), seed))
+    Some(Box::new(app))
 }
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
@@ -274,34 +257,20 @@ fn parse_step_arg(args: &[String]) -> Option<String> {
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG.
 ///
-/// `seed_creds` pre-populates the username/password CRDT objects so the
-/// User/Confirm/Install screens render representative text. Because the
-/// composed children are only created *inside* `build_layout`, the frame
-/// syncs a second time afterwards so those children (the `TextInputs`) pull
-/// their values from the document — the live App achieves the same via its
-/// per-frame sync.
+/// Because the composed children are only created *inside* `build_layout`,
+/// the frame syncs a second time afterwards so those children pull their
+/// values — the live App achieves the same via its per-frame sync.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     text_scale: Option<f32>,
     out: &std::path::Path,
-    seed_creds: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use automerge::{ObjType, transaction::Transactable};
-
     let theme = text_scale.map_or_else(Theme::dark, |scale| Theme::dark().with_text_scale(scale));
     let mut frame = ShotFrame::new(viewport, theme)
         .with_unscaled_text()
         .with_layout(ShotLayout::Measured)
         .with_resync_after_build();
-
-    if seed_creds {
-        let state = &mut frame.state;
-        let uobj = state
-            .doc
-            .put_object(&state.root, "installer.username", ObjType::Text)?;
-        let _ = state.doc.splice_text(&uobj, 0, 0, "ada");
-    }
 
     frame.sync(widget.as_mut());
     frame.layout(widget.as_mut())?;

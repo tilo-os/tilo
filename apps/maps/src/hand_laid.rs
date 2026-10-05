@@ -2,7 +2,6 @@
 //! the offline sheet's field and stepper, the overflow menu) with the event's
 //! own document.
 
-use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::widget::Widget;
 use winit::event::WindowEvent;
@@ -15,7 +14,7 @@ pub(crate) fn drive(
     event: &WindowEvent,
     scale: f64,
     modifiers: winit::event::Modifiers,
-    doc: &mut AutoCommit,
+    doc: &mut ui::widget::Edits<'_>,
 ) -> bool {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
@@ -28,7 +27,7 @@ pub(crate) fn drive(
         &mut ui::widget::EventCtx {
             scale_factor: scale,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,

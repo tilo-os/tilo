@@ -14,6 +14,7 @@ pub(crate) struct Fields {
     pub(crate) name: LocalState<String>,
     pub(crate) key: LocalState<String>,
     pub(crate) value: LocalState<String>,
+    pub(crate) secret: LocalState<bool>,
 }
 
 impl Fields {
@@ -22,6 +23,7 @@ impl Fields {
             name: LocalState::new(name.to_owned()),
             key: LocalState::new(String::new()),
             value: LocalState::new(String::new()),
+            secret: LocalState::new(false),
         }
     }
 }
@@ -49,7 +51,17 @@ pub(crate) fn build(mode: FormMode, subject: &str, fields: &Fields, sink: &Sink)
     if mode.needs_variable_fields() {
         body = body.push(field("Variable", &fields.key, TextInputKind::Code, true));
         if mode.needs_value() {
-            body = body.push(field("Value", &fields.value, TextInputKind::Code, false));
+            body = body
+                .push(field(
+                    "Value",
+                    &fields.value,
+                    TextInputKind::Password,
+                    false,
+                ))
+                .push(Box::new(Field::new(
+                    "Keep value on this device",
+                    ui::widget::Toggle::from_state(&fields.secret),
+                )));
         }
     }
     match mode {

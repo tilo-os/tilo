@@ -626,12 +626,7 @@ impl Widget for WebView {
     /// Two-finger swipe / edge-pull → browser-style history navigation.
     /// Overriding this here makes every embedder of `WebView`
     /// swipe-navigable, not just the browser app.
-    fn on_nav_gesture(
-        &mut self,
-        dir: NavDirection,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
+    fn on_nav_gesture(&mut self, dir: NavDirection, _state: &AppModel, _path: &ModelPath) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,
             NavDirection::Forward => WebViewCommand::GoForward,
@@ -750,7 +745,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut state,
+                state: crate::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1380,10 +1375,10 @@ mod tests {
             use crate::gesture::NavDirection;
             let engine = TestEngine::new();
             let mut w = WebView::new(engine.clone());
-            let mut state = AutoCommit::new();
+            let state = AutoCommit::new();
             let root = automerge::ROOT;
-            assert!(w.on_nav_gesture(NavDirection::Back, &mut state, &root));
-            assert!(w.on_nav_gesture(NavDirection::Forward, &mut state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Back, &state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Forward, &state, &root));
             let cmds = engine.commands();
             assert!(cmds.contains(&WebViewCommand::GoBack));
             assert!(cmds.contains(&WebViewCommand::GoForward));

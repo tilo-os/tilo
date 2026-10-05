@@ -6,7 +6,7 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
@@ -1604,7 +1604,7 @@ impl Widget for ContextMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
@@ -1764,7 +1764,7 @@ impl crate::widget::Decorator for MenuButton {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate) && Widget::is_enabled(&self.button) {
@@ -1847,7 +1847,7 @@ impl crate::widget::Decorator for MenuButton {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.menu
@@ -1939,6 +1939,7 @@ mod a11y_tests {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+    use std::sync::Arc;
 
     /// A menu is a floating Panel in the window's top layer: `draw` (the
     /// in-flow pass, where later siblings paint over it) paints nothing, and
@@ -2075,7 +2076,6 @@ mod tests {
         assert!(menu.anchor_row.is_none());
     }
     use std::collections::HashMap;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use winit::event::{DeviceId, TouchPhase};
 
@@ -2174,7 +2174,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2348,7 +2348,7 @@ mod tests {
                 &mut menu,
                 "context-menu:item:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 100);
@@ -2365,7 +2365,7 @@ mod tests {
                 &mut menu,
                 "context-menu:item:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 0);
@@ -2720,7 +2720,7 @@ mod nested_and_anchored_tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

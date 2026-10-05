@@ -11,7 +11,39 @@ use std::rc::Rc;
 use crate::model::Id;
 
 /// The queue every widget callback pushes onto.
-pub(crate) type Sink = Rc<RefCell<Vec<Cmd>>>;
+#[derive(Clone)]
+pub(crate) struct Sink {
+    queue: Rc<RefCell<Vec<Cmd>>>,
+    pub(crate) dispatcher:
+        Rc<RefCell<Option<ui::framework::Dispatcher<crate::resource::ApiTester>>>>,
+    pub(crate) actions: Rc<RefCell<Option<ui::framework::Actions<crate::resource::ApiTester>>>>,
+    pub(crate) method: ui::LocalState<String>,
+}
+impl Sink {
+    pub(crate) fn borrow(&self) -> std::cell::Ref<'_, Vec<Cmd>> {
+        self.queue.borrow()
+    }
+    pub(crate) fn borrow_mut(&self) -> std::cell::RefMut<'_, Vec<Cmd>> {
+        self.queue.borrow_mut()
+    }
+    pub(crate) fn retry(&self, state: ui::widget::EmptyState) -> ui::widget::EmptyState {
+        use ui::framework::ActionControl;
+        match self.actions.borrow().as_ref() {
+            Some(actions) => {
+                actions.bind_effect_invocation(state, &crate::actions::ApiTesterEffect::Send)
+            }
+            None => state.unavailable(),
+        }
+    }
+    pub(crate) fn send(&self, button: ui::widget::Button) -> ui::widget::Button {
+        match self.actions.borrow().as_ref() {
+            Some(actions) => {
+                actions.bind_effect_invocation(button, &crate::actions::ApiTesterEffect::Send)
+            }
+            None => button.with_enabled(false),
+        }
+    }
+}
 
 /// The key/value tables of a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,4 +165,15 @@ impl FormMode {
 pub(crate) struct FormTarget {
     pub(crate) collection: Option<Id>,
     pub(crate) request: Option<Id>,
+}
+
+impl Default for Sink {
+    fn default() -> Self {
+        Self {
+            queue: Rc::default(),
+            dispatcher: Rc::default(),
+            actions: Rc::default(),
+            method: ui::LocalState::new(String::new()),
+        }
+    }
 }

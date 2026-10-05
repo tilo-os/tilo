@@ -53,7 +53,9 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
                 })
             })
             .child(child)
-            .child(Box::new(Button::new("save", "Save", Some("saved"))));
+            .child(Box::new(
+                Button::new("save", "Save").on_click(crate::testing::record_click("saved")),
+            ));
             let root: Box<dyn Widget> = if mode == 2 {
                 Box::new(
                     Form::new()
@@ -107,14 +109,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
                 // Return keyboard focus to the same entry for the next resize.
                 app.set_focused_node(Some(app.focusable_order[0]));
             }
-            use automerge::ReadDoc;
-            assert!(
-                app.state
-                    .doc
-                    .get(automerge::ROOT, "saved")
-                    .unwrap()
-                    .is_some()
-            );
+            assert!(crate::testing::clicks("saved") > 0);
         }
     }
 
@@ -175,7 +170,9 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
                 })
             })
             .child(child)
-            .child(Box::new(Button::new("save", "Save", Some("saved"))));
+            .child(Box::new(
+                Button::new("save", "Save").on_click(crate::testing::record_click("saved")),
+            ));
             let invalidation = manual.invalidation();
             let root: Box<dyn Widget> = if mode == 2 {
                 Box::new(
@@ -266,14 +263,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             );
             assert!(!app.dispatch_semantic_click(save_before.center().x, save_before.center().y));
             assert!(app.dispatch_semantic_click(save_after.center().x, save_after.center().y));
-            use automerge::ReadDoc;
-            assert!(
-                app.state
-                    .doc
-                    .get(automerge::ROOT, "saved")
-                    .unwrap()
-                    .is_some()
-            );
+            assert!(crate::testing::clicks("saved") > 0);
             paint(&mut app);
             let settled_calls = calls.get();
             run(&mut app);

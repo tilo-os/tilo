@@ -23,9 +23,9 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
     eprintln!("phase list_children_include_real_paragraphs_and_fences_after_import_and_reopen");
     {
         let source = "1. Parent A\n\n  Paragraph child\n\n  ```python\n  first()\n  second()\n  ```\n\n  - [x] Child task\n    1. Grandchild\n\n2. Parent B\n";
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut original = f.records.read(&checkout.id, Clone::clone).unwrap();
         let reopened = automerge::AutoCommit::load(&original.save()).unwrap();
         for doc in [&original, &reopened] {
@@ -85,9 +85,9 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
     eprintln!("phase nested_content_indents_semantically_and_exits_code_into_the_same_list_item");
     {
         use notes::actions;
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, b"1. Parent\n\n  Explanation\n\n  ```python\n  first()\n  second()\n  ```\n\n2. Next item\n");
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let rows = f
             .records
             .read(&checkout.id, |doc| {
@@ -195,9 +195,9 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
     {
         let source = "```python\nfirst()\n```\n\n```python\nsecond()\n```\n";
         let expected = markdown::serialize(&markdown::parse(source));
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut original = f.records.read(&checkout.id, Clone::clone).unwrap();
         let reopened = automerge::AutoCommit::load(&original.save()).unwrap();
         for doc in [&original, &reopened] {
@@ -222,9 +222,9 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
     eprintln!("phase deleting_first_fence_row_and_duplicating_keep_boundaries_and_new_group_ids");
     {
         let source = "```python\nfirst()\nkept()\n```\n\n```python\nsecond()\n```\n";
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
         let first = NotesDoc::page_block_snapshots(&doc, f.child)[0].0.clone();
         remove_block(&mut doc, f.child, &first);
@@ -286,12 +286,12 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
 
     eprintln!("phase closing_a_fence_in_the_middle_keeps_both_copy_buttons_addressable");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(
             f.child,
             b"```python\nfirst()\nsecond()\n\nthird()\nfourth()\n```\n",
         );
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let rows = f
             .records
             .read(&checkout.id, |doc| {

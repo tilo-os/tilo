@@ -19,12 +19,11 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppModel, Button, ModelPath, Widget};
+use ui::widget::{Button, ModelPath, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use super::{Hit, LibraryDestination, PhotosApp, SelectionHit};
-use crate::doc::PhotosDoc;
 use crate::strings::{tr, tr_count, tr_with};
 
 use ui::chrome::{NavCount, NavRowFace, NavSectionFace, SelectionState};
@@ -73,6 +72,7 @@ struct Command {
     icon: Option<Icon>,
     toggle: Option<bool>,
     separator_before: bool,
+    enabled: bool,
 }
 
 impl Command {
@@ -83,6 +83,7 @@ impl Command {
             icon: Some(icon),
             toggle: None,
             separator_before: false,
+            enabled: true,
         }
     }
 
@@ -93,7 +94,13 @@ impl Command {
             icon: None,
             toggle: None,
             separator_before: false,
+            enabled: true,
         }
+    }
+
+    fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
     }
 
     fn toggled(mut self, on: bool) -> Self {
@@ -369,6 +376,24 @@ impl PhotosApp {
                             .toggled(self.selection_mode)
                             .after_separator(),
                     );
+                    if self.album_editor && self.library_total > self.library_page_step() {
+                        commands.push(
+                            Command::icon(
+                                Hit::PreviousPage,
+                                tr("photos-a11y-previous-photos"),
+                                Icon::ChevronLeft,
+                            )
+                            .enabled(self.can_page_library(false)),
+                        );
+                        commands.push(
+                            Command::icon(
+                                Hit::NextPage,
+                                tr("photos-a11y-next-photos"),
+                                Icon::ChevronRight,
+                            )
+                            .enabled(self.can_page_library(true)),
+                        );
+                    }
                     commands.push(Command::icon(
                         Hit::Smaller,
                         tr("photos-smaller-thumbnails"),
@@ -547,6 +572,10 @@ impl PhotosApp {
             .collect()
     }
 
+    pub(super) fn invalidate_toolbar(&mut self) {
+        self.chrome.toolbar_signature.clear();
+    }
+
     /// Rebuild the header toolbar when the commands that apply changed.
     pub(super) fn refresh_toolbar(&mut self) {
         let commands = self.commands();
@@ -554,8 +583,12 @@ impl PhotosApp {
             .iter()
             .map(|command| {
                 format!(
-                    "{:?}:{}:{:?}:{}",
-                    command.hit, command.label, command.toggle, command.separator_before
+                    "{:?}:{}:{:?}:{}:{}",
+                    command.hit,
+                    command.label,
+                    command.toggle,
+                    command.separator_before,
+                    command.enabled
                 )
             })
             .collect::<Vec<_>>()
@@ -575,14 +608,22 @@ impl PhotosApp {
                 (_, Some(on)) => toolbar.push_toggle(&command.label, on, click),
                 (Some(icon), None) => toolbar.push_icon(icon, &command.label, click),
                 (None, None) => toolbar.push_button(&command.label, click),
-            };
+            }
+            .with_enabled(command.enabled);
+            if let (Some(actions), Some(effect)) = (&self.actions, hit.effect()) {
+                toolbar = match actions.effect(&effect) {
+                    Some(binding) => toolbar.with_action(binding),
+                    None => toolbar.with_enabled(false),
+                };
+            }
         }
         self.chrome.toolbar = toolbar;
+        self.structure_dirty = true;
         self.chrome.toolbar_signature = signature;
     }
 
     /// Recompute the title and the status bar's readouts from the model.
-    pub(super) fn refresh_chrome_text(&mut self, doc: &AutoCommit) {
+    pub(super) fn refresh_chrome_text(&mut self, _doc: &AutoCommit) {
         self.chrome.title = self.chrome_title();
         let (left, right) = if self.library_mode {
             let destination = if self.people_mode {
@@ -612,11 +653,11 @@ impl PhotosApp {
                     String::new(),
                 ),
             }
-        } else if let Some(open) = PhotosDoc::image(doc)
+        } else if let Some(photo) = self.shown_photo()
             && self.canvas_state == super::CanvasState::Ready
         {
-            let edits = PhotosDoc::edits(doc);
-            let (w, h) = open.edited_size(&edits);
+            let edits = photo.edits;
+            let (w, h) = photo.image.edited_size(&edits);
             (
                 super::dimensions_label(w, h),
                 if edits.is_identity() {
@@ -628,7 +669,7 @@ impl PhotosApp {
         } else {
             (String::new(), String::new())
         };
-        self.chrome.status_left = left;
+        self.chrome.status_left = self.search_refresh_error.clone().unwrap_or(left);
         self.chrome.status_right = right;
     }
 
@@ -1227,7 +1268,7 @@ impl PhotosApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if target == "photos:sidebar:toggle" {
@@ -1239,16 +1280,14 @@ impl PhotosApp {
         if target == "photos:toolbar:photos-library" {
             if matches!(action, AccessAction::Activate) && self.header_back_visible() {
                 self.pending.set(Some(Hit::Library));
-                let (doc, _) = ui::doc::document(state, path);
-                self.drain_pending(doc);
+                self.drain_pending();
             }
             return matches!(action, AccessAction::Activate | AccessAction::Focus);
         }
         if target == "photos:search:open" {
             if matches!(action, AccessAction::Activate) {
                 self.pending.set(Some(Hit::Search));
-                let (doc, _) = ui::doc::document(state, path);
-                self.drain_pending(doc);
+                self.drain_pending();
             }
             return matches!(action, AccessAction::Activate | AccessAction::Focus);
         }
@@ -1258,8 +1297,7 @@ impl PhotosApp {
                 .toolbar
                 .perform_semantic_action(target, action, state, path)
             {
-                let (doc, _) = ui::doc::document(state, path);
-                self.drain_pending(doc);
+                self.drain_pending();
                 return true;
             }
             return false;

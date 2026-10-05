@@ -315,7 +315,7 @@ fn sign_in_choice(fields: &SetupFields) -> ToggleGroup {
 /// The browser sign-in button and what it does.
 fn browser_sign_in(fields: &SetupFields, requests: &Requests) -> Element {
     let requests = Rc::clone(requests);
-    let button = Button::new("mail.setup:oauth-sign-in", &fields.sign_in_label(), None)
+    let button = Button::new("mail.setup:oauth-sign-in", &fields.sign_in_label())
         .role(ButtonRole::Secondary)
         .on_effect(move || requests.borrow_mut().push(SetupRequest::SignIn));
     let available = fields.provider().is_some_and(OAuthProvider::is_configured);
@@ -443,7 +443,7 @@ fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape)
         form = form.section(
             FormSection::untitled().control_row(Box::new(
                 Row::new().push(Box::new(
-                    Button::new("mail.setup:remove", &label("mail-setup-remove"), None)
+                    Button::new("mail.setup:remove", &label("mail-setup-remove"))
                         .role(ButtonRole::Destructive)
                         .on_effect(move || requests.borrow_mut().push(SetupRequest::Remove)),
                 )),
@@ -524,7 +524,7 @@ impl Decorator for SetupForm {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         let shape = Shape::of(&self.fields);
         if shape != self.built_for {
             let focused = focused_id(self.content.as_ref());
@@ -640,6 +640,11 @@ impl SetupSheet {
             self.fields
                 .set_field_errors(self.fields.config().validate());
         }
+    }
+
+    /// Give a field focus through the retained control tree.
+    pub(crate) fn focus_field(&mut self, index: usize) -> bool {
+        focus_id(&mut self.dialog, &field_id(index))
     }
 
     /// The Save action says what is happening and waits while it does.

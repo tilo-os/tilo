@@ -92,7 +92,7 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut doc,
+            state: tilo_ui::widget::Edits::lend(&mut doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -367,8 +367,8 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
             let mut dd = Dropdown::new(options, "choice").open();
             let control = Rect::new(40.0, 20.0, 300.0, 60.0);
             dd.apply_layout_external(control);
-            let mut doc = AutoCommit::new();
-            dd.sync(&mut doc, &ROOT);
+            let doc = AutoCommit::new();
+            dd.sync(&doc, &ROOT);
             // Rows hang directly under the control: LIST_GAP 4, ITEM_HEIGHT 32.
             let row = |i: f64| {
                 let top = control.y1 + 4.0 + i * 32.0;
@@ -543,8 +543,8 @@ fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
             let mut dd = Dropdown::new(options, "choice");
             let control = Rect::new(40.0, 20.0, 300.0, 60.0);
             dd.apply_layout_external(control);
-            let mut doc = AutoCommit::new();
-            dd.sync(&mut doc, &ROOT);
+            let doc = AutoCommit::new();
+            dd.sync(&doc, &ROOT);
             let presence = PresenceCtx::default();
             // Clear of both the label (left) and the chevron (right 30 px).
             let probe = Point::new(control.x1 - 44.0, control.center().y);

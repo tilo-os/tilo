@@ -10,7 +10,7 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::widget::{
     Button, ButtonRole, ControlSize, DatePicker, Dropdown, Element, Field, Form, FormPage,
-    FormSection, LabelPlacement, Row, TextInput, TextInputKind,
+    FormSection, LabelPlacement, Row, TextInput, TextInputKind, Widget,
 };
 
 use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled, group_names_equal};
@@ -169,6 +169,8 @@ pub(crate) struct EditForm {
     pub types: Vec<(TypeTarget, LocalState<String>)>,
     /// The birthday calendar is shown under the field.
     pub calendar_open: bool,
+    /// Initial field focus when a property opens its editor.
+    pub focus: Option<Slot>,
     /// Where the form is scrolled to; it survives the form being rebuilt
     /// when a row is added or removed.
     pub scroll: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
@@ -252,6 +254,7 @@ impl EditForm {
             fields,
             types,
             calendar_open: false,
+            focus: None,
             scroll: std::rc::Rc::default(),
         }
     }
@@ -540,6 +543,7 @@ impl EditForm {
             .map_or_else(TextInput::local, TextInput::from_state)
             .with_id(&format!("contacts.form.{}", slot_key(slot)))
             .with_accessible_name(field_name(slot));
+        input.set_focus(self.focus == Some(slot));
         if let Some(hint) = placeholder(slot) {
             input = input.with_placeholder(hint);
         }
@@ -604,7 +608,7 @@ impl EditForm {
             label.to_lowercase().replace(' ', "-")
         );
         Box::new(
-            Button::new(&id, label, None)
+            Button::new(&id, label)
                 .with_icon(Icon::Plus)
                 .role(ButtonRole::Plain)
                 .on_view(queue(shared, Request::Add(kind))),
@@ -652,7 +656,7 @@ impl EditForm {
                     .with_help("Year, month and day, such as 1990-04-25"),
             )
             .content(Box::new(
-                Button::new("contacts.form.calendar", calendar_label, None)
+                Button::new("contacts.form.calendar", calendar_label)
                     .with_icon(Icon::Calendar)
                     .on_view(queue(shared, Request::ToggleCalendar)),
             ));

@@ -582,12 +582,15 @@ impl Category {
             .any(|k| k.contains(&q) || padded.contains(&format!(" {k} ")))
     }
 
+    /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
     /// The category whose [`Self::slug`] is `slug`.
-    pub fn from_slug(slug: &str) -> Option<Category> {
-        Category::ALL.iter().copied().find(|c| c.slug() == slug)
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|category| category.slug() == slug)
     }
 
-    /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
     pub fn slug(self) -> &'static str {
         match self {
             Category::Network => "network",

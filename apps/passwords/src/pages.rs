@@ -46,7 +46,7 @@ fn button(
     requests: &Requests,
     request: Request,
 ) -> Button {
-    Button::new(id, label, None)
+    Button::new(id, label)
         .role(role)
         .on_click(ask(requests, request))
 }

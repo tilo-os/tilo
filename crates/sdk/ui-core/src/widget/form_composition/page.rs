@@ -11,9 +11,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use super::{
-    Actions, Affine, AutoCommit, Effective, Element, Form, HashMap, LayoutInfo, LayoutOrigin,
-    NodeId, ObjId, PageLayout, Parts, Point, PresenceCtx, Rect, Scene, Scrollable, TaffyTree, Text,
-    TextRenderer, TextRole, Theme, Widget, column_style, fr, length, minmax, percent, spacing,
+    Actions, Affine, Effective, Element, Form, HashMap, LayoutInfo, LayoutOrigin, NodeId, ObjId,
+    PageLayout, Parts, Point, PresenceCtx, Rect, Scene, Scrollable, TaffyTree, Text, TextRenderer,
+    TextRole, Theme, Widget, column_style, fr, length, minmax, percent, spacing,
 };
 use crate::tokens::Rhythm;
 
@@ -27,14 +27,14 @@ macro_rules! lifecycle {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut AutoCommit,
+            doc: &mut crate::widget::Edits<'_>,
             path: &ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
             crate::widget::start_in_children(self, op, doc, path)
         }
         fn update(
             &mut self,
-            state: &mut crate::widget::AppModel,
+            state: &crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
             let mut changed = false;
@@ -43,7 +43,7 @@ macro_rules! lifecycle {
             }
             changed
         }
-        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             for child in &mut self.$($path).+.children {
                 child.sync(state, path);
             }

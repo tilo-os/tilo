@@ -4934,7 +4934,7 @@ impl Widget for TopBarChrome {
         Some(self)
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // The time is read when drawing, so nothing else marks the bar
         // dirty when the minute turns over on an idle desktop.
         let time_changed = self.take_time_wake();
@@ -5335,7 +5335,7 @@ impl Widget for TopBarChrome {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(
@@ -5635,7 +5635,7 @@ mod tests {
             None,
             "nothing drawn, nothing stale"
         );
-        assert!(!bar.update(&mut (), &()));
+        assert!(!bar.update(&(), &()));
 
         lay_out_and_draw(&mut bar, 1200.0);
         let now = Instant::now();
@@ -5643,7 +5643,7 @@ mod tests {
             .next_wake_deadline()
             .expect("a drawn clock wakes when its minute ends");
         assert!(wake > now && wake <= now + Duration::from_secs(60));
-        assert!(!bar.update(&mut (), &()), "the minute has not turned yet");
+        assert!(!bar.update(&(), &()), "the minute has not turned yet");
 
         let overdue = Instant::now()
             .checked_sub(Duration::from_millis(1))
@@ -5655,7 +5655,7 @@ mod tests {
             "an overdue wake must not hold the loop at a zero timeout"
         );
         assert!(
-            bar.update(&mut (), &()),
+            bar.update(&(), &()),
             "the turned minute marks the bar dirty so the frame repaints it"
         );
         assert!(
@@ -5663,7 +5663,7 @@ mod tests {
                 .is_some_and(|next| next > Instant::now()),
             "the next minute is scheduled"
         );
-        assert!(!bar.update(&mut (), &()), "one repaint per minute");
+        assert!(!bar.update(&(), &()), "one repaint per minute");
     }
 
     fn floating_clock() -> TopBarChrome {
@@ -6059,7 +6059,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -6288,7 +6288,7 @@ mod tests {
         assert!(bar.perform_semantic_action(
             TopBarChrome::CONTROL_CENTER_CALENDAR,
             &ui::a11y::Action::ToggleCheck,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(bar.center_widget, CenterWidget::Calendar);
@@ -6926,7 +6926,7 @@ mod tests {
         assert!(bar.perform_semantic_action(
             &target,
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(

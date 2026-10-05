@@ -44,7 +44,7 @@ impl RetainedEditor {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut self.doc,
+                    state: crate::widget::Edits::lend(&mut self.doc),
                     path: &automerge::ROOT,
                     handled: &mut false,
                     focus_target: &mut None,
@@ -171,7 +171,7 @@ impl RetainedEditor {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut self.doc,
+                state: crate::widget::Edits::lend(&mut self.doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,

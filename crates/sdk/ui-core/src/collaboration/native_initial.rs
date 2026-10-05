@@ -29,12 +29,6 @@ pub(crate) struct NativeConstruction {
     previous: Option<Weak<Construction>>,
 }
 impl NativeConstruction {
-    pub(crate) fn enter_prebuilt(manager: CollaborationManager) -> Result<Self, String> {
-        if InitialReadBridge::from_manager(&manager)?.is_some() {
-            return Err("native Required history must be read before building the root".into());
-        }
-        Self::enter(manager)
-    }
     pub(crate) fn enter(manager: CollaborationManager) -> Result<Self, String> {
         Self::enter_inner(manager, None, true)
     }
@@ -125,13 +119,6 @@ impl NativeConstruction {
             .is_none_or(|witness| binding.admission_route().as_ref() != Some(&witness.route))
         {
             return Err("component route changed during native admission".into());
-        }
-        Ok(())
-    }
-    pub(crate) fn state_opened(&self) -> Result<(), String> {
-        self.check()?;
-        if self.state.primary.borrow().is_some() {
-            return Err("native state opener did not consume the required initial history".into());
         }
         Ok(())
     }

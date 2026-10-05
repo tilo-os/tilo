@@ -16,17 +16,15 @@
 //!
 //! [`Core`] is held once behind an `Rc<RefCell<…>>`; the two pane widgets
 //! (see [`crate::panes`]) borrow it to draw and to route input, and the root
-//! [`crate::app::WeatherApp`] borrows it to seed the CRDT, pump the network
+//! [`crate::app::WeatherApp`] borrows it to present the document, pump the network
 //! worker, and drive the shell.
 
-mod detail;
-
-pub use detail::RETRY_KEY;
-
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::HashMap;
 use ui::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
@@ -52,8 +50,11 @@ use crate::interaction::{EntryAction, PointerPress, swipe_commit_dx};
 use crate::model::{LocationId, SavedLocation, WeatherModel};
 use crate::net::{Request, RequestKind, Response};
 use crate::presentation::PlaceRowText;
-use crate::units::Units;
+mod detail;
+use crate::resource::Weather;
+use crate::units::{self, Units};
 use crate::wxcode::Sky;
+pub use detail::RETRY_KEY;
 
 /// How long a recently-typed query stays "fresh" before we fire a geocode.
 const GEOCODE_DEBOUNCE: Duration = Duration::from_millis(220);
@@ -80,7 +81,7 @@ pub(crate) struct OverviewEventCtx<'a> {
     pub(crate) event: &'a WindowEvent,
     pub(crate) scale_factor: f64,
     pub(crate) modifiers: winit::event::Modifiers,
-    pub(crate) state: &'a mut AutoCommit,
+    pub(crate) state: ui::widget::Edits<'a>,
     pub(crate) path: &'a ObjId,
     pub(crate) focus_target: &'a mut Option<NodeId>,
     pub(crate) node_id: NodeId,
@@ -95,7 +96,7 @@ impl OverviewEventCtx<'_> {
         f(&mut ui::widget::EventCtx {
             scale_factor: self.scale_factor,
             modifiers: &self.modifiers,
-            state: self.state,
+            state: self.state.reborrow(),
             path: self.path,
             handled: &mut handled,
             focus_target: self.focus_target,
@@ -204,9 +205,14 @@ pub struct Core {
     // --- shell intent (consumed by the root widget) ---
     nav_request: Option<NavIntent>,
 
-    /// User-owned CRDT changes awaiting root-level `ActionHost` dispatch.
-    /// Network data stays local to this process and never writes the document.
-    durable_actions: Vec<WeatherAction>,
+    /// Where saved-place edits go: the framework's dispatcher, which applies
+    /// them to the document and presents the result back. Network data stays
+    /// local to this process and never reaches the document.
+    dispatcher: Option<ui::framework::Dispatcher<Weather>>,
+    /// The default place the document named when last presented.
+    default_location: Option<LocationId>,
+    /// The forecasts a capture shows in place of the network's.
+    fixture_forecasts: Option<std::rc::Rc<WeatherModel>>,
 }
 
 impl Core {
@@ -264,7 +270,9 @@ impl Core {
             status: String::new(),
             notice: None,
             nav_request: None,
-            durable_actions: Vec::new(),
+            dispatcher: None,
+            default_location: None,
+            fixture_forecasts: None,
         }
     }
 
@@ -345,17 +353,56 @@ impl Core {
             .collect()
     }
 
-    /// Adopt restored/remote authored places, invalidating stale gestures and
+    /// Submit saved-place edits through `dispatcher`.
+    pub(crate) fn attach(&mut self, dispatcher: ui::framework::Dispatcher<Weather>) {
+        self.dispatcher = Some(dispatcher);
+    }
+
+    /// Show `forecasts` for the places a capture stages, in place of fetched
+    /// ones.
+    pub(crate) fn show_fixture_forecasts(&mut self, forecasts: std::rc::Rc<WeatherModel>) {
+        self.fixture_forecasts = Some(forecasts);
+    }
+
+    /// Submit one saved-place edit, its actions one undo step. The model
+    /// already previews it; the document presents the result back, or the
+    /// stored state when the edit is refused.
+    fn submit(&self, actions: &[WeatherAction]) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.group(|| {
+                for action in actions {
+                    dispatcher.apply(action);
+                }
+            });
+        }
+    }
+
+    /// Adopt the presented saved places, invalidating stale gestures and
     /// unsent effects. Dispatched effects retain their real settlement count.
+    /// The place on view stays this window's, unless the document's default
+    /// place changed.
     pub(crate) fn adopt_saved_places(&mut self, persisted: &mut WeatherModel) {
         let changed = self.model.locations != persisted.locations;
         for l in &persisted.locations {
-            if self.model.locations.iter().any(|old| old == l) {
+            // A cached reading belongs to a place's coordinates: one that
+            // moved must be fetched again.
+            if self.model.locations.iter().any(|old| same_place(old, l)) {
                 if let Some(s) = self.model.snapshots.get(&l.id) {
                     persisted.snapshots.insert(l.id, s.clone());
                 }
                 if let Some(a) = self.model.air_quality.get(&l.id) {
                     persisted.air_quality.insert(l.id, a.clone());
+                }
+            }
+            if let Some(fixture) = &self.fixture_forecasts {
+                if let Some(s) = fixture.snapshots.get(&l.id) {
+                    persisted.snapshots.entry(l.id).or_insert_with(|| s.clone());
+                }
+                if let Some(a) = fixture.air_quality.get(&l.id) {
+                    persisted
+                        .air_quality
+                        .entry(l.id)
+                        .or_insert_with(|| a.clone());
                 }
             }
         }
@@ -364,7 +411,7 @@ impl Core {
             self.press = None;
             self.close_menu();
             self.reorder.cancel();
-            self.durable_actions.clear();
+
             self.nav_request = None;
             let unsent = self
                 .outbox
@@ -383,7 +430,12 @@ impl Core {
             self.status.clear();
             self.notice = None;
         }
-        if let Some(id) = self.model.selected_location().map(|location| location.id)
+        let presented_default = persisted.selected_location().map(|location| location.id);
+        let viewed = (presented_default == self.default_location)
+            .then(|| self.model.selected_location().map(|location| location.id))
+            .flatten();
+        self.default_location = presented_default;
+        if let Some(id) = viewed
             && let Some(index) = persisted
                 .locations
                 .iter()
@@ -398,14 +450,6 @@ impl Core {
     /// Take a pending shell navigation intent, if any.
     pub fn take_nav_request(&mut self) -> Option<NavIntent> {
         self.nav_request.take()
-    }
-
-    pub fn take_durable_actions(&mut self) -> Vec<WeatherAction> {
-        std::mem::take(&mut self.durable_actions)
-    }
-
-    fn queue_durable_action(&mut self, action: WeatherAction) {
-        self.durable_actions.push(action);
     }
 
     /// Whether a fetch is currently in flight (drives frame pumping).
@@ -815,8 +859,10 @@ impl Core {
                 return false;
             };
             let id = location.id.to_string();
-            self.queue_durable_action(WeatherAction::AddLocation { location });
-            self.queue_durable_action(WeatherAction::SelectLocation { id });
+            self.submit(&[
+                WeatherAction::AddLocation { location },
+                WeatherAction::SelectLocation { id },
+            ]);
             self.scroll = 0.0;
             self.hourly_scroll_x = 0.0;
             self.refresh_selected();
@@ -845,7 +891,7 @@ impl Core {
             EntryAction::Delete => {
                 if let Some(id) = self.model.locations.get(index).map(|location| location.id) {
                     self.model.remove_location(index);
-                    self.queue_durable_action(WeatherAction::RemoveLocation { id: id.to_string() });
+                    self.submit(&[WeatherAction::RemoveLocation { id: id.to_string() }]);
                     true
                 } else {
                     false
@@ -854,10 +900,10 @@ impl Core {
             EntryAction::MoveToTop => {
                 let changed = self.model.move_location(index, 0);
                 if changed && let Some(location) = self.model.locations.first() {
-                    self.queue_durable_action(WeatherAction::SetLocationRank {
+                    self.submit(&[WeatherAction::SetLocationRank {
                         id: location.id.to_string(),
                         rank: location.order_rank,
-                    });
+                    }]);
                 }
                 changed
             }
@@ -1308,9 +1354,20 @@ impl Core {
     /// own gesture handling.
     fn route_search_field(&mut self, ctx: &mut OverviewEventCtx<'_>) -> Option<bool> {
         let before = self.search.text().to_string();
-        let event = ctx.event;
-        let search = &mut self.search;
-        let ac_handled = ctx.with_widget_ctx(|wctx| search.handle_event(event, wctx));
+        let mut ac_handled = false;
+        self.search.handle_event(
+            ctx.event,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &ctx.modifiers,
+                state: ctx.state.reborrow(),
+                path: ctx.path,
+                handled: &mut ac_handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
+        );
         self.finish_search_edit(&before, ac_handled)
     }
 
@@ -1318,7 +1375,7 @@ impl Core {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.search.is_editing() {
@@ -1513,10 +1570,10 @@ impl Core {
                 // Commit the live insertion the controller tracked.
                 changed = self.model.move_location(from, to);
                 if changed && let Some(location) = self.model.locations.get(to) {
-                    self.queue_durable_action(WeatherAction::SetLocationRank {
+                    self.submit(&[WeatherAction::SetLocationRank {
                         id: location.id.to_string(),
                         rank: location.order_rank,
-                    });
+                    }]);
                 }
             } else {
                 // Dropped in place (or never activated): no change.
@@ -1914,6 +1971,11 @@ fn result_value(loc: &SavedLocation) -> String {
     format!("{}, {}", loc.name, loc.subtitle())
 }
 
+fn same_place(a: &SavedLocation, b: &SavedLocation) -> bool {
+    a.id == b.id
+        && a.latitude.to_bits() == b.latitude.to_bits()
+        && a.longitude.to_bits() == b.longitude.to_bits()
+}
 #[cfg(test)]
 mod search_tests {
     use super::*;
@@ -1955,7 +2017,7 @@ mod search_tests {
             assert!(pane.perform_semantic_action(
                 search.action_target.as_deref().unwrap(),
                 &Action::SetValue("city".into()),
-                &mut state,
+                &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             assert_eq!(core.borrow().search_query, "city");
@@ -1966,7 +2028,7 @@ mod search_tests {
             assert!(pane.perform_semantic_action(
                 row.action_target.as_deref().unwrap(),
                 &Action::Activate,
-                &mut state,
+                &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             let mut core = core.borrow_mut();
@@ -2027,9 +2089,6 @@ mod history_regressions {
             core.seed_drag();
             core.seed_search_highlighted("unsaved query", crate::sample::sample_geocode_results());
             let seq = core.search_seq;
-            core.queue_durable_action(WeatherAction::SetLocationOrder {
-                ids: vec![loc.id.to_string()],
-            });
             let dispatched_count = core.inflight - core.outbox.len();
             let mut restored = core.model.clone();
             restored.locations[0].latitude += 1.;
@@ -2041,7 +2100,6 @@ mod history_regressions {
             assert!(core.search_seq > seq);
             assert!(core.press.is_none() && !core.menu.is_open());
             assert!(!core.reorder.is_active());
-            assert!(core.take_durable_actions().is_empty());
             assert!(core.take_outbox().is_empty());
             assert_eq!(core.inflight, dispatched_count);
             assert_eq!(core.units, Units::IMPERIAL);
@@ -2083,8 +2141,8 @@ mod history_regressions {
             let next = SavedLocation::new("Next", "", "Country", "CC", 1., 2., "auto");
             core.seed_search_highlighted("Next", vec![next.clone()]);
             assert!(core.commit_search_pick(&result_value(&next)));
+            assert!(core.model.locations.iter().any(|l| l.id == next.id));
             assert!(core.open_location(loc.id));
-            assert!(!core.take_durable_actions().is_empty());
             assert!(!core.take_outbox().is_empty());
         }
         // Case `history_stale_autocomplete_acceptance_cannot_select_new_unrelated_results`.
@@ -2094,7 +2152,7 @@ mod history_regressions {
             let new = SavedLocation::new("New", "", "", "", 3., 4., "auto");
             core.seed_search_highlighted("New", vec![new]);
             assert!(!core.commit_search_pick(&result_value(&old)));
-            assert!(core.take_durable_actions().is_empty());
+            assert!(core.model.locations.is_empty());
         }
         // Case `history_deleted_location_rejects_delayed_provider_snapshot`.
         {

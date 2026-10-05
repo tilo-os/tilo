@@ -167,14 +167,14 @@ impl super::Decorator for When {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.observe();
         if self.shown {
             self.child.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let was = self.shown;
         self.observe();
         let changed = was != self.shown;

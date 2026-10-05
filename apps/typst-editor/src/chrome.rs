@@ -459,7 +459,7 @@ impl Chrome {
         self.toolbar.perform_semantic_action(
             target,
             &ui::a11y::Action::Activate,
-            doc,
+            &mut ui::widget::Edits::lend(doc),
             &automerge::ROOT,
         )
     }

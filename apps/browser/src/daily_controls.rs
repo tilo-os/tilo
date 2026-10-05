@@ -162,6 +162,9 @@ impl DailyControls {
     /// for the next `sync`, the same hand-off every control here uses.
     pub fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.pending.clone();
+        // As tall as the address field and the find field these sit beside,
+        // so the toolbar row and the find bar each keep one top and one
+        // bottom edge. The 32px face left a step down on either side of them.
         move || pending.set(Some(action))
     }
     /// The zoom row's label: the page's zoom level is always stated while it

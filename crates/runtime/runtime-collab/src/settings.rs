@@ -101,7 +101,6 @@ pub mod host {
 
     use std::cell::RefCell;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use capnp::capability::Promise;
     use serde_json::{Map, Value};
@@ -110,11 +109,6 @@ pub mod host {
 
     use super::MAX_SETTINGS_WIRE_BYTES;
     use crate::collab_capnp::app_settings;
-
-    /// How often a waiting [`app_settings::Server::read`] looks for a
-    /// change. Every change bumps the source's revision; looking is a
-    /// counter read and, for the session's records, one `stat` of the copy.
-    const CHANGE_POLL: Duration = Duration::from_millis(200);
 
     /// Asked before every call; an error refuses it (the channel's
     /// admission was withdrawn).
@@ -128,6 +122,10 @@ pub mod host {
         /// The view last answered and the revision it was answered as, so
         /// a change elsewhere in the document wakes no reader.
         answered: RefCell<(u64, Map<String, Value>)>,
+        /// Woken by the source on every change of its document.
+        changed: Arc<tokio::sync::Notify>,
+        /// Keeps this server listening to the source.
+        _listener: Arc<settings_store::Listener>,
     }
 
     impl AppSettingsServer {
@@ -137,11 +135,17 @@ pub mod host {
             source: Arc<dyn SettingsSource>,
             revalidate: Revalidate,
         ) -> Self {
+            let changed = Arc::new(tokio::sync::Notify::new());
+            let wake = Arc::clone(&changed);
+            let listener: Arc<settings_store::Listener> = Arc::new(move || wake.notify_waiters());
+            source.changes().listen(&listener);
             Self {
                 app_id: app_id.into(),
                 source,
                 revalidate,
                 answered: RefCell::new((0, Map::new())),
+                changed,
+                _listener: listener,
             }
         }
 
@@ -185,7 +189,11 @@ pub mod host {
             Promise::from_future(async move {
                 loop {
                     (self.revalidate)()?;
-                    let seen = self.source.revision();
+                    // Armed before looking, so a change between the look
+                    // and the wait still wakes it.
+                    let changed = self.changed.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
                     let (revision, view) = self.current();
                     if revision != after {
                         let mut reply = results.get();
@@ -193,10 +201,7 @@ pub mod host {
                         reply.set_document_json(&encode(&view)?);
                         return Ok(());
                     }
-                    while self.source.revision() == seen {
-                        tokio::time::sleep(CHANGE_POLL).await;
-                        (self.revalidate)()?;
-                    }
+                    changed.await;
                 }
             })
         }

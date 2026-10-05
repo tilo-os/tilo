@@ -242,13 +242,13 @@ impl PhotoFormat {
     }
 }
 
-/// User-tunable capture settings. Lives in the CRDT (see [`crate::doc`]).
+/// User-tunable capture settings, as the settings screen shows them. They
+/// are kept as two settings: [`CapturePreferences`] follow the person,
+/// [`CameraDevicePreferences`] belong to this device's cameras.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each field is an independent user-facing toggle persisted flat in the CRDT; \
-              grouping them into sub-structs would fragment doc.rs's read/write and app.rs's \
-              settings UI for no behavioral benefit"
+    reason = "each field is an independent user-facing toggle shown flat on the settings screen"
 )]
 pub struct Settings {
     pub resolution: Resolution,
@@ -276,6 +276,91 @@ impl Default for Settings {
             default_facing: Facing::Back,
         }
     }
+}
+
+impl Settings {
+    /// The settings screen's values from the person's and this device's.
+    pub fn from_parts(person: CapturePreferences, device: CameraDevicePreferences) -> Self {
+        Self {
+            resolution: device.resolution,
+            photo_format: person.photo_format,
+            timer: person.timer,
+            grid: person.grid,
+            level: person.level,
+            mirror_front: person.mirror_front,
+            geotag: person.geotag,
+            hdr: person.hdr,
+            default_facing: device.default_facing,
+        }
+    }
+
+    /// The choices that follow the person.
+    pub fn person(&self) -> CapturePreferences {
+        CapturePreferences {
+            photo_format: self.photo_format,
+            timer: self.timer,
+            grid: self.grid,
+            level: self.level,
+            mirror_front: self.mirror_front,
+            geotag: self.geotag,
+            hdr: self.hdr,
+        }
+    }
+
+    /// The choices about this device's cameras.
+    pub fn device(&self) -> CameraDevicePreferences {
+        CameraDevicePreferences {
+            resolution: self.resolution,
+            default_facing: self.default_facing,
+        }
+    }
+}
+
+/// How the person likes to take pictures: the same on each of their
+/// devices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent user-facing toggle"
+)]
+pub struct CapturePreferences {
+    pub photo_format: PhotoFormat,
+    pub timer: Timer,
+    pub grid: bool,
+    pub level: bool,
+    pub mirror_front: bool,
+    pub geotag: bool,
+    pub hdr: bool,
+}
+
+impl Default for CapturePreferences {
+    fn default() -> Self {
+        Settings::default().person()
+    }
+}
+
+impl ui::storage::SettingsSchema for CapturePreferences {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+}
+
+/// Choices about this device's own cameras: which resolutions and lenses
+/// exist differs from one device to the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraDevicePreferences {
+    pub resolution: Resolution,
+    pub default_facing: Facing,
+}
+
+impl Default for CameraDevicePreferences {
+    fn default() -> Self {
+        Settings::default().device()
+    }
+}
+
+impl ui::storage::SettingsSchema for CameraDevicePreferences {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

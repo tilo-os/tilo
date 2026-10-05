@@ -123,7 +123,7 @@ impl ShelfControls {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> (bool, Option<LibrarySort>) {
         if !self.sort.perform_action(target, action, state, root) {

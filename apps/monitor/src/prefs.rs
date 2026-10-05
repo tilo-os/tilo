@@ -2,9 +2,9 @@
 //!
 //! The sampling cadence and kernel-thread visibility are the person's: they
 //! follow them to every device as [`MonitorPreferences`], a personal
-//! settings section, never the shared document. Whether this window is
-//! sampling right now ([`Prefs::auto_refresh`]) belongs to the window alone:
-//! another window's paused sampler is never authority over this one.
+//! settings section, never the shared document. Stopping or killing a
+//! process always asks for confirmation: the effect declares it. Whether this window is sampling right now
+//! ([`Prefs::auto_refresh`]) belongs to the window alone.
 
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};
@@ -46,6 +46,28 @@ impl Prefs {
         self.interval_ms = personal.interval_ms;
         self.show_kernel_threads = personal.show_kernel_threads;
     }
+
+    /// Advance to the next refresh cadence (1s → 1.5s → 2s → 3s → 5s → 1s).
+    /// Any off-grid value (a hand-edited setting) snaps back
+    /// to the start of the cycle.
+    pub fn cycle_interval(&mut self) {
+        self.interval_ms = match self.interval_ms {
+            1000 => 1500,
+            1500 => 2000,
+            2000 => 3000,
+            3000 => 5000,
+            // 5000 falls back here too, alongside any off-grid value.
+            _ => 1000,
+        };
+    }
+
+    pub fn interval_label(&self) -> String {
+        if self.interval_ms.is_multiple_of(1000) {
+            format!("{}s", self.interval_ms / 1000)
+        } else {
+            format!("{:.1}s", self.interval_ms as f32 / 1000.0)
+        }
+    }
 }
 
 /// The Monitor preferences that follow the person to every device.
@@ -75,5 +97,15 @@ mod tests {
         assert_eq!(prefs.interval_ms, 1500);
         assert!(prefs.auto_refresh);
         assert!(!prefs.show_kernel_threads);
+
+        // The interval cycles 1000 → 1500 → 2000 → 3000 → 5000 → 1000.
+        let mut p = Prefs {
+            interval_ms: 1000,
+            ..Prefs::default()
+        };
+        for want in [1500, 2000, 3000, 5000, 1000] {
+            p.cycle_interval();
+            assert_eq!(p.interval_ms, want, "case cycle to {want}");
+        }
     }
 }

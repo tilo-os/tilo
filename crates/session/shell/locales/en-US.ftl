@@ -1232,8 +1232,6 @@ search-opens-here = Opens here, as a tab
 # Search providers, as the search settings actions name them
 search-provider-now-playing = Now playing
 search-provider-records = Records
-search-provider-notes = Notes
-search-provider-editor = Editor
 search-provider-session = Session
 search-provider-shortcuts = Shortcuts
 search-provider-tray = Tray
@@ -1441,8 +1439,6 @@ search-action-peer-invite-named = Name collaborator and open invite
 search-action-peer-invite-named-subtitle = Record the display name, then review their invite before creating it
 search-action-agent-invite = Invite agent to workspace
 search-action-agent-invite-subtitle = Start a scoped agent setup; choose every surface it may use
-search-action-text-insert = Insert text into the focused note
-search-action-text-insert-subtitle = Write into the focused Notes or Editor tab at a character offset
 search-action-record-bring = Add an item to this workspace
 search-action-record-bring-subtitle = Make it available here without moving the original
 search-action-quick-settings-brightness-set = Set display brightness

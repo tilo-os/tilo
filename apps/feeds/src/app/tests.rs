@@ -3,7 +3,9 @@
 #![allow(clippy::float_cmp, reason = "tests assert exact values")]
 
 use super::*;
+use crate::doc::FeedsDoc;
 use crate::model::{BlockKind, ContentBlock};
+use automerge::ReadDoc as _;
 use ui::headless::Framed;
 use ui::widget::Widget;
 use winit::event::MouseScrollDelta;
@@ -14,8 +16,11 @@ fn app() -> FeedsApp {
 }
 
 /// Mount `app` over an empty document in the production frame host.
-fn framed_at(app: FeedsApp, viewport: (u32, u32)) -> Framed<FeedsApp> {
-    Framed::new(ui::State::new(), app, viewport, Theme::dark())
+fn framed_at(mut app: FeedsApp, viewport: (u32, u32)) -> Framed<FeedsApp> {
+    let doc = synced(&mut app);
+    let mut state = ui::State::new();
+    assert!(state.adopt_doc(doc));
+    Framed::new(state, app, viewport, Theme::dark())
 }
 
 fn framed(app: FeedsApp) -> Framed<FeedsApp> {
@@ -31,7 +36,33 @@ fn settle(app: &mut Framed<FeedsApp>) {
 
 fn synced(app: &mut FeedsApp) -> AutoCommit {
     let mut doc = AutoCommit::new();
-    app.sync(&mut doc, &automerge::ROOT);
+    app.attach_framework(ui::framework::Dispatcher::detached(
+        "so.tilo.feeds",
+        "component-test-author",
+    ));
+    // A component fixture presents the same typed actions a capture applies;
+    // the live app never seeds its document during sync.
+    let core = app.core();
+    if !core.store.feeds.is_empty() || !core.store.folders.is_empty() {
+        tilo_actions::Action::apply(
+            &FeedsAction::ImportSubscriptions {
+                folders: core.store.folders.clone(),
+                feeds: core.store.feeds.clone(),
+            },
+            &mut doc,
+        )
+        .unwrap();
+        tilo_actions::Action::apply(
+            &FeedsAction::UpsertFetched {
+                articles: core.store.articles.clone(),
+                feeds: Vec::new(),
+            },
+            &mut doc,
+        )
+        .unwrap();
+    }
+    drop(core);
+    app.sync(&doc, &automerge::ROOT);
     doc
 }
 
@@ -112,7 +143,7 @@ fn dispatch_mods(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: doc,
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -159,13 +190,16 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     // Syncing the live app over a fresh document writes nothing: the default
     // reading settings stand unwritten.
     let mut live = FeedsApp::new();
-    let doc = synced(&mut live);
+    let mut doc = synced(&mut live);
     assert!(live.core().store.feeds.is_empty());
     assert!(
-        !FeedsDoc::has_settings(&doc),
+        doc.get(automerge::ROOT, "settings").unwrap().is_none(),
         "opening writes nothing: the default reading settings stand unwritten"
     );
-    assert!(live.core().actions.last_dispatched().is_none());
+    assert!(
+        doc.get_heads().is_empty(),
+        "the untouched live record has no app writes"
+    );
 
     // The demo opens a rich article and seeds its first document.
     let mut demo = app();
@@ -255,7 +289,8 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             !a.core().pending_doc_writes.is_empty(),
             "the write is queued"
         );
-        a.core_mut().flush_doc_writes(&mut doc);
+        a.core_mut()
+            .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
         assert!(a.core().pending_doc_writes.is_empty());
         assert!(
             FeedsDoc::load(&doc)
@@ -311,11 +346,13 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         assert_eq!(doc.get_heads(), heads, "the drain persists nothing");
         let before = a.core().pending_doc_writes.len();
         assert!(before >= total);
-        a.core_mut().flush_doc_writes(&mut doc);
+        a.core_mut()
+            .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
         assert!(before - a.core().pending_doc_writes.len() <= FLUSH_BUDGET);
         let mut frames = 0;
         while !a.core().pending_doc_writes.is_empty() && frames < 5000 {
-            a.core_mut().flush_doc_writes(&mut doc);
+            a.core_mut()
+                .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
             frames += 1;
         }
         assert!(FeedsDoc::load(&doc).articles.len() >= total);
@@ -387,9 +424,10 @@ fn reader_state_edits_persist_through_the_document() {
         Request::SetPaper(ReadTheme::Sepia),
         Request::SetScale(120.0),
     ] {
-        a.core_mut().apply(request, &mut doc);
+        a.core_mut()
+            .apply(request, &mut ui::widget::Edits::lend(&mut doc));
     }
-    let loaded = FeedsDoc::read_settings(&doc);
+    let loaded = a.read_settings_for_test();
     assert_eq!(loaded.font, ReadFont::Sans);
     assert_eq!(loaded.theme, ReadTheme::Sepia);
     assert!((loaded.font_scale - 1.2).abs() < 0.001);
@@ -402,12 +440,14 @@ fn reader_state_edits_persist_through_the_document() {
         .find(|x| !x.read)
         .map(|x| x.id)
         .expect("an unread article");
-    a.core_mut().select_article(unread, &mut doc);
+    a.core_mut()
+        .select_article(unread, &mut ui::widget::Edits::lend(&mut doc));
     assert!(FeedsDoc::load(&doc).article(unread).is_some_and(|x| x.read));
 
     let id = a.core().store.articles[0].id;
     let before = a.core().store.article(id).is_some_and(|x| x.starred);
-    a.core_mut().toggle_star(id, &mut doc);
+    a.core_mut()
+        .toggle_star(id, &mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(
         FeedsDoc::load(&doc).article(id).map(|x| x.starred),
         Some(!before)
@@ -424,7 +464,8 @@ fn reader_state_edits_persist_through_the_document() {
     );
 
     a.core_mut().set_filter(Filter::All);
-    a.core_mut().mark_all_read(&mut doc);
+    a.core_mut()
+        .mark_all_read(&mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(a.core().store.total_unread(), 0);
 }
 
@@ -450,7 +491,7 @@ fn accessibility_mirrors_and_operates_the_reader() {
     assert!(a.perform_semantic_action(
         &format!("feeds.star:{id}"),
         &A11yAction::ToggleCheck,
-        &mut st.doc,
+        &mut ui::widget::Edits::lend(&mut st.doc),
         &st.root,
     ));
     assert_ne!(
@@ -460,7 +501,7 @@ fn accessibility_mirrors_and_operates_the_reader() {
     assert!(a.perform_semantic_action(
         &format!("feeds.article:{id}"),
         &A11yAction::Activate,
-        &mut st.doc,
+        &mut ui::widget::Edits::lend(&mut st.doc),
         &st.root,
     ));
     assert_eq!(a.selected_article(), Some(id));
@@ -480,7 +521,7 @@ fn accessibility_mirrors_and_operates_the_reader() {
     assert!(a.perform_semantic_action(
         &format!("feeds.reader-tag:{}", tagged.1),
         &A11yAction::Activate,
-        &mut st.doc,
+        &mut ui::widget::Edits::lend(&mut st.doc),
         &st.root,
     ));
     assert_eq!(a.active_filter(), Filter::Tag(tagged.1));
@@ -571,7 +612,7 @@ fn the_add_dialog_field_is_native_and_submits_a_subscription() {
         let mut doc = synced(&mut a);
         a.core_mut().open_add_folder();
         a.take_pending_modal();
-        a.submit_modal(&mut doc);
+        a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
         assert!(a.modal.is_some(), "nothing to create yet");
         a.modal
             .as_mut()
@@ -579,7 +620,7 @@ fn the_add_dialog_field_is_native_and_submits_a_subscription() {
             .dialog
             .content_mut()
             .set_value("Later");
-        a.submit_modal(&mut doc);
+        a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
         assert!(a.modal.is_none());
         let folder = a
             .core()
@@ -615,7 +656,7 @@ fn the_tag_editor_uses_the_canonical_action() {
         .dialog
         .content_mut()
         .set_value("Design, Later, design");
-    a.submit_modal(&mut doc);
+    a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(
         FeedsDoc::load(&doc).article(id).unwrap().tags,
         ["design", "later"]
@@ -623,7 +664,7 @@ fn the_tag_editor_uses_the_canonical_action() {
     a.stage_tag_editor();
     a.take_pending_modal();
     a.modal.as_mut().unwrap().dialog.content_mut().set_value("");
-    a.submit_modal(&mut doc);
+    a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
     assert!(FeedsDoc::load(&doc).article(id).unwrap().tags.is_empty());
 }
 
@@ -651,7 +692,7 @@ fn the_window_shell_adapts_to_its_width() {
     {
         let (a, st) = Framed::split(&mut mounted);
         a.requests.borrow_mut().push(Request::Show(Filter::Unread));
-        a.settle(&mut st.doc);
+        a.settle(&mut ui::widget::Edits::lend(&mut st.doc), &st.root);
     }
     assert!(!mounted.shell().is_sidebar_open());
 
@@ -667,8 +708,9 @@ fn the_window_shell_adapts_to_its_width() {
         a.shell_mut().show(NavPane::Overview);
         a.shell_mut().snap();
         let id = a.core().store.articles_for(Filter::All)[1].id;
-        a.core_mut().select_article(id, &mut st.doc);
-        a.settle(&mut st.doc);
+        a.core_mut()
+            .select_article(id, &mut ui::widget::Edits::lend(&mut st.doc));
+        a.settle(&mut ui::widget::Edits::lend(&mut st.doc), &st.root);
         assert_eq!(a.shell().front_pane(), NavPane::Content);
     }
 }
@@ -705,7 +747,7 @@ fn opml_portal_import_and_export_report_honestly() {
         let before = a.core().store.feeds.len();
         let new_ids = a
             .core_mut()
-            .apply_opml_import(opml::sample_opml(), &mut doc);
+            .apply_opml_import(opml::sample_opml(), &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(new_ids.len(), 3);
         assert_eq!(a.core().store.feeds.len(), before + 3);
         let loaded = FeedsDoc::load(&doc);
@@ -718,7 +760,7 @@ fn opml_portal_import_and_export_report_honestly() {
         assert!(loaded.folders.iter().any(|f| f.name == "Reading"));
         assert!(
             a.core_mut()
-                .apply_opml_import(opml::sample_opml(), &mut doc)
+                .apply_opml_import(opml::sample_opml(), &mut ui::widget::Edits::lend(&mut doc))
                 .is_empty()
         );
     }
@@ -873,7 +915,7 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
         .dialog
         .content_mut()
         .set_value("My feed");
-    a.submit_modal(doc);
+    a.submit_modal(&mut ui::widget::Edits::lend(doc));
     assert_eq!(FeedsDoc::load(doc).feed(feed).unwrap().title, "My feed");
 
     // Losing focus dismisses an open menu.
@@ -882,8 +924,10 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     assert!(a.core().menu.is_none());
 
     // Mark all as read marks the feed's articles and persists.
-    a.core_mut()
-        .apply_menu_action(MenuAction::MarkFeedRead(feed), doc);
+    a.core_mut().apply_menu_action(
+        MenuAction::MarkFeedRead(feed),
+        &mut ui::widget::Edits::lend(doc),
+    );
     assert_eq!(a.core().store.unread_for_feed(feed), 0);
     assert!(
         FeedsDoc::load(doc)
@@ -894,15 +938,17 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     );
 
     // Unsubscribe asks first, as a destructive confirmation.
-    a.core_mut()
-        .apply_menu_action(MenuAction::Unsubscribe(feed), doc);
+    a.core_mut().apply_menu_action(
+        MenuAction::Unsubscribe(feed),
+        &mut ui::widget::Edits::lend(doc),
+    );
     a.take_pending_modal();
     assert_eq!(
         a.modal.as_ref().map(|m| m.intent),
         Some(ModalIntent::Unsubscribe { feed_id: feed })
     );
     assert!(a.core().store.feed(feed).is_some(), "not until confirmed");
-    a.submit_modal(doc);
+    a.submit_modal(&mut ui::widget::Edits::lend(doc));
     assert!(a.core().store.feed(feed).is_none());
     let loaded = FeedsDoc::load(doc);
     assert!(!loaded.feeds.iter().any(|f| f.id == feed));
@@ -958,7 +1004,7 @@ fn sidebar_counts_and_titles_follow_the_library() {
     a.requests
         .borrow_mut()
         .push(Request::Show(Filter::Feed(feed)));
-    a.settle(&mut doc);
+    a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
     assert_eq!(a.active_filter(), Filter::Feed(feed));
     let title = a.core().store.feed(feed).unwrap().title.clone();
     assert_eq!(a.titles.0, title);
@@ -982,7 +1028,7 @@ fn reading_settings_open_under_their_button() {
     a.requests
         .borrow_mut()
         .push(Request::SetPaper(ReadTheme::Dark));
-    a.settle(&mut st.doc);
+    a.settle(&mut ui::widget::Edits::lend(&mut st.doc), &st.root);
     assert_eq!(a.core().settings.theme, ReadTheme::Dark);
     // Escape closes the panel.
     dispatch(a, &mut st.doc, &named_key(NamedKey::Escape));
@@ -1034,7 +1080,8 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
     // Stepping to the first article brings it back into view.
     let (a, st) = Framed::split(&mut mounted);
     let first = a.core().store.articles_for(Filter::All)[0].id;
-    a.core_mut().select_article(first, &mut st.doc);
+    a.core_mut()
+        .select_article(first, &mut ui::widget::Edits::lend(&mut st.doc));
     settle(&mut mounted);
     assert_eq!(mounted.core().list.scroll(), 0.0);
 }

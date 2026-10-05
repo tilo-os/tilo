@@ -427,7 +427,7 @@ impl<C: Widget> Popover<C> {
                 &mut crate::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     // A node of the popover's own tree means nothing to the
@@ -911,7 +911,7 @@ impl Popover {
 }
 
 impl<C: Widget + 'static> Widget for Popover<C> {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Even when closed, so reopening shows a current frame.
         self.content.sync(state, path);
     }
@@ -1362,7 +1362,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         self.popover.set_platform_conventions(conventions);
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.button.sync(state, path);
         self.popover.sync(state, path);
     }

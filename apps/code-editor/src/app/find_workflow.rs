@@ -14,12 +14,12 @@ use crate::find::{byte_ranges, matches_in};
 use crate::search::Query;
 
 /// The active buffer as the find bar's target for one `drive`.
-pub(super) struct FindTarget<'a> {
+pub(super) struct FindTarget<'a, 'doc> {
     pub(super) app: &'a mut CodeApp,
-    pub(super) doc: &'a mut AutoCommit,
+    pub(super) doc: &'a mut ui::widget::Edits<'doc>,
 }
 
-impl FindTarget<'_> {
+impl FindTarget<'_, '_> {
     /// The active buffer's text, if a file is open.
     fn text(&self) -> Option<String> {
         let node = self.app.session.active_buffer().map(|b| b.node)?;
@@ -49,7 +49,7 @@ impl FindTarget<'_> {
         }
         if let Err(error) = self
             .app
-            .dispatch_text_action(self.doc, file_id, &name, &text, &next)
+            .dispatch_text_action(self.doc, file_id, &text, &next)
         {
             self.app.editor.reconcile_from_doc(self.doc);
             self.app
@@ -60,7 +60,7 @@ impl FindTarget<'_> {
     }
 }
 
-impl Findable for FindTarget<'_> {
+impl Findable for FindTarget<'_, '_> {
     fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
         let text = self.text().unwrap_or_default();
         let query = Query::new(query)
@@ -183,7 +183,7 @@ impl CodeApp {
 
     /// Carry what the user did to the bar this frame (a new query, a step, a
     /// replacement, a close) over to the buffer.
-    pub(super) fn drive_find(&mut self, doc: &mut AutoCommit) {
+    pub(super) fn drive_find(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if !self.find_open {
             return;
         }

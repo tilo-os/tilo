@@ -3,15 +3,52 @@
 //! through a headless driver in `tests/a11y.rs`.
 
 use super::*;
+use crate::actions::API_TESTER_ACTION_TYPE;
+use crate::resource::ApiTesterShell;
 use automerge::ROOT;
-use ui::headless::Driver;
+use ui::framework::testing::TestApp;
+use ui::tilo_resource::{Invoke, Resource as _};
+const METHOD_PATH: &str = "method";
 
 /// A demo app whose workspace has been seeded into a fresh document.
+
 fn demo() -> (ApiTesterApp, AutoCommit) {
-    let mut app = ApiTesterApp::new_demo();
+    let dispatcher = ui::framework::testing::dispatcher::<ApiTester>("so.tilo.api-tester");
     let mut doc = AutoCommit::new();
-    app.sync(&mut doc, &ROOT);
+    ApiTester::initialize(&mut doc).unwrap();
+    for action in crate::seed::workspace() {
+        dispatcher
+            .apply_now(&mut ui::widget::Edits::lend(&mut doc), &action)
+            .unwrap();
+    }
+    let mut app = ApiTesterApp::new_demo();
+    app.dispatcher = Some(dispatcher.clone());
+    *app.sink.dispatcher.borrow_mut() = Some(dispatcher);
+    app.present_workspace(&ApiTester::read(&doc).unwrap());
+    app.sync(&doc, &ROOT);
     (app, doc)
+}
+
+thread_local! { static LAST: std::cell::RefCell<Option<ui::tilo_actions::EncodedAction>> = const { std::cell::RefCell::new(None) }; }
+
+fn resync(app: &mut ApiTesterApp, doc: &AutoCommit) {
+    app.present_workspace(&ApiTester::read(doc).unwrap());
+    app.sync(doc, &ROOT);
+}
+
+fn drain(app: &mut ApiTesterApp, doc: &mut AutoCommit) -> bool {
+    let changed = app.drain_commands(doc, &ROOT);
+    let applied = ui::framework::testing::resolve(app.dispatcher.as_ref().unwrap(), doc).unwrap();
+    if let Some(action) = applied.last().and_then(|group| group.last()) {
+        LAST.with(|last| *last.borrow_mut() = Some(actions::encode(action)));
+    }
+    app.present_workspace(&ApiTester::read(doc).unwrap());
+    changed
+}
+
+fn outgoing(app: &mut ApiTesterApp, doc: &AutoCommit) -> Outgoing {
+    app.present_workspace(&ApiTester::read(doc).unwrap());
+    app.outgoing()
 }
 
 fn push(app: &ApiTesterApp, cmd: Cmd) {
@@ -38,9 +75,15 @@ fn constructors_start_live_empty_demo_seeded_and_persist_through_crdt() {
     );
 
     let mut doc = AutoCommit::new();
-    a.seed_workspace(&mut doc, &ROOT);
+    ApiTester::initialize(&mut doc).unwrap();
+    let dispatcher = ui::framework::testing::dispatcher::<ApiTester>("so.tilo.api-tester");
+    for action in crate::seed::workspace() {
+        dispatcher
+            .apply_now(&mut ui::widget::Edits::lend(&mut doc), &action)
+            .unwrap();
+    }
     let mut b = ApiTesterApp::new();
-    b.adopt(&doc, &ROOT);
+    b.present_workspace(&ApiTester::read(&doc).unwrap());
     assert_eq!(b.collections.len(), a.collections.len());
     assert_eq!(b.environments.len(), a.environments.len());
 }
@@ -55,7 +98,7 @@ fn request_builder_resolves_environment_and_loads_saved_requests() {
         a.env_vars().get("base_url").map(String::as_str),
         Some("https://api.example.com/v2")
     );
-    let out = a.outgoing(&doc, &ROOT);
+    let out = outgoing(&mut a, &doc);
     assert!(out.url.starts_with("https://api.example.com/v2/users"));
     assert!(out.url.contains("page=1"));
     assert!(out.url.contains("per_page=25"));
@@ -63,10 +106,10 @@ fn request_builder_resolves_environment_and_loads_saved_requests() {
 
     // The URL the person typed is what is sent, not the model's copy.
     ApiDoc::set_text(&mut doc, &ROOT, "url", "{{base_url}}/typed");
-    assert!(a.outgoing(&doc, &ROOT).url.contains("/v2/typed"));
+    assert!(outgoing(&mut a, &doc).url.contains("/v2/typed"));
 
     push(&a, Cmd::LoadRequest(0, 2));
-    assert!(a.drain_commands(&mut doc, &ROOT));
+    assert!(drain(&mut a, &mut doc));
     assert_eq!(a.request.method, HttpMethod::Post);
     assert_eq!(a.request.body_mode, BodyMode::Json);
     assert_eq!(a.selected, Some((0, 2)));
@@ -81,7 +124,7 @@ fn request_builder_resolves_environment_and_loads_saved_requests() {
 fn replaying_history_fills_the_builder_without_sending() {
     let (mut a, mut doc) = demo();
     push(&a, Cmd::ReplayHistory(1));
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     assert_eq!(a.request.method, HttpMethod::Post);
     assert_eq!(
         ApiDoc::read_text(&doc, &ROOT, "url"),
@@ -104,16 +147,15 @@ fn selecting_environment_dispatches_the_set_active_action() {
     assert_ne!(a.active_env, Some(target.id), "target isn't already active");
 
     push(&a, Cmd::PickEnvironment(target.name.clone()));
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
 
     assert_eq!(
         a.active_env,
         Some(target.id),
         "the active environment switched"
     );
-    let dispatched = a
-        .actions
-        .last_dispatched()
+    let dispatched = LAST
+        .with(|last| last.borrow().clone())
         .expect("the picker dispatched an action");
     let expected = actions::encode(&actions::set_active_environment_action(Some(target.id)));
     assert_eq!(dispatched.type_id, expected.type_id);
@@ -138,7 +180,7 @@ fn selecting_environment_dispatches_the_set_active_action() {
         &a,
         Cmd::PickEnvironment(ENVIRONMENT_COMMANDS[2].0.to_owned()),
     );
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     assert_eq!(
         a.form.as_ref().map(|form| form.mode),
         Some(FormMode::NewVariable)
@@ -160,15 +202,15 @@ fn renaming_the_active_environment_keeps_it_active() {
         .name
         .set("Live".into());
     push(&a, Cmd::SubmitForm);
-    a.drain_commands(&mut doc, &ROOT);
-    a.sync(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
+    resync(&mut a, &doc);
     assert_eq!(a.active_env, Some(active));
     assert_eq!(a.env_state.get(), "Live");
 
     a.open_form(FormMode::DeleteEnvironment, FormTarget::default());
     push(&a, Cmd::SubmitForm);
-    a.drain_commands(&mut doc, &ROOT);
-    a.sync(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
+    resync(&mut a, &doc);
     assert!(a.environments.iter().all(|e| e.id != active));
     assert_eq!(a.active_env, None);
     assert_eq!(
@@ -197,7 +239,7 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
         .name
         .set("Billing API".into());
     push(&a, Cmd::SubmitForm);
-    assert!(a.drain_commands(&mut doc, &ROOT));
+    assert!(drain(&mut a, &mut doc));
     assert!(
         ApiDoc::collections(&doc, &ROOT)
             .iter()
@@ -205,7 +247,9 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
         "New collection dispatched its canonical action"
     );
     assert_eq!(
-        a.actions.last_dispatched().expect("recorded").type_id,
+        LAST.with(|last| last.borrow().clone())
+            .expect("recorded")
+            .type_id,
         API_TESTER_ACTION_TYPE
     );
     assert!(a.form.is_none(), "the sheet closes on submit");
@@ -215,7 +259,7 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
     fields.key.set("region".into());
     fields.value.set("eu-west-1".into());
     push(&a, Cmd::SubmitForm);
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     let active = a.active_env.expect("demo has an active environment");
     assert!(
         ApiDoc::environments(&doc, &ROOT)
@@ -267,7 +311,7 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
         .name
         .set("Fetch user".into());
     push(&a, Cmd::SubmitForm);
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     let names: Vec<&str> = a
         .collections
         .iter()
@@ -280,7 +324,7 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
     let heads = doc.get_heads();
     a.open_form(FormMode::DeleteRequest, FormTarget::default());
     push(&a, Cmd::CancelForm);
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     assert!(a.form.is_none());
     assert_eq!(doc.get_heads(), heads);
 
@@ -293,7 +337,7 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
         },
     );
     push(&a, Cmd::SubmitForm);
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     let remaining: usize = a.collections.iter().map(|c| c.requests.len()).sum();
     assert_eq!(remaining, 6, "one of the seven demo requests is gone");
     let (ci, ri) = a.selected.expect("the builder's request is still selected");
@@ -309,7 +353,7 @@ fn saving_a_request_files_it_and_selects_it() {
     a.selected = None;
     a.open_form(FormMode::SaveRequest, FormTarget::default());
     push(&a, Cmd::SubmitForm);
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     let (ci, ri) = a.selected.expect("the saved request is selected");
     let saved = &a.collections[ci].requests[ri];
     assert_eq!(saved.name, "Health");
@@ -324,16 +368,29 @@ fn view_commands_stay_device_local() {
     let heads = doc.get_heads();
     push(&a, Cmd::SetTab(1));
     push(&a, Cmd::SetView(2));
-    push(&a, Cmd::SetBodyMode(1));
-    push(&a, Cmd::SetAuthKind(2));
-    assert!(a.drain_commands(&mut doc, &ROOT));
+    assert!(drain(&mut a, &mut doc));
     assert_eq!(a.active_tab, RequestTab::Headers);
     assert_eq!(a.response_view, ResponseView::Headers);
+    assert_eq!(
+        doc.get_heads(),
+        heads,
+        "view navigation changes no document"
+    );
+    push(&a, Cmd::SetBodyMode(1));
+    push(&a, Cmd::SetAuthKind(2));
+    assert!(drain(&mut a, &mut doc));
     assert_eq!(a.request.body_mode, BodyMode::Json);
     assert!(matches!(a.request.auth, Auth::Basic { .. }));
-    assert_eq!(doc.get_heads(), heads, "no document change");
+    let stored = ApiTester::read(&doc).unwrap();
+    assert_eq!(stored.request.body_mode, BodyMode::Json);
+    assert!(matches!(stored.request.auth, Auth::Basic { .. }));
+    assert_ne!(
+        doc.get_heads(),
+        heads,
+        "body and authentication modes are shared draft edits"
+    );
     assert!(a.stale.tab_panel && a.stale.response_body && a.stale.body_inner);
-    a.sync(&mut doc, &ROOT);
+    resync(&mut a, &doc);
     assert!(!a.stale.tab_panel && !a.stale.response_body && !a.stale.body_inner);
 }
 
@@ -355,7 +412,7 @@ fn key_value_tables_edit_the_request() {
             edit: RowEdit::Key("limit".into()),
         },
     );
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
     let pair = a.request.params.last().expect("the new pair");
     assert_eq!(
@@ -378,7 +435,7 @@ fn key_value_tables_edit_the_request() {
             edit: RowEdit::Value("10".into()),
         },
     );
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
     assert_eq!(a.request.params[count].value, "10");
 
@@ -390,10 +447,10 @@ fn key_value_tables_edit_the_request() {
             edit: RowEdit::Enabled(false),
         },
     );
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     assert!(!a.request.params[count].enabled);
     assert!(
-        !a.outgoing(&doc, &ROOT).url.contains("limit="),
+        !outgoing(&mut a, &doc).url.contains("limit="),
         "an unchecked row is not sent"
     );
 
@@ -407,7 +464,7 @@ fn key_value_tables_edit_the_request() {
             edit: RowEdit::Key(String::new()),
         },
     );
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
 
     push(
@@ -418,29 +475,47 @@ fn key_value_tables_edit_the_request() {
             edit: RowEdit::Remove,
         },
     );
-    a.drain_commands(&mut doc, &ROOT);
+    drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count);
 }
 
 /// The auth tab edits the scheme the request is composed with.
 #[test]
+
 fn auth_fields_edit_the_request() {
-    let (mut a, mut doc) = demo();
-    push(&a, Cmd::SetAuthKind(2));
-    push(&a, Cmd::EditAuth(AuthField::Username, "ada".into()));
-    push(&a, Cmd::EditAuth(AuthField::Password, "secret".into()));
-    push(&a, Cmd::EditAuth(AuthField::Token, "ignored".into()));
-    a.drain_commands(&mut doc, &ROOT);
+    let mut app = TestApp::<ApiTesterShell>::capture(None).unwrap();
+    app.with_surface::<ApiTesterApp, _>(|surface| push(surface, Cmd::SetAuthKind(2)))
+        .unwrap();
+    app.settle();
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        push(surface, Cmd::EditAuth(AuthField::Username, "ada".into()));
+        push(surface, Cmd::EditAuth(AuthField::Password, "secret".into()));
+        push(surface, Cmd::EditAuth(AuthField::Token, "ignored".into()));
+    })
+    .unwrap();
+    app.settle();
     assert_eq!(
-        a.request.auth,
+        app.with_surface::<ApiTesterApp, _>(|surface| surface.request.auth.clone())
+            .unwrap(),
         Auth::Basic {
             username: "ada".into(),
             password: "secret".into()
         }
     );
-    push(&a, Cmd::SetAuthKind(3));
-    a.drain_commands(&mut doc, &ROOT);
-    assert!(matches!(&a.request.auth, Auth::ApiKey { header, .. } if header == "X-Api-Key"));
+    assert_eq!(
+        app.state().request.auth,
+        Auth::Basic {
+            username: "ada".into(),
+            password: String::new()
+        },
+        "the authoritative document holds the auth scheme and username, with no credential"
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| push(surface, Cmd::SetAuthKind(3)))
+        .unwrap();
+    app.settle();
+    assert!(
+        matches!(app.state().request.auth, Auth::ApiKey { ref header, .. } if header == "X-Api-Key")
+    );
 }
 
 /// Every named `--shots` scenario stages, renders, and leaves an accessibility
@@ -448,14 +523,13 @@ fn auth_fields_edit_the_request() {
 #[test]
 fn every_scenario_stages_and_renders_an_accessible_frame() {
     for scenario in ApiTesterApp::SCENARIOS {
-        let mut app = ApiTesterApp::new_demo();
-        assert!(app.stage(scenario), "{scenario} is a known scenario");
         let size = if scenario.contains("drawer") {
             (520, 800)
         } else {
             (1280, 800)
         };
-        let d = Driver::new(ui::State::new(), Box::new(app), size);
+        let mut app = TestApp::<ApiTesterShell>::capture_at(Some(scenario), size).unwrap();
+        let d = app.harness();
         assert!(
             d.render_rgba().iter().any(|byte| *byte != 0),
             "{scenario} renders"
@@ -486,6 +560,7 @@ fn resource_provider_sends_for_real_and_resolves_exact_records() {
     clippy::too_many_lines,
     reason = "end-to-end scenario that reads top-to-bottom"
 )]
+
 fn resource_send_performs_a_real_http_round_trip() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -539,110 +614,146 @@ fn resource_send_performs_a_real_http_round_trip() {
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     });
 
-    let mut app = ApiTesterApp::new();
-    app.request.params.push(KeyValue::new("name", "Grün"));
-    app.request
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("HTTP proof");
+    request.url = format!("http://{address}/probe");
+    request.params.push(KeyValue::new("name", "Grün"));
+    request
         .headers
         .push(KeyValue::new("X-Tilo-Probe", "native"));
-    let invocation = tilo_actions::InvocationId::new();
-    let mut doc = AutoCommit::new();
-    app.sync(&mut doc, &ROOT);
-    ApiDoc::set_text(&mut doc, &ROOT, "url", &format!("http://{address}/probe"));
-    assert!(ApiDoc::history(&doc, &ROOT).is_empty());
-    let payload =
-        serde_json::to_vec(&crate::actions::ApiTesterOperation::SendActiveRequest).unwrap();
-    assert!(matches!(
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::API_TESTER_OPERATION_TYPE,
-                &payload
-            ),
-            &mut doc,
-            &ROOT
-        )
+    app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
+        .unwrap();
+    assert!(app.state().history.is_empty());
+    app.effect(&ApiTesterEffect::Send).unwrap();
+    assert!(
+        app.effect_progress()
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Accepted { .. })),
+        "the host admits the real HTTP job instead of completing at queue time"
+    );
+    // A later edit cannot change the history record of the request already sent.
+    app.invoke(
+        Invoke::apply(&ApiTesterAction::EditUrl(
+            ui::tilo_resource::TextEdit::ReplaceText {
+                text: "http://127.0.0.1/edited-after-send".into(),
+            },
+        ))
         .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Accepted)
-    ));
-    assert!(app.sending, "the pane shows the request is on its way");
-    // The builder remains editable while a request is in flight. History
-    // must describe the request sent, not these later edits.
-    ApiDoc::set_text(&mut doc, &ROOT, "url", "http://127.0.0.1/edited-after-send");
-    app.request.method = HttpMethod::Post;
-    let update = tilo_test_env::wait_for("the HTTP worker to complete the request", || {
-        app.poll_resource_operation(invocation, false, &doc, &ROOT)
+    )
+    .unwrap();
+    app.invoke(
+        Invoke::apply(&ApiTesterAction::SetMethod {
+            method: HttpMethod::Post,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    tilo_test_env::wait_until("the HTTP worker to complete the request", || {
+        app.settle();
+        app.effect_progress()
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
     });
-    assert!(matches!(
-        update,
-        tilo_actions::InvocationUpdate::Succeeded { .. }
-    ));
     server.join().unwrap();
-    let response = app.response.as_ref().expect("the response is displayed");
+    let response = app
+        .with_surface::<ApiTesterApp, _>(|surface| surface.response.clone())
+        .unwrap()
+        .expect("the response is displayed");
     assert_eq!(response.status, 200);
     assert_eq!(response.body, "{\"result\":\"Grün\"}");
-    assert_eq!(app.history.len(), 1);
-    assert_eq!(app.history[0].status, 200);
-    assert_eq!(app.history[0].method, HttpMethod::Get);
+    let state = app.state();
+    assert_eq!(state.history.len(), 1);
+    assert_eq!(state.history[0].status, 200);
+    assert_eq!(state.history[0].method, HttpMethod::Get);
     assert_eq!(
-        app.history[0].url,
+        state.history[0].url,
         format!("http://{address}/probe?name=Gr%C3%BCn")
     );
-    assert!(!app.sending);
-    app.sync(&mut doc, &ROOT);
-    assert_eq!(ApiDoc::history(&doc, &ROOT), app.history);
-    let mut restarted = ApiTesterApp::new();
-    restarted.sync(&mut doc, &ROOT);
+    assert!(
+        !app.with_surface::<ApiTesterApp, _>(|surface| surface.sending)
+            .unwrap()
+    );
+    for _ in 0..3 {
+        app.settle();
+    }
     assert_eq!(
-        restarted.history, app.history,
+        app.effect_progress()
+            .iter()
+            .filter(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+            .count(),
+        1,
+        "terminal delivery is at most once"
+    );
+    assert_eq!(
+        app.read_document(|doc| ApiDoc::history(doc, &ROOT)),
+        state.history
+    );
+    let mut restarted = app.reopen().unwrap();
+    assert_eq!(
+        restarted.state().history,
+        state.history,
         "completed requests survive restart"
     );
-    let entry = app.history[0].clone();
-    app.perform(&mut doc, &ROOT, &ApiTesterAction::RecordHistory { entry });
+    restarted
+        .invoke(
+            Invoke::apply(&ApiTesterAction::RecordHistory {
+                entry: state.history[0].clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
     assert_eq!(
-        ApiDoc::history(&doc, &ROOT).len(),
+        restarted.state().history.len(),
         1,
         "replay does not duplicate history"
     );
 }
 
 /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
+
 fn resource_send_reports_worker_completion_instead_of_queue_success() {
-    let (mut a, doc) = demo();
-    let invocation = tilo_actions::InvocationId::new();
-    a.resource_send_invocation = Some(invocation);
-    a.tx.send(SendOutcome::Ok {
-        response: http::sample_response(),
-        method: HttpMethod::Get,
-        url: "http://localhost/test".into(),
-    })
-    .unwrap();
-    assert!(matches!(
-        a.poll_resource_operation(invocation, false, &doc, &ROOT),
-        Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-    ));
-    assert!(
-        a.poll_resource_operation(invocation, false, &doc, &ROOT)
-            .is_none(),
-        "terminal delivery is at most once"
-    );
+    // The real hosted HTTP scenario asserts admission, worker completion and exactly one terminal delivery.
+    resource_send_performs_a_real_http_round_trip();
 }
 
 /// A failed request shows the failure once, in the response pane.
 #[test]
+
 fn a_failed_request_is_shown_in_the_response_pane() {
-    let (mut a, mut doc) = demo();
-    a.tx.send(SendOutcome::Err("Could not reach the host.".into()))
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("Failure proof");
+    request.url = format!("http://{address}/unreachable");
+    app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
         .unwrap();
-    a.sync(&mut doc, &ROOT);
-    assert!(a.response.is_none());
-    assert_eq!(a.error.as_deref(), Some("Could not reach the host."));
-    assert!(!a.stale.response, "the pane was rebuilt");
+    app.effect(&ApiTesterEffect::Send).unwrap();
+    tilo_test_env::wait_until("the failed HTTP worker", || {
+        app.settle();
+        app.effect_progress()
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Failed { .. }))
+    });
+    let failure = app
+        .effect_progress()
+        .into_iter()
+        .find_map(|update| match update {
+            tilo_actions::InvocationUpdate::Failed { error, .. } => Some(error.message),
+            _ => None,
+        })
+        .expect("the worker reported why it failed");
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert!(surface.response.is_none());
+        assert_eq!(surface.error.as_deref(), Some(failure.as_str()));
+        assert!(!surface.stale.response, "the pane was rebuilt");
+    })
+    .unwrap();
 }
 
 /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
 fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
-    let (mut a, _) = demo();
+    let (mut a, mut doc) = demo();
     let mut collection = Collection::new("Load test");
     collection.requests = (0..5_000)
         .map(|index| Request::new(format!("Request {index}")))
@@ -650,19 +761,27 @@ fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
     let request = collection.requests.last().expect("late request").id;
     a.collections = vec![collection];
     a.environments.clear();
-    a.refresh_search();
-
-    let doc = AutoCommit::new();
+    let dispatcher = a.dispatcher.as_ref().unwrap();
+    dispatcher
+        .apply_now(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &actions::create_collection_action(a.collections[0].id, &a.collections[0].name),
+        )
+        .unwrap();
+    for request in &a.collections[0].requests {
+        dispatcher
+            .apply_now(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &actions::save_request_action(a.collections[0].id, request.clone()),
+            )
+            .unwrap();
+    }
+    let state = ApiTester::read(&doc).unwrap();
     let id = format!("api_tester.request:{request}");
-    let resource =
-        ApiTesterApp::publish_resource(&a, &doc, &id).expect("late exact address resolves");
+    let resource = actions::resolve_child(&state, &id).expect("late exact address resolves");
     assert_eq!(resource.id.0, id);
     assert!(resource.actions.iter().any(|action| action.id == "send"));
-    assert_eq!(
-        a.search_provider.last_exact_inspected(),
-        1,
-        "the performs one indexed address lookup"
-    );
+    assert_eq!(state.exact_inspected.get(), 1, "one indexed address lookup");
 }
 
 /// The document returns records in the order of their ids, so a pick or a
@@ -678,12 +797,13 @@ fn rereading_the_document_keeps_the_order_on_screen() {
     };
     let before = (names(&app), collections(&app));
     for _ in 0..8 {
-        app.adopt_workspace(&doc, &ROOT);
+        resync(&mut app, &doc);
         assert_eq!((names(&app), collections(&app)), before);
     }
     let first = app.environments[0].id;
     let second = app.environments[1].id;
-    app.pick_environment(&mut doc, &ROOT, "Staging");
+    app.pick_environment(&doc, &ROOT, "Staging");
+    drain(&mut app, &mut doc);
     assert_eq!(app.active_env, Some(second));
     assert_ne!(app.active_env, Some(first));
     assert_eq!((names(&app), collections(&app)), before);

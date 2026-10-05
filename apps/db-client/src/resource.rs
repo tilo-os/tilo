@@ -322,7 +322,7 @@ pub(crate) fn sql_dispatcher(dispatcher: &Dispatcher<DbClient>) -> Dispatcher<Pl
 /// entry it acts on, which it names by id and resolves again when invoked.
 /// None carries a password.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "db_client.effects")]
+#[effect(operation = "db_client.effects", device_only)]
 pub enum DbEffect {
     /// Run SQL
     ///
@@ -497,6 +497,12 @@ impl ResourceSurface<DbClient, DbEffect> for DbClientApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_row(id)
+    }
+
+    /// The open connection's relations, columns, result, transaction and
+    /// local query history: what the live catalog holds, not the document.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.catalog_search_entries()
     }
 }
 

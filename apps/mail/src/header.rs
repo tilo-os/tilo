@@ -224,7 +224,7 @@ pub(crate) fn header_actions(spec: &BarSpec, shared: &Shared, column: &str) -> V
             let id = format!("mail-{column}-action-{index}");
             let button = match item.icon {
                 Some(icon) => Button::icon_only(&id, icon, &item.label),
-                None => Button::new(&id, &item.label, None).role(ButtonRole::Plain),
+                None => Button::new(&id, &item.label).role(ButtonRole::Plain),
             };
             let button = match item.toggle {
                 Some(on) => button.toggled(on),

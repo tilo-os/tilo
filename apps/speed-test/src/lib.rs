@@ -26,9 +26,6 @@ mod model;
 pub mod resource;
 mod view;
 
-pub use resource::{SpeedTest, SpeedTestShell};
+pub use resource::{Measurement, SpeedEffect, SpeedTest, SpeedTestShell};
 
-/// The app as every host mounts it.
-pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SpeedTestShell>()
-}
+ui::dev_reload_entry!(SpeedTestShell);

@@ -355,7 +355,7 @@ pub enum ExternalDatePickerHit {
 }
 
 impl Widget for DatePicker {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(date) = self
             .local_state
             .as_mut()
@@ -611,7 +611,7 @@ impl Widget for DatePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -903,7 +903,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -916,7 +916,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -1070,11 +1070,11 @@ mod tests {
             let state = crate::LocalState::new(first);
             let mut left = DatePicker::from_state(&state);
             let mut right = DatePicker::from_state(&state);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
             left.set_selected(second);
             assert_eq!(state.with(|date| *date), second);
-            Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut right, &doc, &automerge::ROOT);
             assert_eq!(right.selected(), second);
             assert_eq!(right.month_view(), (2027, 8));
         }
@@ -1092,7 +1092,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-11-23".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|date| *date), expected);
@@ -1101,7 +1101,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-02-30".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|date| *date), expected);

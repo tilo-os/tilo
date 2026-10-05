@@ -382,9 +382,9 @@ impl Core {
             return false;
         };
         if row.star.is_some_and(|r| r.contains(self.pointer)) {
-            self.toggle_star(row.id, ctx.state);
+            self.toggle_star(row.id, &mut ctx.state);
         } else {
-            self.select_article(row.id, ctx.state);
+            self.select_article(row.id, &mut ctx.state);
         }
         true
     }
@@ -469,14 +469,14 @@ impl ListPane {
 }
 
 impl Widget for ListPane {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow();
         if let Some((_, empty)) = self.empty.as_mut() {
             empty.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.follow();
         self.empty
             .as_mut()

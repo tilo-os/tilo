@@ -234,14 +234,14 @@ impl Widget for Columns {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.main.sync(state, path);
         if let Some(aside) = &mut self.aside {
             aside.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let main = self.main.update(state, path);
         let aside = self
             .aside

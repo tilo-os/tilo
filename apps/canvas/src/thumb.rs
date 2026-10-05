@@ -184,7 +184,7 @@ impl Widget for Thumb {
             .draw(scene, transform, self.rect, theme);
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn name(&self) -> &'static str {
         "Thumb"

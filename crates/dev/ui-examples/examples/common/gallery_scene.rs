@@ -15,6 +15,7 @@ use automerge::transaction::Transactable;
 use tilo_ui::icons::Icon;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::table;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::{
@@ -313,11 +314,24 @@ fn seed_gallery_state(state: &mut State) {
     let _ = state.doc.put(&root, "cb_updates", true);
     let _ = state.doc.put(&root, "sld_vol", 0.65);
     let _ = state.doc.put(&root, "dd_quality", "High");
-    if let Ok(ti) = state
-        .doc
-        .put_object(&root, "ti_name", automerge::ObjType::Text)
-    {
-        let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
+
+    for _ in 0..3 {
+        table::insert_column(&mut state.doc, &root, usize::MAX);
+    }
+    for _ in 0..4 {
+        table::insert_row(&mut state.doc, &root, usize::MAX);
+    }
+    table::set_header(&mut state.doc, &root, true);
+    let rows = [
+        ["Task", "Owner", "Status"],
+        ["Design", "Ada", "Done"],
+        ["Build", "Grace", "Active"],
+        ["Ship", "Linus", "Queued"],
+    ];
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            table::set_cell_text(&mut state.doc, &root, r, c, cell);
+        }
     }
 }
 
@@ -332,16 +346,16 @@ fn build_controls_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(
-                            Button::new("g_save", "Save", None)
+                            Button::new("g_save", "Save")
                                 .role(ButtonRole::Primary)
                                 .shortcut_hint(tilo_ui::platform::Shortcut::command("S")),
                         ))
-                        .push(Box::new(Button::new("g_cancel", "Discard", None)))
+                        .push(Box::new(Button::new("g_cancel", "Discard")))
                         .push(Box::new(
-                            Button::new("g_delete", "Delete", None).role(ButtonRole::Destructive),
+                            Button::new("g_delete", "Delete").role(ButtonRole::Destructive),
                         ))
                         .push(Box::new(
-                            Button::new("g_more", "Details", None).role(ButtonRole::Plain),
+                            Button::new("g_more", "Details").role(ButtonRole::Plain),
                         ))
                         .push(Box::new(Button::icon_only(
                             "g_open",
@@ -386,9 +400,9 @@ fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
             col(12.0)
                 .push(dim("Text field", theme))
                 .push(Box::new(
-                    TextInput::new(vec![])
-                        .with_id("g_name")
-                        .with_on_change_path("ti_name"),
+                    TextInput::local()
+                        .with_initial_value("Ada Lovelace")
+                        .with_id("g_name"),
                 ))
                 .push(dim("Search field", theme))
                 .push(Box::new(

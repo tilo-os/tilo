@@ -46,3 +46,5 @@ themes-motion-material = Motion and material
 themes-motion = Motion
 themes-blur = Blur behind menus
 themes-tint-opacity = Menu opacity
+
+themes-reset = Reset

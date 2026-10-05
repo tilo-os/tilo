@@ -114,7 +114,7 @@ fn the_retained_banner_holds_its_buttons_and_dismisses_through_its_control() {
                 .with_message("Changes will sync when you reconnect.")
                 .with_id("offline")
                 .with_action(
-                    Button::new("offline.retry", "Try again", None).on_effect(move || {
+                    Button::new("offline.retry", "Try again").on_effect(move || {
                         retry.set(retry.get() + 1);
                     }),
                 )

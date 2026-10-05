@@ -1,26 +1,56 @@
-//! API Tester as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! publish path. Workspace create actions and the static request/menu/history
-//! children ride [`Resource::bound_actions`] / [`Resource::children`].
+//! API Tester as a [`tilo_resource::Resource`]: the shared workspace —
+//! collections, environments, the request in the builder and the history —
+//! shown and edited by [`ApiTesterApp`].
 
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ROOT};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use automerge::ROOT;
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+};
+use ui::tilo_actions::ActionSpec;
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, PlainText, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
-    API_TESTER_ACTION_TYPE, ApiTesterAction, document_children, register, workspace_bound_actions,
+    API_TESTER_ACTION_TYPE, ApiTesterAction, ApiTesterEffect, body_resource_id, document_children,
+    register, resolve_child, search_entries, set_method_declaration, url_resource_id,
+    use_environment_declaration, workspace_bound_actions,
 };
 use crate::app::ApiTesterApp;
 use crate::doc::ApiDoc;
+use crate::model::{Collection, Environment, HistoryEntry, Request};
 
-/// Lightweight workspace projection for search and the published tree.
-#[derive(Clone, Debug, Default)]
-pub struct WorkspaceState {
-    pub collections: Vec<(String, String)>,
-    pub environments: Vec<(String, String)>,
+/// The shared workspace as the views read it. Credentials are not in it:
+/// they stay in the device's secret store.
+#[derive(Clone, Debug)]
+pub struct Workspace {
+    pub collections: Vec<Collection>,
+    pub environments: Vec<Environment>,
+    pub active_env: Option<uuid::Uuid>,
+    /// The request in the builder.
+    pub request: Request,
+    /// Completed requests, newest first.
+    pub history: Vec<HistoryEntry>,
+    /// Exact resource addresses, rebuilt once with each authoritative projection.
+    pub(crate) index: std::collections::HashMap<String, crate::actions::RecordLocation>,
+    #[cfg(test)]
+    pub(crate) exact_inspected: std::cell::Cell<usize>,
+}
+
+impl Default for Workspace {
+    fn default() -> Self {
+        Self {
+            collections: Vec::new(),
+            environments: Vec::new(),
+            active_env: None,
+            request: blank_request(),
+            history: Vec::new(),
+            index: std::collections::HashMap::new(),
+            #[cfg(test)]
+            exact_inspected: std::cell::Cell::new(0),
+        }
+    }
 }
 
 /// The API workspace resource.
@@ -31,156 +61,164 @@ impl Resource for ApiTester {
     const LABEL: &'static str = "API workspace";
     const ACTION_TYPE: &'static str = API_TESTER_ACTION_TYPE;
 
-    type State = WorkspaceState;
+    type State = Workspace;
     type Action = ApiTesterAction;
 
     fn register(registry: &mut tilo_actions::ActionRegistry) {
         register(registry);
     }
 
-    fn read(doc: &Doc) -> Result<WorkspaceState, ModelError> {
-        let collections = ApiDoc::collections(doc, &ROOT)
-            .into_iter()
-            .map(|collection| (collection.id.to_string(), collection.name))
-            .collect();
-        let environments = ApiDoc::environments(doc, &ROOT)
-            .into_iter()
-            .map(|environment| (environment.id.to_string(), environment.name))
-            .collect();
-        Ok(WorkspaceState {
-            collections,
-            environments,
-        })
+    fn read(doc: &Doc) -> Result<Workspace, ModelError> {
+        let mut state = Workspace {
+            collections: ApiDoc::collections(doc, &ROOT),
+            environments: ApiDoc::environments(doc, &ROOT),
+            active_env: ApiDoc::active_env(doc, &ROOT).and_then(|id| id.parse().ok()),
+            request: ApiDoc::request(doc, &ROOT).unwrap_or_else(blank_request),
+            history: ApiDoc::history(doc, &ROOT),
+            index: std::collections::HashMap::new(),
+            #[cfg(test)]
+            exact_inspected: std::cell::Cell::new(0),
+        };
+        state.index = crate::actions::resource_index(&state);
+        Ok(state)
+    }
+
+    /// A new workspace opens on one blank request, the same on every device
+    /// (its id is the nil id), with the URL and body texts two people type
+    /// into before they have synced.
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        ApiDoc::set_request(doc, &ROOT, &blank_request());
+        Ok(())
+    }
+
+    /// Typing in the URL or the body is one undo step a word at a time.
+    fn coalesces(previous: &ApiTesterAction, next: &ApiTesterAction) -> bool {
+        match (previous, next) {
+            (ApiTesterAction::EditUrl(previous), ApiTesterAction::EditUrl(next))
+            | (ApiTesterAction::EditBody(previous), ApiTesterAction::EditBody(next)) => {
+                PlainText::coalesces(previous, next)
+            }
+            _ => false,
+        }
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        // Prompted new-collection / new-environment mint ids when the name is
-        // committed — see [`bound_actions`]. Typed declarations would lose that
-        // continuation identity.
-        Vec::new()
+        vec![set_method_declaration()]
     }
 
-    fn bound_actions(_state: &WorkspaceState) -> Vec<ActionSpec> {
+    fn bound_declarations(state: &Workspace) -> Vec<ActionDecl<Self>> {
+        vec![use_environment_declaration(state)]
+    }
+
+    fn bound_actions(_state: &Workspace) -> Vec<ActionSpec> {
         workspace_bound_actions()
     }
 
-    fn children(_state: &WorkspaceState) -> Vec<tilo_actions::Resource> {
-        // Active request Send (Effect), contextual menus (View), and the
-        // history directory. Deep collection/request/environment records stay
-        // on the search catalog and resolve by stable id.
-        document_children()
+    fn children(state: &Workspace) -> Vec<tilo_actions::Resource> {
+        document_children(state)
     }
 
-    fn search(state: &WorkspaceState) -> Vec<SearchEntry> {
-        let collections = state.collections.iter().map(|(id, name)| SearchEntry {
-            anchor: Some(format!("api_tester.collection:{id}")),
-            title: name.clone(),
-            text: String::new(),
-            ..Default::default()
-        });
-        let environments = state.environments.iter().map(|(id, name)| SearchEntry {
-            anchor: Some(format!("api_tester.environment:{id}")),
-            title: name.clone(),
-            text: String::new(),
-            ..Default::default()
-        });
-        collections.chain(environments).collect()
+    fn child(state: &Workspace, id: &str) -> Option<tilo_actions::Resource> {
+        resolve_child(state, id)
     }
+
+    fn search(state: &Workspace) -> Vec<SearchEntry> {
+        search_entries(state)
+    }
+}
+
+/// The request a new workspace opens on.
+pub fn blank_request() -> Request {
+    let mut request = crate::seed::blank_request();
+    request.id = uuid::Uuid::nil();
+    request
+}
+
+/// Edits of the builder's URL through the workspace's dispatcher.
+pub(crate) fn url_dispatcher(dispatcher: &Dispatcher<ApiTester>) -> Dispatcher<PlainText> {
+    dispatcher.child::<PlainText>(&url_resource_id(), ApiTesterAction::EditUrl)
+}
+
+/// Edits of the builder's body through the workspace's dispatcher.
+pub(crate) fn body_dispatcher(dispatcher: &Dispatcher<ApiTester>) -> Dispatcher<PlainText> {
+    dispatcher.child::<PlainText>(&body_resource_id(), ApiTesterAction::EditBody)
 }
 
 /// Framework app.
 pub struct ApiTesterShell;
+
+impl ApiTesterShell {
+    /// The view state a screenshot scenario stages: a contextual form, the
+    /// rail, the URL's focus, a failed send.
+    pub const SCENARIOS: &'static [&'static str] = &[
+        "empty",
+        "rail-open",
+        "error",
+        "focus-url",
+        "form-new-collection",
+        "form-save-request",
+        "form-rename-collection",
+        "form-rename-request",
+        "form-new-environment",
+        "form-rename-environment",
+        "form-delete-environment",
+        "form-new-variable",
+        "form-delete-variable",
+    ];
+}
 
 impl ResourceApp for ApiTesterShell {
     type Resource = ApiTester;
     const ID: &'static str = "so.tilo.api-tester";
     const TITLE: &'static str = "API Tester";
     const ICON: Option<&'static str> = Some("api-tester");
+
+    fn view(cx: &mut ViewCx<ApiTester>) -> Element {
+        cx.surface(ApiTesterApp::new_with_actions(&cx.actions()))
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        Self::SCENARIOS
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1280, 800)
     }
 
-    fn view(cx: &mut ViewCx<ApiTester>) -> Element {
-        cx.surface(ApiTesterApp::new())
+    /// Every scenario but the empty one shows the sample workspace.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<ApiTester>> {
+        if name == Some("empty") {
+            return Vec::new();
+        }
+        crate::seed::workspace()
+            .iter()
+            .filter_map(|action| Invoke::<ApiTester>::apply(action).ok())
+            .collect()
     }
 }
 
-impl ResourceSurface<ApiTester> for ApiTesterApp {
-    fn present(&mut self, state: &Rc<WorkspaceState>) {
-        self.adopt_resource_state(state);
+impl ResourceSurface<ApiTester, ApiTesterEffect> for ApiTesterApp {
+    fn present(&mut self, state: &Rc<Workspace>) {
+        self.present_workspace(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<ApiTester>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher for collections, environments, and saved requests.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<ApiTester>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<ApiTester>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+        self.attach_surface(&cx);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
+    fn read_only_changed(&mut self, read_only: bool) {
+        self.set_read_only(read_only);
     }
 
-    pub(crate) fn dispatch_with_context(
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    fn effect(
         &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &ApiTesterAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.is_hosted() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Hosted commits are recorded by the dispatcher. Standalone tests still
-    /// read the local host's rising edge.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+        effect: ApiTesterEffect,
+        cx: &mut EffectCx<ApiTester, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
     }
 }

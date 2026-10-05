@@ -63,7 +63,7 @@ impl Default for MonitorState {
 /// (its PID with its kernel start time), so a delayed invocation never
 /// reaches a process that reused the PID.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "monitor.effect")]
+#[effect(operation = "monitor.effect", device_only)]
 pub enum MonitorEffect {
     /// Refresh processes.
     #[effect(permission = "read")]
@@ -273,6 +273,12 @@ impl ResourceSurface<Monitor, MonitorEffect> for MonitorApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_process_row(id)
+    }
+
+    /// Every process running here, each found by its name, user or PID and
+    /// opening its exact generation — the tail beyond the published rows too.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.process_search_entries()
     }
 }
 

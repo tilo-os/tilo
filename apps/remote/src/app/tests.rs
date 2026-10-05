@@ -637,33 +637,31 @@ fn tilo_sessions_use_the_authenticated_broker_and_consent() {
 fn resource_operations_settle_only_their_own_session() {
     let mut app = demo();
     let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-    let invocation = tilo_actions::InvocationId::new();
     app.session_for = Some(id);
     app.session_generation = 42;
     app.session.borrow_mut().live = Some(LiveSession::Preview(SessionStatus::Connecting));
     app.pending_resource_operation = Some(PendingResourceOperation::Connect {
-        invocation,
+        reply: None,
         connection_id: id,
         session_generation: 42,
     });
     assert!(matches!(
-        app.poll_resource_operation(invocation, true, &doc(), &automerge::ROOT),
-        Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+        app.pending_outcome(true),
+        Some(Err(ref message)) if message.contains("cancelled")
     ));
     assert!(app.session.borrow().live.is_none());
 
-    let stale = tilo_actions::InvocationId::new();
     app.session_for = Some(id);
     app.session_generation = 99;
     app.session.borrow_mut().live = Some(LiveSession::Preview(SessionStatus::Connecting));
     app.pending_resource_operation = Some(PendingResourceOperation::Connect {
-        invocation: stale,
+        reply: None,
         connection_id: id,
         session_generation: 98,
     });
     assert!(matches!(
-        app.poll_resource_operation(stale, true, &doc(), &automerge::ROOT),
-        Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+        app.pending_outcome(true),
+        Some(Err(ref message)) if message.contains("cancelled")
     ));
     assert!(
         app.session.borrow().live.is_some(),

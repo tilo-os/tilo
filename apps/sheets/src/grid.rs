@@ -682,7 +682,7 @@ impl Grid {
     }
 
     /// Select a rectangular range (anchor..active), replacing any existing
-    /// selection. Used by paste (to select what landed) and the shots hooks.
+    /// selection. Used by paste (to select what landed) and screenshot staging.
     pub fn select_range_public(&mut self, anchor: Addr, active: Addr) {
         let (nc, nr) = (
             self.n_cols.max(anchor.0.max(active.0) + 4),
@@ -703,7 +703,7 @@ impl Grid {
 
     /// Add a discontiguous rectangular range to the current selection,
     /// keeping the existing one(s). The new range becomes the live one.
-    /// Drives the multi-range shots hook (Ctrl+drag equivalent).
+    /// Stages a multi-range selection (Ctrl+drag equivalent).
     pub fn add_range_public(&mut self, anchor: Addr, active: Addr) {
         let (nc, nr) = (
             self.n_cols.max(anchor.0.max(active.0) + 4),
@@ -1199,7 +1199,7 @@ impl Grid {
     /// Drive a fill-handle drag from the current selection to `target` and
     /// release, exactly as a pointer grab + drag + release would — the
     /// production `pointer_up` path records the pending fill. Used by tests and
-    /// the `--shots` scenarios to exercise the real fill without a display.
+    /// screenshot scenarios to exercise the real fill without a display.
     pub fn start_fill_to(&mut self, target: Addr) {
         let (c0, r0, c1, r1) = self.current_range().bounds();
         self.fill_drag = Some(FillDrag {

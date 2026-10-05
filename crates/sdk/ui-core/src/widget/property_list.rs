@@ -1071,7 +1071,7 @@ impl Widget for PropertyList {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
@@ -1380,7 +1380,7 @@ impl Widget for PropertyValue {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
         if self.copyable && key_path == [0] && matches!(action, crate::a11y::Action::Activate) {

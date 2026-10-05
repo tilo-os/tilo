@@ -119,7 +119,7 @@ impl Session {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &self.root,
                 handled: &mut handled,
                 focus_target: &mut focus,

@@ -4,9 +4,9 @@ use notes::{actions, doc::NotesDoc};
 use ui::widget::BlockContent;
 
 fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboard: bool) {
-    let fixture = LegacyFixture::rich();
+    let fixture = NotebookFixture::rich();
     fixture.write_page(fixture.child, source.as_bytes());
-    let checkout = imported(&fixture);
+    let checkout = notebook(&fixture);
     let before = fixture
         .records
         .read(&checkout.id, |doc| {
@@ -175,12 +175,12 @@ fn semantic_duplicate_uses_the_explicit_block_id_and_subtree() {
 }
 
 fn duplicate_selection_then_type(semantic: bool) {
-    let fixture = LegacyFixture::rich();
+    let fixture = NotebookFixture::rich();
     fixture.write_page(
         fixture.child,
         b"Parent\n\nFirst child\n\nSecond child\n\nAfter\n",
     );
-    let checkout = imported(&fixture);
+    let checkout = notebook(&fixture);
     let before = fixture
         .records
         .read(&checkout.id, |doc| {
@@ -336,12 +336,12 @@ fn semantic_duplicate_selection_uses_the_same_safe_batch_command() {
 
 #[test]
 fn visual_table_composition_keeps_keyboard_and_semantic_copy_out_of_the_cell() {
-    let fixture = LegacyFixture::rich();
+    let fixture = NotebookFixture::rich();
     fixture.write_page(
         fixture.child,
         b"| Name | Value |\n| --- | --- |\n| first | second |\n",
     );
-    let checkout = imported(&fixture);
+    let checkout = notebook(&fixture);
     let before = fixture
         .records
         .read(&checkout.id, |doc| {

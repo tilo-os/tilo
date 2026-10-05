@@ -2538,7 +2538,11 @@ impl NavShell {
 
     /// Activate the action the person chose in a More menu: from the event
     /// that chose it, so its invocation leaves with that event.
-    fn take_more_choices(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn take_more_choices(
+        &mut self,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
         let mut acted = false;
         for column in Column::ALL {
             let shown = self.shown_actions(column);
@@ -3284,7 +3288,7 @@ impl Widget for NavShell {
         self.for_each_owned_mut(|child| child.set_interaction_environment(environment));
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let next = self.pane_binding.as_mut().and_then(LocalBinding::poll);
         if let Some(pane) = next {
             self.show(pane);
@@ -3300,7 +3304,7 @@ impl Widget for NavShell {
         self.sync_filter();
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.take_requests();
         self.for_each_owned_mut(|child| changed |= child.update(state, path));
         changed |= self.follow_navigation();
@@ -3468,7 +3472,7 @@ impl Widget for NavShell {
         }
         self.route_event_to_children(event, ctx);
         self.take_requests();
-        self.take_more_choices(&mut *ctx.state, ctx.path);
+        self.take_more_choices(&mut ctx.state, ctx.path);
         self.open_more_menus();
         self.follow_navigation();
         self.sync_filter();

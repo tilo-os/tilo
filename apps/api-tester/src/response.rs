@@ -23,7 +23,7 @@ pub(crate) struct Built {
 }
 
 /// No request has been sent yet.
-pub(crate) fn empty() -> Element {
+pub(crate) fn empty(_sink: &Sink) -> Element {
     Box::new(
         EmptyState::new("No response yet")
             .with_icon(Icon::Globe)
@@ -43,15 +43,17 @@ pub(crate) fn sending() -> Element {
 }
 
 /// The request could not be completed. The reason is shown here once.
-pub(crate) fn failed(detail: &str) -> Element {
+pub(crate) fn failed(detail: &str, sink: &Sink) -> Element {
     let status = Row::new().push(Box::new(
         Badge::text("Failed").style(ChipStyle::Tinted(Tone::Danger)),
     ));
-    let reason = EmptyState::error("Couldn't complete the request", detail)
-        .with_icon(Icon::TriangleAlert)
-        .with_action("Try again")
-        .with_action_id("api.response.retry")
-        .on_action(crate::app::active_send_binding())
+    let reason = sink
+        .retry(
+            EmptyState::error("Couldn't complete the request", detail)
+                .with_icon(Icon::TriangleAlert)
+                .with_action("Try again")
+                .with_action_id("api.response.retry"),
+        )
         .into_scrollable();
     Box::new(
         Column::new()

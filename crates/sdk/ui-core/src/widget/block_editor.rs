@@ -9,7 +9,6 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use taffy::style_helpers::length;
@@ -488,9 +487,9 @@ impl ImageAttachment {
             source: source.into(),
             editing: false,
             node: None,
-            edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit", None)
+            edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit")
                 .on_view(move || edit_command.set(Some(true))),
-            done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done", None)
+            done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done")
                 .on_view(move || done_command.set(Some(false))),
             command,
         }
@@ -637,10 +636,6 @@ pub struct BlockEditor {
     /// `Some`: backed by this Automerge block-Map list, bound per-line
     /// so edits sync. `None`: local-only (examples/tests).
     blocks_list: Option<ObjId>,
-    /// Set by split/merge/delete so the next `sync` mirrors structure
-    /// into the doc, preserving block `Text` identity. Distinct from
-    /// `structure_dirty` (which drives taffy).
-    doc_structure_dirty: bool,
     local_author: Option<String>,
     /// Anchor of a keyboard cross-block selection, latched on the first
     /// `Ctrl+Shift+Arrow` and held across extends. Cleared by any
@@ -665,7 +660,6 @@ pub struct BlockEditor {
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
     preferred_formula_mode: crate::math::FormulaMode,
-    action_interception: bool,
     /// Canonical binding stays read-only even after its last block is removed.
     canonical_existing: bool,
     /// An empty canonical list has a local paragraph until the first effective edit.
@@ -809,7 +803,6 @@ impl BlockEditor {
             block_drag: None,
             tooltip_viewport: None,
             blocks_list: None,
-            doc_structure_dirty: false,
             local_author: None,
             kbd_sel_anchor: None,
             empty_hint: DEFAULT_EMPTY_HINT.to_string(),
@@ -825,7 +818,6 @@ impl BlockEditor {
             visual_formulas: HashMap::new(),
             visual_formula_focus: None,
             preferred_formula_mode: crate::math::FormulaMode::Visual,
-            action_interception: false,
             canonical_existing: false,
             canonical_empty: false,
             interception_before: None,
@@ -837,17 +829,13 @@ impl BlockEditor {
             replace_field: TextInput::local()
                 .with_id("block-editor-replacement")
                 .with_placeholder("block-editor-replace-placeholder"),
-            replace_button: Button::new("block-editor-replace", "block-editor-replace", None)
+            replace_button: Button::new("block-editor-replace", "block-editor-replace")
                 .control_size(crate::widget::ControlSize::Regular)
                 .on_click(move || requested.set(true)),
-            replace_all_button: Button::new(
-                "block-editor-replace-all",
-                "block-editor-replace-all",
-                None,
-            )
-            .control_size(crate::widget::ControlSize::Regular)
-            .tooltip("block-editor-replace-all-help")
-            .on_click(move || all_requested.set(true)),
+            replace_all_button: Button::new("block-editor-replace-all", "block-editor-replace-all")
+                .control_size(crate::widget::ControlSize::Regular)
+                .tooltip("block-editor-replace-all-help")
+                .on_click(move || all_requested.set(true)),
             replace_all_node: None,
             replace_all_requested,
             find_snapshot: Vec::new(),
@@ -902,26 +890,18 @@ impl BlockEditor {
         &self.empty_hint
     }
 
-    /// Opt into action-owned editing. The host snapshots immediately before an
-    /// input event and dispatches the resulting semantic operations afterwards.
-    /// Existing consumers remain on the direct CRDT path unless they opt in.
-    pub fn set_action_interception(&mut self, enabled: bool) {
-        self.action_interception = enabled;
-        for block in &mut self.blocks {
-            block.line.set_direct_crdt_writes(!enabled);
-        }
-        if !enabled {
-            self.interception_before = None;
-        }
-    }
-
-    pub fn begin_action_intercept(&mut self) {
-        if self.action_interception {
+    /// Note the blocks as they are before an edit, unless an earlier edit the
+    /// owner has not taken yet is already noted.
+    fn begin_edit(&mut self) {
+        if self.interception_before.is_none() {
             self.interception_before = Some(self.block_snapshot());
         }
     }
 
-    pub fn take_intercepted_ops(&mut self) -> Vec<BlockEditOp> {
+    /// The user's edits since the owner last took them, as semantic block
+    /// operations for the owner to submit as actions. The editor never
+    /// writes the document itself.
+    pub fn take_edit_ops(&mut self) -> Vec<BlockEditOp> {
         let Some(before) = self.interception_before.take() else {
             return Vec::new();
         };
@@ -1304,7 +1284,6 @@ impl BlockEditor {
         self.visual_formulas.clear();
         self.visual_formula_focus = None;
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
     }
 
@@ -1550,22 +1529,6 @@ impl BlockEditor {
         self.local_author = author;
     }
 
-    /// If the doc list already has blocks, adopts them (discarding the
-    /// locally seeded ones); if empty, seeds it from the local blocks.
-    pub fn bind_blocks(&mut self, state: &mut AutoCommit, list: ObjId) {
-        self.canonical_existing = false;
-        self.canonical_empty = false;
-        let doc_len = state.length(&list);
-        if doc_len == 0 {
-            self.doc_structure_dirty = true;
-            self.reconcile_structure_to_doc(state, &list);
-            self.doc_structure_dirty = false;
-        } else {
-            self.rebuild_from_doc(state, &list, doc_len);
-        }
-        self.blocks_list = Some(list);
-    }
-
     /// Bind a canonical existing list without initializing its durable contents.
     /// # Errors
     /// Rejects malformed identities, kinds or Text objects before installing local state.
@@ -1655,7 +1618,6 @@ impl BlockEditor {
                 return Err(invalid("code group on a non-code block"));
             }
             block.line.set_local_author(self.local_author.clone());
-            block.line.set_direct_crdt_writes(false);
             block.line.bind_text(text.clone());
             block.line.adopt_bound_text(state)?;
             blocks.push(block);
@@ -1664,18 +1626,15 @@ impl BlockEditor {
         if blocks.is_empty() {
             let mut block = Block::paragraph("");
             block.line.set_local_author(self.local_author.clone());
-            block.line.set_direct_crdt_writes(false);
             blocks.push(block);
         }
         self.set_blocks(blocks);
-        self.set_action_interception(true);
         self.canonical_existing = true;
         self.canonical_empty = objects.is_empty();
         // Structural sync belongs to the action owner's projection. Looking
         // through a physical List here would silently undo its logical order.
         self.blocks_list = None;
         self.edit_pending = false;
-        self.doc_structure_dirty = false;
         self.interception_before = None;
         self.pending_semantic_ops.clear();
         Ok(())
@@ -1786,7 +1745,6 @@ impl BlockEditor {
         self.canonical_existing = true;
         self.canonical_empty = objects.is_empty();
         self.blocks_list = None;
-        self.doc_structure_dirty = false;
         self.structure_dirty = true;
         self.dirty = true;
         Ok(())
@@ -1796,82 +1754,13 @@ impl BlockEditor {
         self.canonical_existing && self.blocks_list.is_none()
     }
 
-    /// Preserves each existing block's `Text` object by identity
-    /// (Automerge list insert/delete keeps other elements' object ids
-    /// stable); text drifted by a local split/merge is reconciled with
-    /// a minimal splice.
-    fn reconcile_structure_to_doc(&mut self, state: &mut AutoCommit, list: &ObjId) {
-        let mut doc_idx = 0usize;
-        for block in &mut self.blocks {
-            let kind_str = kind_to_str(&block.kind);
-            let local_text = block.line.value().to_string();
-            if let Some(bound) = block.line.bound_obj() {
-                // Delete any doc blocks before the bound one — they
-                // were removed locally.
-                while doc_idx < state.length(list)
-                    && doc_text_obj(state, list, doc_idx).as_ref() != Some(&bound)
-                {
-                    let _ = state.delete(list, doc_idx);
-                }
-                if doc_idx < state.length(list) {
-                    let block_map = list_map(state, list, doc_idx);
-                    if let Some(bm) = block_map {
-                        let _ = state.put(&bm, "kind", kind_str.as_str());
-                        write_code_group(state, &bm, block.code_group.as_deref());
-                        write_nesting(state, &bm, block.nesting);
-                    }
-                    push_text_diff(state, &bound, &local_text);
-                    doc_idx = doc_idx.saturating_add(1);
-                } else {
-                    // Bound object vanished from the doc — re-insert. A
-                    // `None` here means the doc's `list` itself was
-                    // concurrently removed; leave the block unbound rather
-                    // than desync `doc_idx` from a write that never landed.
-                    if let Some(t) = insert_doc_block(
-                        state,
-                        list,
-                        doc_idx,
-                        &block.id,
-                        &kind_str,
-                        &local_text,
-                        block.code_group.as_deref(),
-                        block.nesting,
-                    ) {
-                        block.line.bind_text(t);
-                        doc_idx = doc_idx.saturating_add(1);
-                    }
-                }
-            } else {
-                // New block (e.g. the suffix of a split): insert a
-                // fresh doc block and bind it.
-                if let Some(t) = insert_doc_block(
-                    state,
-                    list,
-                    doc_idx,
-                    &block.id,
-                    &kind_str,
-                    &local_text,
-                    block.code_group.as_deref(),
-                    block.nesting,
-                ) {
-                    block.line.bind_text(t);
-                    doc_idx = doc_idx.saturating_add(1);
-                }
-            }
-        }
-        while state.length(list) > doc_idx {
-            let last_idx = state.length(list).saturating_sub(1);
-            let _ = state.delete(list, last_idx);
-        }
-    }
-
     /// Preserves focus + caret across the rebuild so a remote edit
     /// elsewhere doesn't yank the local caret.
     #[expect(
         clippy::indexing_slicing,
         reason = "the restored focus index is clamped to the non-empty rebuilt projection"
     )]
-    fn rebuild_from_doc(&mut self, state: &mut AutoCommit, list: &ObjId, doc_len: usize) {
+    fn rebuild_from_doc(&mut self, state: &AutoCommit, list: &ObjId, doc_len: usize) {
         let saved_focus = self.focused;
         let saved_id = self
             .focused
@@ -1891,14 +1780,13 @@ impl BlockEditor {
         for i in 0..doc_len {
             let kind = kind_from_str(&read_block_kind(state, list, i));
             let mut b = block_for_kind(&kind);
-            b.id = read_or_migrate_block_id(state, list, i, &kind, !self.action_interception);
+            b.id = read_block_id_at(state, list, i, &kind);
             b.nesting = list_map(state, list, i)
                 .and_then(|map| read_nesting(state, &map).ok())
                 .unwrap_or(0);
             b.code_group = list_map(state, list, i)
                 .and_then(|map| read_code_group(state, &map).ok().flatten());
             b.line.set_local_author(self.local_author.clone());
-            b.line.set_direct_crdt_writes(!self.action_interception);
             if let Some(t) = doc_text_obj(state, list, i) {
                 b.line.bind_text(t);
                 b.line.sync(state, list);
@@ -1955,7 +1843,6 @@ impl BlockEditor {
         self.commit_pending = true;
         self.dirty = true;
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
     }
 
     pub fn focused_index(&self) -> Option<usize> {
@@ -2588,7 +2475,6 @@ impl BlockEditor {
         let next_idx = idx.saturating_add(1);
         self.blocks.insert(next_idx, suffix_block);
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
         self.focus_block(next_idx, CursorPlacement::Start);
     }
@@ -2626,7 +2512,6 @@ impl BlockEditor {
         }
         self.blocks.remove(idx);
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
         self.focus_block(prev_idx, CursorPlacement::Byte(join_at));
     }
@@ -2644,15 +2529,12 @@ impl BlockEditor {
             }
             self.focused = Some(0);
             self.structure_dirty = true;
-            self.doc_structure_dirty = true;
-            self.doc_structure_dirty = true;
             self.dirty = true;
             return;
         }
         let target = idx.saturating_sub(1);
         self.blocks.remove(idx);
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
         let target = target.min(self.blocks.len().saturating_sub(1));
         self.focus_block(target, CursorPlacement::End);
@@ -2838,7 +2720,6 @@ impl BlockEditor {
             b.nesting = 0;
         }
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
         // Dividers aren't focusable — push focus to the next block (or a
         // fresh trailing paragraph) so the user can keep typing.
@@ -3014,7 +2895,6 @@ impl BlockEditor {
         // touch arbitrarily many descendants, all of which must be committed.
         self.note_edit_anywhere();
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
         self.edit_pending = true;
         self.commit_pending = true;
@@ -3125,7 +3005,6 @@ impl BlockEditor {
             }
         }
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.commit_pending = true;
         self.dirty = true;
     }
@@ -3152,7 +3031,6 @@ impl BlockEditor {
         {
             block.line.set_text("");
         }
-        self.doc_structure_dirty = true;
         self.commit_pending = true;
         self.edit_pending = true;
         self.dirty = true;
@@ -3356,7 +3234,6 @@ impl BlockEditor {
                 .set_focus(self.is_focused && self.focused == Some(index));
         }
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.commit_pending = true;
         self.edit_pending = true;
         self.dirty = true;
@@ -3386,11 +3263,11 @@ impl BlockEditor {
         let Some(target_index) = self.neighboring_group(source, up) else {
             return false;
         };
-        self.begin_action_intercept();
+        self.begin_edit();
         if !self.move_block_to(source, target_index) {
             return false;
         }
-        let ops = self.take_intercepted_ops();
+        let ops = self.take_edit_ops();
         self.pending_semantic_ops.extend(ops);
         true
     }
@@ -3403,9 +3280,9 @@ impl BlockEditor {
             let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
                 return false;
             };
-            self.begin_action_intercept();
+            self.begin_edit();
             let changed = self.edit_table_structure(index, row, column, command);
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
             return changed;
         }
@@ -3416,9 +3293,9 @@ impl BlockEditor {
                 .map(|result| (index, result))
         }) {
             if let Some((row, column, value)) = result {
-                self.begin_action_intercept();
+                self.begin_edit();
                 self.apply_table_cell_edit(index, row, column, &value);
-                let ops = self.take_intercepted_ops();
+                let ops = self.take_edit_ops();
                 self.pending_semantic_ops.extend(ops);
             }
             self.dirty = true;
@@ -3499,10 +3376,10 @@ impl BlockEditor {
         if command == "copy" {
             self.document_selection = prior;
         } else {
-            self.begin_action_intercept();
+            self.begin_edit();
             self.replace_document_selection(&replacement);
             self.set_focus(true);
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
         }
         self.dirty = true;
@@ -4340,6 +4217,7 @@ impl BlockEditor {
 
     /// No-op for non-Checklist kinds.
     pub fn try_toggle_check(&mut self, idx: usize) -> Option<bool> {
+        self.begin_edit();
         let b = self.blocks.get_mut(idx)?;
         if let BlockKind::Checklist { indent, done } = &b.kind {
             let new_done = !*done;
@@ -4870,21 +4748,17 @@ impl TableModeControl {
             } else {
                 "table-edit-visual"
             },
-            None,
         )
         .on_click(move || clicked.set(true));
         let structure = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_request = structure.clone();
         let column_request = structure.clone();
         let add_row =
-            crate::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row", None)
+            crate::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row")
                 .on_click(move || row_request.set(Some(true)));
-        let add_column = crate::widget::Button::new(
-            &format!("notes.table-add-column:{id}"),
-            "table-add-column",
-            None,
-        )
-        .on_click(move || column_request.set(Some(false)));
+        let add_column =
+            crate::widget::Button::new(&format!("notes.table-add-column:{id}"), "table-add-column")
+                .on_click(move || column_request.set(Some(false)));
         Self {
             button,
             requested,
@@ -5787,17 +5661,10 @@ fn read_block_kind(state: &AutoCommit, list: &ObjId, index: usize) -> String {
     }
 }
 
-/// Read a persisted UUID, assigning a deterministic UUID to old block maps
-/// that predate the action bridge.  The migration deliberately derives only
-/// from replicated content and position, never an actor id or wall clock, so
-/// every replica upgrading the same legacy document writes the same value.
-fn read_or_migrate_block_id(
-    state: &mut AutoCommit,
-    list: &ObjId,
-    index: usize,
-    kind: &BlockKind,
-    persist: bool,
-) -> String {
+/// A block's persisted UUID, or the deterministic UUID a block map without
+/// one is known by: derived only from replicated content and position, so
+/// every replica reads the same value. The owner's action persists it.
+fn read_block_id_at(state: &AutoCommit, list: &ObjId, index: usize, kind: &BlockKind) -> String {
     let Some(map) = list_map(state, list, index) else {
         return Uuid::new_v4().to_string();
     };
@@ -5807,11 +5674,7 @@ fn read_or_migrate_block_id(
     let text = doc_text_obj(state, list, index)
         .and_then(|text| state.text(&text).ok())
         .unwrap_or_default();
-    let id = legacy_block_id(list, index, &kind_to_str(kind), &text);
-    if persist {
-        let _ = state.put(&map, "id", id.as_str());
-    }
-    id
+    legacy_block_id(list, index, &kind_to_str(kind), &text)
 }
 
 /// Deterministic stable ID for a legacy block map that has no persisted `id`.
@@ -5849,32 +5712,6 @@ fn deterministic_block_uuid(seed: &str) -> Uuid {
     Uuid::from_u128(raw)
 }
 
-/// Returns `None` if `list` was concurrently removed from the document —
-/// the only way `insert_object`/`put_object` can fail here — leaving the
-/// caller's local block unbound rather than panicking on a legitimate CRDT
-/// race.
-fn insert_doc_block(
-    state: &mut AutoCommit,
-    list: &ObjId,
-    index: usize,
-    id: &str,
-    kind: &str,
-    text: &str,
-    code_group: Option<&str>,
-    nesting: u8,
-) -> Option<ObjId> {
-    let block = state.insert_object(list, index, ObjType::Map).ok()?;
-    let _ = state.put(&block, "id", id);
-    let _ = state.put(&block, "kind", kind);
-    write_code_group(state, &block, code_group);
-    write_nesting(state, &block, nesting);
-    let text_id = state.put_object(&block, "text", ObjType::Text).ok()?;
-    if !text.is_empty() {
-        let _ = state.splice_text(&text_id, 0, 0, text);
-    }
-    Some(text_id)
-}
-
 fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, crate::view::ThawError> {
     let invalid = || crate::view::ThawError::State("invalid or conflicted block nesting".into());
     match state
@@ -5889,14 +5726,6 @@ fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, crate::view::Thaw
             .and_then(|depth| u8::try_from(depth).ok())
             .ok_or_else(invalid),
         _ => Err(invalid()),
-    }
-}
-
-fn write_nesting(state: &mut AutoCommit, map: &ObjId, depth: u8) {
-    if depth == 0 {
-        let _ = state.delete(map, "nesting");
-    } else {
-        let _ = state.put(map, "nesting", u64::from(depth));
     }
 }
 
@@ -5918,57 +5747,6 @@ fn read_code_group(
         }
         _ => Err(invalid()),
     }
-}
-
-fn write_code_group(state: &mut AutoCommit, map: &ObjId, group: Option<&str>) {
-    match group {
-        Some(group) => {
-            let _ = state.put(map, "code_group", group);
-        }
-        None => {
-            let _ = state.delete(map, "code_group");
-        }
-    }
-}
-
-/// A single minimal splice, since the structural ops that call this
-/// produce one contiguous change.
-fn push_text_diff(state: &mut AutoCommit, text_obj: &ObjId, local: &str) {
-    let cur = state.text(text_obj).unwrap_or_default();
-    if cur == local {
-        return;
-    }
-    let (at_byte, inserted, removed) = crate::widget::rich_text_line::diff_splice(&cur, local);
-    let at_byte = at_byte.min(cur.len()).min(local.len());
-    let raw_removed_end = at_byte.saturating_add(removed).min(cur.len());
-    let raw_inserted_end = at_byte.saturating_add(inserted).min(local.len());
-
-    // `diff_splice` compares raw bytes, so none of `at_byte`,
-    // `raw_removed_end` or `raw_inserted_end` is guaranteed to land on a
-    // UTF-8 char boundary in `cur`/`local`. Bytes before `at_byte` are
-    // byte-identical between the two strings (that's their shared
-    // prefix), and likewise for the bytes from each raw end to the end
-    // of its string (their shared suffix) — so moving the start earlier,
-    // or an end later, by the same byte count in both strings never
-    // changes what the resulting splice produces, only how many
-    // already-identical bytes it needlessly re-touches. Without this, a
-    // diff that happens to split a multi-byte character (e.g. between
-    // "café" and "cafe\u{301}") would panic on the slice below.
-    let start = cur.floor_char_boundary(at_byte);
-    let removed_end = cur.ceil_char_boundary(raw_removed_end);
-    let shift = removed_end.saturating_sub(raw_removed_end);
-    let inserted_end = raw_inserted_end.saturating_add(shift).min(local.len());
-
-    let (Some(prefix), Some(removed_slice), Some(inserted_str)) = (
-        cur.get(..start),
-        cur.get(start..removed_end),
-        local.get(start..inserted_end),
-    ) else {
-        return;
-    };
-    let char_at = prefix.chars().count();
-    let removed_chars = isize::try_from(removed_slice.chars().count()).unwrap_or(isize::MAX);
-    let _ = state.splice_text(text_obj, char_at, removed_chars, inserted_str);
 }
 
 /// Marks entirely (or partly) before `boundary`, clipped to it — the
@@ -6145,6 +5923,7 @@ impl BlockEditor {
     /// mutations happen in this call, so the host commits one Automerge undo
     /// boundary for the originating key/IME event.
     pub fn replace_document_selection(&mut self, replacement: &str) -> bool {
+        self.begin_edit();
         let Some(selection) = self.document_selection else {
             return false;
         };
@@ -6228,7 +6007,6 @@ impl BlockEditor {
         self.cross_block_drag_touched = None;
         self.kbd_sel_anchor = None;
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.edit_pending = true;
         self.commit_pending = true;
         self.dirty = true;
@@ -7569,121 +7347,61 @@ impl BlockEditor {
 }
 
 impl Widget for BlockEditor {
-    crate::provides!(
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = crate::doc::document_ref(state, path);
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             // Unbound (examples / tests): local-mode, nothing to sync.
             return;
         };
 
-        // Action-owned hosts (Calendar today) must never let the widget write
-        // straight to Automerge.  Their host has already dispatched the exact
-        // semantic operation before this frame's sync. We only bind fresh text
-        // objects and adopt remote structural changes here.
-        if self.action_interception {
-            let doc_len = state.length(&list);
-            if self.canonical_existing && doc_len == 0 {
-                if !self.canonical_empty {
-                    self.rebuild_from_doc(state, &list, 0);
-                    self.canonical_empty = true;
-                }
-                return;
+        // The owner dispatches each edit before this frame's sync; here the
+        // editor only binds fresh text objects and adopts structural changes.
+        let doc_len = state.length(&list);
+        if self.canonical_existing && doc_len == 0 {
+            if !self.canonical_empty {
+                self.rebuild_from_doc(state, &list, 0);
+                self.canonical_empty = true;
             }
-            self.canonical_empty = false;
-            if doc_len != self.blocks.len() {
-                self.rebuild_from_doc(state, &list, doc_len);
-                return;
-            }
-            let drifted = (0..doc_len).any(|i| {
-                let Some(block) = self.blocks.get(i) else {
-                    return true;
-                };
-                let Some(map) = list_map(state, &list, i) else {
-                    return true;
-                };
-                let id = read_block_id(state, &map);
-                let kind = read_block_kind(state, &list, i);
-                let text = doc_text_obj(state, &list, i)
-                    .and_then(|text| state.text(&text).ok())
-                    .unwrap_or_default();
-                id.as_deref() != Some(block.id.as_str())
-                    || kind != kind_to_str(&block.kind)
-                    || !read_nesting(state, &map).is_ok_and(|depth| depth == block.nesting)
-                    || !read_code_group(state, &map).is_ok_and(|group| group == block.code_group)
-                    || text != block.text()
-            });
-            if drifted {
-                self.rebuild_from_doc(state, &list, doc_len);
-                return;
-            }
-            for (i, block) in self.blocks.iter_mut().enumerate() {
-                let kind = kind_from_str(&read_block_kind(state, &list, i));
-                block.id = read_or_migrate_block_id(state, &list, i, &kind, false);
-                if block.line.bound_obj().is_none()
-                    && let Some(text) = doc_text_obj(state, &list, i)
-                {
-                    block.line.bind_text(text);
-                }
-            }
-            self.doc_structure_dirty = false;
             return;
         }
-
-        if self.doc_structure_dirty {
-            self.reconcile_structure_to_doc(state, &list);
-            self.doc_structure_dirty = false;
-        }
-
-        // A different block count now means a remote peer changed the
-        // structure — adopt it.
-        let doc_len = state.length(&list);
+        self.canonical_empty = false;
         if doc_len != self.blocks.len() {
             self.rebuild_from_doc(state, &list, doc_len);
             return;
         }
-
-        // Same structure: refresh kind + text (RichTextLine::sync pulls
-        // bound text without disturbing the local caret).
+        let drifted = (0..doc_len).any(|i| {
+            let Some(block) = self.blocks.get(i) else {
+                return true;
+            };
+            let Some(map) = list_map(state, &list, i) else {
+                return true;
+            };
+            let id = read_block_id(state, &map);
+            let kind = read_block_kind(state, &list, i);
+            let text = doc_text_obj(state, &list, i)
+                .and_then(|text| state.text(&text).ok())
+                .unwrap_or_default();
+            id.as_deref() != Some(block.id.as_str())
+                || kind != kind_to_str(&block.kind)
+                || !read_nesting(state, &map).is_ok_and(|depth| depth == block.nesting)
+                || !read_code_group(state, &map).is_ok_and(|group| group == block.code_group)
+                || text != block.text()
+        });
+        if drifted {
+            self.rebuild_from_doc(state, &list, doc_len);
+            return;
+        }
         for (i, block) in self.blocks.iter_mut().enumerate() {
-            let k = kind_from_str(&read_block_kind(state, &list, i));
-            block.id = read_or_migrate_block_id(state, &list, i, &k, true);
-            let nesting = list_map(state, &list, i)
-                .and_then(|map| read_nesting(state, &map).ok())
-                .unwrap_or(0);
-            if block.nesting != nesting {
-                block.nesting = nesting;
-                self.structure_dirty = true;
-            }
-            let group = list_map(state, &list, i)
-                .and_then(|map| read_code_group(state, &map).ok().flatten());
-            if block.code_group != group {
-                block.code_group = group;
-                self.structure_dirty = true;
-            }
-            if block.kind != k {
-                block.line = std::mem::take(&mut block.line).with_size(k.font_size());
-                block
-                    .line
-                    .set_mono(matches!(k, BlockKind::CodeBlock { .. }));
-                block
-                    .line
-                    .set_inline_formatting(!matches!(k, BlockKind::CodeBlock { .. }));
-                block.kind = k;
-                self.structure_dirty = true;
-            }
+            let kind = kind_from_str(&read_block_kind(state, &list, i));
+            block.id = read_block_id_at(state, &list, i, &kind);
             if block.line.bound_obj().is_none()
-                && let Some(t) = doc_text_obj(state, &list, i)
+                && let Some(text) = doc_text_obj(state, &list, i)
             {
-                block.line.bind_text(t);
+                block.line.bind_text(text);
             }
-            block.line.set_local_author(self.local_author.clone());
-            block.line.sync(state, &list);
         }
     }
 
@@ -8702,6 +8420,7 @@ impl Widget for BlockEditor {
         if self.read_only {
             return;
         }
+        self.begin_edit();
         let typing = self.typing_position(event, *ctx.modifiers);
         self.handle_event_unscoped(event, ctx);
         let scope = match typing {
@@ -8918,13 +8637,14 @@ impl Widget for BlockEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if self.read_only {
             return false;
         }
+        self.begin_edit();
         match action {
             Action::SetValue(value) => {
                 let cleaned: String = value
@@ -9476,7 +9196,7 @@ impl Widget for BlockEditor {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.edit_scope = EditScope::Anywhere;
@@ -9589,7 +9309,7 @@ impl Widget for BlockEditor {
                 let cursor = self.blocks[index].line.cursor_pos();
                 self.focus_block(index, CursorPlacement::Byte(cursor));
             }
-            self.begin_action_intercept();
+            self.begin_edit();
             let handled = self.blocks[index].line.perform_action(action, state, path);
             if handled {
                 self.dirty = true;
@@ -9598,7 +9318,7 @@ impl Widget for BlockEditor {
                     self.commit_pending = true;
                 }
             }
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
             return handled;
         }
@@ -9617,13 +9337,13 @@ impl Widget for BlockEditor {
                 if self.blocks[index].text() == value {
                     return true;
                 }
-                self.begin_action_intercept();
+                self.begin_edit();
                 self.blocks[index].line.set_text(value);
                 self.edit_pending = true;
                 self.commit_pending = true;
                 self.structure_dirty = true;
                 self.dirty = true;
-                let ops = self.take_intercepted_ops();
+                let ops = self.take_edit_ops();
                 self.pending_semantic_ops.extend(ops);
                 return true;
             }
@@ -9649,9 +9369,9 @@ impl Widget for BlockEditor {
                     .get(id)
                     .and_then(super::block_editor_table::DocumentTable::projected_focus)
                     .unwrap_or((0, 0));
-                self.begin_action_intercept();
+                self.begin_edit();
                 let changed = self.edit_table_structure(index, row, column, command);
-                let ops = self.take_intercepted_ops();
+                let ops = self.take_edit_ops();
                 self.pending_semantic_ops.extend(ops);
                 return changed;
             }
@@ -9664,9 +9384,9 @@ impl Widget for BlockEditor {
             {
                 match action {
                     crate::a11y::Action::SetValue(value) => {
-                        self.begin_action_intercept();
+                        self.begin_edit();
                         let changed = self.apply_table_cell_edit(index, row, column, value);
-                        let ops = self.take_intercepted_ops();
+                        let ops = self.take_edit_ops();
                         self.pending_semantic_ops.extend(ops);
                         return changed;
                     }
@@ -9716,9 +9436,9 @@ impl Widget for BlockEditor {
             let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
                 return false;
             };
-            self.begin_action_intercept();
+            self.begin_edit();
             let changed = self.try_indent(index, delta);
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
             return changed;
         }
@@ -9788,22 +9508,6 @@ impl Widget for BlockEditor {
     /// expose, so an idle document re-measures nothing.
     fn is_layout_dirty(&self) -> bool {
         self.blocks.iter().any(|block| block.line.is_layout_dirty())
-    }
-}
-
-impl crate::undo::UndoPoints for BlockEditor {
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-            || self
-                .blocks
-                .iter()
-                .any(|block| crate::undo::needs_commit(block.line.inner()))
-    }
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-        for block in &mut self.blocks {
-            crate::undo::on_commit(block.line.inner_mut());
-        }
     }
 }
 
@@ -10627,11 +10331,6 @@ impl BlockEditor {
         if let Some(b) = self.blocks.get_mut(focused_idx)
             && b.kind.is_editable()
         {
-            // Bound RichTextLines ordinarily splice their Text object from
-            // `handle_event`. Action-owned hosts retain that binding for
-            // reconciliation, but their optimistic input must stay local until
-            // the host dispatches the semantic operation captured below.
-            b.line.set_direct_crdt_writes(!self.action_interception);
             b.line.handle_event(event, ctx);
         }
         if let Some(sig) = self
@@ -10679,7 +10378,6 @@ impl BlockEditor {
                     block.line.set_focus(true);
                     self.opening_code_fence = Some((block.id.clone(), lang));
                     self.structure_dirty = true;
-                    self.doc_structure_dirty = true;
                     self.dirty = true;
                     self.edit_pending = true;
                     self.commit_pending = true;
@@ -10843,7 +10541,6 @@ impl BlockEditor {
         self.edit_pending = true;
         self.commit_pending = true;
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
     }
 
@@ -11132,7 +10829,6 @@ impl BlockEditor {
         block.kind = BlockKind::CodeBlock { lang: lang.clone() };
         self.opening_code_fence = Some((id, lang));
         self.structure_dirty = true;
-        self.doc_structure_dirty = true;
         self.dirty = true;
         self.edit_pending = true;
         self.commit_pending = true;
@@ -11431,11 +11127,11 @@ impl BlockEditor {
             return false;
         };
         if semantic {
-            self.begin_action_intercept();
+            self.begin_edit();
         }
         let changed = self.try_convert_to(index, BlockKind::Table { visual: !visual });
         if semantic {
-            let ops = self.take_intercepted_ops();
+            let ops = self.take_edit_ops();
             self.pending_semantic_ops.extend(ops);
         }
         if visual {

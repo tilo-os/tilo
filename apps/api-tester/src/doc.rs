@@ -66,7 +66,27 @@ struct VariableRecord {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct ActiveKeyValueRecord {
     section: String,
+    /// Where the row is listed in its section.
+    #[serde(default)]
+    position: usize,
     value: KeyValue,
+}
+
+/// A saved request's param, header or form row, and where it is listed.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct RowRecord {
+    position: usize,
+    value: KeyValue,
+}
+
+fn row_records(rows: &[KeyValue]) -> Vec<RowRecord> {
+    rows.iter()
+        .enumerate()
+        .map(|(position, value)| RowRecord {
+            position,
+            value: value.clone(),
+        })
+        .collect()
 }
 
 impl ApiDoc {
@@ -101,8 +121,10 @@ impl ApiDoc {
         if Self::is_tombstoned(doc, root, COLLECTION_TOMBSTONES_KEY, id) {
             return;
         }
+        let position = Self::next_position(doc, root, COLLECTION_FIELDS_KEY);
         if let Some(map) = Self::native_record_map(doc, root, COLLECTION_FIELDS_KEY, id) {
             Self::put_string_if_changed(doc, &map, "name", name);
+            Self::place(doc, &map, position);
         }
     }
 
@@ -118,8 +140,10 @@ impl ApiDoc {
         if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, id) {
             return;
         }
+        let position = Self::next_position(doc, root, ENVIRONMENT_FIELDS_KEY);
         if let Some(map) = Self::native_record_map(doc, root, ENVIRONMENT_FIELDS_KEY, id) {
             Self::put_string_if_changed(doc, &map, "name", name);
+            Self::place(doc, &map, position);
         }
     }
 
@@ -141,6 +165,7 @@ impl ApiDoc {
         variable_id: &str,
         key: &str,
         value: &str,
+        secret: bool,
     ) {
         if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, env_id)
             || Self::is_tombstoned(
@@ -159,7 +184,9 @@ impl ApiDoc {
         Self::put_string_if_changed(doc, &map, "environment_id", env_id);
         Self::put_string_if_changed(doc, &map, "id", variable_id);
         Self::put_string_if_changed(doc, &map, "key", key);
-        Self::put_string_if_changed(doc, &map, "value", value);
+        // A secret variable's value stays in the device's secret store.
+        Self::put_string_if_changed(doc, &map, "value", if secret { "" } else { value });
+        Self::put_bool_if_changed(doc, &map, "secret", secret);
         Self::put_bool_if_changed(doc, &map, "enabled", true);
     }
 
@@ -259,9 +286,46 @@ impl ApiDoc {
         }
     }
 
+    /// Get-or-create the `Text` object of the active request's URL.
+    pub fn url_text(doc: &mut AutoCommit, root: &ObjId) -> ObjId {
+        Self::text_obj(doc, root, "url")
+    }
+
+    /// Get-or-create the `Text` object of the active request's body.
+    pub fn body_text(doc: &mut AutoCommit, root: &ObjId) -> ObjId {
+        Self::text_obj(doc, root, "body")
+    }
+
+    /// The active request's URL text, if the document has one: what the URL
+    /// bar shows and edits.
+    pub fn url_text_id(doc: &AutoCommit) -> Option<ObjId> {
+        Self::existing_text(doc, "url")
+    }
+
+    /// The active request's body text, if the document has one.
+    pub fn body_text_id(doc: &AutoCommit) -> Option<ObjId> {
+        Self::existing_text(doc, "body")
+    }
+
+    fn existing_text(doc: &AutoCommit, key: &str) -> Option<ObjId> {
+        match doc.get(&automerge::ROOT, key) {
+            Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Change the active request with `edit`, writing only the fields it
+    /// changed.
+    pub fn update_request(doc: &mut AutoCommit, root: &ObjId, edit: impl FnOnce(&mut Request)) {
+        let mut request = Self::request(doc, root).unwrap_or_else(|| Request::new("New request"));
+        edit(&mut request);
+        Self::set_request(doc, root, &request);
+    }
+
     /// Persist collections as keyed records. A deleted UUID is never revived by
     /// a stale whole-workspace flush; creating a genuinely new collection uses
     /// a fresh UUID.
+    #[cfg(test)]
     pub fn set_collections(doc: &mut AutoCommit, root: &ObjId, collections: &[Collection]) {
         let before = Self::collections(doc, root);
         let live: std::collections::HashSet<_> = collections
@@ -295,7 +359,7 @@ impl ApiDoc {
     /// Read collections from every concurrently-created root. Any live
     /// tombstone wins over an old record from another root.
     pub fn collections(doc: &AutoCommit, root: &ObjId) -> Vec<Collection> {
-        let mut records: Vec<Collection> = Vec::new();
+        let mut records: Vec<(u64, Collection)> = Vec::new();
         for fields in Self::record_roots(doc, root, COLLECTION_FIELDS_KEY) {
             for id in doc.keys(&fields) {
                 if Self::is_tombstoned(doc, root, COLLECTION_TOMBSTONES_KEY, &id) {
@@ -307,17 +371,21 @@ impl ApiDoc {
                     continue;
                 };
                 let name = Self::read_text(doc, &map, "name");
-                if let Some(record) = records.iter_mut().find(|record| record.id == uuid) {
+                if let Some((_, record)) = records.iter_mut().find(|(_, record)| record.id == uuid)
+                {
                     if !name.is_empty() {
                         record.name = name;
                     }
                 } else {
-                    records.push(Collection {
-                        id: uuid,
-                        name,
-                        requests: Vec::new(),
-                        expanded: true,
-                    });
+                    records.push((
+                        Self::position(doc, &map),
+                        Collection {
+                            id: uuid,
+                            name,
+                            requests: Vec::new(),
+                            expanded: true,
+                        },
+                    ));
                 }
             }
         }
@@ -348,14 +416,19 @@ impl ApiDoc {
                 }
             }
         }
-        for collection in &mut records {
-            collection.requests = by_collection
-                .remove(&collection.id.to_string())
-                .unwrap_or_default();
-        }
+        records.sort_by_key(|(position, collection)| (*position, collection.id));
         records
+            .into_iter()
+            .map(|(_, mut collection)| {
+                collection.requests = by_collection
+                    .remove(&collection.id.to_string())
+                    .unwrap_or_default();
+                collection
+            })
+            .collect()
     }
 
+    #[cfg(test)]
     pub fn set_environments(doc: &mut AutoCommit, root: &ObjId, envs: &[Environment]) {
         let before = Self::environments(doc, root);
         let live: std::collections::HashSet<_> = envs
@@ -379,6 +452,7 @@ impl ApiDoc {
                     &variable.id,
                     &variable.key,
                     &variable.value,
+                    variable.secret,
                 );
             }
             if let Some(previous) = previous {
@@ -396,7 +470,7 @@ impl ApiDoc {
     }
 
     pub fn environments(doc: &AutoCommit, root: &ObjId) -> Vec<Environment> {
-        let mut records: Vec<Environment> = Vec::new();
+        let mut records: Vec<(u64, Environment)> = Vec::new();
         for fields in Self::record_roots(doc, root, ENVIRONMENT_FIELDS_KEY) {
             for id in doc.keys(&fields) {
                 if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, &id) {
@@ -408,16 +482,20 @@ impl ApiDoc {
                     continue;
                 };
                 let name = Self::read_text(doc, &map, "name");
-                if let Some(record) = records.iter_mut().find(|record| record.id == uuid) {
+                if let Some((_, record)) = records.iter_mut().find(|(_, record)| record.id == uuid)
+                {
                     if !name.is_empty() {
                         record.name = name;
                     }
                 } else {
-                    records.push(Environment {
-                        id: uuid,
-                        name,
-                        variables: Vec::new(),
-                    });
+                    records.push((
+                        Self::position(doc, &map),
+                        Environment {
+                            id: uuid,
+                            name,
+                            variables: Vec::new(),
+                        },
+                    ));
                 }
             }
         }
@@ -442,6 +520,9 @@ impl ApiDoc {
                 let enabled = doc.get(&map, "enabled").ok().flatten().is_none_or(|(value, _)| {
                     matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
                 });
+                let secret = doc.get(&map, "secret").ok().flatten().is_some_and(|(value, _)| {
+                    matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
+                });
                 let row = VariableRecord {
                     environment_id,
                     variable: KeyValue {
@@ -449,6 +530,7 @@ impl ApiDoc {
                         key,
                         value,
                         enabled,
+                        secret,
                     },
                 };
                 if let Some(old) = variables.iter_mut().find(|old| {
@@ -468,12 +550,16 @@ impl ApiDoc {
                 .or_default()
                 .push(record.variable);
         }
-        for environment in &mut records {
-            environment.variables = by_environment
-                .remove(&environment.id.to_string())
-                .unwrap_or_default();
-        }
+        records.sort_by_key(|(position, environment)| (*position, environment.id));
         records
+            .into_iter()
+            .map(|(_, mut environment)| {
+                environment.variables = by_environment
+                    .remove(&environment.id.to_string())
+                    .unwrap_or_default();
+                environment
+            })
+            .collect()
     }
 
     pub fn set_active_env(doc: &mut AutoCommit, root: &ObjId, id: Option<&str>) {
@@ -504,7 +590,7 @@ impl ApiDoc {
         Self::put_json_if_changed(doc, &map, "id", &req.id);
         Self::put_json_if_changed(doc, &map, "name", &req.name);
         Self::put_json_if_changed(doc, &map, "method", &req.method);
-        Self::put_json_if_changed(doc, &map, "auth", &req.auth);
+        Self::put_json_if_changed(doc, &map, "auth", &req.auth.without_secret());
         Self::put_json_if_changed(doc, &map, "body_mode", &req.body_mode);
         Self::sync_active_key_values(doc, root, &before, req);
     }
@@ -591,6 +677,44 @@ impl ApiDoc {
         // has replicated. Keep it visible until the list catches up.
         ordered.extend(by_id.into_values());
         ordered
+    }
+
+    /// The position a record created now in `store` takes: after every
+    /// record it already holds, so lists keep the order they were made in.
+    fn next_position(doc: &AutoCommit, root: &ObjId, store: &str) -> u64 {
+        Self::record_roots(doc, root, store)
+            .iter()
+            .flat_map(|fields| {
+                doc.keys(fields)
+                    .filter_map(|id| match doc.get(fields, &id).ok().flatten() {
+                        Some((Value::Object(ObjType::Map), map)) => {
+                            Some(Self::position(doc, &map).saturating_add(1))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Give a record its position once; renaming it later keeps its place.
+    fn place(doc: &mut AutoCommit, map: &ObjId, position: u64) {
+        if doc.get(map, "position").ok().flatten().is_none() {
+            let _ = doc.put(map, "position", position);
+        }
+    }
+
+    /// Where a record sits in its list.
+    fn position(doc: &AutoCommit, map: &ObjId) -> u64 {
+        match doc.get(map, "position").ok().flatten() {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Uint(position) => *position,
+                ScalarValue::Int(position) => u64::try_from(*position).unwrap_or(0),
+                _ => 0,
+            },
+            _ => 0,
+        }
     }
 
     fn record_roots(doc: &AutoCommit, root: &ObjId, key: &str) -> Vec<ObjId> {
@@ -795,7 +919,7 @@ impl ApiDoc {
             Self::put_json_if_changed(doc, &map, "collection_id", &record.collection_id);
             Self::put_json_if_changed(doc, &map, "name", &record.request.name);
             Self::put_json_if_changed(doc, &map, "method", &record.request.method);
-            Self::put_json_if_changed(doc, &map, "auth", &record.request.auth);
+            Self::put_json_if_changed(doc, &map, "auth", &record.request.auth.without_secret());
             Self::put_json_if_changed(doc, &map, "body_mode", &record.request.body_mode);
             Self::set_text(doc, &map, "url", &record.request.url);
             Self::set_text(doc, &map, "body", &record.request.body_text);
@@ -878,12 +1002,18 @@ impl ApiDoc {
             ("form", &before.form, &after.form),
         ] {
             let tombstones = format!("{section}_tombstones");
-            if let Some((records, removed)) =
-                Self::ensure_record_store(doc, map, section, &tombstones, old, |row: &KeyValue| {
-                    row.id.clone()
-                })
-            {
-                Self::sync_record_store(doc, &records, &removed, old, new, |row| row.id.clone());
+            let (old, new) = (row_records(old), row_records(new));
+            if let Some((records, removed)) = Self::ensure_record_store(
+                doc,
+                map,
+                section,
+                &tombstones,
+                &old,
+                |row: &RowRecord| row.value.id.clone(),
+            ) {
+                Self::sync_record_store(doc, &records, &removed, &old, &new, |row| {
+                    row.value.id.clone()
+                });
             }
         }
     }
@@ -895,9 +1025,10 @@ impl ApiDoc {
             ("form", &mut request.form),
         ] {
             let tombstones = format!("{section}_tombstones");
-            let rows = Self::read_record_store(doc, map, section, &tombstones);
+            let mut rows: Vec<RowRecord> = Self::read_record_store(doc, map, section, &tombstones);
             if !rows.is_empty() || !Self::record_roots(doc, map, section).is_empty() {
-                *target = rows;
+                rows.sort_by_key(|row| row.position);
+                *target = rows.into_iter().map(|row| row.value).collect();
             }
         }
     }
@@ -923,8 +1054,10 @@ impl ApiDoc {
                 rows.iter()
                     .filter(|row| !row.is_blank())
                     .cloned()
-                    .map(move |value| ActiveKeyValueRecord {
+                    .enumerate()
+                    .map(move |(position, value)| ActiveKeyValueRecord {
                         section: section.to_string(),
+                        position,
                         value,
                     })
             })
@@ -948,9 +1081,12 @@ impl ApiDoc {
     }
 
     fn active_key_values(values: &[ActiveKeyValueRecord], section: &str) -> Vec<KeyValue> {
-        values
+        let mut rows: Vec<_> = values
             .iter()
             .filter(|record| record.section == section)
+            .collect();
+        rows.sort_by_key(|record| record.position);
+        rows.into_iter()
             .map(|record| record.value.clone())
             .collect()
     }
@@ -1047,11 +1183,6 @@ impl ApiDoc {
             let _ = doc.insert(list, index, id);
         }
     }
-
-    /// Whether the document has been seeded with any workspace content yet.
-    pub fn is_empty(doc: &AutoCommit, root: &ObjId) -> bool {
-        Self::collections(doc, root).is_empty() && Self::request(doc, root).is_none()
-    }
 }
 
 #[cfg(test)]
@@ -1073,6 +1204,38 @@ mod tests {
         request_snapshot_round_trips();
         url_text_is_live_and_editable();
         history_keeps_the_newest_first_order_while_records_stay_keyed();
+        collections_and_environments_keep_the_order_they_were_made_in();
+    }
+
+    /// Case of `records_round_trip_through_the_document`.
+    fn collections_and_environments_keep_the_order_they_were_made_in() {
+        let mut d = AutoCommit::new();
+        let root = automerge::ROOT;
+        // Ids that sort the other way round from the order they are made in.
+        let ids = [
+            "ffffffff-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+            "88888888-0000-4000-8000-000000000003",
+        ];
+        for (index, id) in ids.iter().enumerate() {
+            ApiDoc::create_collection(&mut d, &root, id, &format!("Collection {index}"));
+            ApiDoc::create_environment(&mut d, &root, id, &format!("Environment {index}"));
+        }
+        // Renaming keeps a record's place.
+        ApiDoc::rename_collection(&mut d, &root, ids[0], "First");
+        let collections: Vec<String> = ApiDoc::collections(&d, &root)
+            .into_iter()
+            .map(|collection| collection.name)
+            .collect();
+        assert_eq!(collections, ["First", "Collection 1", "Collection 2"]);
+        let environments: Vec<String> = ApiDoc::environments(&d, &root)
+            .into_iter()
+            .map(|environment| environment.name)
+            .collect();
+        assert_eq!(
+            environments,
+            ["Environment 0", "Environment 1", "Environment 2"]
+        );
     }
 
     /// Case of `records_round_trip_through_the_document`.
@@ -1156,6 +1319,7 @@ mod tests {
             &variable_id,
             "base_url",
             "https://api.example.test",
+            false,
         );
         ApiDoc::set_active_env(&mut d, &root, Some(&environment_id));
         let heads_before = d.get_heads();
@@ -1167,6 +1331,7 @@ mod tests {
             &variable_id,
             "base_url",
             "https://api.example.test",
+            false,
         );
         ApiDoc::set_active_env(&mut d, &root, Some(&environment_id));
 
@@ -1664,6 +1829,7 @@ mod tests {
             &first,
             "region",
             "eu",
+            false,
         );
         ApiDoc::set_variable(
             &mut right,
@@ -1672,6 +1838,7 @@ mod tests {
             &second,
             "token",
             "abc",
+            false,
         );
         left.merge_incoming(&mut right).unwrap();
         let vars = &ApiDoc::environments(&left, &root)[0].variables;
@@ -1700,6 +1867,7 @@ mod tests {
             &first,
             "region",
             "stale",
+            false,
         );
         left.merge_incoming(&mut stale).unwrap();
         assert!(

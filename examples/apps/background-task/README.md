@@ -6,12 +6,13 @@ Slow work on a worker thread, with a spinner while it runs and the result
 when it finishes. The input is resource state; the progress is view state in
 a `LatestTask`, whose completions go stale when the task restarts or is
 cancelled, so a slow answer never overwrites a newer one. Run and Cancel are
-effect actions, so anyone who can see the app's actions can start and stop
-the work.
+the app's effects (`#[derive(Effect)]`, answered with `cx.effects`), so anyone
+who can see the app's actions can start and stop the work, and Run answers
+its caller with the count when the worker finishes.
 
 Read:
 
-- `src/lib.rs`: the computation as plain testable functions, the task resource, the worker loop.
+- `src/lib.rs`: the computation as plain testable functions, the effects, the worker loop.
 - `tests/app.rs`: the work itself, a completed run, a cancelled run, the durable input.
 
 The work runs through `ui::background`, on a thread where the target has one

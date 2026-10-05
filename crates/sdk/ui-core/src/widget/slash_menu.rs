@@ -32,7 +32,7 @@
 //! pinned 360 px width, which is wider than most paragraph blocks.
 //! A purpose-built widget is ~150 LOC and avoids the impedance match.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -723,7 +723,7 @@ impl Widget for SlashMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let Some(row_index) = target
@@ -997,7 +997,7 @@ mod tests {
                 &mut menu,
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(menu.take_selected_kind(), Some(BlockKind::Heading(2)));

@@ -718,7 +718,7 @@ impl ui::widget::Decorator for FirewallApp {
         Some(self)
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.take_outcome();
         self.drain();
         self.changed = false;
@@ -726,7 +726,7 @@ impl ui::widget::Decorator for FirewallApp {
         self.shell.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.drain();
         let shell = self.shell.update(state, path);
         shell || self.changed || self.outcome.borrow().is_some()

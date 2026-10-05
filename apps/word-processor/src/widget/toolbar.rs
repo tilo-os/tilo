@@ -46,7 +46,6 @@ pub(super) enum ToolAction {
     ToggleStyles,
     ToggleRuler,
     ToggleOutline,
-    ToggleHistory,
     InsertToc,
     NewMenu,
 }
@@ -73,7 +72,6 @@ impl ToolAction {
             ToolAction::FontSizeDec => Icon::AArrowDown,
             ToolAction::FontSizeInc => Icon::AArrowUp,
             ToolAction::ToggleRuler => Icon::Ruler,
-            ToolAction::ToggleHistory => Icon::History,
             _ => return None,
         })
     }
@@ -86,7 +84,6 @@ impl ToolAction {
             ToolAction::ToggleStyles
                 | ToolAction::ToggleRuler
                 | ToolAction::ToggleOutline
-                | ToolAction::ToggleHistory
                 | ToolAction::NewMenu
                 | ToolAction::TextColorPalette
                 | ToolAction::HighlightPalette

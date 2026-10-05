@@ -305,7 +305,7 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Eleme
             };
             let name = ui::i18n::I18nManager::lookup_plain(id);
             let flip = crop.clone();
-            let button = Button::new(id, &name, None)
+            let button = Button::new(id, &name)
                 .tooltip(ui::i18n::I18nManager::lookup_plain("canvas-crop-hint"))
                 .on_view(move || flip.set(!flip.with(|on| *on)));
             Box::new(if *cropping {

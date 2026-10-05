@@ -642,7 +642,7 @@ pub fn next_slot_in_visual_order(slot: usize, positions: &[usize; 3], backward: 
 }
 
 impl Widget for RecoveryVerifyScreen {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,

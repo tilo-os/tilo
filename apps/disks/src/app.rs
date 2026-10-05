@@ -808,13 +808,13 @@ impl ui::widget::Decorator for DisksApp {
         &mut self.shell
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_intents();
         self.refresh_view();
         self.shell.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.drain_intents();
         self.refresh_view();
         self.shell.update(state, path) || self.dirty
@@ -966,12 +966,58 @@ mod tests {
 
     /// The sample machine starts on its first drive, whole, on the overview.
     #[test]
-    fn the_sample_machine_opens_on_its_first_drive() {
-        let app = sample_app();
-        assert_eq!(app.topo.drives.len(), 4);
-        assert_eq!(app.selected, 0);
-        assert!(app.part().is_none());
-        assert_eq!(app.tab, Tab::Overview);
+    fn accessibility_names_and_routes_canvas_controls() {
+        // --- phase: accessibility_exposes_and_routes_canvas_controls ---
+        {
+            let mut window =
+                ui::framework::testing::TestApp::<crate::resource::DisksShell>::capture(None)
+                    .unwrap();
+            let nodes = window.harness().a11y_nodes();
+            assert!(
+                nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Rescan drives"))
+            );
+            assert!(
+                nodes
+                    .iter()
+                    .any(|(_, node)| node.label().is_some_and(|label| label.contains("Samsung"))),
+                "the sample drive is accessible"
+            );
+            assert!(
+                nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Format…")),
+                "the drive's format action is accessible"
+            );
+            let smart = window
+                .harness()
+                .a11y_node_named("SMART")
+                .expect("the SMART tab");
+            window
+                .harness()
+                .perform_a11y_action(smart, &ui::a11y::Action::Activate)
+                .unwrap();
+            window.settle();
+            assert_eq!(
+                window.with_surface::<DisksApp, _>(|app| app.tab).unwrap(),
+                Tab::Smart
+            );
+        }
+
+        // --- phase: icon_only_hamburger_face_has_a_spoken_name ---
+        {
+            let face = ui::widget::ButtonFace::new(Rect::ZERO, "")
+                .icon(ui::icons::Icon::Menu)
+                .accessible_name("Show drives");
+            assert_eq!(face.spoken_name(), "Show drives");
+            assert_eq!(
+                ui::widget::ButtonFace::new(Rect::ZERO, "Rescan")
+                    .icon(ui::icons::Icon::Refresh)
+                    .spoken_name(),
+                "Rescan"
+            );
+        }
     }
 
     /// A drive's name from the document replaces its model.

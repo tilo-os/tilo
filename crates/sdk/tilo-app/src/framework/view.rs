@@ -160,6 +160,30 @@ impl<R: Resource> ViewCx<R> {
 }
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
+    /// Open, in this window and in place of the record it shows, what a
+    /// launch of the app naming `arguments` opens: the record
+    /// [`ResourceApp::launch_record`](super::ResourceApp::launch_record)
+    /// names, with its launch actions — the document a person chose with
+    /// the app's own Open. The window's view is rebuilt for that record on
+    /// the next frame. Refused in a past version and a capture.
+    ///
+    /// The outcome answers once the host opened it, or why it could not.
+    ///
+    /// # Errors
+    /// Returns that the window cannot open another record.
+    pub fn open_here(
+        &self,
+        arguments: &[String],
+    ) -> Result<ui_core::application::ReplacementOutcome, String> {
+        self.run.open_here(arguments)
+    }
+
+    /// The names of the participants, for showing the ids actions record
+    /// ([`People::name`](super::People::name)).
+    pub fn people(&self) -> super::People {
+        self.run.people.clone()
+    }
+
     /// The live resource state, for reads a binding does not cover.
     pub fn live(&self) -> &Live<R> {
         &self.live
@@ -189,6 +213,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// same for everyone. `None` in a view of a past version.
     pub fn me(&self) -> Option<&str> {
         self.dispatch.me()
+    }
+
+    /// What the launch that opened this window named — the file a person
+    /// opened the app with, its command line — for a view that shows what
+    /// the launch's actions ([`ResourceApp::launch`](super::ResourceApp::launch))
+    /// made: the note a launch imported, opened. Empty for a plain start and
+    /// for a past version.
+    pub fn launch(&self) -> super::launch::LaunchInput<'_> {
+        self.run.launch()
     }
 
     /// Whether this participant may only view, when the view is built.
@@ -263,7 +296,40 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// on them beyond the actions the launch took: the file a save writes
     /// back to. Empty for a plain start, a past version and a capture.
     pub fn launch_arguments(&self) -> &[String] {
-        &self.run.arguments
+        &self.run.launched.arguments
+    }
+
+    /// The value of the app's own option `name` (`--purpose`) the window's
+    /// launch named; see [`ResourceApp::OPTIONS`](super::ResourceApp::OPTIONS).
+    /// `None` for a past version.
+    pub fn launch_option(&self, name: &str) -> Option<&str> {
+        super::launch::option(&self.run.launched.options, name)
+    }
+
+    /// Whether the window's launch named the app's switch `name`; see
+    /// [`ResourceApp::FLAGS`](super::ResourceApp::FLAGS).
+    pub fn launch_flag(&self, name: &str) -> bool {
+        super::launch::flag(&self.run.launched.options, name)
+    }
+
+    /// The service of type `T` the host that mounts the app in its own
+    /// process lent it ([`HostContext::lend`](ui_core::application::HostContext::lend)),
+    /// taken once: the shell's connection to the session's process
+    /// supervisor for a terminal it hosts. `None` in the app's own process,
+    /// and for a past version or a capture, which start nothing.
+    pub fn take_lent<S: 'static>(&self) -> Option<S> {
+        if !self.run.mode.is_live() {
+            return None;
+        }
+        self.run.launched.lent.take::<S>()
+    }
+
+    /// Whether the window is private ([`ResourceApp::PRIVATE_WINDOWS`](super::ResourceApp::PRIVATE_WINDOWS)):
+    /// its record, settings and files are thrown away with the process. A
+    /// view keeps what it would otherwise remember on the device (visits,
+    /// a session to restore) to itself.
+    pub fn is_private(&self) -> bool {
+        self.run.private
     }
 
     /// The app's typed settings of type `S`, kept current while this scope
@@ -274,6 +340,35 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
     {
         self.storage.follow(self.alive.clone())
+    }
+
+    /// The device this window runs on: stable across launches, distinct on
+    /// each of the person's devices. `None` in a view of a past version. An
+    /// action that records where something happened (a speed test run on
+    /// this device) takes it as an argument, so every replica applies the
+    /// same value.
+    pub fn device(&self) -> Option<&str> {
+        self.storage.device()
+    }
+
+    /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):
+    /// theirs alone, kept in their own room and synced to their other
+    /// devices, never to a collaborator, whatever room this record is in.
+    /// `None` where the host keeps no records of the person's (a view of a
+    /// past version) or the record cannot be opened.
+    pub fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.person::<P>()
+    }
+
+    /// The person's record `P` that one app keeps for all of theirs — their
+    /// accounts, which Settings keeps: the same record on every device, held
+    /// here too and converging with the keeper's over the person's own room.
+    /// Changed only by its owner and editors
+    /// ([`SharedRecord`](tilo_resource::SharedRecord),
+    /// [`PersonRecord::editable`](super::PersonRecord::editable)); for its
+    /// owner it is [`Self::person`].
+    pub fn shared_person<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.shared_person::<P>()
     }
 
     /// The app's files, secrets and settings documents, as its host gave
@@ -397,6 +492,46 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         }
     }
 
+    /// Route a serialized screen's text inputs over `path` through the
+    /// resource ([`UiValues::route`](ui_core::UiValues::route)): they show
+    /// `read` of it and each edit invokes `action` with the input's new text.
+    /// A view that may not invoke `action` leaves the path unrouted.
+    pub fn route_graph_text(
+        &self,
+        values: &ui_core::UiValues,
+        path: &str,
+        read: impl Fn(&T) -> String + 'static,
+        action: impl Binds<R, String>,
+    ) {
+        let Some(binding) = self.binding(action) else {
+            return;
+        };
+        let shown = LocalState::new(String::new());
+        let sink = shown.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        shown.set(initial);
+        values.route(path, shown, binding);
+    }
+
+    /// Route a serialized screen's checked controls through the resource:
+    /// they show `read` and each edit invokes its typed `action`.
+    pub fn route_graph_bool(
+        &self,
+        values: &ui_core::UiValues,
+        path: &str,
+        read: impl Fn(&T) -> bool + 'static,
+        action: impl Binds<R, bool>,
+    ) {
+        let Some(binding) = self.binding(action) else {
+            return;
+        };
+        let shown = LocalState::new(false);
+        let sink = shown.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        shown.set(initial);
+        values.route_bool(path, shown, binding);
+    }
+
     /// A checkbox showing `read` of the resource; toggling invokes `action`
     /// with the new value.
     pub fn checkbox(
@@ -420,7 +555,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A button that invokes one fully specified action.
     pub fn button(&self, label: &str, invoke: Invoke<R>) -> Button {
         let id = self.control_id(invoke.id);
-        let button = Button::new(&id, label, None);
+        let button = Button::new(&id, label);
         let Some(spec) = self
             .published
             .actions
@@ -504,7 +639,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// state it captured. Invoking one dispatches what it builds through the
     /// same permission check, confirmation and undo as any other action. The
     /// binding lasts as long as this view scope (a row's ends with the row);
-    /// an id the resource already publishes keeps the resource's action.
+    /// an id the resource already publishes keeps the resource's action
+    /// unless the bound one refines it ([`tilo_resource::bind_declaration`]).
     pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
         self.bindings
             .0
@@ -607,8 +743,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         S: ResourceSurface<R, E> + 'static,
         E: Effect,
     {
+        let jobs = self.effects.surface_jobs();
         surface.attach(SurfaceCx {
+            jobs: jobs.clone(),
             dispatch: self.dispatch.clone(),
+            actions: self.actions(),
             live: self.live.clone(),
             run: self.run.clone(),
             storage: Rc::clone(&self.storage),
@@ -621,6 +760,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             self.live.clone(),
             self.dispatch.clone(),
             &self.effects,
+            jobs,
             self.alive.clone(),
             surface,
         );
@@ -665,6 +805,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         EffectsHandle { status }
     }
 
+    /// Jobs the view starts on its own, with nobody invoking an effect: a
+    /// fetch when what it shows changes. See [`Jobs`](super::Jobs).
+    pub fn jobs(&self) -> super::Jobs<R> {
+        self.effects.view_jobs()
+    }
+
     /// Drain a projection: what the resource's actions queued for the world
     /// outside the document — an outbox entry, a filesystem operation, the
     /// device configuration the document describes.
@@ -696,7 +842,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     pub fn effect_button<E: Effect>(&self, label: &str, effect: &E) -> Button {
         let id = self.control_id(effect.id());
         self.actions()
-            .bind_effect_invocation(Button::new(&id, label, None), effect)
+            .bind_effect_invocation(Button::new(&id, label), effect)
     }
 }
 

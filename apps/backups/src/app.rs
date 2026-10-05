@@ -75,7 +75,6 @@ pub struct BackupsApp {
     built: Option<ViewKey>,
     dirty: bool,
     open_drawer: bool,
-    search_index: crate::search_provider::BackupsSearchIndex,
     source_path: Option<PathBuf>,
     destination_path: Option<PathBuf>,
     repository_error: Option<String>,
@@ -154,7 +153,6 @@ impl BackupsApp {
         Self::with_catalog(Catalog::empty())
     }
     fn with_catalog(catalog: Catalog) -> Self {
-        let search_index = crate::search_provider::BackupsSearchIndex::new(&catalog);
         let policy = RetentionPolicy::default();
         Self {
             shell: NavShell::new()
@@ -193,7 +191,6 @@ impl BackupsApp {
             built: None,
             dirty: true,
             open_drawer: false,
-            search_index,
             source_path: None,
             destination_path: None,
             repository_error: None,
@@ -208,9 +205,6 @@ impl BackupsApp {
             && self.destination_path.is_some()
             && self.repository_error.is_none()
     }
-    fn sync_search_index(&self) {
-        self.search_index.sync(&self.catalog);
-    }
 
     /// Take part in the resource: edits and effects go through the
     /// dispatcher, and the repository shown is this device's (a live
@@ -219,7 +213,7 @@ impl BackupsApp {
         self.dispatcher = Some(cx.dispatcher());
         if let Some(demo) = cx.fixture::<DemoRepository>() {
             self.catalog = demo.catalog.clone();
-            self.sync_search_index();
+
             self.source_path.clone_from(&demo.location.source);
             self.destination_path.clone_from(&demo.location.destination);
             self.repository_error.clone_from(&demo.error);
@@ -273,7 +267,6 @@ impl BackupsApp {
                 );
             }
         }
-        self.sync_search_index();
     }
 
     /// Reload the repository after a job changed it.
@@ -287,7 +280,7 @@ impl BackupsApp {
             error
         })?;
         self.catalog = Catalog::from_local(source, destination, &manifests);
-        self.sync_search_index();
+
         Ok(())
     }
 
@@ -1076,17 +1069,9 @@ impl ui::widget::Decorator for BackupsApp {
     type Inner = NavShell;
 
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::search::capability::SearchSource>() {
-            request.provide::<dyn ui::search::capability::SearchSource>(self);
-            return;
-        }
         self.shell.provide(request);
     }
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::search::capability::SearchSource>() {
-            request.provide::<dyn ui::search::capability::SearchSource>(self);
-            return;
-        }
         self.shell.provide_mut(request);
     }
     fn inner(&self) -> &NavShell {
@@ -1097,7 +1082,7 @@ impl ui::widget::Decorator for BackupsApp {
         &mut self.shell
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.refresh_runtime();
         self.drain_intents();
         self.refresh_view();
@@ -1113,7 +1098,7 @@ impl ui::widget::Decorator for BackupsApp {
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.drain_intents();
         self.refresh_view();
         self.shell.update(state, path) || self.dirty
@@ -1139,8 +1124,13 @@ impl ui::widget::Decorator for BackupsApp {
             ));
         }
         if let Some(dialog) = &mut self.restore {
-            let (doc, root) = ui::doc::document(ctx.state, ctx.path);
-            dialog.handle_detached(event, ctx.scale_factor, *ctx.modifiers, doc, root);
+            dialog.handle_detached(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                &mut ctx.state,
+                ctx.path,
+            );
             *ctx.handled = true;
         } else {
             self.shell.handle_event(event, ctx);
@@ -1227,12 +1217,6 @@ impl ui::widget::Decorator for BackupsApp {
 
     fn test_id(&self) -> Option<&str> {
         Some("backups_app")
-    }
-}
-
-impl ui::search::capability::SearchSource for BackupsApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 

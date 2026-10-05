@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    ViewCx,
+    RunMode, ViewCx,
 };
 use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
 use ui::widget::Element;
@@ -52,7 +52,9 @@ impl ResourceApp for PasswordsShell {
     };
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
-        let surface = if cx.fixture::<DemoVault>().is_some() {
+        let surface = if cx.mode() == RunMode::Past {
+            PasswordsSurface::new(crate::PasswordsModel::closed())
+        } else if cx.fixture::<DemoVault>().is_some() {
             PasswordsSurface::demo()
         } else {
             PasswordsSurface::new(crate::PasswordsModel::open())
@@ -100,6 +102,10 @@ impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
             EffectStatus::unavailable(PasswordsEffect::CANCEL, "not_editing", reason),
             EffectStatus::unavailable(PasswordsEffect::GENERATE, "not_editing", reason),
         ]
+    }
+
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        PasswordsSurface::search_entries(self)
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {

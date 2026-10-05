@@ -20,14 +20,49 @@ use super::{Highlighter, HlState, LineSpans, Span, TokenKind};
 
 /// Grammars match lines without their trailing `\n`, which is how every
 /// caller already splits its text.
-/// Without `syntax-definitions` (the browser toolkit core) the set is empty
-/// and every language highlights as plain text.
+/// Without `syntax-definitions` (the browser toolkit core) the set holds only
+/// the plain-text grammar, so every language highlights as plain text. It
+/// cannot be empty: syntect expects every set to have a plain-text grammar.
 fn syntax_set() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
     #[cfg(feature = "syntax-definitions")]
     return SET.get_or_init(two_face::syntax::extra_no_newlines);
     #[cfg(not(feature = "syntax-definitions"))]
-    return SET.get_or_init(SyntaxSet::default);
+    return SET.get_or_init(plain_text_only);
+}
+
+/// A set holding only syntect's plain-text grammar (no rules, scope
+/// `text.plain`), built without the YAML loader the browser core leaves out.
+#[cfg(any(test, not(feature = "syntax-definitions")))]
+fn plain_text_only() -> SyntaxSet {
+    use syntect::parsing::syntax_definition::{Context, SyntaxDefinition};
+    #[allow(
+        clippy::expect_used,
+        reason = "a fixed, valid scope name always parses"
+    )]
+    let scope = syntect::parsing::Scope::new("text.plain").expect("valid scope");
+    let entry = |name: &str| {
+        let mut context = Context::new(false);
+        context.meta_content_scope = vec![scope];
+        (name.to_owned(), context)
+    };
+    let mut builder = syntect::parsing::SyntaxSetBuilder::new();
+    builder.add(SyntaxDefinition {
+        name: "Plain Text".into(),
+        file_extensions: vec!["txt".into()],
+        scope,
+        first_line_match: None,
+        hidden: false,
+        variables: std::collections::HashMap::new(),
+        contexts: [
+            entry("__start"),
+            entry("__main"),
+            ("main".to_owned(), Context::new(true)),
+        ]
+        .into_iter()
+        .collect(),
+    });
+    builder.build()
 }
 
 /// Map a scope stack to the kind of its innermost classified scope, or `None`
@@ -246,6 +281,16 @@ impl Highlighter for SyntaxHighlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The browser core's set, without grammars, still parses plain text.
+    #[test]
+    fn the_set_without_grammars_has_plain_text() {
+        let set = plain_text_only();
+        let plain = set.find_syntax_plain_text();
+        assert_eq!(plain.scope.build_string(), "text.plain");
+        let mut parse = ParseState::new(plain);
+        assert!(parse.parse_line("any text at all", &set).is_ok());
+    }
 
     fn text_of(line: &str, kind: TokenKind, spans: &[Span]) -> Vec<String> {
         spans

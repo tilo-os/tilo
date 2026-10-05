@@ -257,7 +257,7 @@ impl ui::widget::Decorator for RequestsNav {
         &mut self.list
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let next = self.pending.borrow_mut().take();
         if let Some((sections, selected)) = next {
             self.list.set_sections(sections);

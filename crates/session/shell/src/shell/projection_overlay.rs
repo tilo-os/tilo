@@ -574,7 +574,7 @@ impl ProjectionOverlay {
             &mut EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: &mut *ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut input_handled,
                 focus_target: &mut *ctx.focus_target,

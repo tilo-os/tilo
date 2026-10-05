@@ -1,23 +1,21 @@
-//! File-explorer places as a Tilo global-search source.
+//! What the file explorer finds in the unified Ctrl+K palette: the user's
+//! curated **Favourites / Places**, the collaborative records of the mount
+//! and the remote file accounts, each a search entry the explorer surface
+//! contributes to the app's one search source. A pinned location is
+//! findable by its label or path; activating a row navigates there.
 //!
-//! Mirrors the reference wiring in `apps/contacts`: the file explorer declares
-//! its searchable type by implementing `SearchProvider` over the user's
-//! curated **Favourites / Places** list, so a pinned location is findable from
-//! the unified Ctrl+K palette by its label or path. Activating a row navigates
-//! there.
-//!
-//! Only the stable, in-memory places set is indexed — never the live directory
+//! Only stable, in-memory sets are searchable — never the live directory
 //! contents (which are not a bounded, stable library) nor the transient
-//! back/forward history. The query path touches no filesystem, so it stays
-//! synchronous.
+//! back/forward history. Reading the entries touches no filesystem, so it
+//! stays synchronous.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use sha2::{Digest as _, Sha256};
 
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
-use ui::tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
+use ui::tilo_actions::{ActionAddress, Resource};
+use ui::tilo_resource::SearchEntry;
 
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
@@ -84,18 +82,12 @@ pub fn remote_account_open_address(account: &RemoteAccount) -> ActionAddress {
     )
 }
 
-/// Join independently searchable fields without allowing a query to match
-/// across a label/path boundary.
-fn searchable_fields(fields: impl IntoIterator<Item = String>) -> String {
-    fields.into_iter().collect::<Vec<_>>().join("\u{1f}")
-}
-
-/// A retained, revision-gated catalogue over the private Places list.  The
-/// widget changes the revision only after a favourite mutation, so a palette
-/// frame merely shares this Arc-backed index instead of re-walking paths.
+/// A revision-gated snapshot of the private Places list, the search entries
+/// and rows it offers. The widget changes the revision only after a
+/// favourite mutation, so a search merely reads the snapshot instead of
+/// re-walking paths.
 #[derive(Clone)]
-pub struct PlacesSearchProvider {
-    catalog: SearchCatalog,
+pub struct PlacesSearch {
     snapshot: Arc<RwLock<PlacesSnapshot>>,
     kind: String,
 }
@@ -106,11 +98,10 @@ struct PlacesSnapshot {
     favorites: BTreeMap<String, Favorite>,
 }
 
-impl PlacesSearchProvider {
-    /// Create a retained provider with an initial snapshot.
+impl PlacesSearch {
+    /// Create a snapshot of `favorites`.
     pub fn new(favorites: &[Favorite]) -> Self {
         let provider = Self {
-            catalog: SearchCatalog::new(crate::i18n::t("files-a11y-places")),
             snapshot: Arc::new(RwLock::new(PlacesSnapshot {
                 revision: None,
                 favorites: BTreeMap::new(),
@@ -123,7 +114,7 @@ impl PlacesSearchProvider {
 
     /// Reconcile only when the owner has observed a new source revision.
     /// Supplying the same revision is intentionally a no-op: it must not turn
-    /// a steady-state `sync` into a full catalogue traversal.
+    /// a steady-state `sync` into a full traversal.
     pub fn refresh(&self, revision: u64, favorites: &[Favorite]) -> bool {
         {
             let snapshot = self
@@ -134,37 +125,14 @@ impl PlacesSearchProvider {
                 return false;
             }
         }
-        let mut current = BTreeMap::new();
-        for favorite in favorites {
-            let id = place_resource_id(&favorite.path);
-            let result = SearchResult::for_action(
-                &self.kind,
-                favorite.label.clone(),
-                place_open_address(&favorite.path),
-            )
-            .with_subtitle(favorite.path.display().to_string())
-            .with_icon(favorite.icon());
-            let _ = self.catalog.upsert(
-                id.clone(),
-                searchable_fields([
-                    favorite.label.clone(),
-                    favorite.path.to_string_lossy().into_owned(),
-                ]),
-                result,
-            );
-            current.insert(id, favorite.clone());
-        }
+        let current = favorites
+            .iter()
+            .map(|favorite| (place_resource_id(&favorite.path), favorite.clone()))
+            .collect();
         let mut snapshot = self
             .snapshot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for removed in snapshot
-            .favorites
-            .keys()
-            .filter(|id| !current.contains_key(*id))
-        {
-            self.catalog.remove(removed);
-        }
         snapshot.favorites = current;
         snapshot.revision = Some(revision);
         true
@@ -174,32 +142,33 @@ impl PlacesSearchProvider {
         let favorite = self.snapshot.read().ok()?.favorites.get(id)?.clone();
         Some(
             Resource::new(id, "files.place", favorite.label).with_action(
-                ActionSpec::operation(OPEN_ACTION, "Open", OperationKind::View, "files.open", &id)
-                    .ok()?
-                    .with_contract(ActionContract::view()),
+                crate::effects::row_action(
+                    &crate::effects::FilesEffect::OpenItem {
+                        item: id.to_owned(),
+                    },
+                    OPEN_ACTION,
+                    "Open",
+                ),
             ),
         )
     }
 
-    #[cfg(test)]
-    fn stats(&self) -> ui::search::SearchCatalogStats {
-        self.catalog.stats()
-    }
-}
-
-impl CatalogSearchProvider for PlacesSearchProvider {
-    fn provider_name(&self) -> &str {
-        &self.kind
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
-        (address.action == OPEN_ACTION)
-            .then(|| self.resource(&address.resource))
-            .flatten()
+    /// Every place as a search entry: found by its label or path, opening it.
+    pub(crate) fn entries(&self) -> Vec<SearchEntry> {
+        let Ok(snapshot) = self.snapshot.read() else {
+            return Vec::new();
+        };
+        snapshot
+            .favorites
+            .values()
+            .map(|favorite| {
+                SearchEntry::new(favorite.label.clone(), String::new())
+                    .invoking(place_open_address(&favorite.path))
+                    .grouped(self.kind.clone())
+                    .subtitled(favorite.path.display().to_string())
+                    .with_icon(favorite.icon().name())
+            })
+            .collect()
     }
 }
 
@@ -207,8 +176,7 @@ impl CatalogSearchProvider for PlacesSearchProvider {
 /// UUIDs, rather than paths, are action identity: paths are mutable provenance
 /// used only for matching and presentation.
 #[derive(Clone)]
-pub struct CollaborativeRecordSearchProvider {
-    catalog: SearchCatalog,
+pub struct CollaborativeRecordSearch {
     snapshot: Arc<RwLock<RecordSnapshot>>,
     kind: String,
 }
@@ -219,15 +187,10 @@ struct RecordSnapshot {
     records: BTreeMap<String, WorkspaceRecord>,
 }
 
-impl CollaborativeRecordSearchProvider {
-    #[allow(
-        clippy::expect_used,
-        reason = "the action address and catalogue key are derived from the same immutable record UUID"
-    )]
+impl CollaborativeRecordSearch {
     pub(crate) fn new(entries: &[WorkspaceRecord]) -> Self {
         let kind = crate::i18n::t("files-search-collaborative-records");
         let provider = Self {
-            catalog: SearchCatalog::new(kind.clone()),
             snapshot: Arc::new(RwLock::new(RecordSnapshot::default())),
             kind,
         };
@@ -249,9 +212,6 @@ impl CollaborativeRecordSearchProvider {
             .snapshot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for removed in snapshot.records.keys() {
-            self.catalog.remove(removed);
-        }
         snapshot.records.clear();
         snapshot.revision = Some(revision);
         drop(snapshot);
@@ -271,27 +231,36 @@ impl CollaborativeRecordSearchProvider {
             return false;
         }
         for entry in entries {
-            let address = record_reveal_address(entry.record_id);
-            let result = SearchResult::for_action(&self.kind, entry.name.clone(), &address)
-                .with_subtitle(crate::i18n::t_args(
-                    "files-search-record-provenance",
-                    &[
-                        crate::i18n::arg("path", entry.path.display().to_string()),
-                        crate::i18n::arg("record", entry.record_id.to_string()),
-                    ],
-                ))
-                .with_icon(ui::icons::icon_for_path(&entry.path, entry.is_dir));
-            let _ = self.catalog.upsert(
-                address.resource.clone(),
-                searchable_fields([
-                    entry.name.clone(),
-                    entry.path.to_string_lossy().into_owned(),
-                ]),
-                result,
-            );
-            snapshot.records.insert(address.resource, entry.clone());
+            snapshot
+                .records
+                .insert(record_resource_id(entry.record_id), entry.clone());
         }
         true
+    }
+
+    /// Every collaborative record as a search entry: found by its name or
+    /// path, revealing it by its stable record id.
+    pub(crate) fn entries(&self) -> Vec<SearchEntry> {
+        let Ok(snapshot) = self.snapshot.read() else {
+            return Vec::new();
+        };
+        snapshot
+            .records
+            .values()
+            .map(|entry| {
+                SearchEntry::new(entry.name.clone(), String::new())
+                    .invoking(record_reveal_address(entry.record_id))
+                    .grouped(self.kind.clone())
+                    .subtitled(crate::i18n::t_args(
+                        "files-search-record-provenance",
+                        &[
+                            crate::i18n::arg("path", entry.path.display().to_string()),
+                            crate::i18n::arg("record", entry.record_id.to_string()),
+                        ],
+                    ))
+                    .with_icon(ui::icons::icon_for_path(&entry.path, entry.is_dir).name())
+            })
+            .collect()
     }
 
     pub(crate) fn record(&self, record_id: uuid::Uuid) -> Option<WorkspaceRecord> {
@@ -305,35 +274,15 @@ impl CollaborativeRecordSearchProvider {
 
     pub(crate) fn resource(&self, id: &str) -> Option<Resource> {
         let record = self.snapshot.read().ok()?.records.get(id)?.clone();
-        Some(
-            Resource::new(id, "files.record", record.name).with_action(
-                ActionSpec::operation(
-                    REVEAL_ACTION,
-                    "Reveal in Files",
-                    OperationKind::View,
-                    "files.reveal-record",
-                    &record.record_id.to_string(),
-                )
-                .ok()?
-                .with_contract(ActionContract::view()),
+        Some(Resource::new(id, "files.record", record.name).with_action(
+            crate::effects::row_action(
+                &crate::effects::FilesEffect::Reveal {
+                    record: record.record_id.to_string(),
+                },
+                REVEAL_ACTION,
+                "Reveal in Files",
             ),
-        )
-    }
-}
-
-impl CatalogSearchProvider for CollaborativeRecordSearchProvider {
-    fn provider_name(&self) -> &str {
-        &self.kind
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
-        (address.action == REVEAL_ACTION)
-            .then(|| self.resource(&address.resource))
-            .flatten()
+        ))
     }
 }
 
@@ -342,8 +291,7 @@ impl CatalogSearchProvider for CollaborativeRecordSearchProvider {
 /// crawler: the mount daemon owns remote I/O and Files must remain responsive
 /// and offline-safe while the palette is open.
 #[derive(Clone)]
-pub struct RemoteAccountSearchProvider {
-    catalog: SearchCatalog,
+pub struct RemoteAccountSearch {
     snapshot: Arc<RwLock<RemoteAccountsSnapshot>>,
     kind: String,
 }
@@ -354,10 +302,9 @@ struct RemoteAccountsSnapshot {
     accounts: BTreeMap<String, RemoteAccount>,
 }
 
-impl RemoteAccountSearchProvider {
+impl RemoteAccountSearch {
     pub fn new(accounts: &[RemoteAccount]) -> Self {
         let provider = Self {
-            catalog: SearchCatalog::new("Remote file accounts"),
             snapshot: Arc::new(RwLock::new(RemoteAccountsSnapshot {
                 revision: None,
                 accounts: BTreeMap::new(),
@@ -378,46 +325,19 @@ impl RemoteAccountSearchProvider {
                 return false;
             }
         }
-        let mut current = BTreeMap::new();
-        for account in accounts {
-            let id = crate::remote_accounts::resource_id(&account.id);
-            let result = SearchResult::for_action(
-                &self.kind,
-                account.label.clone(),
-                remote_account_open_address(account),
-            )
-            .with_subtitle(format!(
-                "{} ({}), {}",
-                account.kind.label(),
-                account.host,
-                account.health.label()
-            ))
-            .with_icon(ui::icons::icon_for_path(
-                std::path::Path::new("remote-folder"),
-                true,
-            ));
-            let _ = self.catalog.upsert(
-                id.clone(),
-                searchable_fields([
-                    account.label.clone(),
-                    account.host.clone(),
-                    account.kind.label().to_owned(),
-                ]),
-                result,
-            );
-            current.insert(id, account.clone());
-        }
+        let current = accounts
+            .iter()
+            .map(|account| {
+                (
+                    crate::remote_accounts::resource_id(&account.id),
+                    account.clone(),
+                )
+            })
+            .collect();
         let mut snapshot = self
             .snapshot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for removed in snapshot
-            .accounts
-            .keys()
-            .filter(|id| !current.contains_key(*id))
-        {
-            self.catalog.remove(removed);
-        }
         snapshot.accounts = current;
         snapshot.revision = Some(revision);
         true
@@ -425,36 +345,46 @@ impl RemoteAccountSearchProvider {
 
     pub(crate) fn resource(&self, id: &str) -> Option<Resource> {
         let account = self.snapshot.read().ok()?.accounts.get(id)?.clone();
-        let payload = vec!["details".to_string(), account.id.to_string()];
         Some(
             Resource::new(id, "files.remote-account", account.label).with_action(
-                ActionSpec::operation(
+                crate::effects::row_action(
+                    &crate::effects::FilesEffect::AccountDetails {
+                        account: account.id.to_string(),
+                    },
                     REMOTE_ACCOUNT_OPEN_ACTION,
                     "Show connection details",
-                    OperationKind::View,
-                    "files.remote-account",
-                    &payload,
-                )
-                .ok()?
-                .with_contract(ActionContract::view()),
+                ),
             ),
         )
     }
 }
 
-impl CatalogSearchProvider for RemoteAccountSearchProvider {
-    fn provider_name(&self) -> &str {
-        &self.kind
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
-        (address.action == REMOTE_ACCOUNT_OPEN_ACTION)
-            .then(|| self.resource(&address.resource))
-            .flatten()
+impl RemoteAccountSearch {
+    /// Every remote account as a search entry: found by its label, host or
+    /// kind, opening its connection details.
+    pub(crate) fn entries(&self) -> Vec<SearchEntry> {
+        let Ok(snapshot) = self.snapshot.read() else {
+            return Vec::new();
+        };
+        snapshot
+            .accounts
+            .values()
+            .map(|account| {
+                SearchEntry::new(account.label.clone(), account.kind.label())
+                    .invoking(remote_account_open_address(account))
+                    .grouped(self.kind.clone())
+                    .subtitled(format!(
+                        "{} · {} · {}",
+                        account.kind.label(),
+                        account.host,
+                        account.health.label()
+                    ))
+                    .with_icon(
+                        ui::icons::icon_for_path(std::path::Path::new("remote-folder"), true)
+                            .name(),
+                    )
+            })
+            .collect()
     }
 }
 
@@ -464,6 +394,11 @@ mod tests {
     use crate::favorites::{FavKind, Favorite};
     use std::path::PathBuf;
     use ui::search::SearchProvider;
+
+    /// The app's search source over `entries`, as the framework builds it.
+    fn source(entries: Vec<SearchEntry>) -> impl SearchProvider {
+        ui::framework::testing::search_source::<crate::resource::FileExplorer>(entries)
+    }
     use ui::search::SearchRegistry;
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
@@ -509,7 +444,7 @@ mod tests {
         // --- phase: provider_finds_a_place_by_label_or_path ---
         {
             let values = places();
-            let provider = PlacesSearchProvider::new(&values);
+            let provider = source(PlacesSearch::new(&values).entries());
             assert!(
                 provider
                     .search("projects")
@@ -530,7 +465,7 @@ mod tests {
         {
             let mut registry = SearchRegistry::new();
             let values = places();
-            registry.register(Box::new(PlacesSearchProvider::new(&values)));
+            registry.register(Box::new(source(PlacesSearch::new(&values).entries())));
             let hit = registry
                 .query("documents")
                 .into_iter()
@@ -555,7 +490,7 @@ mod tests {
                 mount: None,
             };
             let accounts = vec![account.clone()];
-            let provider = RemoteAccountSearchProvider::new(&accounts);
+            let provider = source(RemoteAccountSearch::new(&accounts).entries());
             for query in ["personal", "example", "nextcloud"] {
                 assert_eq!(provider.search(query).len(), 1, "{query}");
             }
@@ -599,7 +534,6 @@ mod tests {
         // --- phase: widget_hooks_find_then_navigate_to_the_place ---
         {
             use automerge::{AutoCommit, ROOT};
-            use ui::widget::Widget;
 
             // Build the app against real temp dirs so navigation actually loads.
             let base = std::env::temp_dir().join(format!("tilo-fe-search-{}", std::process::id()));
@@ -610,19 +544,14 @@ mod tests {
             std::fs::create_dir_all(&cfg).unwrap();
 
             let mut app = crate::files_app::FileExplorerWidget::with_persistence(
-                Some(cfg),
+                Some(&cfg),
                 Some(home.clone()),
             );
             // Move away from Home so activation demonstrably navigates back.
             app.navigate(sub.clone());
             assert_eq!(app.current_path(), sub);
 
-            let providers = ui::search::capability::search_providers(&app);
-            assert!(
-                !providers.is_empty(),
-                "the file explorer publishes a search provider"
-            );
-            let hit = providers[0]
+            let hit = source(app.search_entries_shown())
                 .search("")
                 .into_iter()
                 .find(|r| r.action_address() == Some(place_open_address(&home)))
@@ -630,7 +559,7 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             let address = hit.action_address().expect("canonical action address");
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = crate::files_app::published::tree(&app, &doc);
             let spec = ui::tilo_actions::door::resolve(&resources, &address)
                 .expect("search address is exported");
             assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
@@ -640,18 +569,16 @@ mod tests {
                 ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
                     .expect("search address is exported");
             assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        kind,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
+                crate::files_app::published::start(
+                    &mut app,
+                    kind,
+                    &encoded.type_id,
+                    &encoded.payload,
                     &mut doc,
                     &ROOT
                 )
                 .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
+                Some(ui::framework::Effected::Done(_))
             ));
             assert_eq!(
                 app.current_path(),
@@ -666,11 +593,11 @@ mod tests {
     /// Retained catalogues gate unchanged revisions, page with true cursors and hard budgets, and find suffix hits with a fixed budget.
     #[test]
     fn retained_catalogues_page_within_budgets() {
-        // --- phase: retained_places_catalogue_gates_unchanged_revisions_and_pages_with_hard_budgets ---
+        // --- phase: places_snapshot_gates_unchanged_revisions ---
         {
             let values = places();
-            let provider = PlacesSearchProvider::new(&values);
-            let before = provider.stats();
+            let places = PlacesSearch::new(&values);
+            let before = places.entries();
             let changed = vec![Favorite {
                 label: "Late place".into(),
                 path: "/home/tester/late-needle".into(),
@@ -678,18 +605,13 @@ mod tests {
                 kind: FavKind::Folder,
             }];
             assert!(
-                !provider.refresh(0, &changed),
-                "the owner must advance the source revision before any traversal/reindex"
+                !places.refresh(0, &changed),
+                "the owner must advance the source revision before any traversal"
             );
-            assert_eq!(provider.stats(), before);
-            assert!(provider.search("late-needle").is_empty());
-            assert!(provider.refresh(1, &changed));
-            assert_eq!(provider.search("late-needle").len(), 1);
-
-            let page = provider.search_page(&ui::search::SearchQuery::new("late"), None, 1, 1);
-            assert_eq!(page.inspected, 1);
-            assert_eq!(page.results.len(), 1);
-            assert!(page.next.is_none());
+            assert_eq!(places.entries(), before);
+            assert!(source(places.entries()).search("late-needle").is_empty());
+            assert!(places.refresh(1, &changed));
+            assert_eq!(source(places.entries()).search("late-needle").len(), 1);
         }
 
         // --- phase: every_retained_provider_supports_true_cursor_pages_and_lazy_action_equivalence ---
@@ -704,7 +626,8 @@ mod tests {
                     mount: None,
                 })
                 .collect();
-            let provider = RemoteAccountSearchProvider::new(&accounts);
+            let remote = RemoteAccountSearch::new(&accounts);
+            let provider = source(remote.entries());
             let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 3, 3);
             assert_eq!(first.inspected, 3);
             assert_eq!(first.results.len(), 3);
@@ -724,8 +647,8 @@ mod tests {
 
             let hit = first.results.first().expect("a page has a result");
             let address = hit.action_address().expect("canonical account address");
-            let resource = provider
-                .resolve_action_resource(&address)
+            let resource = remote
+                .resource(&address.resource)
                 .expect("the omitted account is materialized exactly");
             let resources = [resource];
             let spec = ui::tilo_actions::door::resolve(&resources, &address)
@@ -743,7 +666,7 @@ mod tests {
             let mut entry = collaborative_entry("old-name.txt");
             entry.path = PathBuf::from("/Workspace/old-name.txt");
             entry.record_id = record_id;
-            let provider = CollaborativeRecordSearchProvider::new(&[entry]);
+            let provider = source(CollaborativeRecordSearch::new(&[entry]).entries());
             let hit = provider.search("workspace").pop().expect("path matches");
             assert_eq!(hit.action_address(), Some(record_reveal_address(record_id)));
             assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
@@ -761,7 +684,7 @@ mod tests {
                     [first, duplicate]
                 })
                 .collect();
-            let provider = CollaborativeRecordSearchProvider::new(&entries);
+            let provider = source(CollaborativeRecordSearch::new(&entries).entries());
             // Result presentation is intentionally capped, but the index itself
             // is complete: a match beyond the former 256-record snapshot limit is
             // still discoverable.
@@ -785,7 +708,7 @@ mod tests {
                             entry
                         })
                         .collect();
-                    CollaborativeRecordSearchProvider::new(&entries)
+                    source(CollaborativeRecordSearch::new(&entries).entries())
                 },
                 3_000,
             );

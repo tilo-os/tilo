@@ -9,7 +9,7 @@
 //! toggles wrote an ephemeral CRDT key that nothing read and nothing
 //! persisted — the control looked live but its value evaporated when the
 //! window closed. This store gives them a real home on disk, exactly the
-//! way [`crate::region::RegionSettings`] persists the locale.
+//! way the locale is a section of the same document.
 //!
 //! # The file (a format contract, not a crate dependency)
 //!
@@ -54,8 +54,6 @@
 //! clobbers another pane's — or the region store's — section.
 
 use serde::{Deserialize, Serialize};
-
-use crate::region::RegionSettings;
 
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
@@ -241,6 +239,12 @@ impl Default for InputPrefs {
     }
 }
 
+/// The person's pointer and keyboard choices, and this device's touchpad
+/// and tablets, read by the compositor's input layer.
+impl ui::storage::SettingsSchema for InputPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("input");
+}
+
 impl InputPrefs {
     /// Decode the input object while preserving the pre-split global scrolling
     /// preference. A missing document receives the independent touchpad and
@@ -414,6 +418,12 @@ pub struct PowerPrefs {
     pub critical_action: PowerActionPref,
 }
 
+/// This device's idle and button preferences, read by the compositor's
+/// idle layer.
+impl ui::storage::SettingsSchema for PowerPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
+}
+
 impl Default for PowerPrefs {
     fn default() -> Self {
         Self {
@@ -444,6 +454,11 @@ pub struct UpdatePrefs {
     pub last_checked: String,
 }
 
+/// This device's update preferences.
+impl ui::storage::SettingsSchema for UpdatePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
+}
+
 impl Default for UpdatePrefs {
     fn default() -> Self {
         Self {
@@ -455,10 +470,9 @@ impl Default for UpdatePrefs {
 }
 
 /// Look-and-feel preferences the OS theming layer resolves into the
-/// concrete [`ui::Theme`] every app draws against. `mode` picks light, dark
-/// or the schedule; `dark_theme` and `light_theme` name the theme each mode
-/// shows (a preset id or `custom:<id>`); `density` scales spacing;
-/// `high_contrast`, `reduce_transparency`, `reduce_motion` and `text_scale`
+/// concrete [`ui::Theme`] every app draws against. `theme` is a named preset
+/// (see [`AppearancePrefs::THEMES`]); `high_contrast` overrides the palette
+/// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
 /// fold in the accessibility comforts. The compositor reads this section the
 /// same way it reads the display/input comfort sections.
 #[allow(
@@ -467,6 +481,9 @@ impl Default for UpdatePrefs {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppearancePrefs {
+    /// Legacy preset selector retained for imported settings and the published SetTheme action.
+    #[serde(default = "default_legacy_theme")]
+    pub theme: String,
     /// `"light"`, `"dark"` or `"automatic"` (light by day, dark by night).
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -585,9 +602,13 @@ fn default_ui_scale() -> f64 {
     1.0
 }
 
+fn default_legacy_theme() -> String {
+    "Light".into()
+}
 impl Default for AppearancePrefs {
     fn default() -> Self {
         Self {
+            theme: default_legacy_theme(),
             mode: default_mode(),
             dark_theme: default_dark_theme(),
             light_theme: default_light_theme(),
@@ -707,7 +728,14 @@ impl AppearancePrefs {
 
     /// The theme document the current mode shows, with the density over it.
     pub fn user_document(&self) -> Option<ui::theme::ThemeDocument> {
-        ui::theme::user_document(&self.settings_value(), ui::theme::local_moment())
+        // Import the former preset field without discarding new paired-theme data.
+        // Typed SetTheme keeps both forms in agreement; older settings have only
+        // the preset and therefore still need this conversion when read.
+        let mut imported = self.clone();
+        if self.theme != default_legacy_theme() {
+            imported.choose_legacy_theme(self.theme.clone());
+        }
+        ui::theme::user_document(&imported.settings_value(), ui::theme::local_moment())
     }
 
     fn layers(&self, accessibility: ui::theme::AccessibilityLayer) -> ui::theme::ThemeLayerStack {
@@ -767,6 +795,34 @@ impl AppearancePrefs {
     }
 }
 
+impl ui::storage::SettingsSchema for AppearancePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
+}
+
+impl AppearancePrefs {
+    pub const THEMES: &'static [&'static str] = &[
+        "Automatic",
+        "Dark",
+        "Light",
+        "Dark graphite",
+        "Dark cool",
+        "Dark soft",
+    ];
+    pub fn choose_legacy_theme(&mut self, name: String) {
+        self.theme = name.clone();
+        if settings_store::day_schedule::is_automatic(&name) {
+            self.mode = "automatic".into();
+        } else if let Some(preset) = ui::theme::Preset::find(&name) {
+            let doc = preset.document();
+            self.mode = if doc.palette.dark { "dark" } else { "light" }.into();
+            if doc.palette.dark {
+                self.dark_theme = preset.id().into();
+            } else {
+                self.light_theme = preset.id().into();
+            }
+        }
+    }
+}
 /// Overwrite `known`'s fields in the `section` object, keeping any other key
 /// in it. A non-object section is replaced by an empty one first.
 fn merge_fields(section: &mut serde_json::Value, known: &serde_json::Value) {
@@ -777,6 +833,17 @@ fn merge_fields(section: &mut serde_json::Value, known: &serde_json::Value) {
         for (key, value) in fields {
             target.insert(key.clone(), value.clone());
         }
+    }
+}
+
+/// Map a theme preset name to its [`ui::Theme`] constructor, defaulting to the
+/// dark theme for an unrecognised name so a stray value never leaves the UI
+/// unthemed.
+pub fn theme_by_name(name: &str) -> ui::Theme {
+    if name.starts_with("custom:") {
+        ui::Theme::configured()
+    } else {
+        ui::Theme::named(name).unwrap_or_else(ui::Theme::dark)
     }
 }
 
@@ -826,6 +893,12 @@ pub struct NotificationPrefs {
 
 fn default_true() -> bool {
     true
+}
+
+/// The person's notification policy, read by the compositor's notification
+/// layer.
+impl ui::storage::SettingsSchema for NotificationPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("notifications");
 }
 
 impl Default for NotificationPrefs {
@@ -1123,6 +1196,12 @@ impl Default for AccessibilityPrefs {
     }
 }
 
+/// The person's assists, read by the compositor's input and accessibility
+/// layer.
+impl ui::storage::SettingsSchema for AccessibilityPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("accessibility");
+}
+
 impl AccessibilityPrefs {
     /// The offered bounce-keys windows as `(display label, milliseconds)`.
     pub const BOUNCE_DELAYS: &'static [(&'static str, u32)] = &[
@@ -1188,26 +1267,9 @@ pub struct SystemPrefs {
     pub appearance: AppearancePrefs,
     pub notifications: NotificationPrefs,
     pub accessibility: AccessibilityPrefs,
-    /// The person's own presence colour (`identity.colour`): the stored name
-    /// of a [`ui::tokens::PresenceHue`], or `None` while it is still the
-    /// colour derived from their identity.
-    pub identity_colour: Option<String>,
 }
 
 impl SystemPrefs {
-    /// The chosen presence colour, if the stored name is one this build knows.
-    pub fn identity_colour(&self) -> Option<ui::tokens::PresenceHue> {
-        let name = self.identity_colour.as_deref()?;
-        ui::tokens::PresenceHue::ALL
-            .into_iter()
-            .find(|hue| hue.id() == name)
-    }
-
-    /// Choose (or clear) the presence colour.
-    pub fn set_identity_colour(&mut self, colour: Option<ui::tokens::PresenceHue>) {
-        self.identity_colour = colour.map(|hue| hue.id().to_string());
-    }
-
     /// Parse each section from a JSON document, falling back to that
     /// section's default when it is missing or malformed. Never fails.
     pub fn from_json(text: &str) -> Self {
@@ -1238,11 +1300,6 @@ impl SystemPrefs {
             accessibility: section("accessibility")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
-            identity_colour: root
-                .get("identity")
-                .and_then(|identity| identity.get("colour"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
         };
         // `serde(default)` fills a missing multi-source field with `["us"]`.
         // For an old document whose only field is `keyboard_layout: "de"`,
@@ -1307,12 +1364,6 @@ impl SystemPrefs {
             accessibility,
             &serde_json::to_value(self.accessibility).unwrap_or_default(),
         );
-        if let Some(colour) = &self.identity_colour {
-            let identity = obj
-                .entry("identity")
-                .or_insert_with(|| serde_json::json!({}));
-            merge_fields(identity, &serde_json::json!({ "colour": colour }));
-        }
         serde_json::to_string_pretty(&serde_json::Value::Object(obj))
             .unwrap_or_else(|_| "{}".into())
     }
@@ -1320,19 +1371,13 @@ impl SystemPrefs {
     /// Load from the shared settings path. Returns section defaults when the
     /// file is absent or unreadable.
     pub fn load() -> Self {
-        let mut prefs = match RegionSettings::store_path() {
-            Some(path) => match std::fs::read_to_string(&path) {
-                Ok(text) => Self::from_json(&text),
-                Err(_) => Self::default(),
-            },
-            None => Self::default(),
+        let Some(path) = settings_store::settings_path() else {
+            return Self::default();
         };
-        // A capture with `--distinct-letters` shows the setting as that
-        // choice everywhere it appears, matching the text it renders.
-        if let Some(on) = ui::launch::capture_distinct_letters() {
-            prefs.appearance.choose_distinct_letters(on);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Self::from_json(&text),
+            Err(_) => Self::default(),
         }
-        prefs
     }
 
     /// Persist to the shared settings path, preserving foreign keys. Creates
@@ -1344,8 +1389,8 @@ impl SystemPrefs {
     /// `XDG_CONFIG_HOME`), if the `tilo` config directory cannot be created,
     /// or if the settings file cannot be written.
     pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
-        let path =
-            RegionSettings::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
+        let path = settings_store::settings_path()
+            .ok_or_else(|| std::io::Error::other("no config dir"))?;
         settings_store::update_document_at(&path, |doc| {
             let existing = serde_json::Value::Object(std::mem::take(doc)).to_string();
             *doc = settings_store::parse(&self.to_json_merged(&existing));
@@ -1366,8 +1411,6 @@ impl SystemPrefs {
 /// so the text stack keeps its font cache instead of rebuilding it per test.
 #[cfg(test)]
 pub(crate) mod test_env {
-    use std::path::PathBuf;
-
     use crate::settings_app::SettingsApp;
 
     /// Holds the redirected environment for a test's duration.
@@ -1375,7 +1418,7 @@ pub(crate) mod test_env {
         // Field order is drop order: restore the environment before the
         // directory it points at disappears.
         _env: tilo_test_env::ScopedEnv,
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
     }
 
     impl ConfigGuard {
@@ -1386,17 +1429,10 @@ pub(crate) mod test_env {
                 .expect("create test config dir");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_CONFIG_HOME", dir.path());
-            Self { _env: env, dir }
-        }
-
-        /// The Tilo config root inside the redirected `XDG_CONFIG_HOME`.
-        pub(crate) fn config_root(&self) -> PathBuf {
-            self.dir.path().join("tilo")
-        }
-
-        /// The app over this guard's config root.
-        pub(crate) fn app(&self) -> SettingsApp {
-            SettingsApp::with_config_root(self.config_root())
+            Self {
+                _env: env,
+                _dir: dir,
+            }
         }
     }
 
@@ -1433,7 +1469,11 @@ mod tests {
     /// Every default is sensible and every owned leaf has a continuity policy.
     #[test]
     fn prefs_defaults_are_sensible_and_classified() {
-        let region = RegionSettings::default().to_json_merged("");
+        let region = serde_json::json!({
+            "locale": crate::region::Locale::default(),
+            "default_apps": crate::panes::personal_apps::DefaultApps::default(),
+        })
+        .to_string();
         let document = SystemPrefs::default().to_json_merged(&region);
         let parsed = settings_store::parse(&document);
         let missing = settings_store::continuity::unclassified_leaves(&parsed);
@@ -1566,11 +1606,7 @@ mod tests {
         p.power.lock_minutes = 0;
         p.updates.auto = false;
         p.updates.channel = "Nightly".into();
-        p.appearance.mode = "automatic".into();
-        p.appearance.dark_theme = "dark-cool".into();
-        p.appearance.density = 1.2;
-        p.appearance.reduce_transparency = true;
-        p.identity_colour = Some("violet".into());
+        p.appearance.theme = "Nord".into();
         p.appearance.high_contrast = true;
         p.appearance.reduce_motion = true;
         p.appearance.text_scale = 1.25;
@@ -1628,10 +1664,9 @@ mod tests {
         // A settings file written before ui_scale existed must load with the
         // field defaulted to 1.0 rather than failing the appearance section.
         let p = SystemPrefs::from_json(
-            r#"{"appearance":{"mode":"light","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
+            r#"{"appearance":{"theme":"Nord","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
         );
-        assert_eq!(p.appearance.mode, "light", "the section still parses");
-        assert_eq!(p.appearance.dark_theme, "dark", "missing themes default");
+        assert_eq!(p.appearance.theme, "Nord", "the section still parses");
         assert_eq!(
             p.appearance.ui_scale, 1.0,
             "missing ui_scale defaults to neutral"
@@ -1663,13 +1698,13 @@ mod tests {
     #[test]
     fn appearance_prefs_resolve_to_real_themes() {
         let p = AppearancePrefs::default();
-        assert_eq!(p.mode, "dark");
+        assert_eq!(p.theme, "Light");
         assert!(!p.high_contrast);
         assert_eq!(p.text_scale, 1.0);
 
         let prefs =
-            |mode: &str, high_contrast, reduce_motion, text_scale, ui_scale| AppearancePrefs {
-                mode: mode.into(),
+            |theme: &str, high_contrast, reduce_motion, text_scale, ui_scale| AppearancePrefs {
+                theme: theme.into(),
                 high_contrast,
                 reduce_motion,
                 text_scale,
@@ -1678,27 +1713,25 @@ mod tests {
             };
         // (case, prefs, resolved name, text scale, reduced motion)
         let cases = [
-            ("default resolves to dark, unscaled", p, "Dark", 1.0, false),
             (
-                "light mode with comforts",
-                prefs("light", false, true, 1.5, 1.0),
+                "default resolves to light, unscaled",
+                p,
                 "Light",
-                1.5,
-                true,
-            ),
-            // high_contrast wins over the stored theme and keeps the mode's
-            // polarity.
-            (
-                "high contrast overrides the theme",
-                prefs("dark", true, false, 1.0, 1.0),
-                "High contrast",
                 1.0,
                 false,
             ),
             (
-                "high contrast keeps a light mode light",
-                prefs("light", true, false, 1.0, 1.0),
-                "High contrast light",
+                "named preset with comforts",
+                prefs("Dark cool", false, true, 1.5, 1.0),
+                "Dark cool",
+                1.5,
+                true,
+            ),
+            // high_contrast wins over the named preset.
+            (
+                "high contrast overrides the preset",
+                prefs("Dark graphite", true, false, 1.0, 1.0),
+                "High Contrast",
                 1.0,
                 false,
             ),
@@ -1710,127 +1743,51 @@ mod tests {
             assert_eq!(theme.reduce_motion, reduce_motion, "case {case}");
         }
 
-        // The stored theme of each polarity is the one its mode shows.
-        let chosen = AppearancePrefs {
-            dark_theme: "dark-cool".into(),
-            ..AppearancePrefs::default()
-        };
-        assert_eq!(chosen.resolve_theme().name, "Dark cool");
-        // An unknown reference falls back to the built-in default rather
-        // than leaving the UI unthemed.
-        let unknown = AppearancePrefs {
-            dark_theme: "not-a-theme".into(),
-            ..AppearancePrefs::default()
-        };
-        assert_eq!(unknown.resolve_theme().name, "Dark");
-        // Every offered theme resolves to its own theme.
-        for dark in [true, false] {
-            for choice in AppearancePrefs::default().theme_choices(dark) {
-                let theme = AppearancePrefs {
-                    mode: if dark { "dark" } else { "light" }.into(),
-                    dark_theme: choice.reference.clone(),
-                    light_theme: choice.reference.clone(),
-                    ..AppearancePrefs::default()
-                }
-                .resolve_theme();
-                assert_eq!(theme.name, choice.name, "{}", choice.reference);
-            }
+        assert_eq!(theme_by_name("not-a-theme").name, "Dark");
+        // Every advertised preset maps to a distinct real constructor.
+        for name in AppearancePrefs::THEMES
+            .iter()
+            .filter(|name| !settings_store::day_schedule::is_automatic(name))
+        {
+            let t = theme_by_name(name);
+            assert_eq!(&t.name, name, "{name} must resolve to its own theme");
         }
 
         // UI scale folds into the resolved theme and composes with text scale.
         let base = ui::Theme::dark();
         let base_gap = base.tokens.spacing.s3;
-        let base_type = base.tokens.typography.size(ui::TextRole::Body);
-        let theme = prefs("dark", false, false, 1.2, 1.25).resolve_theme();
+        let base_type = base.tokens.typography.size(ui::tokens::TextRole::Body);
+        let theme = prefs("Dark", false, false, 1.2, 1.25).resolve_theme();
         assert_eq!(theme.ui_scale, 1.25, "UI scale folds in");
         assert_eq!(theme.text_scale, 1.2, "text scale folds in");
         // Spacing grows by the UI factor only; type by UI × text.
         assert!((theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
         assert!(
-            (theme.tokens.typography.size(ui::TextRole::Body) - base_type * 1.25 * 1.2).abs()
+            (theme.tokens.typography.size(ui::tokens::TextRole::Body) - base_type * 1.25 * 1.2)
+                .abs()
                 < 1e-2
         );
 
-        // A pinned distribution palette wins over the stored theme.
-        let mut pinned = prefs("light", false, false, 1.0, 1.0);
+        // A pinned distribution emphasis wins over the named preset's emphasis
+        // only. The palette stays the one the pane shows.
+        let mut pinned = prefs("Light", false, false, 1.0, 1.0);
         pinned.distribution_defaults = Some(ui::theme::DistributionDefaults {
-            theme: Some("dark-graphite".into()),
+            document: Some(ui::theme::ThemeDocument {
+                emphasis: ui::tokens::Emphasis::Tinted { hue: 260.0 },
+                ..ui::theme::Preset::Dark.document()
+            }),
             policy: ui::theme::DistributionPolicy {
-                pins: vec![ui::theme::PIN_PALETTE.into()],
+                pins: vec![ui::theme::PIN_EMPHASIS.into()],
+                ..ui::theme::DistributionPolicy::default()
             },
             ..ui::theme::DistributionDefaults::default()
         });
-        assert_eq!(pinned.resolve_theme().name, "Dark graphite");
-    }
-
-    /// The density, the person's own themes and the mode all reach the
-    /// theme the layers resolve.
-    #[test]
-    fn density_and_custom_themes_resolve() {
-        let roomy = AppearancePrefs {
-            density: 1.2,
-            ..AppearancePrefs::default()
-        };
-        let base = ui::Theme::dark().tokens.spacing.s3;
-        assert!((roomy.resolve_theme().tokens.spacing.s3 - base * 1.2).abs() < 1e-2);
-
-        let mut custom = ui::theme::Preset::DarkGraphite.document();
-        custom.id = "ember".into();
-        custom.name = "Ember".into();
-        let prefs = AppearancePrefs {
-            dark_theme: "custom:ember".into(),
-            custom_themes: vec![serde_json::to_value(&custom).unwrap()],
-            ..AppearancePrefs::default()
-        };
-        assert_eq!(prefs.theme_name("custom:ember"), "Ember");
-        assert_eq!(prefs.resolve_theme().name, "Ember");
-        assert!(
-            prefs
-                .theme_choices(true)
-                .iter()
-                .any(|choice| choice.reference == "custom:ember")
+        let pinned_theme = pinned.resolve_theme();
+        assert_eq!(pinned_theme.name, "Light");
+        assert_eq!(
+            pinned_theme.tokens.colors.emphasis,
+            ui::tokens::Emphasis::Tinted { hue: 260.0 }
         );
-        assert!(
-            !prefs
-                .theme_choices(false)
-                .iter()
-                .any(|choice| choice.reference == "custom:ember"),
-            "a dark theme is not offered for light mode"
-        );
-    }
-
-    /// "Always distinguish similar letters" follows the typeface until the
-    /// person chooses, and a choice that matches the typeface stays no
-    /// choice so a later Hyperlegible theme still turns it on.
-    #[test]
-    fn distinct_letters_follow_the_typeface_until_chosen() {
-        let mut prefs = AppearancePrefs::default();
-        assert!(
-            !prefs.distinct_letters_effective(),
-            "off in the default face"
-        );
-        assert!(!prefs.resolve_theme().tokens.typography.distinct_letters);
-
-        prefs.choose_distinct_letters(true);
-        assert_eq!(prefs.distinct_letters, Some(true));
-        assert!(prefs.resolve_theme().tokens.typography.distinct_letters);
-        prefs.choose_distinct_letters(false);
-        assert_eq!(prefs.distinct_letters, None, "the typeface's own value");
-
-        let mut legible = ui::theme::Preset::DarkGraphite.document();
-        legible.id = "legible".into();
-        legible.name = "Legible".into();
-        legible.type_.face = "Hyperlegible".into();
-        let mut prefs = AppearancePrefs {
-            dark_theme: "custom:legible".into(),
-            custom_themes: vec![serde_json::to_value(&legible).unwrap()],
-            ..AppearancePrefs::default()
-        };
-        assert!(prefs.distinct_letters_by_face(), "on with Hyperlegible");
-        assert!(prefs.distinct_letters_effective());
-        prefs.choose_distinct_letters(false);
-        assert_eq!(prefs.distinct_letters, Some(false));
-        assert!(!prefs.resolve_theme().tokens.typography.distinct_letters);
     }
 
     /// Writing one section never clobbers the region store's locale, a theme
@@ -1859,8 +1816,8 @@ mod tests {
             (
                 "appearance keeps the locale",
                 format!(r#"{{"version":1,{locale}}}"#),
-                |p| p.appearance.dark_theme = "dark-soft".into(),
-                &["\"dark_theme\": \"dark-soft\"", "\"currency\": \"EUR\""],
+                |p| p.appearance.theme = "Gruvbox".into(),
+                &["\"theme\": \"Gruvbox\"", "\"currency\": \"EUR\""],
             ),
             (
                 "display keeps locale and foreign keys",
@@ -1878,7 +1835,7 @@ mod tests {
             }
         }
 
-        let existing = r#"{"appearance":{"mode":"dark","studio":{"id":"sunset","theme":{"accent":[251,146,60]}}}}"#;
+        let existing = r#"{"appearance":{"theme":"Dark","studio":{"id":"sunset","theme":{"accent":[251,146,60]}}}}"#;
         let mut p = SystemPrefs::from_json(existing);
         p.appearance.text_scale = 1.25;
         let out = p.to_json_merged(existing);

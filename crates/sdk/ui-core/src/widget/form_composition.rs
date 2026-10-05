@@ -6,7 +6,7 @@
 //! dimensions on standard children remain owned by those children.
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::style_helpers::{auto, fr, length, minmax, percent};
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -378,7 +378,17 @@ impl Field {
         self
     }
     #[must_use]
-    pub fn with_error(mut self, text: impl Into<String>) -> Self {
+    pub fn with_error(self, text: impl Into<String>) -> Self {
+        self.with_error_live(text, crate::a11y::Politeness::Polite)
+    }
+    /// Announce validation with the urgency of the interaction: polite for
+    /// live checking, assertive when an explicit submission is refused.
+    #[must_use]
+    pub fn with_error_live(
+        mut self,
+        text: impl Into<String>,
+        politeness: crate::a11y::Politeness,
+    ) -> Self {
         if let Some(body) = self
             .parts
             .children
@@ -386,7 +396,7 @@ impl Field {
             .and_then(|child| child.as_any_mut())
             .and_then(|any| any.downcast_mut::<FieldBody>())
         {
-            body.set_error(&text.into());
+            body.set_error(&text.into(), politeness);
         }
         self
     }
@@ -528,13 +538,13 @@ struct FieldBody {
     gap: f32,
 }
 impl FieldBody {
-    fn set_error(&mut self, text: &str) {
+    fn set_error(&mut self, text: &str, politeness: crate::a11y::Politeness) {
         // Validation is status: the message in danger ink, and the control
         // itself edged in it, so the error reads at a glance.
         let copy: Element = Box::new(
             Text::new(text)
                 .with_role(TextRole::Caption)
-                .with_live(crate::a11y::Politeness::Polite)
+                .with_live(politeness)
                 .danger(),
         );
         if let Some(control) = self.parts.children.first_mut() {

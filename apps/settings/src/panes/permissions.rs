@@ -27,7 +27,51 @@ use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject,
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource;
 use ui::widget::{Button, Row, Spacer, Text, Widget};
+
+use crate::host::PaneCx;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+
+/// Where Privacy & Security sends the person to change what it reports.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum PermissionsEffect {
+    /// Open the privacy settings of the workspace that owns the grants.
+    #[effect(job, label = "Open workspace privacy")]
+    OpenWorkspacePrivacy,
+}
+
+/// Answer `effect` by opening the tool it names.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: PermissionsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    match effect {
+        PermissionsEffect::OpenWorkspacePrivacy => {
+            if !app.host().reaches_devices() {
+                return Err("only a window someone uses opens workspace settings".into());
+            }
+            Ok(cx.thread(
+                move |_| {
+                    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                    })
+                },
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ))
+        }
+    }
+}
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
 fn state_path() -> Option<PathBuf> {
@@ -166,11 +210,35 @@ struct WsView {
     capabilities: Vec<CapOverride>,
 }
 
+/// Which tint a capability reads in — kept separate from the rendered `Color`
+/// so the projection is testable without a `Theme`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tint {
+    Files,
+    Camera,
+    Microphone,
+    Screen,
+    Remote,
+    Network,
+    AppAction,
+}
+
+impl Tint {
+    fn tone(self) -> StatusTone {
+        match self {
+            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Info,
+            Tint::Camera | Tint::Microphone | Tint::Remote => StatusTone::Warning,
+            Tint::Network => StatusTone::Success,
+        }
+    }
+}
+
 /// One capability an app holds, projected into display terms.
 struct CapView {
     kind: &'static str,
     detail: String,
     expiry: &'static str,
+    tint: Tint,
 }
 
 /// One app's grants within a workspace.
@@ -224,26 +292,32 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         return None;
     }
     let expiry = expiry_label(cap.expiry);
-    let (kind, detail) = match &cap.scope {
+    let (kind, detail, tint) = match &cap.scope {
         Scope::FsPath(p) => {
             let verb = if cap.verb.implies(Verb::Write) {
                 t("perm-verb-rw")
             } else {
                 t("perm-verb-ro")
             };
-            ("Files", format!("{p}, {verb}"))
+            ("Files", format!("{p}  ·  {verb}"), Tint::Files)
         }
-        Scope::Device(d) if d == "camera" => ("Camera", t("perm-capture-video")),
-        Scope::Device(d) if d == "microphone" => ("Microphone", t("perm-capture-audio")),
-        Scope::Device(d) if d == "screencast" => ("Screen sharing", t("perm-stream-workspace")),
-        Scope::Device(d) if d == "remote-desktop" => ("Remote control", t("perm-inject-input")),
+        Scope::Device(d) if d == "camera" => ("Camera", t("perm-capture-video"), Tint::Camera),
+        Scope::Device(d) if d == "microphone" => {
+            ("Microphone", t("perm-capture-audio"), Tint::Microphone)
+        }
+        Scope::Device(d) if d == "screencast" => {
+            ("Screen sharing", t("perm-stream-workspace"), Tint::Screen)
+        }
+        Scope::Device(d) if d == "remote-desktop" => {
+            ("Remote control", t("perm-inject-input"), Tint::Remote)
+        }
         Scope::NetHost(h) => {
             let detail = if h == "*" {
                 t("perm-any-host")
             } else {
                 h.clone()
             };
-            ("Network", detail)
+            ("Network", detail, Tint::Network)
         }
         // Another app's action this app may use: the consent sheet grants
         // these; the workspace's own Settings lists them under App actions.
@@ -256,6 +330,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
                     ("app", app.as_str().into()),
                 ],
             ),
+            Tint::AppAction,
         ),
         _ => return None,
     };
@@ -263,6 +338,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         kind,
         detail,
         expiry,
+        tint,
     })
 }
 
@@ -319,7 +395,7 @@ fn cap_row(view: &CapView) -> El {
     let expiry = expiry_shown(view.expiry);
     Box::new(
         Row::new()
-            .push(semantic_status_pill(&kind, StatusTone::Neutral))
+            .push(semantic_status_pill(&kind, view.tint.tone()))
             .push(Box::new(
                 Text::new(&view.detail)
                     .with_role(ui::TextRole::Caption)
@@ -330,24 +406,20 @@ fn cap_row(view: &CapView) -> El {
     )
 }
 
-/// The name an app goes by on screen: the last part of its package id
-/// (`so.tilo.camera`), capitalised.
-fn app_label(id: &str) -> String {
-    ui::format::capitalize_first(id.rsplit('.').next().unwrap_or(id))
-}
-
-/// One app's block within a workspace card: the app, then its grants.
+/// One app's block within a workspace card: the app id, then its grants.
 fn app_block(grants: &AppGrants) -> El {
     let mut items: Vec<El> = Vec::new();
-    items.push(Box::new(Text::new(&app_label(&grants.app)).strong()));
+    items.push(Box::new(
+        Text::new(&grants.app).with_role(ui::TextRole::Body),
+    ));
     for cap in &grants.caps {
         items.push(cap_row(cap));
     }
     rows(items)
 }
 
-pub fn build() -> Box<dyn Widget> {
-    build_view(load_text().as_deref())
+pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
+    build_view(cx, load_text().as_deref())
 }
 
 fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
@@ -392,7 +464,8 @@ fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
     card(&t("perm-active-use"), rows(usage_rows))
 }
 
-fn device_security_card(security: &DeviceSecurity) -> El {
+fn device_security_card() -> El {
+    let security = device_security();
     card(
         &t("perm-device-security"),
         rows(vec![
@@ -410,18 +483,32 @@ fn device_security_card(security: &DeviceSecurity) -> El {
     )
 }
 
+/// Establish the boundary before mixing the two related, but independently
+/// owned, kinds of access below. System Settings reports this device's state;
+/// collaborators, roles, and app access belong to the workspace that owns
+/// them. Keeping the distinction in the first visible card prevents this
+/// cross-workspace overview from looking like an editor for every workspace.
+fn scope_card() -> El {
+    card(
+        &t("perm-this-device"),
+        rows(vec![Box::new(
+            Text::new(&t("perm-this-device-body")).with_role(ui::TextRole::Caption),
+        )]),
+    )
+}
+
 /// Intro card: what these grants are and where they come from.
-fn workspace_grants_intro_card() -> El {
+fn workspace_grants_intro_card(cx: &PaneCx) -> El {
     let open = t("perm-open-workspace");
     card(
         &t("perm-workspace-intro-title"),
-        rows(vec![Box::new(
-            Button::new("open-workspace-privacy", &open, None).on_effect(|| {
-                let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                    route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
-                });
-            }),
-        )]),
+        rows(vec![
+            Box::new(Text::new(&t("perm-workspace-intro-body")).with_role(ui::TextRole::Caption)),
+            Box::new(cx.bind_invocation(
+                Button::new("open-workspace-privacy", &open),
+                PermissionsEffect::OpenWorkspacePrivacy,
+            )),
+        ]),
     )
 }
 
@@ -430,9 +517,11 @@ fn workspace_grants_intro_card() -> El {
 fn no_workspace_grants_card() -> El {
     card(
         &t("perm-no-grants-title"),
-        rows(vec![Box::new(
-            Text::new(&t("perm-no-grants-body")).with_role(ui::TextRole::Caption),
-        )]),
+        rows(vec![
+            Box::new(Text::new(&t("perm-no-grants-body")).with_role(ui::TextRole::Caption)),
+            gap(SpacingStep::S1),
+            caption(&t("perm-no-grants-caption")),
+        ]),
     )
 }
 
@@ -484,30 +573,27 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
     }
 }
 
-/// Core builder, split from [`build`] so it can be exercised against an
-/// explicit state document in tests without touching the real config dir.
-fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
-    build_view_with(
-        state_json,
-        &os_actions::get_privacy_status(),
-        &device_security(),
+/// Where the compositor enforces the grants.
+fn enforcement_card() -> El {
+    card(
+        &t("perm-enforcement-title"),
+        rows(vec![caption(&t("perm-enforcement-caption"))]),
     )
 }
 
-/// [`build_view`] over explicit device facts.
-fn build_view_with(
-    state_json: Option<&str>,
-    privacy: &os_actions::PrivacyStatus,
-    security: &DeviceSecurity,
-) -> Box<dyn Widget> {
+/// Core builder, split from [`build`] so it can be exercised against an
+/// explicit state document in tests without touching the real config dir.
+fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
     let workspace_access = state_json.map(project).transpose();
 
-    let mut panel: Vec<El> = vec![
-        privacy_hardware_card(privacy),
-        active_privacy_use_card(privacy),
-        device_security_card(security),
-        workspace_grants_intro_card(),
-    ];
+    let mut panel: Vec<El> = Vec::new();
+
+    let privacy = os_actions::get_privacy_status();
+    panel.push(scope_card());
+    panel.push(privacy_hardware_card(&privacy));
+    panel.push(active_privacy_use_card(&privacy));
+    panel.push(device_security_card());
+    panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
         Ok(Some(all)) if all.is_empty() => panel.push(no_workspace_grants_card()),
@@ -518,62 +604,18 @@ fn build_view_with(
         Ok(None) | Err(_) => panel.push(workspace_grants_unavailable_card()),
     }
 
-    cards(panel)
-}
+    panel.push(enforcement_card());
 
-/// The `--shots` pane: a laptop with working privacy hardware, disk
-/// encryption and a firewall, and a workspace that has approved a few apps.
-#[cfg(not(feature = "thin"))]
-pub fn build_for_shot() -> Box<dyn Widget> {
-    use os_actions::{KillState, PrivacyStatus};
-    let privacy = PrivacyStatus {
-        microphone_muted: Some(false),
-        microphone_kill: KillState::Allowed,
-        camera_present: true,
-        camera_kill: KillState::Allowed,
-        ..PrivacyStatus::default()
-    };
-    let security = DeviceSecurity {
-        disk_encryption: t("perm-encrypted"),
-        secure_boot: t("perm-enabled"),
-        firewall: Ok(t("perm-firewall-firewalld")),
-    };
-    let grants = vec![
-        CapOverride::grant(
-            Subject::app("so.tilo.photos"),
-            Scope::FsPath("/var/workspace/Photos".into()),
-            Verb::Write,
-        )
-        .expiring(Expiry::Never),
-        CapOverride::grant(
-            Subject::app("so.tilo.meet"),
-            Scope::Device("camera".into()),
-            Verb::Read,
-        )
-        .expiring(Expiry::EndOfSession),
-        CapOverride::grant(
-            Subject::app("so.tilo.meet"),
-            Scope::Device("microphone".into()),
-            Verb::Read,
-        )
-        .expiring(Expiry::EndOfSession),
-        CapOverride::grant(
-            Subject::app("so.tilo.meet"),
-            Scope::Device("screencast".into()),
-            Verb::Read,
-        )
-        .expiring(Expiry::AfterUse),
-    ];
-    let state = serde_json::json!({
-        "workspaces": [{ "name": "Studio", "capabilities": grants }],
-    })
-    .to_string();
-    build_view_with(Some(&state), &privacy, &security)
+    cards(panel)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cx() -> PaneCx {
+        PaneCx::in_file(std::env::temp_dir().join("tilo-settings-permissions-unused.json"))
+    }
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use std::collections::HashMap;
 
@@ -674,7 +716,7 @@ mod tests {
             // The pane still cannot mutate state.json. Its only button asks the
             // shell to reveal the active workspace's authoritative controls.
             for json in [None, Some(sample_state().as_str())] {
-                let mut pane = build_view(json);
+                let mut pane = build_view(&cx(), json);
                 build_layout_of(&mut pane);
                 assert_eq!(count_named(pane.as_ref(), "Button"), 1);
             }
@@ -685,11 +727,11 @@ mod tests {
             // System Settings never pretends it can edit a workspace. The one
             // live control is an explicit route to the current workspace's
             // authoritative access surface.
-            let mut pane = build_view(Some(&sample_state()));
+            let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             button_labels(pane.as_ref(), &mut labels);
-            assert_eq!(labels, vec!["Open workspace access"]);
+            assert_eq!(labels, vec!["Open current workspace access"]);
         }
 
         // Case `cap_view_maps_each_scope_to_its_kind`.
@@ -749,15 +791,15 @@ mod tests {
         {
             // Two grants → the workspace card carries a kind pill + a lifetime chip
             // for each (4 badges), built from the real projection.
-            let mut pane = build_view(Some(&sample_state()));
+            let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             assert_eq!(
                 count_named(pane.as_ref(), "Badge"),
                 4,
                 "two pills per grant"
             );
-            // Device security, the intro and one workspace section are all present.
-            assert!(count_named(pane.as_ref(), "Section") >= 3);
+            // Intro + one workspace + enforcement cards are all present.
+            assert!(count_named(pane.as_ref(), "Card") >= 3);
         }
     }
 
@@ -790,7 +832,7 @@ mod tests {
         // Case `missing_state_never_claims_that_no_grants_exist`.
         {
             // No state document means the panel cannot make a claim about grants.
-            let mut pane = build_view(None);
+            let mut pane = build_view(&cx(), None);
             build_layout_of(&mut pane);
             assert_eq!(
                 count_named(pane.as_ref(), "Badge"),
@@ -799,22 +841,22 @@ mod tests {
             );
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"Workspace access can't be checked".to_string()));
+            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
             assert!(
                 !labels
                     .iter()
-                    .any(|label| label.contains("No app can reach anything outside"))
+                    .any(|label| label.contains("Nothing here means nothing is granted"))
             );
         }
 
         // Case `valid_empty_state_is_the_only_path_that_claims_no_grants`.
         {
-            let mut pane = build_view(Some(r#"{"workspaces":[]}"#));
+            let mut pane = build_view(&cx(), Some(r#"{"workspaces":[]}"#));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"No workspace access".to_string()));
-            assert!(!labels.contains(&"Workspace access can't be checked".to_string()));
+            assert!(labels.contains(&"No workspace access grants".to_string()));
+            assert!(!labels.contains(&"Workspace access status unavailable".to_string()));
         }
 
         // Case `workspace_without_app_grants_is_omitted`.
@@ -834,12 +876,12 @@ mod tests {
         // Case `malformed_document_is_reported_as_unavailable_not_empty`.
         {
             assert!(project("not json {").is_err());
-            let mut pane = build_view(Some("not json {"));
+            let mut pane = build_view(&cx(), Some("not json {"));
             build_layout_of(&mut pane);
             assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"Workspace access can't be checked".to_string()));
+            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
         }
     }
 }

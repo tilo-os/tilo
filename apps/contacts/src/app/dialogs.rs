@@ -351,7 +351,7 @@ impl ContactsApp {
     }
 
     /// Apply the person's answer to the open decision.
-    pub(super) fn answer_dialog(&mut self, doc: &mut AutoCommit, choice: DialogChoice) {
+    pub(super) fn answer_dialog(&mut self, doc: &mut ui::widget::Edits<'_>, choice: DialogChoice) {
         let Some(key) = self.wanted_dialog() else {
             return;
         };
@@ -385,7 +385,7 @@ impl ContactsApp {
             (DialogKey::Export, DialogChoice::Primary) => {
                 if let Some(export) = self.export.take() {
                     let version = export.version();
-                    self.request_export(export.ids, version);
+                    self.request_export(&export.ids, version);
                 }
             }
             (DialogKey::Export, _) => self.export = None,
@@ -426,7 +426,7 @@ impl ContactsApp {
         Ok(())
     }
 
-    pub(super) fn merge_duplicate_review(&mut self, state: &mut AutoCommit) {
+    pub(super) fn merge_duplicate_review(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(review) = self.duplicate_review.take() else {
             return;
         };

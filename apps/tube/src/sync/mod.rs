@@ -21,8 +21,9 @@
 //! ## Product lifecycle
 //!
 //! The shipped build enables `grayjay-sync`.  The app derives its long-lived
-//! Noise identity from the desktop secret portal, persists only public peer
-//! routes and revocation tombstones, requires explicit fingerprint approval,
+//! Noise identity from a seed in its secret store, keeps only public peer
+//! routes and revocation tombstones, as a setting of this device, requires
+//! explicit fingerprint approval,
 //! and runs bounded background sync.  Builds without that feature retain a
 //! hermetic unavailable seam for tests and constrained downstream packages.
 //!
@@ -47,7 +48,7 @@ pub use transport::{DeviceKey, GrayjaySession, GrayjaySyncTransport};
 #[cfg(feature = "grayjay-sync")]
 pub use lifecycle::state_from_model as lifecycle_state;
 #[cfg(feature = "grayjay-sync")]
-pub use lifecycle::{DeviceSync, PeerRecord, SyncStatus, SyncView, merge_remote_state};
+pub use lifecycle::{DeviceSync, PairedDevices, PeerRecord, SyncStatus, SyncView};
 
 #[cfg(not(feature = "grayjay-sync"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

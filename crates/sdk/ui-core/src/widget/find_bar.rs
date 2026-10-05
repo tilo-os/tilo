@@ -1059,7 +1059,7 @@ impl Widget for FindBar {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut AppModel,
+        _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
@@ -1255,7 +1255,7 @@ impl Widget for FindScope {
     /// Content that changes with no input under an open bar (output
     /// arriving in a terminal) is found again as it syncs, so the counter
     /// follows it (see [`Findable::content_revision`]).
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         for child in self.children_mut() {
             child.sync(state, path);
         }
@@ -1641,7 +1641,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1981,7 +1981,7 @@ mod host_driven_tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::from(modifiers),
-                    state: &mut AutoCommit::new(),
+                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut None,

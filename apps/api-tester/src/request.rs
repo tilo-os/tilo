@@ -99,21 +99,35 @@ fn body(text: &str) -> Element {
 /// The method, the URL, Save and Send on one row; the row wraps on a narrow
 /// window.
 pub(crate) fn url_bar(sink: &Sink) -> Element {
-    let method = Dropdown::new(
+    let method = Dropdown::from_state(
         HttpMethod::ALL
             .iter()
             .map(|m| m.as_str().to_owned())
             .collect(),
-        METHOD_PATH,
+        &sink.method,
     )
     .with_id("api.method")
     .with_accessible_name("Method");
-    let url = TextInput::from_document_string("url")
-        .with_kind(TextInputKind::Url)
-        .with_id("api.url")
-        .with_placeholder("Enter a URL")
-        .with_accessible_name("Request URL");
-    let save = Button::new("api.save-request", "Save", None)
+    let method = match sink.actions.borrow().as_ref() {
+        Some(actions) => actions.bind(
+            method,
+            ui::tilo_resource::ActionRef::<crate::resource::ApiTester, String>::new(
+                "set-method",
+                &["method"],
+            ),
+        ),
+        None => method,
+    };
+    let url = RequestText::new(
+        TextInput::local()
+            .with_kind(TextInputKind::Url)
+            .with_id("api.url")
+            .with_placeholder("Enter a URL")
+            .with_accessible_name("Request URL"),
+        sink,
+        false,
+    );
+    let save = Button::new("api.save-request", "Save")
         .with_icon(Icon::Check)
         .with_accessible_name("Save request")
         .tooltip("Save this request to a collection")
@@ -121,9 +135,7 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
             sink,
             Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
         ));
-    let send = Button::new("api.send", "Send", None)
-        .role(ButtonRole::Primary)
-        .on_action(crate::app::active_send_binding());
+    let send = sink.send(Button::new("api.send", "Send").role(ButtonRole::Primary));
     // The endpoint keeps room to read: the URL never gets narrower than a few
     // words, so on a narrow window the row wraps and the URL takes a line.
     Box::new(
@@ -369,13 +381,15 @@ pub(crate) fn body_inner(
     match request.body_mode {
         BodyMode::None => (body("This request does not have a body."), None),
         BodyMode::Json | BodyMode::Raw => (
-            Box::new(
-                TextInput::from_document_string("body")
+            Box::new(RequestText::new(
+                TextInput::local()
                     .multiline(true)
                     .with_mono()
                     .with_id("api.body")
                     .with_accessible_name("Request body"),
-            ),
+                sink,
+                true,
+            )),
             None,
         ),
         BodyMode::Form => {
@@ -416,5 +430,46 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
         element: scrolling(Box::new(column)),
         inner: Some(handle),
         table,
+    }
+}
+
+/// The shared toolkit text control bound to the builder's resource text.
+/// The dispatcher arrives when the framework attaches the retained surface.
+struct RequestText {
+    text: ui::framework::TextControl<TextInput>,
+    sink: Sink,
+    body: bool,
+}
+impl RequestText {
+    fn new(input: TextInput, sink: &Sink, body: bool) -> Self {
+        let locate = if body {
+            crate::doc::ApiDoc::body_text_id
+        } else {
+            crate::doc::ApiDoc::url_text_id
+        };
+        Self {
+            text: ui::framework::TextControl::view_only(input, locate),
+            sink: sink.clone(),
+            body,
+        }
+    }
+}
+impl ui::widget::Decorator for RequestText {
+    type Inner = ui::framework::TextControl<TextInput>;
+    fn inner(&self) -> &Self::Inner {
+        &self.text
+    }
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.text
+    }
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        if let Some(dispatch) = self.sink.dispatcher.borrow().as_ref() {
+            self.text.attach(if self.body {
+                crate::resource::body_dispatcher(dispatch)
+            } else {
+                crate::resource::url_dispatcher(dispatch)
+            });
+        }
+        ui::widget::Widget::sync(&mut self.text, state, path);
     }
 }

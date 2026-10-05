@@ -74,10 +74,10 @@ impl Choice {
     /// The value the person just picked, once.
     pub(super) fn take_pick(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Option<String> {
-        self.dropdown.sync(doc, path);
+        self.dropdown.sync(doc.doc(), path);
         let value = self.state.get();
         (value != self.last).then(|| {
             self.last.clone_from(&value);
@@ -643,7 +643,11 @@ impl CalendarApp {
     }
 
     /// Apply the picks the dropdowns published since the last pass.
-    pub(super) fn commit_choices(&mut self, doc: &mut AutoCommit, path: &automerge::ObjId) {
+    pub(super) fn commit_choices(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) {
         match self.selection {
             Some(Sel::Event(_)) => {
                 if let Some(value) = self.choices.calendar.take_pick(doc, path) {

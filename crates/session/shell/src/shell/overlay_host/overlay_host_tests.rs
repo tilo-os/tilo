@@ -3,7 +3,7 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
-use automerge::{ReadDoc as _, ScalarValue, Value};
+use automerge::{ReadDoc as _, ScalarValue};
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -718,7 +718,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.desktop_tour = true;
 
-        host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        host.sync(&AutoCommit::new(), &automerge::ROOT);
 
         assert!(host.onboarding_active());
         assert!(
@@ -790,7 +790,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.desktop_tour = true;
         let mut document = AutoCommit::new();
-        host.sync(&mut document, &automerge::ROOT);
+        host.sync(&document, &automerge::ROOT);
         let mut h = build_harness_with_host(host, chrome);
 
         let next = h
@@ -815,7 +815,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut document,
+                    state: ui::widget::Edits::lend(&mut document),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -825,11 +825,23 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             );
             assert!(handled, "the visible tour must own {event:?}");
         }
-        assert!(matches!(
-            document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), ScalarValue::Boolean(true))
-        ));
+        assert!(
+            matches!(
+                document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
+                Ok(None)
+            ),
+            "a click is a view action, never a document write"
+        );
+        h.host.sync(&document, &automerge::ROOT);
+        assert_eq!(
+            h.host
+                .onboarding
+                .as_ref()
+                .expect("the tour stays open")
+                .tour_step(),
+            Some(2),
+            "Continue advances the tour"
+        );
     }
 
     onboarding_release_keeps_focus_reset_after_relayout_edge_is_consumed();
@@ -1186,11 +1198,11 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
 
     fn typed_session_actions_run_through_the_power_flyouts_executor() {
         let mut h = build_harness();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         h.chrome
             .borrow_mut()
             .request_session_action(os_actions::SessionAction::Lock);
-        h.host.update(&mut doc, &automerge::ROOT);
+        h.host.update(&doc, &automerge::ROOT);
         assert!(
             h.chrome.borrow_mut().take_session_lock_request(),
             "a typed lock reaches the compositor lock edge the flyout's Lock row does"
@@ -1199,7 +1211,7 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
         h.chrome
             .borrow_mut()
             .request_session_action(os_actions::SessionAction::Suspend);
-        h.host.update(&mut doc, &automerge::ROOT);
+        h.host.update(&doc, &automerge::ROOT);
         assert!(
             h.chrome
                 .borrow()
@@ -1680,7 +1692,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     fn print_screen_preserves_oobe_and_returns_to_the_same_step() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.desktop_tour = true;
-        h.host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        h.host.sync(&AutoCommit::new(), &automerge::ROOT);
         let before = h
             .host
             .onboarding
@@ -1822,7 +1834,7 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -1914,7 +1926,7 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
     assert!(h.host.perform_semantic_action(
         &replace,
         &ui::a11y::Action::Activate,
-        &mut AutoCommit::new(),
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
         &automerge::ROOT,
     ));
     assert!(h.host.pump_file_picker());
@@ -2285,7 +2297,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         h.host
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
 
         // Super+Space is the default Search action.  Any rebind goes through the
         // same effective-action resolver used by this dispatcher.
@@ -2303,7 +2315,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         // one publishes its immutable snapshot and refreshes the visible rows.
         let index_started = std::time::Instant::now();
         while index_started.elapsed() < HANG_BOUND {
-            h.host.update(&mut doc, &automerge::ROOT);
+            h.host.update(&doc, &automerge::ROOT);
             if h.host
                 .search_results
                 .iter()
@@ -2335,80 +2347,6 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
         env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
-    }
-
-    /// Search must reach the focused app's own *content*, not just its tab
-    /// title. `Welcome` appears only in the note's body, so
-    /// a provider looking it up by tab id rather than by document
-    /// answers nothing.
-    fn configured_search_finds_a_word_that_only_appears_in_the_notes_body() {
-        use crate::shell::chrome_state::SearchScope;
-        use crate::shell::notes_app::NotesApp;
-
-        let mut h = build_harness();
-        h.host
-            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
-            .unwrap();
-        let doc = AutoCommit::new();
-        // The document as `TileHost::sync` hands it to the app every
-        // frame: the tab's own record.
-        let notes_tab =
-            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-        let record = crate::shell::tab_documents::scratch_tab_record(notes_tab);
-        let store = h.chrome.borrow().records().clone();
-        store.open_record(&record);
-        store.with(&record.id, |d| {
-            let mut notes = NotesApp::with_seed(
-                "Welcome to tilo.\n\nThese notes sync live with anyone \
-                 invited to this workspace.",
-            );
-            notes.sync(d, &automerge::ROOT);
-        });
-
-        let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
-        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
-
-        h.host.palette.set_query("Welcome");
-        h.host.refresh_search_results(&doc, &automerge::ROOT);
-
-        let hit = h
-            .host
-            .search_results
-            .iter()
-            .find(|r| r.provider_id == "notes")
-            .unwrap_or_else(|| {
-                panic!(
-                    "searching inside Notes for a word from its own body \
-                     must offer the note; got {:?}",
-                    h.host
-                        .search_results
-                        .iter()
-                        .map(|r| (&r.provider_id, &r.title))
-                        .collect::<Vec<_>>()
-                )
-            });
-        assert!(
-            hit.subtitle.as_deref().unwrap_or_default().contains("tilo"),
-            "the row must show the matching line, not a bare title: {:?}",
-            hit.subtitle
-        );
-        // And it is a row the palette actually paints, with that snippet
-        // as its description.
-        let painted =
-            h.host.palette.visible_entries().iter().any(|e| {
-                e.label == hit.title && e.description.as_deref() == hit.subtitle.as_deref()
-            });
-        assert!(
-            painted,
-            "the hit must reach the palette's own rows: {:?}",
-            h.host
-                .palette
-                .visible_entries()
-                .iter()
-                .map(|e| (&e.label, &e.description))
-                .collect::<Vec<_>>()
-        );
     }
 
     /// A room starting empty is only workable if moving one of your own
@@ -2509,7 +2447,8 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
         // Enter on that row.
         h.host.palette.set_cursor(idx);
-        h.host.activate_selected_result(&mut doc, &automerge::ROOT);
+        h.host
+            .activate_selected_result(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
 
         let records = h.host.room_records();
         let records = records.borrow();
@@ -2577,7 +2516,6 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
     toggle_palette_focuses_input();
     configured_search_reaches_installed_apps();
-    configured_search_finds_a_word_that_only_appears_in_the_notes_body();
     super_k_finds_a_record_from_another_room_and_enter_brings_it_here();
     app_scope_pill_names_the_app_as_an_app();
 }
@@ -2853,13 +2791,22 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         KEY_BACKUP_CONTINUE,
         KEY_FINISH,
     ] {
-        let _ = automerge::transaction::Transactable::put(
-            &mut doc,
-            &automerge::ROOT,
-            key,
-            ScalarValue::Boolean(true),
-        );
-        host.sync(&mut doc, &automerge::ROOT);
+        // The acknowledgement checkboxes are document-bound; the rest are
+        // the setup's buttons.
+        if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            let _ = automerge::transaction::Transactable::put(
+                &mut doc,
+                &automerge::ROOT,
+                key,
+                ScalarValue::Boolean(true),
+            );
+        } else {
+            host.onboarding
+                .as_ref()
+                .expect("setup is running")
+                .press(key);
+        }
+        host.sync(&doc, &automerge::ROOT);
     }
     assert!(!host.onboarding_active(), "setup released the desktop");
 

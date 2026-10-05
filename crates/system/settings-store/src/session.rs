@@ -210,6 +210,7 @@ pub struct SessionSettings {
     paths: SessionPaths,
     state: Mutex<State>,
     revision: AtomicU64,
+    changes: crate::ChangeSignal,
 }
 
 impl SessionSettings {
@@ -239,6 +240,7 @@ impl SessionSettings {
             paths,
             state: Mutex::new(state),
             revision: AtomicU64::new(1),
+            changes: crate::ChangeSignal::default(),
         })
     }
 
@@ -256,7 +258,10 @@ impl SessionSettings {
         clippy::significant_drop_tightening,
         reason = "the state stays locked while the copy is, so one change is taken in and written at a time"
     )]
-    fn refresh(&self) {
+    /// Take in what another process wrote to the copy. Readers do so
+    /// before they read; a host that watches the copy calls this when it
+    /// changes, so those waiting for a change hear of it at once.
+    pub fn refresh(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !copy_changed(&self.paths.copy, &state) {
             return;
@@ -289,6 +294,7 @@ impl SessionSettings {
         state.copy_identity = identity;
         if touched.person || touched.device {
             self.revision.fetch_add(1, Ordering::AcqRel);
+            self.changes.ring();
         }
         Ok(())
     }
@@ -323,6 +329,7 @@ impl SettingsSource for SessionSettings {
         }
         if touched.person || touched.device {
             self.revision.fetch_add(1, Ordering::AcqRel);
+            self.changes.ring();
         }
         // The records keep the change even when the copy cannot be written;
         // the next change or refresh writes it again.
@@ -332,6 +339,10 @@ impl SettingsSource for SessionSettings {
     fn revision(&self) -> u64 {
         self.refresh();
         self.revision.load(Ordering::Acquire)
+    }
+
+    fn changes(&self) -> &crate::ChangeSignal {
+        &self.changes
     }
 }
 
@@ -380,6 +391,47 @@ fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn every_change_rings_its_readers_and_nothing_else_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let rung = std::sync::Arc::new(AtomicU64::new(0));
+        let count = std::sync::Arc::clone(&rung);
+        let listener: std::sync::Arc<crate::Listener> = std::sync::Arc::new(move || {
+            count.fetch_add(1, Ordering::AcqRel);
+        });
+        session.changes().listen(&listener);
+
+        // A write in this process rings at once.
+        session
+            .update_section("power", object(json!({"idle": 5})))
+            .unwrap();
+        assert_eq!(rung.load(Ordering::Acquire), 1);
+
+        // Another process's write rings when the session takes it in, as a
+        // watch on the copy has it do.
+        crate::update_section_at(
+            &session.paths().copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        session.refresh();
+        assert_eq!(rung.load(Ordering::Acquire), 2);
+
+        // Looking again finds nothing new and rings nothing.
+        session.refresh();
+        let _ = session.load();
+        assert_eq!(rung.load(Ordering::Acquire), 2);
+
+        // A reader that stopped listening is not called.
+        drop(listener);
+        session
+            .update_section("power", object(json!({"idle": 6})))
+            .unwrap();
+        assert_eq!(rung.load(Ordering::Acquire), 2);
+    }
 
     fn object(value: Value) -> Map<String, Value> {
         match value {

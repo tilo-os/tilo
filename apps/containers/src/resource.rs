@@ -148,6 +148,110 @@ pub enum ContainersEffect {
     /// Create container.
     #[effect(permission = "read")]
     Create,
+    /// Open logs.
+    #[effect(view, row)]
+    OpenLogs {
+        #[param("Container id")]
+        container: String,
+    },
+    /// Start.
+    #[effect(row, idempotent, privileged, permission = "admin")]
+    Start {
+        #[param("Container id")]
+        container: String,
+    },
+    /// Stop.
+    #[effect(row, idempotent, privileged, permission = "admin")]
+    Stop {
+        #[param("Container id")]
+        container: String,
+    },
+    /// Restart.
+    #[effect(row, privileged, permission = "admin")]
+    Restart {
+        #[param("Container id")]
+        container: String,
+    },
+    /// Pause.
+    #[effect(row, idempotent, privileged, permission = "admin")]
+    Pause {
+        #[param("Container id")]
+        container: String,
+    },
+    /// Resume.
+    #[effect(row, idempotent, privileged, permission = "admin")]
+    Unpause {
+        #[param("Container id")]
+        container: String,
+    },
+    /// Remove.
+    #[effect(row, destructive, permission = "admin")]
+    RemoveContainer {
+        #[param("Container id")]
+        container: String,
+    },
+    /// Open shell.
+    #[effect(row, privileged, permission = "admin")]
+    Shell {
+        #[param("Container id")]
+        container: String,
+    },
+    /// Show image.
+    #[effect(view, row)]
+    ShowImage {
+        #[param("Image reference")]
+        image: String,
+    },
+    /// Remove image.
+    #[effect(row, destructive, permission = "admin")]
+    RemoveImage {
+        #[param("Image reference")]
+        image: String,
+    },
+    /// Show volume.
+    #[effect(view, row)]
+    ShowVolume {
+        #[param("Volume name")]
+        volume: String,
+    },
+    /// Remove volume.
+    #[effect(row, destructive, permission = "admin")]
+    RemoveVolume {
+        #[param("Volume name")]
+        volume: String,
+    },
+    /// Show distrobox.
+    #[effect(view, row)]
+    ShowDistrobox {
+        #[param("Distrobox name")]
+        distrobox: String,
+    },
+    /// Enter distrobox.
+    #[effect(row, privileged, permission = "admin")]
+    EnterDistrobox {
+        #[param("Distrobox name")]
+        distrobox: String,
+    },
+}
+
+impl ContainersEffect {
+    /// The engine operation a row effect asks for: its target's kind, the
+    /// verb, and the target.
+    pub(crate) fn engine_operation(&self) -> Option<(&'static str, &'static str, &str)> {
+        Some(match self {
+            Self::Start { container } => ("containers.container", "start", container),
+            Self::Stop { container } => ("containers.container", "stop", container),
+            Self::Restart { container } => ("containers.container", "restart", container),
+            Self::Pause { container } => ("containers.container", "pause", container),
+            Self::Unpause { container } => ("containers.container", "unpause", container),
+            Self::RemoveContainer { container } => ("containers.container", "remove", container),
+            Self::Shell { container } => ("containers.container", "shell", container),
+            Self::RemoveImage { image } => ("containers.image", "remove", image),
+            Self::RemoveVolume { volume } => ("containers.volume", "remove", volume),
+            Self::EnterDistrobox { distrobox } => ("containers.distrobox", "enter", distrobox),
+            _ => return None,
+        })
+    }
 }
 
 /// The screenshots: the default container detail, each section and detail
@@ -254,6 +358,43 @@ impl ResourceSurface<Containers, ContainersEffect> for ContainersApp {
         effect: ContainersEffect,
         _cx: &mut EffectCx<Containers, Self>,
     ) -> EffectAnswer {
+        self.perform_effect(effect).map(|()| Effected::done())
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.engine.live {
+            Vec::new()
+        } else {
+            vec![EffectStatus::unavailable(
+                ContainersEffect::CREATE,
+                "engine_offline",
+                "Creating containers requires a connected Podman engine",
+            )]
+        }
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.engine_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.engine_row(id)
+    }
+
+    /// Containers with their recent logs, images, volumes and distroboxes:
+    /// what the engine holds, not the document.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::search::engine_entries(&self.engine)
+    }
+}
+
+impl ContainersApp {
+    /// Do what `effect` asks, for any caller: the rows, the palette, an
+    /// agent.
+    ///
+    /// # Errors
+    /// Returns why it could not be done.
+    pub fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
         match effect {
             ContainersEffect::SetSection { section } => {
                 let section = Section::parse(&section)
@@ -277,28 +418,20 @@ impl ResourceSurface<Containers, ContainersEffect> for ContainersApp {
                 self.show_tab(tab);
             }
             ContainersEffect::Create => self.open_create(),
+            ContainersEffect::OpenLogs { container } => {
+                self.select_container(Some(container));
+                self.show_tab(DetailTab::Logs);
+            }
+            ContainersEffect::ShowImage { .. } => self.show_section(Section::Images),
+            ContainersEffect::ShowVolume { .. } => self.show_section(Section::Volumes),
+            ContainersEffect::ShowDistrobox { .. } => self.show_section(Section::Distrobox),
+            engine => {
+                if let Some((kind, verb, target)) = engine.engine_operation() {
+                    self.run_engine_operation(kind, verb, target)?;
+                }
+            }
         }
-        Ok(Effected::done())
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        if self.engine.live {
-            Vec::new()
-        } else {
-            vec![EffectStatus::unavailable(
-                ContainersEffect::CREATE,
-                "engine_offline",
-                "Podman isn't available. Start its user service to create containers.",
-            )]
-        }
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.engine_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.engine_row(id)
+        Ok(())
     }
 }
 
