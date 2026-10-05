@@ -24,16 +24,18 @@
 # tree is layered. See dist/rpm/host-update.sh.
 %{!?tilo_release:%global tilo_release 1}
 
-# The payload is already built and stripped; there is no source to extract
-# debug symbols from, and an empty -debuginfo subpackage would fail the
-# build.
+# The payload is prebuilt. Its native binaries deliberately keep their symbol
+# table (`[profile.release]` in Cargo.toml) so a crash log on the user's
+# machine names each frame's function, and carry no debug info to extract.
 %global debug_package %{nil}
 
-# The signed Tilo runtime is already stripped before its bundle manifest is
-# hashed and signed. Fedora's generic brp-strip pass would mutate the bundled
-# ELF loader and shared libraries after that signature was created, leaving a
-# formally packaged but unusable runtime. Keep the ordinary post-processing
-# chain, but make its strip helpers no-ops for this prebuilt, signed payload.
+# Nothing in the payload is stripped here. The signed Tilo runtime is already
+# stripped before its bundle manifest is hashed and signed, and Fedora's
+# generic brp-strip pass would mutate the bundled ELF loader and shared
+# libraries after that signature was created, leaving a formally packaged but
+# unusable runtime; on the session binaries it would remove the symbol table
+# the crash log needs. Keep the ordinary post-processing chain, but make its strip
+# helpers no-ops for this prebuilt payload.
 %global __strip /bin/true
 
 # These signature-covered application trees are private sandbox payloads, not
