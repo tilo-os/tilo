@@ -320,3 +320,16 @@ refuses it again at run time.
 | MCP shim | `scripts/tilo-mcp-server.py` |
 | Console apps (installer, greeter) | `crates/session/console-control` |
 | Socket framing, other ops | `docs/headless-testing.md` |
+
+### Unlocking the device-owner session
+
+The existing device-owner `admin-control.sock` publishes the `session-lock`
+resource while locked. Invoke `unlock@session-lock` with a Secret `password`,
+using `tilo-control actions invoke session-lock unlock@session-lock --args-stdin`.
+Supply the JSON object through private stdin; never place a credential in argv.
+The reply acknowledges asynchronous verification, rather than claiming unlock.
+Wait for the ordinary `state-dump` `chrome.session_locked` transition and
+`chrome.lock_auth.verifying`/non-leaky error fields. The normal PAM helper
+verifies the existing session owner; no caller may replace the username.
+Agent-scoped and enrolled-device actions do not receive this local capability.
+Other app actions remain refused while locked.

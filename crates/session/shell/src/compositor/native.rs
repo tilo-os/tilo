@@ -4952,7 +4952,7 @@ fn pump_test_control_conn(
             }
             PendingConnectionProgress::Idle | PendingConnectionProgress::WroteResponse => {}
         }
-        let mut line = String::new();
+        let mut line = zeroize::Zeroizing::new(String::new());
         match read_bounded_line(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES) {
             Ok(None) => {
                 conn.closed = true;
@@ -4982,7 +4982,7 @@ fn pump_test_control_conn(
                         },
                         Vec::new(),
                     ),
-                    Ok(request) => {
+                    Ok(mut request) => {
                         // Settle layout before anything reads a rect. The relayout after an action
                         // (below) covers a tree the *socket* changed, not one a **client** changed
                         // — a window map/close/resize rearranges the strip with no command sent,
@@ -4998,6 +4998,28 @@ fn pump_test_control_conn(
                                 label: None,
                             })
                         });
+                        if conn.admin
+                            && agent.is_none()
+                            && let Some(response) = super::lock_actions::dispatch(
+                                &mut request.command,
+                                session.is_locked(),
+                                lock,
+                            )
+                        {
+                            if matches!(&response, test_control::Response::Answer(answer) if answer["authentication"] == "verifying")
+                            {
+                                injected_input = true;
+                            }
+                            let progress = queue_test_control_response(conn, &response);
+                            if matches!(
+                                progress,
+                                PendingConnectionProgress::Closed
+                                    | PendingConnectionProgress::OutputPending
+                            ) {
+                                return injected_input;
+                            }
+                            continue;
+                        }
                         match agent {
                             Some(_)
                                 if session.is_locked()
@@ -14353,6 +14375,65 @@ mod tests {
             assert_eq!(answered, code, "{line} (locked: {locked})");
         }
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn owner_socket_publishes_and_submits_locked_session_authentication() {
+        use std::io::Write as _;
+        let mut fb = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let _ = session.request_lock(Instant::now());
+        assert!(session.is_locked());
+        let mut lock =
+            LockController::new(std::sync::Arc::new(lock_auth::UnavailableVerifier), "owner");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+        let display: Display<State> = Display::new().unwrap();
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).unwrap();
+        // The production accept path sets this only after device-owner and
+        // same-UID, unconfined kernel peer checks (admin_control tests).
+        conn.admin = true;
+        writer
+            .write_all(b"{\"op\":\"actions_enumerate\"}\n")
+            .unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        let test_control::Response::Answer(catalogue) = socket_response(&mut reader) else {
+            panic!("owner enumeration must return the lock resource");
+        };
+        assert_eq!(catalogue["actions"][0]["provider"], "session-lock");
+        assert_eq!(catalogue["actions"][0]["id"], "unlock@session-lock");
+        writer.write_all(b"{\"op\":\"actions_invoke\",\"provider\":\"session-lock\",\"id\":\"unlock@session-lock\",\"args\":{\"password\":\"private-test-password\"}}\n").unwrap();
+        assert!(pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state
+        ));
+        let response = socket_response(&mut reader);
+        assert!(
+            matches!(response,test_control::Response::Answer(ref value) if value["authentication"]=="verifying")
+        );
+        assert!(
+            !serde_json::to_string(&response)
+                .unwrap()
+                .contains("private-test-password")
+        );
+        assert_eq!(lock.buffer_len(), 0);
+        assert!(
+            session.is_locked(),
+            "action acceptance cannot unlock a session"
+        );
+        writer.write_all(b"{\"op\":\"actions_invoke\",\"provider\":\"session-lock\",\"id\":\"unlock@session-lock\",\"args\":{\"password\":\"private-test-password\"},\"agent\":\"peer\"}\n").unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader),test_control::Response::Err{code,..} if code=="not_permitted")
+        );
+        assert!(session.is_locked());
     }
 
     /// A driver's request often lands after its connection was accepted and
