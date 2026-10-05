@@ -206,7 +206,7 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
             bindings.rebuild(&scroll, &tree, root, &nodes);
         }
         let mut renderer = TextRenderer::new();
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         for (width, height) in [(280.0, 180.0), (760.0, 420.0), (280.0, 300.0)] {
             let mut style = tree.style(root).unwrap().clone();
             style.size.height = Dimension::length(height);
@@ -218,7 +218,7 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
             ] {
                 let long = !body.is_empty();
                 text.set(body);
-                scroll.sync(&mut doc, &automerge::ROOT);
+                scroll.sync(&doc, &automerge::ROOT);
                 tree.mark_dirty(editor).unwrap();
                 // SAFETY: no widgets move or change topology during settlement.
                 unsafe {

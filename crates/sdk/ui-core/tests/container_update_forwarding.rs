@@ -86,8 +86,8 @@ fn probe() -> (Box<dyn Widget>, Rc<Cell<u32>>) {
 }
 
 fn assert_forwards(label: &str, mut container: Box<dyn Widget>, updates: &Rc<Cell<u32>>) {
-    let mut doc = AutoCommit::new();
-    let changed = container.update(&mut doc, &ROOT);
+    let doc = AutoCommit::new();
+    let changed = container.update(&doc, &ROOT);
     assert_eq!(
         updates.get(),
         1,
@@ -124,13 +124,13 @@ fn containers_forward_update_to_children() {
     let mut root: Box<dyn Widget> = Box::new(Stack::new().push(Box::new(
         Column::new().push(Box::new(Row::new().push(child))),
     )));
-    let mut doc = AutoCommit::new();
-    assert!(root.update(&mut doc, &ROOT));
+    let doc = AutoCommit::new();
+    assert!(root.update(&doc, &ROOT));
     assert_eq!(updates.get(), 1);
 
     let mut quiet: Box<dyn Widget> = Box::new(Column::new());
     assert!(
-        !quiet.update(&mut doc, &ROOT),
+        !quiet.update(&doc, &ROOT),
         "an empty column has nothing to report"
     );
 }
