@@ -284,6 +284,14 @@ struct RowGeometry {
 /// How many marks [`ListRowFace::mark`] keeps after a title.
 pub const MAX_MARKS: usize = 3;
 
+/// One mark after a row's title: an icon in tertiary ink, or a swatch in a
+/// colour that belongs to the item (a task's project, a calendar).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RowMark {
+    Icon(Icon),
+    Swatch(Color),
+}
+
 /// Immediate-mode list row. Build one per row per frame, `measure` it for
 /// its height, then `paint` it into the rect you laid out: the row's outer
 /// rect, the list's content edge grown by [`row_bleed`] on both sides.
@@ -300,7 +308,7 @@ pub struct ListRowFace<'a> {
     meta: Option<&'a str>,
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
-    marks: [Option<Icon>; MAX_MARKS],
+    marks: [Option<RowMark>; MAX_MARKS],
     tags: &'a [(&'a str, ChipStyle)],
     count: Option<usize>,
     leading: Option<RowLeading<'a>>,
@@ -438,10 +446,23 @@ impl<'a> ListRowFace<'a> {
     /// filled.
     #[must_use]
     pub fn mark(mut self, icon: Icon) -> Self {
-        if let Some(slot) = self.marks.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(icon);
-        }
+        self.push_mark(RowMark::Icon(icon));
         self
+    }
+
+    /// A colour the item carries (its project, its calendar), as a small
+    /// swatch among the marks after the title. It counts as one of the
+    /// [`MAX_MARKS`].
+    #[must_use]
+    pub fn swatch_mark(mut self, color: Color) -> Self {
+        self.push_mark(RowMark::Swatch(color));
+        self
+    }
+
+    fn push_mark(&mut self, mark: RowMark) {
+        if let Some(slot) = self.marks.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(mark);
+        }
     }
 
     /// Tags after the title, each a small pill in its style.
@@ -1063,10 +1084,27 @@ impl<'a> ListRowFace<'a> {
                 x + m.mark,
                 line_cy + m.mark / 2.0,
             );
-            if matches!(mark, Icon::Star | Icon::Pin) {
-                mark.draw_filled(ctx.scene, ctx.transform, r, theme.text_tertiary);
-            } else {
-                mark.draw(ctx.scene, ctx.transform, r, theme.text_tertiary);
+            match mark {
+                RowMark::Icon(icon @ (Icon::Star | Icon::Pin)) => {
+                    icon.draw_filled(ctx.scene, ctx.transform, r, theme.text_tertiary);
+                }
+                RowMark::Icon(icon) => icon.draw(ctx.scene, ctx.transform, r, theme.text_tertiary),
+                RowMark::Swatch(color) => {
+                    // The swatch sits inside the mark's box, as an icon's
+                    // glyph does, with its own derived edge.
+                    let swatch = r.inset(-(m.mark * 0.1));
+                    let radius = swatch.width() * 0.25;
+                    let shape = RoundedRect::from_rect(swatch, radius);
+                    ctx.scene
+                        .fill(Fill::NonZero, ctx.transform, color, None, &shape);
+                    ctx.scene.stroke(
+                        &vello::kurbo::Stroke::new(1.0),
+                        ctx.transform,
+                        crate::surface::edge_on(color),
+                        None,
+                        &crate::surface::edge_outline(swatch, radius),
+                    );
+                }
             }
             x += m.mark + m.tag_gap;
         }
