@@ -86,7 +86,7 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     // before the next relayout — the exact ordering that panicked in the
     // live demo. Must not panic.
     let (notes, state) = Framed::split(&mut app);
-    notes.sync(&mut state.doc, &state.root);
+    notes.sync(&state.doc, &state.root);
     draw(&mut app, &theme, &mut tr);
 
     // And after a proper relayout it renders both rows without panic.

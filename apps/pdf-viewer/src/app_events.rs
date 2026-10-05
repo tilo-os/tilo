@@ -1514,7 +1514,7 @@ mod event_tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut self.st.doc),
+                    state: Edits::lend(&mut self.st.doc),
                     path: &self.st.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -1649,7 +1649,7 @@ mod event_tests {
         let lay = app.toolbar_layout();
         for (tool, r) in lay.tools {
             let hit = app.toolbar_hit(centre(r)).expect("a toolbar hit");
-            app.apply_toolbar(&hit, &mut st.doc);
+            app.apply_toolbar(&hit, &mut Edits::lend(&mut st.doc));
             assert_eq!(app.tool, tool, "clicking {tool:?} should arm it");
         }
 
@@ -1663,7 +1663,10 @@ mod event_tests {
             .clone();
         app.selected_anno = Some(hl.id.clone());
         app.tool = Tool::Highlight;
-        app.apply_toolbar(&ToolbarHit::Swatch(Swatch::Green), &mut st.doc);
+        app.apply_toolbar(
+            &ToolbarHit::Swatch(Swatch::Green),
+            &mut Edits::lend(&mut st.doc),
+        );
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
         assert!(
@@ -1910,7 +1913,10 @@ mod event_tests {
                 .find(|c| c.id == id)
                 .unwrap()
                 .resolved;
-            assert!(rig.app.apply_sidebar(centre(r), &mut rig.st.doc));
+            assert!(
+                rig.app
+                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
+            );
             let after = rig
                 .app
                 .comments
@@ -1980,7 +1986,10 @@ mod event_tests {
         });
         if let Some((id, r)) = del {
             let n = rig.app.comments.len();
-            assert!(rig.app.apply_sidebar(centre(r), &mut rig.st.doc));
+            assert!(
+                rig.app
+                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
+            );
             assert_eq!(rig.app.comments.len(), n - 1);
             assert!(!rig.app.comments.iter().any(|c| c.id == id));
         }
@@ -1992,7 +2001,10 @@ mod event_tests {
         });
         if let Some((id, r)) = dels {
             let n = rig.app.signatures.len();
-            assert!(rig.app.apply_sidebar(centre(r), &mut rig.st.doc));
+            assert!(
+                rig.app
+                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
+            );
             assert_eq!(rig.app.signatures.len(), n - 1);
             assert!(!rig.app.signatures.iter().any(|s| s.id == id));
         }
@@ -2221,10 +2233,10 @@ mod event_tests {
         let (mut app, mut st) = sample_app();
         let a0 = app.annotations.len();
         let c0 = app.comments.len();
-        app.create_note(&mut st.doc, 1, (120.0, 200.0));
+        app.create_note(&mut Edits::lend(&mut st.doc), 1, (120.0, 200.0));
         assert_eq!(app.comments.len(), c0 + 1);
         assert!(app.editing.is_some());
-        app.commit_edit(&mut st.doc); // committed empty
+        app.commit_edit(&mut Edits::lend(&mut st.doc)); // committed empty
         assert_eq!(app.comments.len(), c0, "empty note thread removed");
         assert_eq!(app.annotations.len(), a0, "and its page marker removed");
 
@@ -2255,7 +2267,7 @@ mod event_tests {
         let replies_before = app.comments[0].replies.len();
         app.begin_edit(EditTarget::Reply(cid.clone()), "");
         app.editing.as_mut().unwrap().set_text("Looks good");
-        app.commit_edit(&mut st.doc);
+        app.commit_edit(&mut Edits::lend(&mut st.doc));
         let after = app.comments.iter().find(|c| c.id == cid).unwrap();
         assert_eq!(
             after.replies.len(),
@@ -2338,7 +2350,7 @@ mod event_tests {
         );
         let (services, recorder) = ui::host::HostServices::recording();
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
         });
         assert!(
             app.portal_rx.is_some(),
@@ -2363,7 +2375,7 @@ mod event_tests {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
         });
         app.sync_settled(&mut st.doc, &st.root);
         assert!(
@@ -2384,7 +2396,7 @@ mod event_tests {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
         });
         assert!(
             app.portal_rx.is_some(),
@@ -2443,7 +2455,10 @@ mod event_tests {
             serde_json::from_slice(&spec_encoded.payload).expect("the palette's delete decodes");
         ui::tilo_actions::Action::apply(&decoded, &mut palette).expect("the palette deletes");
         // …and the real affordance path (Delete key / rail button / context menu).
-        app.delete_target(&DeleteTarget::Annotation(anno.id.clone()), &mut st.doc);
+        app.delete_target(
+            &DeleteTarget::Annotation(anno.id.clone()),
+            &mut Edits::lend(&mut st.doc),
+        );
         let ids = |annotations: Vec<Annotation>| -> Vec<String> {
             annotations.into_iter().map(|a| a.id).collect()
         };

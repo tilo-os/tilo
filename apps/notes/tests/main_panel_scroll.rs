@@ -16,6 +16,7 @@
 )]
 
 use std::fmt::Write as _;
+use ui::widget::Edits;
 
 use crate::framework_support::{send, surface, with_note};
 use notes::{MainPanel, NotesShell};
@@ -75,7 +76,7 @@ fn semantic(app: &mut TestApp<NotesShell>, target: &str, action: &ui::a11y::Acti
         panel.perform_semantic_action(
             target,
             action,
-            &mut automerge::AutoCommit::new(),
+            &mut Edits::lend(&mut automerge::AutoCommit::new()),
             &automerge::ROOT,
         )
     })

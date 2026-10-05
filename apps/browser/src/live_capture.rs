@@ -155,7 +155,7 @@ fn render_live_shot_to_png(
     let mut text_renderer = TextRenderer::new();
     text_renderer.set_text_scale(theme.text_scale);
 
-    let mut state = ui::State::new();
+    let state = ui::State::new();
     let root_obj = state.root.clone();
 
     // Pump sync + layout until the engine has painted a frame at the
@@ -169,9 +169,9 @@ fn render_live_shot_to_png(
     loop {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        widget.sync(&mut state.doc, &root_obj);
+        widget.sync(&state.doc, &root_obj);
         let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-        widget.sync(&mut state.doc, &root_obj);
+        widget.sync(&state.doc, &root_obj);
         let root = taffy.new_with_children(
             Style {
                 size: Size {

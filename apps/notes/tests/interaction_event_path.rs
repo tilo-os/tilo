@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use ui::headless::Framed;
+use ui::widget::Edits;
 
 use crate::framework_support::{notes, with_note};
 use notes::sidebar::OutEvent;
@@ -270,7 +271,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         assert!(editor.perform_semantic_action(
             &format!("notes.block-move:{first}:down"),
             &ui::a11y::Action::Activate,
-            &mut state,
+            &mut Edits::lend(&mut state),
             &automerge::ROOT,
         ));
         relayout_block_editor(&mut editor);
@@ -287,7 +288,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
             !editor.perform_semantic_action(
                 &before[0],
                 &ui::a11y::Action::Activate,
-                &mut state,
+                &mut Edits::lend(&mut state),
                 &automerge::ROOT,
             ),
             "a removed fence must never copy another fence at its old position"

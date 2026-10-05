@@ -6,6 +6,7 @@ use std::rc::Rc;
 use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
 use ui::record::RecordCheckout;
+use ui::widget::Edits;
 
 pub fn existing(checkout: &RecordCheckout) -> LaunchTarget {
     LaunchTarget::Record {
@@ -279,8 +280,8 @@ impl BoundNotes {
         let mut tile = Box::new(ui::widget::TileHost::from_component(component));
         // A host syncs a mounted component before laying it out: the
         // notebook surface binds its open note's editor then.
-        let mut outer = automerge::AutoCommit::new();
-        tile.sync(&mut outer, &automerge::ROOT);
+        let outer = automerge::AutoCommit::new();
+        tile.sync(&outer, &automerge::ROOT);
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
         let layout = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
@@ -337,7 +338,7 @@ impl BoundNotes {
                     widget.perform_semantic_action(
                         &format!("notes.block-move:{block}:up"),
                         &ui::a11y::Action::Activate,
-                        doc,
+                        &mut Edits::lend(doc),
                         root,
                     )
                 },
