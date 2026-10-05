@@ -543,6 +543,32 @@ impl Invalidation {
     }
 }
 
+/// Trusted setup owns these document gates; controls only queue the person's intent.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+enum AcknowledgementKind {
+    IdentityProtection,
+    SkipBackup,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AcknowledgementAction {
+    kind: AcknowledgementKind,
+    path: ObjId,
+    checked: bool,
+}
+
+impl tilo_actions::Action for AcknowledgementAction {
+    fn apply(&self, doc: &mut AutoCommit) -> Result<(), tilo_actions::ActionError> {
+        use automerge::transaction::Transactable as _;
+        let key = match self.kind {
+            AcknowledgementKind::IdentityProtection => KEY_UNDERSTOOD,
+            AcknowledgementKind::SkipBackup => KEY_BACKUP_SKIP_ACKNOWLEDGED,
+        };
+        doc.put(&self.path, key, self.checked)?;
+        Ok(())
+    }
+}
+
 /// The setup actions a person has taken (a button click or its keyboard
 /// shortcut) that `sync` has not handled yet. Buttons record into it from
 /// their click handler; the document never sees a click.
@@ -621,6 +647,8 @@ pub struct OnboardingView {
     /// Actions the person took since `sync` last looked: view state, never
     /// written to the document.
     pressed: PressedActions,
+    acknowledgements: Rc<RefCell<Vec<(AcknowledgementKind, bool)>>>,
+    acknowledgement_actions: ui::action_host::ActionHost,
     invalidation: Invalidation,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -867,6 +895,8 @@ impl OnboardingView {
             tour_only: false,
             finished: false,
             pressed: PressedActions::default(),
+            acknowledgements: Rc::default(),
+            acknowledgement_actions: ui::action_host::ActionHost::new(),
             invalidation: Invalidation::Focus,
             composed: None,
             rect: Rect::ZERO,
@@ -1723,7 +1753,15 @@ impl OnboardingView {
                         KEY_BACKUP_SKIP_ACKNOWLEDGED,
                     )
                     .with_id("onboarding.backup.skip-acknowledged.row")
-                    .with_label(t("onboarding-backup-skip-acknowledgement")),
+                    .with_label(t("onboarding-backup-skip-acknowledgement"))
+                    .on_change({
+                        let pending = Rc::clone(&self.acknowledgements);
+                        move |checked| {
+                            pending
+                                .borrow_mut()
+                                .push((AcknowledgementKind::SkipBackup, checked));
+                        }
+                    }),
                 ))
                 .push(self.identity_actions()),
         )
@@ -1837,7 +1875,15 @@ impl OnboardingView {
             Screen::NoRecovery => Some(
                 Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
                     .with_id("onboarding.understood.row")
-                    .with_label(acknowledgement()),
+                    .with_label(acknowledgement())
+                    .on_change({
+                        let pending = Rc::clone(&self.acknowledgements);
+                        move |checked| {
+                            pending
+                                .borrow_mut()
+                                .push((AcknowledgementKind::IdentityProtection, checked));
+                        }
+                    }),
             ),
             _ => None,
         };
@@ -3024,6 +3070,27 @@ impl Drop for OnboardingView {
 }
 
 impl Widget for OnboardingView {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+        for (kind, checked) in self.acknowledgements.take() {
+            let action = AcknowledgementAction {
+                kind,
+                path: path.clone(),
+                checked,
+            };
+            if let Err(error) = edits.apply(
+                &mut self.acknowledgement_actions,
+                "tilo.shell.onboarding.acknowledgement",
+                &action,
+                tilo_actions::ActionContext::default(),
+            ) {
+                tracing::warn!(%error, "onboarding acknowledgement refused");
+            }
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one ordered reducer owns all modal OOBE actions and secret cleanup transitions"
@@ -6293,6 +6360,10 @@ mod tests {
                 );
                 assert!(handled, "the labelled checkbox row must handle {event:?}");
             }
+            view.settle(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+            );
             assert!(read_bool(&document, &automerge::ROOT, KEY_UNDERSTOOD));
         }
         // Phase `continue_without_backup_pointer_target_advances_to_ready_page`.
