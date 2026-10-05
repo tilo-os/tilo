@@ -3,8 +3,7 @@
 //! prominent type/format indicator, a name-box + formula bar, and a bottom
 //! sheet-tab strip + status line — all hand-drawn into the scene.
 //!
-//! Data flow: `sync` seeds the workbook into the CRDT on first run, reads
-//! the active sheet's raw inputs, recalculates every formula via the
+//! Data flow: `sync` reads the active sheet's raw inputs, recalculates every formula via the
 //! [`crate::formula`] engine, propagates formats onto computed cells, and
 //! hands the resulting values to the grid. `handle_event` routes
 //! pointer/keyboard input to whichever region was hit and applies the
@@ -14,8 +13,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use ui::time::Instant;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::{AppModel, Edits, ModelPath};
 
+use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -750,9 +750,9 @@ pub struct SheetsApp {
     annotation_clicks: Vec<(Rect, AnnotationClick)>,
     /// Each tab's durable sheet identity, which the edits it offers name.
     sheet_ids: Vec<String>,
-    /// The heads the tabs were read at. Separate from `cache`: changing the
+    /// The document revision the tabs were read at. Separate from `cache`: changing the
     /// active tab must not re-read every tab.
-    tabs_heads: Option<Vec<ChangeHash>>,
+    tabs_heads: Option<(Vec<ChangeHash>, usize)>,
     active_sheet: usize,
     /// The latest transient action message (e.g. "Pasted into B2"), surfaced
     /// via the floating [`status_bubble`](Self::status_bubble) rather than a
@@ -831,6 +831,7 @@ struct ClipboardGrid {
 /// CRDT or re-run the formula engine.
 struct ReloadCache {
     heads: Vec<ChangeHash>,
+    pending_ops: usize,
     sheet: usize,
     /// Effective per-cell format (explicit format, else propagated formula
     /// unit). Drives the type indicator and the selection summary.
@@ -956,7 +957,7 @@ impl SheetsApp {
     /// dispatcher checks the participant's permission, applies through the
     /// replayable executor (an attributed, committed change that replays
     /// byte-identically on peers) and takes the undo step.
-    fn apply_edit(&self, doc: &mut AutoCommit, action: &SheetsAction) {
+    fn apply_edit(&self, doc: &mut Edits<'_>, action: &SheetsAction) {
         // Interactive affordances retain the framework's non-panicking
         // contract.  Import uses the fallible helper below so it can surface a
         // refusal instead of falsely reporting completion.
@@ -969,7 +970,7 @@ impl SheetsApp {
     /// commands, or the whole operation reports its exact failure.
     fn try_apply_edit(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut Edits<'_>,
         action: &SheetsAction,
     ) -> Result<(), tilo_actions::ActionError> {
         let Some(dispatch) = &self.dispatch else {
@@ -977,11 +978,7 @@ impl SheetsApp {
                 "the workbook is not open for editing".into(),
             ));
         };
-        dispatch.apply_now_with(
-            &mut ui::widget::Edits::lend(doc),
-            action,
-            actions::history_context(action),
-        )?;
+        dispatch.apply_now_with(doc, action, actions::history_context(action))?;
         #[cfg(test)]
         {
             *self.last_action.borrow_mut() = Some(action.clone());
@@ -1303,7 +1300,7 @@ impl SheetsApp {
     }
 
     /// Finish the staged part of a scenario that works on the document.
-    fn finish_staging(&mut self, doc: &mut AutoCommit) {
+    fn finish_staging(&mut self, doc: &mut Edits<'_>) {
         let Some(staged) = self.staged.take() else {
             return;
         };
@@ -1379,17 +1376,19 @@ impl SheetsApp {
     /// Read the active sheet, recalculate, propagate formats onto computed
     /// cells, and push the data into the grid.
     ///
-    /// Memoised on `(document heads, active sheet)`: selection changes,
+    /// Memoised on `(document heads, pending operations, active sheet)`: selection changes,
     /// scrolling, and hover — which never mutate the CRDT — reuse the cached
     /// result instead of re-snapshotting the document and re-running the whole
     /// formula engine every frame.
-    fn reload(&mut self, doc: &mut AutoCommit) {
-        let heads = doc.get_heads();
+    fn reload(&mut self, doc: &AutoCommit) {
+        let heads = doc.base_heads();
+        let pending_ops = doc.pending_ops();
         let count = SheetsDoc::sheet_count(doc).max(1);
         let sheet = self.active_sheet.min(count - 1);
         if let Some(c) = &self.cache
             && c.sheet == sheet
             && c.heads == heads
+            && c.pending_ops == pending_ops
         {
             self.active_sheet = sheet;
             return;
@@ -1398,14 +1397,20 @@ impl SheetsApp {
         self.active_sheet = sheet;
         // A tab switch recalculates the active sheet below, never the others;
         // the tabs and the document's settings change only with the heads.
-        if self.tabs_heads.as_ref() != Some(&heads) {
+        if self
+            .tabs_heads
+            .as_ref()
+            .is_none_or(|(cached_heads, cached_pending)| {
+                cached_heads != &heads || *cached_pending != pending_ops
+            })
+        {
             self.sheet_names = SheetsDoc::sheet_names(doc);
             self.sheet_colors = SheetsDoc::sheet_colors(doc);
             self.sheet_ids = (0..self.sheet_names.len())
                 .map(|idx| SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default())
                 .collect();
             self.doc_settings = SheetsDoc::doc_settings(doc);
-            self.tabs_heads = Some(heads.clone());
+            self.tabs_heads = Some((heads.clone(), pending_ops));
         }
         let cur = self.default_currency();
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
@@ -1429,6 +1434,7 @@ impl SheetsApp {
 
         self.cache = Some(ReloadCache {
             heads,
+            pending_ops,
             sheet,
             eff_fmt: fmt.clone(),
             values: values.clone(),
@@ -1438,7 +1444,7 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    fn apply_cmds(&mut self, doc: &mut AutoCommit, cmds: Vec<GridCmd>) {
+    fn apply_cmds(&mut self, doc: &mut Edits<'_>, cmds: Vec<GridCmd>) {
         let cur = self.default_currency();
         let sheet = self.active_sheet;
         // Collect the event's cell writes into one batched action, so undo, peer
@@ -1480,7 +1486,7 @@ impl SheetsApp {
         }
     }
 
-    fn apply_format(&mut self, doc: &mut AutoCommit, fmt: CellFormat) {
+    fn apply_format(&mut self, doc: &mut Edits<'_>, fmt: CellFormat) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
@@ -1505,7 +1511,7 @@ impl SheetsApp {
         self.status = format!("Applied {} to {}", fmt.label(), self.grid.selection_label());
     }
 
-    fn clear_format(&mut self, doc: &mut AutoCommit) {
+    fn clear_format(&mut self, doc: &mut Edits<'_>) {
         let sheet = self.active_sheet;
         let cells: Vec<(Addr, CellFormat)> = self
             .grid
@@ -1583,7 +1589,7 @@ impl SheetsApp {
     /// offset by its own position — matching Excel/Sheets. Otherwise the
     /// plain-text clipboard is parsed as a TSV grid and each field is
     /// smart-typed, so a paste from any other app works too.
-    fn paste(&mut self, doc: &mut AutoCommit) {
+    fn paste(&mut self, doc: &mut Edits<'_>) {
         let (target, sel_br) = self.grid.selection_bounds();
         let system = ui::clipboard_paste();
         let use_internal = match (&self.clipboard, &system) {
@@ -1699,7 +1705,7 @@ impl SheetsApp {
     /// write it starting at `target`, smart-typing each non-empty field.
     /// Selects the pasted rectangle. Returns `false` (writing nothing) when the
     /// payload has no content. This is the system-clipboard branch of `paste`.
-    fn paste_tsv(&mut self, doc: &mut AutoCommit, target: Addr, text: &str) -> bool {
+    fn paste_tsv(&mut self, doc: &mut Edits<'_>, target: Addr, text: &str) -> bool {
         let cur = self.default_currency();
         let normalized = text.replace('\r', "");
         let body = normalized.strip_suffix('\n').unwrap_or(&normalized);
@@ -1735,7 +1741,7 @@ impl SheetsApp {
 
     /// `AutoSum`: scan upward from the active cell for a run of numeric cells
     /// and write `=SUM(top:above)` into the active cell.
-    fn auto_sum(&mut self, doc: &mut AutoCommit) {
+    fn auto_sum(&mut self, doc: &mut Edits<'_>) {
         let (c, r) = self.grid.active();
         if r == 0 {
             self.status = "Nothing above to sum".into();
@@ -1777,7 +1783,7 @@ impl SheetsApp {
     /// Fill the top row of the selection downward through every row in the
     /// selection's bounding box — Excel's Ctrl+D. Each source cell's raw input
     /// and format copy down, with relative formula references shifted per row.
-    fn fill_down(&mut self, doc: &mut AutoCommit) {
+    fn fill_down(&mut self, doc: &mut Edits<'_>) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
@@ -1810,7 +1816,7 @@ impl SheetsApp {
     }
 
     /// Fill the left column of the selection rightward — Excel's Ctrl+R.
-    fn fill_right(&mut self, doc: &mut AutoCommit) {
+    fn fill_right(&mut self, doc: &mut Edits<'_>) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
@@ -1858,7 +1864,7 @@ impl SheetsApp {
     /// [`crate::fill`] engine — formulas offset their relative refs, numeric
     /// pairs extrapolate a series, dates/names continue, text+number
     /// increments. One batched action, one undo boundary.
-    fn run_pending_fill(&mut self, doc: &mut AutoCommit) {
+    fn run_pending_fill(&mut self, doc: &mut Edits<'_>) {
         let Some((src_tl, src_br, dst_tl, dst_br)) = self.grid.take_pending_fill() else {
             return;
         };
@@ -2367,7 +2373,7 @@ impl SheetsApp {
     #[cfg(test)]
     fn import_tables(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut Edits<'_>,
         tables: Vec<crate::xlsx::SheetTable>,
     ) -> Result<usize, String> {
         let (action, total, last_sheet_id) = self.import_action(tables, true, None)?;
@@ -2381,7 +2387,7 @@ impl SheetsApp {
         Ok(total)
     }
 
-    fn switch_sheet(&mut self, doc: &mut AutoCommit, idx: usize) {
+    fn switch_sheet(&mut self, doc: &mut Edits<'_>, idx: usize) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
@@ -2394,7 +2400,7 @@ impl SheetsApp {
         );
     }
 
-    fn add_sheet(&mut self, doc: &mut AutoCommit) {
+    fn add_sheet(&mut self, doc: &mut Edits<'_>) {
         let n = SheetsDoc::sheet_count(doc);
         let name = format!("Sheet{}", n.saturating_add(1));
         self.apply_edit(doc, &actions::add_sheet_action(&name));
@@ -2408,7 +2414,7 @@ impl SheetsApp {
 
     // --- settings actions ---------------------------------------------------
 
-    fn apply_setting(&mut self, doc: &mut AutoCommit, kind: SettingKind) {
+    fn apply_setting(&mut self, doc: &mut Edits<'_>, kind: SettingKind) {
         match kind {
             SettingKind::Currency(c) => self.doc_settings.currency = c,
             SettingKind::Date(d) => self.doc_settings.date_format = d,
@@ -2485,7 +2491,7 @@ impl SheetsApp {
     /// carries the free-text a `with_argument` entry collected (e.g. the cell
     /// reference for "Go to cell").
     #[cfg(test)]
-    fn dispatch_command(&mut self, doc: &mut AutoCommit, id: &str, argument: Option<&str>) {
+    fn dispatch_command(&mut self, doc: &mut Edits<'_>, id: &str, argument: Option<&str>) {
         match id {
             "goto" => self.go_to_cell(argument.unwrap_or("")),
             "sum_selection" => self.sum_selection(doc),
@@ -2531,7 +2537,7 @@ impl SheetsApp {
     /// "Sum selection": write a `=SUM(col_top:col_bottom)` total for each column
     /// of the selection into the row directly below it, then select that row.
     #[cfg(test)]
-    fn sum_selection(&mut self, doc: &mut AutoCommit) {
+    fn sum_selection(&mut self, doc: &mut Edits<'_>) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
@@ -2562,7 +2568,7 @@ impl SheetsApp {
     }
 
     #[cfg(test)]
-    fn insert_row(&mut self, doc: &mut AutoCommit) {
+    fn insert_row(&mut self, doc: &mut Edits<'_>) {
         let r0 = self.grid.active().1;
         self.apply_edit(
             doc,
@@ -2577,7 +2583,7 @@ impl SheetsApp {
     }
 
     #[cfg(test)]
-    fn delete_row(&mut self, doc: &mut AutoCommit) {
+    fn delete_row(&mut self, doc: &mut Edits<'_>) {
         let r0 = self.grid.active().1;
         self.apply_edit(
             doc,
@@ -2592,7 +2598,7 @@ impl SheetsApp {
     }
 
     #[cfg(test)]
-    fn insert_column(&mut self, doc: &mut AutoCommit) {
+    fn insert_column(&mut self, doc: &mut Edits<'_>) {
         let c0 = self.grid.active().0;
         self.apply_edit(
             doc,
@@ -2610,7 +2616,7 @@ impl SheetsApp {
     }
 
     #[cfg(test)]
-    fn delete_column(&mut self, doc: &mut AutoCommit) {
+    fn delete_column(&mut self, doc: &mut Edits<'_>) {
         let c0 = self.grid.active().0;
         self.apply_edit(
             doc,
@@ -4635,25 +4641,7 @@ impl Widget for SheetsApp {
         if let Some(locale) = &self.locale {
             self.global = locale.get();
         }
-        if let Some(reveal) = self.pending_reveal.take() {
-            if let Some(idx) = SheetsDoc::sheet_index_by_resource_id(state, &reveal.sheet_id) {
-                self.switch_sheet(state, idx);
-                self.grid.select_only(reveal.addr);
-                self.status = reveal.status.unwrap_or_else(|| {
-                    format!(
-                        "Went to {}!{}",
-                        self.sheet_names.get(idx).cloned().unwrap_or_default(),
-                        crate::model::addr_to_a1(reveal.addr.0, reveal.addr.1)
-                    )
-                });
-            } else if reveal.arriving {
-                self.pending_reveal = Some(reveal);
-            } else {
-                self.status = "That sheet no longer exists".into();
-            }
-        }
         self.reload(state);
-        self.finish_staging(state);
         self.current_active_format = self.format_of_active();
         // Surface the floating status bubble only when the composed label
         // actually changes — a selection move/extend, or a fresh action
@@ -4788,12 +4776,35 @@ impl Widget for SheetsApp {
         self.draw_sheet_tab_presence(scene, transform, theme, presence);
     }
 
+    fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {
+        if let Some(reveal) = self.pending_reveal.take() {
+            if let Some(idx) = SheetsDoc::sheet_index_by_resource_id(edits.doc(), &reveal.sheet_id)
+            {
+                self.switch_sheet(edits, idx);
+                self.grid.select_only(reveal.addr);
+                self.status = reveal.status.unwrap_or_else(|| {
+                    format!(
+                        "Went to {}!{}",
+                        self.sheet_names.get(idx).cloned().unwrap_or_default(),
+                        crate::model::addr_to_a1(reveal.addr.0, reveal.addr.1)
+                    )
+                });
+            } else if reveal.arriving {
+                self.pending_reveal = Some(reveal);
+            } else {
+                self.status = "That sheet no longer exists".into();
+            }
+        }
+        self.reload(edits.doc());
+        self.finish_staging(edits);
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
         if self.route_inline_editor(
             event,
             event_ctx.scale_factor,
             *event_ctx.modifiers,
-            event_ctx.state,
+            &mut event_ctx.state,
             event_ctx.handled,
             &mut PaletteRouteCtx {
                 path: event_ctx.path,
@@ -4812,7 +4823,7 @@ impl Widget for SheetsApp {
             } => {
                 self.handle_left_press(
                     *event_ctx.modifiers,
-                    event_ctx.state,
+                    &mut event_ctx.state,
                     event_ctx.path,
                     event_ctx.handled,
                 );
@@ -4824,7 +4835,7 @@ impl Widget for SheetsApp {
             } => {
                 self.grid.pointer_up();
                 // A completed fill-handle drag commits its expansion here.
-                self.run_pending_fill(event_ctx.state);
+                self.run_pending_fill(&mut event_ctx.state);
                 self.formula_bar_selecting = false;
                 self.pending.redraw = true;
                 *event_ctx.handled = true;
@@ -4864,7 +4875,7 @@ impl Widget for SheetsApp {
                     event,
                     event_ctx.scale_factor,
                     *event_ctx.modifiers,
-                    event_ctx.state,
+                    &mut event_ctx.state,
                     event_ctx.handled,
                     &mut ctx,
                 );
@@ -5180,10 +5191,9 @@ impl Widget for SheetsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
+        state: &mut Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
             let opened = match target {
@@ -5311,7 +5321,7 @@ impl SheetsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
         ctx: &mut PaletteRouteCtx<'_>,
     ) -> bool {
@@ -5330,7 +5340,7 @@ impl SheetsApp {
                     &mut ui::widget::EventCtx {
                         scale_factor,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled,
                         focus_target: ctx.focus_target,
@@ -5388,7 +5398,7 @@ impl SheetsApp {
                     &mut ui::widget::EventCtx {
                         scale_factor,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled,
                         focus_target: ctx.focus_target,
@@ -5416,7 +5426,7 @@ impl SheetsApp {
     fn handle_left_press(
         &mut self,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -5450,7 +5460,7 @@ impl SheetsApp {
     fn try_palette_click(
         &mut self,
         p: Point,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -5470,7 +5480,7 @@ impl SheetsApp {
 
     /// Open tab context menu: route clicks to its rows / swatches or dismiss
     /// it.
-    fn try_tab_menu_click(&mut self, p: Point, state: &mut AutoCommit, handled: &mut bool) -> bool {
+    fn try_tab_menu_click(&mut self, p: Point, state: &mut Edits<'_>, handled: &mut bool) -> bool {
         let Some(target) = self.tab_menu_target else {
             return false;
         };
@@ -5510,7 +5520,7 @@ impl SheetsApp {
     fn try_settings_panel_click(
         &mut self,
         p: Point,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if self.settings_panel == SettingsPanel::None {
@@ -5533,7 +5543,7 @@ impl SheetsApp {
     /// Open dropdown takes priority: a click on an item runs it (consumed).
     /// A click outside the dropdown dismisses it but still falls through so
     /// a menu-bar click underneath can open a different menu.
-    fn try_dropdown_click(&mut self, p: Point, state: &mut AutoCommit, handled: &mut bool) -> bool {
+    fn try_dropdown_click(&mut self, p: Point, state: &mut Edits<'_>, handled: &mut bool) -> bool {
         if self.open_menu == OpenMenu::None {
             return false;
         }
@@ -5552,7 +5562,7 @@ impl SheetsApp {
     }
 
     /// Menu bar: opens/closes a dropdown, or runs a plain menu item.
-    fn try_menu_bar_click(&mut self, p: Point, state: &mut AutoCommit, handled: &mut bool) -> bool {
+    fn try_menu_bar_click(&mut self, p: Point, state: &mut Edits<'_>, handled: &mut bool) -> bool {
         if !self.menubar_rect.contains(p) {
             return false;
         }
@@ -5585,7 +5595,7 @@ impl SheetsApp {
         &mut self,
         p: Point,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         // Name box → open a Go-To entry seeded with the active cell.
@@ -5637,7 +5647,7 @@ impl SheetsApp {
     fn try_annotation_click(
         &mut self,
         p: Point,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let Some(action) = self
@@ -5674,7 +5684,7 @@ impl SheetsApp {
         true
     }
 
-    fn apply_annotation_click(&mut self, action: AnnotationClick, state: &mut AutoCommit) {
+    fn apply_annotation_click(&mut self, action: AnnotationClick, state: &mut Edits<'_>) {
         let sheet_id = self.sheet_identity(self.active_sheet);
         match action {
             AnnotationClick::Open(addr) => {
@@ -5820,7 +5830,7 @@ impl SheetsApp {
         &mut self,
         p: Point,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) {
         let now = ui::time::now();
@@ -5910,7 +5920,7 @@ impl SheetsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
         ctx: &mut PaletteRouteCtx<'_>,
     ) {
@@ -5920,7 +5930,7 @@ impl SheetsApp {
                 &mut ui::widget::EventCtx {
                     scale_factor,
                     modifiers: &modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled,
                     focus_target: ctx.focus_target,
@@ -6000,7 +6010,7 @@ impl SheetsApp {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
@@ -6138,7 +6148,7 @@ impl SheetsApp {
             .map(|c| c.kind)
     }
 
-    fn run_menu_item(&mut self, doc: &mut AutoCommit, item: &MenuItem) {
+    fn run_menu_item(&mut self, doc: &mut Edits<'_>, item: &MenuItem) {
         match item {
             MenuItem::NewSheet => self.add_sheet(doc),
             MenuItem::ImportCsv => {
@@ -6227,7 +6237,7 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    fn resolve_tab_rename_outcome(&mut self, doc: &mut AutoCommit, outcome: EditOutcome) {
+    fn resolve_tab_rename_outcome(&mut self, doc: &mut Edits<'_>, outcome: EditOutcome) {
         match outcome {
             EditOutcome::Committed(name) => {
                 let Some(rename) = self.tab_rename.take() else {
@@ -6333,7 +6343,7 @@ impl SheetsApp {
         clippy::too_many_lines,
         reason = "tab menu actions stay together to preserve their shared active-sheet update rules"
     )]
-    fn run_tab_action(&mut self, doc: &mut AutoCommit, idx: usize, act: TabAction) {
+    fn run_tab_action(&mut self, doc: &mut Edits<'_>, idx: usize, act: TabAction) {
         match act {
             TabAction::Rename => self.begin_tab_rename(idx),
             TabAction::Duplicate => {
@@ -6490,7 +6500,8 @@ pub(crate) mod tests {
         crate::sample::write(&mut doc);
         let mut app = attached_app();
         app.stage_scenario(None);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         (app, doc)
     }
 
@@ -6822,15 +6833,15 @@ pub(crate) mod tests {
         // Case `unchanged_sync_and_tab_switch_keep_the_tabs`.
         {
             let (mut app, mut doc) = seeded_app();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             let first_heads = app.tabs_heads.clone();
             let first_ids = app.sheet_ids.as_ptr();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.tabs_heads, first_heads);
             assert_eq!(app.sheet_ids.as_ptr(), first_ids);
 
-            app.switch_sheet(&mut doc, 1);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.switch_sheet(&mut Edits::lend(&mut doc), 1);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.sheet_ids.as_ptr(), first_ids);
         }
 
@@ -6873,7 +6884,7 @@ pub(crate) mod tests {
             };
 
             // The on-screen tab context-menu "Delete" on sheet 1 (the real handler).
-            app.run_tab_action(&mut doc, 1, TabAction::Delete);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 1, TabAction::Delete);
 
             let dispatched = actions::encode(
                 app.last_action
@@ -6901,7 +6912,7 @@ pub(crate) mod tests {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 9)); // A10, an empty cell
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: (0, 9),
@@ -7217,7 +7228,7 @@ pub(crate) mod tests {
             app.grid.select_only((0, 30)); // A31 on sheet 0
             app.grid.begin_edit_in_place();
             app.grid.insert_text_public("draft");
-            app.switch_sheet(&mut doc, 1); // click the "Sales" tab
+            app.switch_sheet(&mut Edits::lend(&mut doc), 1); // click the "Sales" tab
             assert_eq!(app.active_sheet, 1);
             let wb = SheetsDoc::wb_map(&mut doc);
             assert!(
@@ -7292,7 +7303,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: (0, 21),
@@ -7307,7 +7318,7 @@ pub(crate) mod tests {
             // Commit the edit through the real flush → apply_cmds path.
             let mut out = Vec::new();
             app.grid.flush_edit(&mut out);
-            app.apply_cmds(&mut doc, out);
+            app.apply_cmds(&mut Edits::lend(&mut doc), out);
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 21)), "=5");
             assert_eq!(value_at(&app, (0, 21)), Some(CellValue::Number(5.0)));
         }
@@ -7336,7 +7347,7 @@ pub(crate) mod tests {
             assert_eq!(value_at(&app, e2), Some(CellValue::Number(3600.0)));
 
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: b2,
@@ -7356,7 +7367,7 @@ pub(crate) mod tests {
             let (mut app, mut doc) = seeded_app();
             // Put the active cell just below a numeric run and AutoSum it.
             app.grid.select_only((1, 7)); // B8, under B2:B7
-            app.auto_sum(&mut doc);
+            app.auto_sum(&mut Edits::lend(&mut doc));
             let raw = SheetsDoc::cell_raw(&doc, 0, (1, 7));
             assert!(raw.starts_with("=SUM("), "auto-sum wrote {raw:?}");
             // The computed value is finite and positive (a real sum, not an error).
@@ -7371,7 +7382,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 0)); // A1, row 0
-            app.auto_sum(&mut doc);
+            app.auto_sum(&mut Edits::lend(&mut doc));
             assert_eq!(app.status, "Nothing above to sum");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 0)), "Category"); // unchanged
         }
@@ -7382,7 +7393,7 @@ pub(crate) mod tests {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 1)); // A2, directly under A1 = "Category" (text)
             let before = SheetsDoc::cell_raw(&doc, 0, (0, 1));
-            app.auto_sum(&mut doc);
+            app.auto_sum(&mut Edits::lend(&mut doc));
             assert_eq!(app.status, "No numeric run above");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 1)), before);
             assert!(!SheetsDoc::cell_raw(&doc, 0, (0, 1)).starts_with("=SUM"));
@@ -7396,7 +7407,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 8)); // B9 = 2600 (currency in the seed)
-            app.apply_format(&mut doc, CellFormat::Percent);
+            app.apply_format(&mut Edits::lend(&mut doc), CellFormat::Percent);
             assert_eq!(app.format_of_active(), CellFormat::Percent);
         }
 
@@ -7407,7 +7418,7 @@ pub(crate) mod tests {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_range_public((1, 1), (1, 2)); // B2:B3
             app.grid.add_range_public((3, 1), (3, 2)); // D2:D3 (discontiguous)
-            app.apply_format(&mut doc, CellFormat::Percent);
+            app.apply_format(&mut Edits::lend(&mut doc), CellFormat::Percent);
             let snap = SheetsDoc::snapshot_sheet(&doc, 0, Currency::USD);
             for a in [(1, 1), (1, 2), (3, 1), (3, 2)] {
                 assert_eq!(
@@ -7429,9 +7440,9 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 25)); // A26, empty
-            app.apply_format(&mut doc, CellFormat::Percent);
+            app.apply_format(&mut Edits::lend(&mut doc), CellFormat::Percent);
             assert_eq!(app.format_of_active(), CellFormat::Percent);
-            app.clear_format(&mut doc);
+            app.clear_format(&mut Edits::lend(&mut doc));
             assert_eq!(app.format_of_active(), CellFormat::General);
             // General is not persisted in the snapshot, so the explicit format is gone.
             let snap = SheetsDoc::snapshot_sheet(&doc, 0, Currency::USD);
@@ -7442,7 +7453,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 1)); // B2
-            app.dispatch_command(&mut doc, "format_percent", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "format_percent", None);
             // The stored format for B2 is now Percent.
             let cur = app.default_currency();
             let snap = SheetsDoc::snapshot_sheet(&doc, 0, cur);
@@ -7565,10 +7576,12 @@ pub(crate) mod tests {
                     bold: false,
                 })]],
             };
-            app.import_tables(&mut doc, vec![table.clone()]).unwrap();
+            app.import_tables(&mut Edits::lend(&mut doc), vec![table.clone()])
+                .unwrap();
             assert_eq!(SheetsDoc::sheet_names(&doc), ["sales"]);
             assert_eq!(app.active_sheet, 0);
-            app.import_tables(&mut doc, vec![table]).unwrap();
+            app.import_tables(&mut Edits::lend(&mut doc), vec![table])
+                .unwrap();
             assert_eq!(
                 SheetsDoc::sheet_names(&doc).len(),
                 2,
@@ -7586,7 +7599,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_range_public((4, 1), (4, 3)); // E2:E4, E2 = =SUM(B2:D2)
-            app.fill_down(&mut doc);
+            app.fill_down(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (4, 2)), "=SUM(B3:D3)");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (4, 3)), "=SUM(B4:D4)");
             // E3 recomputes against row 3's operands: 460 + 510 + ... etc > 0.
@@ -7603,7 +7616,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: (7, 1),
@@ -7618,7 +7631,7 @@ pub(crate) mod tests {
             );
             app.grid.select_range_public((7, 1), (7, 2)); // the pattern
             app.grid.start_fill_to((7, 5)); // drag the handle down to H6
-            app.run_pending_fill(&mut doc);
+            app.run_pending_fill(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (7, 3)), "3");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (7, 4)), "4");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (7, 5)), "5");
@@ -7632,7 +7645,7 @@ pub(crate) mod tests {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.grid.start_fill_to((4, 4)); // drag down to E5
-            app.run_pending_fill(&mut doc);
+            app.run_pending_fill(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (4, 2)), "=SUM(B3:D3)");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (4, 3)), "=SUM(B4:D4)");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (4, 4)), "=SUM(B5:D5)");
@@ -7648,7 +7661,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: (7, 10),
@@ -7663,7 +7676,7 @@ pub(crate) mod tests {
             );
             app.grid.select_range_public((7, 10), (8, 10));
             app.grid.start_fill_to((10, 10)); // drag right to K11
-            app.run_pending_fill(&mut doc);
+            app.run_pending_fill(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (9, 10)), "30");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (10, 10)), "40");
         }
@@ -7694,7 +7707,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_range_public((4, 1), (6, 1)); // E2:G2, E2 = =SUM(B2:D2)
-            app.fill_right(&mut doc);
+            app.fill_right(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (5, 1)), "=SUM(C2:E2)");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (6, 1)), "=SUM(D2:F2)");
             match value_at(&app, (5, 1)) {
@@ -7718,7 +7731,7 @@ pub(crate) mod tests {
             app.grid.select_only((1, 1)); // B2 = 1200, currency
             app.copy_selection(false);
             app.grid.select_only((1, 7)); // B8, empty
-            app.paste(&mut doc);
+            app.paste(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (1, 7)), "1200");
             assert!(matches!(
                 app.grid.cell_fmt_at((1, 7)),
@@ -7739,7 +7752,7 @@ pub(crate) mod tests {
             app.grid.select_only((4, 1)); // E2
             app.copy_selection(false);
             app.grid.select_only((5, 2)); // F3
-            app.paste(&mut doc);
+            app.paste(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (5, 2)), "=SUM(C3:E3)");
             // C3=460, D3=510, E3=SUM(B3:D3)=1390 → 2360.
             assert_eq!(value_at(&app, (5, 2)), Some(CellValue::Number(2360.0)));
@@ -7754,7 +7767,7 @@ pub(crate) mod tests {
             app.grid.select_only((0, 0)); // A1 = "Category"
             app.copy_selection(true); // cut
             app.grid.select_only((0, 20)); // A21, empty
-            app.paste(&mut doc);
+            app.paste(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 0)), "");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 20)), "Category");
         }
@@ -7770,7 +7783,7 @@ pub(crate) mod tests {
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.copy_selection(true); // cut
             app.grid.select_only((6, 10)); // G11, empty, far away
-            app.paste(&mut doc);
+            app.paste(&mut Edits::lend(&mut doc));
             // The formula is unchanged: a move keeps references pointing at B2:D2.
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (6, 10)), "=SUM(B2:D2)");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (4, 1)), "", "source cleared");
@@ -7789,7 +7802,7 @@ pub(crate) mod tests {
             app.copy_selection(false);
             // Target a 1×3 range F2:F4; the 1×1 block tiles down it.
             app.grid.select_range_public((5, 1), (5, 3));
-            app.paste(&mut doc);
+            app.paste(&mut Edits::lend(&mut doc));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (5, 1)), "=SUM(C2:E2)");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (5, 2)), "=SUM(C3:E3)");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (5, 3)), "=SUM(C4:E4)");
@@ -7801,15 +7814,15 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             let target = (0, 40); // A41, empty region
-            assert!(app.paste_tsv(&mut doc, target, "10\t20\n30\t40\n"));
+            assert!(app.paste_tsv(&mut Edits::lend(&mut doc), target, "10\t20\n30\t40\n"));
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 40)), "10");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (1, 40)), "20");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 41)), "30");
             assert_eq!(SheetsDoc::cell_raw(&doc, 0, (1, 41)), "40");
-            app.reload(&mut doc);
+            app.reload(&doc);
             assert_eq!(value_at(&app, (1, 41)), Some(CellValue::Number(40.0)));
             // Empty payload writes nothing.
-            assert!(!app.paste_tsv(&mut doc, target, ""));
+            assert!(!app.paste_tsv(&mut Edits::lend(&mut doc), target, ""));
         }
     }
 
@@ -7939,7 +7952,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             let before = SheetsDoc::sheet_count(&doc);
-            app.run_tab_action(&mut doc, 0, TabAction::Duplicate);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::Duplicate);
             assert_eq!(SheetsDoc::sheet_count(&doc), before + 1);
             // Inserted right after the source and named "<name> copy".
             assert_eq!(SheetsDoc::sheet_names(&doc)[1], "Budget copy");
@@ -7951,17 +7964,17 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             // Seed: Budget, Sales. Remove Sales.
-            app.run_tab_action(&mut doc, 1, TabAction::Delete);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 1, TabAction::Delete);
             assert_eq!(SheetsDoc::sheet_names(&doc), vec!["Budget"]);
             // The last remaining sheet cannot be deleted away.
-            app.run_tab_action(&mut doc, 0, TabAction::Delete);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::Delete);
             assert_eq!(SheetsDoc::sheet_count(&doc), 1);
         }
 
         // Case `tab_move_right_reorders_sheets`.
         {
             let (mut app, mut doc) = seeded_app();
-            app.run_tab_action(&mut doc, 0, TabAction::MoveRight);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::MoveRight);
             assert_eq!(SheetsDoc::sheet_names(&doc), vec!["Sales", "Budget"]);
             // The moved sheet keeps its data (Budget's E2 formula).
             assert_eq!(SheetsDoc::cell_raw(&doc, 1, (4, 1)), "=SUM(B2:D2)");
@@ -7970,9 +7983,9 @@ pub(crate) mod tests {
         // Case `tab_set_and_clear_colour`.
         {
             let (mut app, mut doc) = seeded_app();
-            app.run_tab_action(&mut doc, 0, TabAction::SetColor(Some(2)));
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::SetColor(Some(2)));
             assert_eq!(SheetsDoc::sheet_color(&doc, 0), Some(2));
-            app.run_tab_action(&mut doc, 0, TabAction::SetColor(None));
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::SetColor(None));
             assert_eq!(SheetsDoc::sheet_color(&doc, 0), None);
         }
     }
@@ -7984,7 +7997,8 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             // Commit the startup seed and refresh once at its steady-state heads.
-            app.sync(&mut doc, &automerge::ROOT);
+            doc.commit();
+            app.sync(&doc, &automerge::ROOT);
             let cached_heads = app
                 .cache
                 .as_ref()
@@ -7993,7 +8007,7 @@ pub(crate) mod tests {
                 .clone();
 
             app.pending.redraw = false;
-            app.reload(&mut doc);
+            app.reload(&doc);
             assert!(
                 !app.pending.redraw,
                 "unchanged reload should return before rebuilding"
@@ -8002,15 +8016,24 @@ pub(crate) mod tests {
 
             SheetsDoc::set_cell_raw(&mut doc, 0, (0, 0), "1234");
             app.pending.redraw = false;
-            app.reload(&mut doc);
+            app.reload(&doc);
 
             let refreshed_heads = &app
                 .cache
                 .as_ref()
                 .expect("edited reload refreshes cache")
                 .heads;
-            assert_ne!(refreshed_heads, &cached_heads);
-            assert_eq!(refreshed_heads, &doc.get_heads());
+            assert_ne!(
+                (refreshed_heads, app.cache.as_ref().unwrap().pending_ops),
+                (&cached_heads, 0),
+                "pending edits invalidate the cached document revision"
+            );
+            assert_eq!(refreshed_heads, &doc.base_heads());
+            assert_eq!(app.cache.as_ref().unwrap().pending_ops, doc.pending_ops());
+            assert!(
+                doc.pending_ops() > 0,
+                "a read-only reload must not commit pending edits"
+            );
             assert_eq!(value_at(&app, (0, 0)), Some(CellValue::Number(1234.0)));
             assert!(app.pending.redraw, "rebuilt grid must request a redraw");
         }
@@ -8183,7 +8206,7 @@ pub(crate) mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: doc,
+                state: Edits::lend(doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -8422,7 +8445,7 @@ pub(crate) mod tests {
             let (mut app, mut doc) = seeded_app();
             // Budget!B2:B6 — a column of numbers.
             app.grid.select_range_public((1, 1), (1, 5));
-            app.dispatch_command(&mut doc, "sum_selection", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "sum_selection", None);
             // A SUM total lands in B7 (the row directly below the selection).
             let raw = SheetsDoc::cell_raw(&doc, 0, (1, 6));
             assert_eq!(raw, "=SUM(B2:B6)", "sum total written below the selection");
@@ -8438,7 +8461,7 @@ pub(crate) mod tests {
             assert!(!b2.is_empty());
             // Insert a row above row 1 (active is E2 → row index 1).
             app.grid.select_only((0, 0)); // A1 → insert above row 0
-            app.dispatch_command(&mut doc, "insert_row", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "insert_row", None);
             // Everything shifted down one: the old A1 header is now at A2.
             assert_eq!(
                 SheetsDoc::cell_raw(&doc, 0, (0, 0)),
@@ -8453,7 +8476,7 @@ pub(crate) mod tests {
 
             // Delete that blank top row again → header returns to A1.
             app.grid.select_only((0, 0));
-            app.dispatch_command(&mut doc, "delete_row", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "delete_row", None);
             assert_eq!(
                 SheetsDoc::cell_raw(&doc, 0, (0, 0)),
                 "Category",
@@ -8467,7 +8490,7 @@ pub(crate) mod tests {
             let a1 = SheetsDoc::cell_raw(&doc, 0, (0, 0));
             assert_eq!(a1, "Category");
             app.grid.select_only((0, 0)); // insert left of column A
-            app.dispatch_command(&mut doc, "insert_col", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "insert_col", None);
             assert_eq!(
                 SheetsDoc::cell_raw(&doc, 0, (0, 0)),
                 "",
@@ -8484,9 +8507,9 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             assert!(!app.grid.formula_view());
-            app.dispatch_command(&mut doc, "formula_view", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "formula_view", None);
             assert!(app.grid.formula_view(), "formula view turned on");
-            app.dispatch_command(&mut doc, "formula_view", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "formula_view", None);
             assert!(!app.grid.formula_view(), "formula view toggled back off");
         }
 
@@ -8494,7 +8517,7 @@ pub(crate) mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             let before = SheetsDoc::sheet_count(&doc);
-            app.dispatch_command(&mut doc, "new_sheet", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "new_sheet", None);
             assert_eq!(SheetsDoc::sheet_count(&doc), before + 1);
         }
     }
@@ -8544,14 +8567,14 @@ pub(crate) mod tests {
             assert!(app.perform_semantic_action(
                 "sheets.toolbar.formula-view",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &root,
             ));
             assert!(app.grid.formula_view());
             assert!(app.perform_semantic_action(
                 "sheets.name-box",
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &root,
             ));
             assert!(app.name_box_edit.is_some());
@@ -8559,7 +8582,7 @@ pub(crate) mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &root,
             ));
             assert_eq!(app.active_sheet, 1);
