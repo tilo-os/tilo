@@ -1268,7 +1268,7 @@ impl App {
         registration: crate::history_mode::HistoryRegistration,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.root_widget.sync(&self.state.doc, &self.state.root);
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
@@ -2294,7 +2294,7 @@ impl App {
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.root_widget.sync(&self.state.doc, &self.state.root);
         self.invalidate_widget_resource_cache();
         self.update_focusable_order();
     }
@@ -2384,7 +2384,7 @@ impl App {
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.root_widget.sync(&self.state.doc, &self.state.root);
         self.needs_sync = false;
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
@@ -3707,7 +3707,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.bindings.clear();
                     app.layout.node_map.clear();
                     app.focused_node = None;
-                    app.root_widget.sync(&mut app.state.doc, &app.state.root);
+                    app.root_widget.sync(&app.state.doc, &app.state.root);
                     layout(app)
                 }
                 Self::Driver(driver) => driver.relayout(),
@@ -4183,7 +4183,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     move |_, _| projection.get(),
                     move |changed| values[usize::from(*changed)].take().unwrap(),
                 );
-                model.sync(&mut automerge::AutoCommit::new(), &automerge::ROOT);
+                model.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
                 let mut host = Host::new(native, old_guard.managed(Box::new(model)));
                 host.activate("Emit request");
                 host.value("CONFIRM");

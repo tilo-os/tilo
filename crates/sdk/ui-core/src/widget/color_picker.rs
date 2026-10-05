@@ -1753,12 +1753,12 @@ mod tests {
             let state = crate::LocalState::new(initial);
             let mut left = ColorPicker::from_state(&state);
             let mut right = ColorPicker::from_state(&state);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
             left.set_color(expected);
             assert!(state.with(|color| ColorPicker::colors_equal(color, &expected)));
             assert!(left.take_changed().is_none());
-            Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut right, &doc, &automerge::ROOT);
             assert_eq!(right.hex_string(), "#ABCDEF");
             assert!(right.take_changed().is_none());
         }

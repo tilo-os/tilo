@@ -1140,7 +1140,7 @@ fn legacy_admission_refuses_busy_rebound_dropped_or_replaced_owners() {
         tile.bind_record(a.clone(), checkout.clone());
         let mut outer = automerge::AutoCommit::new();
         outer.put(ROOT, "outer", "pending").unwrap();
-        tile.sync(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
         let root = tile.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -2688,17 +2688,17 @@ fn framework_input_frame_still_suppresses_tile_lifecycle() {
         TileEditor(crate::widget::Column::new().push(Box::new(probe))),
     )));
     tile.bind_record(store, checkout);
-    let mut outer = automerge::AutoCommit::new();
+    let outer = automerge::AutoCommit::new();
     let flag = std::rc::Rc::new(std::cell::Cell::new(false));
     {
         let _frame = crate::history_mode::frame::FrameworkInputFrame::new(&flag, true);
-        assert!(!tile.update(&mut outer, &ROOT));
-        tile.sync(&mut outer, &ROOT);
+        assert!(!tile.update(&outer, &ROOT));
+        tile.sync(&outer, &ROOT);
     }
     assert_eq!(handles.updates.get(), 0);
     assert_eq!(handles.syncs.get(), 0);
-    assert!(!tile.update(&mut outer, &ROOT));
-    tile.sync(&mut outer, &ROOT);
+    assert!(!tile.update(&outer, &ROOT));
+    tile.sync(&outer, &ROOT);
     assert_eq!(handles.updates.get(), 1);
     assert_eq!(handles.syncs.get(), 1);
 }
@@ -2905,18 +2905,18 @@ fn refused_transition_does_not_repoll_an_undrained_stream_update() {
         invocation,
         value: "stream ready".into(),
     });
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     handles.intent.replace(Some(second));
     for _ in 0..5 {
-        tile.sync(&mut outer, &ROOT);
-        tile.update(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
+        tile.update(&outer, &ROOT);
     }
     assert_eq!(handles.polls.get(), 1);
     assert!(matches!(
         tile.poll_resource_operation(invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Item { sequence: 1, .. })
     ));
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert_eq!(handles.polls.get(), 2);
 }
 
@@ -2935,7 +2935,7 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &store, &first);
     let mut outer = automerge::AutoCommit::new();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     let old_invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, old_invocation, &mut outer);
     let old_sender = handles.sender.borrow().clone();
@@ -2945,7 +2945,7 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
             value: "completed first result".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     handles.intent.replace(Some(second.clone()));
 
     let fresh_invocation = tilo_actions::InvocationId::new();
@@ -2965,8 +2965,8 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
             .is_err()
     );
     for _ in 0..3 {
-        tile.sync(&mut outer, &ROOT);
-        tile.update(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
+        tile.update(&outer, &ROOT);
     }
     assert_eq!(accepted(&handles.accepted).len(), 1);
     let old_update = tile
@@ -2990,7 +2990,7 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
             value: "fresh second result".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert_eq!(
         accepted(&handles.accepted).last(),
         Some(&("second".to_owned(), "fresh second result".to_owned()))
@@ -3015,7 +3015,7 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &store, &first);
     let mut outer = automerge::AutoCommit::new();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     let invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, invocation, &mut outer);
     handles
@@ -3026,7 +3026,7 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
             value: "completed on first".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert!(matches!(
         tile.poll_resource_operation(invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { .. })
@@ -3037,7 +3037,7 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
     assert!(tile.record_transition_error().is_some());
     assert!(tile.history_owner().is_some());
     seed_note(&store, &second, "second", "second");
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert_eq!(handles.releases.get(), 1);
     assert!(tile.record_transition_error().is_none());
     assert!(
@@ -3049,7 +3049,7 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
             .is_err()
     );
     for _ in 0..3 {
-        tile.sync(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
     }
     assert_eq!(
         accepted(&handles.accepted),
@@ -3069,7 +3069,7 @@ fn unavailable_old_record_loan_blocks_release_without_acknowledging_commit() {
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &store, &first);
     let mut outer = automerge::AutoCommit::new();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     let invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, invocation, &mut outer);
     handles
@@ -3080,7 +3080,7 @@ fn unavailable_old_record_loan_blocks_release_without_acknowledging_commit() {
             value: "pending old commit".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
 
     store
         .with(&first.id, |_| {
@@ -3123,7 +3123,7 @@ fn renewed_same_id_custody_releases_terminally_polled_old_queue_before_sync() {
             current.id.clone(),
             crate::record::RecordKind::new("wrong-kind"),
         )));
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert!(tile.record_transition_error().is_some() || tile.history_owner().is_none());
     assert!(matches!(
         tile.poll_resource_operation(invocation, false, &outer, &ROOT),
@@ -3133,7 +3133,7 @@ fn renewed_same_id_custody_releases_terminally_polled_old_queue_before_sync() {
 
     handles.intent.replace(Some(current.clone()));
     let _ = tile.content_mut();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
 
     assert!(
         accepted(&handles.accepted).is_empty(),
@@ -3223,8 +3223,8 @@ fn explicit_current_bind_cancels_missing_target_without_later_replay() {
         })
         .unwrap();
     for _ in 0..3 {
-        tile.sync(&mut outer, &ROOT);
-        tile.update(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
+        tile.update(&outer, &ROOT);
     }
 
     assert_eq!(
@@ -3455,7 +3455,7 @@ fn pending_missing_target_retries_after_cached_item_is_delivered() {
             sequence: 1,
             value: serde_json::json!("first"),
         });
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert!(tile.record_transition_error().is_some());
     assert!(matches!(
         tile.poll_resource_operation(invocation, false, &outer, &ROOT),
@@ -3473,7 +3473,7 @@ fn pending_missing_target_retries_after_cached_item_is_delivered() {
             message: Some("after item".into()),
         });
 
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
 
     assert_eq!(
         handles.last_owner.borrow().as_deref(),
@@ -3533,7 +3533,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &old_store, &old);
     let mut outer = automerge::AutoCommit::new();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     let invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, invocation, &mut outer);
     let old_owner = tile.history_owner().unwrap();
@@ -3545,7 +3545,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
             value: "old draft".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert_eq!(accepted(&handles.accepted), one("old", "old draft"));
 
     handles
@@ -3610,8 +3610,8 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
     assert_eq!(handles.releases.get(), 0);
 
     for _ in 0..3 {
-        tile.sync(&mut outer, &ROOT);
-        tile.update(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
+        tile.update(&outer, &ROOT);
         assert_eq!(
             handles.last_owner.borrow().as_deref(),
             Some("old"),
@@ -3636,7 +3636,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
 
     tile.bind_record(latest_store.clone(), latest.clone());
     assert!(tile.record_transition_error().is_none());
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert_eq!(handles.last_owner.borrow().as_deref(), Some("latest"));
     let latest_owner = tile.history_owner().unwrap();
     latest_owner.validate().unwrap();
@@ -3663,7 +3663,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
             value: "fresh latest result".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert!(matches!(
         tile.poll_resource_operation(fresh, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }) if observed == fresh

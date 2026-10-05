@@ -1827,8 +1827,8 @@ mod tests {
         list: &mut VirtualList<M>,
         width: f32,
     ) -> (TaffyTree<()>, NodeId) {
-        let mut doc = AutoCommit::new();
-        list.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        list.sync(&doc, &automerge::ROOT);
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = list.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -1953,15 +1953,15 @@ mod tests {
             list.take_structure_dirty();
             let before = list.mounted[0].node;
             assert!(before.is_some());
-            let mut doc = AutoCommit::new();
-            list.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            list.sync(&doc, &automerge::ROOT);
             assert_eq!(
                 list.mounted[0].node, before,
                 "sync preserves a retained row's layout node"
             );
             list.take_structure_dirty();
             states.borrow_mut().insert(0, 1);
-            list.sync(&mut doc, &automerge::ROOT);
+            list.sync(&doc, &automerge::ROOT);
             assert!(list.mounted[0].node.is_none());
             assert!(
                 list.take_structure_dirty(),
@@ -2154,7 +2154,7 @@ mod tests {
             changed.set(true);
             assert!(Widget::update(
                 &mut list,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT
             ));
             let _ = lay_out(&mut list, 300.0);
@@ -2179,7 +2179,7 @@ mod tests {
             changed.set(true);
             assert!(Widget::update(
                 &mut list,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT
             ));
             let _ = lay_out(&mut list, 300.0);
@@ -2256,7 +2256,7 @@ mod tests {
                 .push(ListModelChange::RowsChanged { keys: vec![2] });
             assert!(Widget::update(
                 &mut list,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut list, 300.0);

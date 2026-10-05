@@ -2074,7 +2074,7 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+        let (state, path) = ui::doc::document_ref(state, path);
         if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
             && saved != self.record_save_status
         {

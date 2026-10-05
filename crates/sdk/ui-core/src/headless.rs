@@ -2482,10 +2482,10 @@ impl FrameHarness {
         // Select the current record before update, then observe a first
         // asynchronous open before sync can accidentally edit the room index.
         self.tick_records();
-        self.root.update(&mut self.state.doc, &self.state.root);
+        self.root.update(&self.state.doc, &self.state.root);
         self.tick_records();
         let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
-        self.root.sync(&mut self.state.doc, &self.state.root);
+        self.root.sync(&self.state.doc, &self.state.root);
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, t_sync);
         }
@@ -2605,7 +2605,7 @@ impl FrameHarness {
                 };
                 // Newly composed controls need sync. If it replaces delegates,
                 // discard these raw maps without admitting or measuring them.
-                self.root.sync(&mut self.state.doc, &self.state.root);
+                self.root.sync(&self.state.doc, &self.state.root);
                 let history_invalidated = self.invalidate_unsupported_history_owner();
                 if self.take_composition_dirty() || history_invalidated {
                     self.node_map.clear();
@@ -4969,7 +4969,7 @@ impl FrameHarness {
         if let Some(direction) = crate::interaction::mouse_nav_direction(event)
             && self
                 .root
-                .on_nav_gesture(direction, &mut self.state.doc, &self.state.root)
+                .on_nav_gesture(direction, &self.state.doc, &self.state.root)
         {
             return;
         }

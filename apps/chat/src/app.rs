@@ -2903,7 +2903,7 @@ impl Widget for ChatApp {
     }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document(doc, path);
+        let (doc, _) = ui::doc::document_ref(doc, path);
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
         self.announce_me(doc);

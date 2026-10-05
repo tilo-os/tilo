@@ -1458,8 +1458,8 @@ mod admission_tests {
             };
             let mut doc = automerge::AutoCommit::new();
             doc.put(automerge::ROOT, "label", "initial").unwrap();
-            root.update(&mut doc, &automerge::ROOT);
-            root.sync(&mut doc, &automerge::ROOT);
+            root.update(&doc, &automerge::ROOT);
+            root.sync(&doc, &automerge::ROOT);
             let now = crate::time::now();
             let mut retry = retry::RenderRetryState::default();
             for _ in 0..8 {
@@ -1491,8 +1491,8 @@ mod admission_tests {
                     tick
                 };
                 if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
-                    assert!(root.update(&mut doc, &automerge::ROOT));
-                    root.sync(&mut doc, &automerge::ROOT);
+                    assert!(root.update(&doc, &automerge::ROOT));
+                    root.sync(&doc, &automerge::ROOT);
                     let _ = buffers.recv().unwrap();
                 }
                 assert_eq!(

@@ -1276,7 +1276,7 @@ impl ThemesApp {
 
 impl Widget for ThemesApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+        let (state, path) = ui::doc::document_ref(state, path);
         if let Some(preview) = self.narrow_view_request.take() {
             self.narrow_view_chosen = true;
             self.set_narrow_preview(preview);

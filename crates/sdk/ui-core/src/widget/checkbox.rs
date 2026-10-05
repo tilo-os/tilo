@@ -1072,7 +1072,7 @@ mod tests {
                 ControlBindingKind::Action(_)
             ));
             doc.put(&automerge::ROOT, "legacy", false).unwrap();
-            Widget::sync(&mut checkbox, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut checkbox, &doc, &automerge::ROOT);
             assert!(
                 !checkbox.is_checked(),
                 "the document path remains the read model"
@@ -1096,15 +1096,15 @@ mod tests {
             let root = automerge::ROOT;
             let mut checkbox = Checkbox::new("any", "checked");
             doc.put(&root, "checked", true).unwrap();
-            Widget::sync(&mut checkbox, &mut doc, &root);
+            Widget::sync(&mut checkbox, &doc, &root);
             assert!(checkbox.is_checked());
 
             doc.delete(&root, "checked").unwrap();
-            Widget::sync(&mut checkbox, &mut doc, &root);
+            Widget::sync(&mut checkbox, &doc, &root);
             assert!(!checkbox.is_checked(), "a removed path means unchecked");
 
             doc.put(&root, "checked", "not-a-boolean").unwrap();
-            Widget::sync(&mut checkbox, &mut doc, &root);
+            Widget::sync(&mut checkbox, &doc, &root);
             assert!(!checkbox.is_checked(), "a mistyped path cannot stay stale");
         }
 
@@ -1120,8 +1120,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(true);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert!(first.is_checked());
             assert!(second.is_checked());
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -1135,12 +1135,12 @@ mod tests {
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);
 
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert!(!second.is_checked(), "sibling follows the shared model");
 
             second.set_checked(true);
             assert!(state.get(), "programmatic mutation publishes typed state");
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert!(first.is_checked());
             assert_eq!(
                 &*changes.borrow(),

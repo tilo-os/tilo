@@ -307,7 +307,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         let mut doc = document
             .try_borrow_mut()
             .map_err(|_| "read a past version before borrowing the document".to_owned())?;
-        let heads = ui_core::history_source::steps::resolve(&mut doc, version)?;
+        let heads = ui_core::history_source::steps::resolve(&doc, version)?;
         let past = doc
             .fork_at(&heads)
             .map_err(|error| format!("version {version:?} is not in this document: {error}"))?;

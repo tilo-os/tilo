@@ -1742,7 +1742,7 @@ impl PhotosApp {
         clippy::too_many_lines,
         reason = "each analysis outcome variant is reconciled against the presented library and library-analysis progress in one exhaustive match"
     )]
-    fn drain_library_analysis_result(&mut self, completed: AnalysisResult, doc: &mut AutoCommit) {
+    fn drain_library_analysis_result(&mut self, completed: AnalysisResult) {
         let photo_name = self
             .library_analysis
             .current_name
@@ -1765,7 +1765,7 @@ impl PhotosApp {
                     photo_id: completed.photo_id.clone(),
                     analysis,
                 };
-                self.apply(doc, &action).map_err(|error| error.to_string())
+                self.apply(&action).map_err(|error| error.to_string())
             }
             AnalysisOutcome::Image {
                 component: ImageAnalysisComponent::Ocr,
@@ -1851,10 +1851,10 @@ impl PhotosApp {
         clippy::too_many_lines,
         reason = "one drain loop applies every completed analysis job kind with the same stale/cancelled checks"
     )]
-    fn drain_analysis_results(&mut self, doc: &mut AutoCommit) {
+    fn drain_analysis_results(&mut self, doc: &AutoCommit) {
         while let Ok(completed) = self.analysis_rx.try_recv() {
             if self.library_analysis.invocation == Some(completed.invocation) {
-                self.drain_library_analysis_result(completed, doc);
+                self.drain_library_analysis_result(completed);
                 continue;
             }
             self.active_analysis.remove(&completed.invocation);
@@ -1894,7 +1894,7 @@ impl PhotosApp {
                             photo_id: completed.photo_id,
                             analysis,
                         };
-                        match self.apply(doc, &action) {
+                        match self.apply(&action) {
                             Ok(()) => {
                                 self.notice = Some(
                                     "Local image analysis was shared with this photo library"
@@ -2387,18 +2387,18 @@ impl PhotosApp {
     /// Import `path` through the canonical durable action. The decoded source
     /// path remains only in this process; the action writes portable metadata
     /// and the staged content hash into the shared document.
-    pub fn open_path(&mut self, doc: &mut AutoCommit, path: &str) {
+    pub fn open_path(&mut self, doc: &AutoCommit, path: &str) {
         self.open_bytes(doc, path, bounded_file_bytes(path).as_deref());
     }
 
     /// Import a photograph chosen by its contents, where it has no path: its
     /// name labels it and its bytes live in the content store.
-    pub fn open_contents(&mut self, doc: &mut AutoCommit, name: &str, bytes: &[u8]) {
+    pub fn open_contents(&mut self, doc: &AutoCommit, name: &str, bytes: &[u8]) {
         let bytes = (bytes.len() <= pixels::MAX_ENCODED_BYTES).then_some(bytes);
         self.open_bytes(doc, name, bytes);
     }
 
-    fn open_bytes(&mut self, doc: &mut AutoCommit, path: &str, bytes: Option<&[u8]>) {
+    fn open_bytes(&mut self, doc: &AutoCommit, path: &str, bytes: Option<&[u8]>) {
         match bytes.and_then(pixels::decode) {
             Some(img) => {
                 // Put the bytes in the content store before naming them, so
@@ -2422,9 +2422,7 @@ impl PhotosApp {
                 self.original_decode_failed = None;
                 let photo = LibraryPhoto::from_image(open);
                 let photo_id = photo.id.clone();
-                self.commit_library_action(
-                    doc,
-                    &crate::actions::PhotosAction::ImportPhoto { photo },
+                self.commit_library_action(&crate::actions::PhotosAction::ImportPhoto { photo },
                 );
                 self.show_photo(&photo_id);
                 self.notice = None;
@@ -2553,7 +2551,7 @@ impl PhotosApp {
     /// Commit a reviewed cluster's compact, user-approved membership through
     /// the normal typed action dispatcher. The local cluster stays local; the
     /// action contains only the selected display name and stable photo ids.
-    pub fn approve_people_cluster(&mut self, doc: &mut AutoCommit, cluster_id: &str) -> bool {
+    pub fn approve_people_cluster(&mut self, doc: &AutoCommit, cluster_id: &str) -> bool {
         let Some(action) = self.people_controller.approve_membership(cluster_id) else {
             self.notice = Some(
                 "Name and confirm this local People suggestion before sharing its labels"
@@ -2561,7 +2559,7 @@ impl PhotosApp {
             );
             return false;
         };
-        self.commit_library_action(doc, &action);
+        self.commit_library_action(&action);
         self.notice =
             Some("Approved person labels were added to the shared photo library".to_owned());
         true
@@ -2889,7 +2887,7 @@ impl PhotosApp {
         clippy::too_many_lines,
         reason = "one exhaustive match routes every People intent to its local or shared effect"
     )]
-    fn handle_people_intent(&mut self, intent: PeopleIntent, doc: &mut AutoCommit) {
+    fn handle_people_intent(&mut self, intent: PeopleIntent, doc: &AutoCommit) {
         match intent {
             PeopleIntent::Back => {
                 if self.people_selection.is_some() {
@@ -2954,9 +2952,7 @@ impl PhotosApp {
                     if to.is_empty() {
                         self.notice = Some("Enter a name first".to_owned());
                     } else {
-                        self.commit_library_action(
-                            doc,
-                            &crate::actions::PhotosAction::RenamePerson {
+                        self.commit_library_action(&crate::actions::PhotosAction::RenamePerson {
                                 from,
                                 to: to.clone(),
                             },
@@ -2969,9 +2965,7 @@ impl PhotosApp {
             PeopleIntent::BeginMerge => self.people_merge_mode = true,
             PeopleIntent::MergeApprovedInto(to) => {
                 if let Some(PeopleSelection::Approved(from)) = self.people_selection.clone() {
-                    self.commit_library_action(
-                        doc,
-                        &crate::actions::PhotosAction::RenamePerson { from, to },
+                    self.commit_library_action(&crate::actions::PhotosAction::RenamePerson { from, to },
                     );
                     self.people_selection = None;
                     self.people_merge_mode = false;
@@ -3255,16 +3249,14 @@ impl PhotosApp {
             .extend(self.library_cards.iter().map(|(id, _, _)| id.clone()));
     }
 
-    fn set_selected_favorite(&mut self, doc: &mut AutoCommit, favorite: bool) {
+    fn set_selected_favorite(&mut self, doc: &AutoCommit, favorite: bool) {
         let mut ids: Vec<_> = self.selected_photo_ids.iter().cloned().collect();
         ids.sort_unstable();
         if ids.is_empty() {
             self.notice = Some("Select at least one photograph first".to_owned());
             return;
         }
-        self.commit_library_action(
-            doc,
-            &crate::actions::PhotosAction::SetFavorites {
+        self.commit_library_action(&crate::actions::PhotosAction::SetFavorites {
                 photo_ids: ids,
                 favorite,
             },
@@ -3277,7 +3269,7 @@ impl PhotosApp {
         self.finish_selection();
     }
 
-    fn add_selected_to_destination_album(&mut self, doc: &mut AutoCommit) {
+    fn add_selected_to_destination_album(&mut self, doc: &AutoCommit) {
         let Some(album_id) = self.selection_destination_album.clone() else {
             self.notice = Some("Choose a destination album first".to_owned());
             return;
@@ -3299,9 +3291,7 @@ impl PhotosApp {
             self.notice = Some("Select at least one photograph first".to_owned());
             return;
         }
-        self.commit_library_action(
-            doc,
-            &crate::actions::PhotosAction::SetAlbumMembership {
+        self.commit_library_action(&crate::actions::PhotosAction::SetAlbumMembership {
                 album_id,
                 photo_ids,
             },
@@ -3310,7 +3300,7 @@ impl PhotosApp {
         self.finish_selection();
     }
 
-    fn handle_selection_hit(&mut self, hit: SelectionHit, doc: &mut AutoCommit) {
+    fn handle_selection_hit(&mut self, hit: SelectionHit, doc: &AutoCommit) {
         match hit {
             SelectionHit::Start => self.begin_selection(),
             SelectionHit::SelectAll => self.select_all_visible(),
@@ -3732,12 +3722,12 @@ impl PhotosApp {
     }
 
     /// Apply `next` to the document as an undoable edit.
-    fn commit_edits(&mut self, doc: &mut AutoCommit, next: Edits) {
+    fn commit_edits(&mut self, next: Edits) {
         let Some(photo_id) = self.open_photo.clone() else {
             return;
         };
         let action = crate::actions::PhotosAction::set(&photo_id, &next);
-        if let Err(error) = self.apply(doc, &action) {
+        if let Err(error) = self.apply(&action) {
             tracing::warn!(%error, "photos: the edit was refused");
         }
         self.notice = None;
@@ -3858,22 +3848,22 @@ impl PhotosApp {
         self
     }
 
-    /// Apply `action` to the library now, through its door.
-    fn apply(
-        &self,
-        doc: &mut AutoCommit,
-        action: &crate::actions::PhotosAction,
-    ) -> Result<(), tilo_actions::ActionError> {
+    /// Submit `action` to the library through its door. It is applied
+    /// after this pass, which only reads the library; a refusal is reported
+    /// by the dispatcher.
+    fn apply(&self, action: &crate::actions::PhotosAction) -> Result<(), tilo_actions::ActionError> {
         let Some(dispatch) = &self.dispatch else {
             return Err(tilo_actions::ActionError::Refused(
                 "this window edits no library".into(),
             ));
         };
-        dispatch.apply_now_with(
-            doc,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", action),
-        )
+        if !dispatch.may_apply(action) {
+            return Err(tilo_actions::ActionError::Refused(
+                "you can view this library but not change it".into(),
+            ));
+        }
+        dispatch.apply(action);
+        Ok(())
     }
 
     /// Every card interaction routes through the same typed, replayable
@@ -3888,7 +3878,6 @@ impl PhotosApp {
     )]
     fn commit_library_action(
         &mut self,
-        doc: &mut AutoCommit,
         action: &crate::actions::PhotosAction,
     ) {
         #[cfg(test)]
@@ -3897,7 +3886,7 @@ impl PhotosApp {
                 tilo_actions::EncodedAction::encode(crate::actions::PHOTOS_ACTION_TYPE, action)
                     .ok();
         }
-        if let Err(error) = self.apply(doc, action) {
+        if let Err(error) = self.apply(action) {
             tracing::warn!(%error, "photos: the library edit was refused");
         }
     }
@@ -4088,7 +4077,7 @@ impl PhotosApp {
         clippy::too_many_lines,
         reason = "builds the single atomic batch metadata action from all sheet fields in one place"
     )]
-    fn save_metadata_editor(&mut self, doc: &mut AutoCommit) {
+    fn save_metadata_editor(&mut self, doc: &AutoCommit) {
         if self.metadata_editor_ids.is_empty() {
             return;
         }
@@ -4173,9 +4162,7 @@ impl PhotosApp {
                 },
             })
         };
-        self.commit_library_action(
-            doc,
-            &crate::actions::PhotosAction::SetMetadataBatch {
+        self.commit_library_action(&crate::actions::PhotosAction::SetMetadataBatch {
                 photo_ids: self.metadata_editor_ids.clone(),
                 folder: text_patch(
                     &self.metadata_folder_input,
@@ -4296,7 +4283,7 @@ impl PhotosApp {
         true
     }
 
-    fn activate_metadata_editor_hit(&mut self, hit: MetadataEditorHit, doc: &mut AutoCommit) {
+    fn activate_metadata_editor_hit(&mut self, hit: MetadataEditorHit, doc: &AutoCommit) {
         match hit {
             MetadataEditorHit::Save => self.save_metadata_editor(doc),
             MetadataEditorHit::Cancel => self.cancel_metadata_editor(),
@@ -4348,7 +4335,7 @@ impl PhotosApp {
         self.notice = Some("Album changes discarded".to_owned());
     }
 
-    fn save_album_editor(&mut self, doc: &mut AutoCommit) {
+    fn save_album_editor(&mut self, doc: &AutoCommit) {
         let Some(id) = self.album_editor_id.clone() else {
             return;
         };
@@ -4388,7 +4375,7 @@ impl PhotosApp {
                 .collect(),
             create: self.album_editor_creating,
         };
-        self.commit_library_action(doc, &action);
+        self.commit_library_action(&action);
         self.active_album = Some(id);
         self.album_editor = false;
         self.album_delete_confirm = false;
@@ -4397,7 +4384,7 @@ impl PhotosApp {
         self.notice = Some("Album saved for everyone in this workspace".to_owned());
     }
 
-    fn delete_active_album(&mut self, doc: &mut AutoCommit) {
+    fn delete_active_album(&mut self, doc: &AutoCommit) {
         let Some(id) = self
             .album_editor_id
             .clone()
@@ -4405,7 +4392,7 @@ impl PhotosApp {
         else {
             return;
         };
-        self.commit_library_action(doc, &crate::actions::PhotosAction::RemoveAlbum { id });
+        self.commit_library_action(&crate::actions::PhotosAction::RemoveAlbum { id });
         self.active_album = None;
         self.album_editor = false;
         self.album_editor_id = None;
@@ -5353,7 +5340,7 @@ impl PhotosApp {
     }
 
     /// Drain a click that a button posted, and act on it.
-    fn drain_pending(&mut self, doc: &mut AutoCommit) {
+    fn drain_pending(&mut self, doc: &AutoCommit) {
         let Some(hit) = self.pending.take() else {
             return;
         };
@@ -5371,8 +5358,8 @@ impl PhotosApp {
             Hit::Library => {
                 let _ = self.perform_effect(PhotosEffect::ViewLibrary, &self.presented().library);
             }
-            Hit::RotateLeft => self.commit_edits(doc, edits.rotated_left()),
-            Hit::RotateRight => self.commit_edits(doc, edits.rotated_right()),
+            Hit::RotateLeft => self.commit_edits(edits.rotated_left()),
+            Hit::RotateRight => self.commit_edits(edits.rotated_right()),
             Hit::CropToView => {
                 let view = self.visible_rect();
                 // Cropping to the whole image is a no-op; say so rather than
@@ -5380,10 +5367,10 @@ impl PhotosApp {
                 if view.is_full() {
                     self.notice = Some(tr("photos-crop-noop"));
                 } else {
-                    self.commit_edits(doc, edits.cropped_from_view(view));
+                    self.commit_edits(edits.cropped_from_view(view));
                 }
             }
-            Hit::Reset => self.commit_edits(doc, Edits::default()),
+            Hit::Reset => self.commit_edits(Edits::default()),
             Hit::Copy => {
                 let _ = self.perform_effect(PhotosEffect::Copy, &self.presented().library);
             }
@@ -6574,7 +6561,7 @@ impl PhotosApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
     ) -> bool {
         let Some(key) = target.strip_prefix("photos:toolbar:") else {
             return false;
@@ -6682,7 +6669,7 @@ impl PhotosApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
     ) -> bool {
         if let Some(destination) = target.strip_prefix("photos:library:") {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
@@ -7098,9 +7085,7 @@ impl PhotosApp {
             self.toggle_library_selection(photo_id, false);
         } else if remove {
             if self.library_remove_confirm.as_deref() == Some(photo_id) {
-                self.commit_library_action(
-                    doc,
-                    &crate::actions::PhotosAction::RemovePhoto {
+                self.commit_library_action(&crate::actions::PhotosAction::RemovePhoto {
                         photo_id: photo_id.to_owned(),
                     },
                 );
@@ -7113,9 +7098,7 @@ impl PhotosApp {
                 );
             }
         } else if set_favorite {
-            self.commit_library_action(
-                doc,
-                &crate::actions::PhotosAction::SetFavorite {
+            self.commit_library_action(&crate::actions::PhotosAction::SetFavorite {
                     photo_id: photo_id.to_owned(),
                     favorite: !favorite,
                 },
@@ -7291,7 +7274,7 @@ impl PhotosApp {
         clippy::too_many_lines,
         reason = "applies every directory import event kind and the final summary from one worker drain"
     )]
-    fn drain_directory_import(&mut self, doc: &mut AutoCommit) {
+    fn drain_directory_import(&mut self) {
         if self.directory_import.is_none() {
             return;
         }
@@ -7427,7 +7410,7 @@ impl PhotosApp {
                 }
                 continue;
             }
-            match self.apply(doc, &action) {
+            match self.apply(&action) {
                 Ok(()) => {
                     if let Some(job) = self.directory_import.as_mut() {
                         if existing.is_some() {
@@ -7546,7 +7529,7 @@ impl PhotosApp {
         clippy::too_many_lines,
         reason = "drains every portal picker channel with its outcome handling side by side"
     )]
-    fn drain_picker(&mut self, doc: &mut AutoCommit) {
+    fn drain_picker(&mut self, doc: &AutoCommit) {
         self.drain_contents_picker(doc);
         if let Some(rx) = self.directory_picker.as_ref() {
             match rx.try_recv() {
@@ -14377,7 +14360,7 @@ fn capture_day(captured_at: &str) -> String {
 /// enforce its decoded-pixel limit.
 impl PhotosApp {
     /// Import the photographs a contents chooser delivered.
-    fn drain_contents_picker(&mut self, doc: &mut AutoCommit) {
+    fn drain_contents_picker(&mut self, doc: &AutoCommit) {
         let Some(rx) = self.contents_picker.as_ref() else {
             return;
         };
@@ -14628,7 +14611,7 @@ impl PhotosApp {
     /// control action. Pointer handling only queues the action; the callback
     /// runs after that event has returned, so `sync` is the common completion
     /// boundary for pointer, keyboard, accessibility, and agent activation.
-    fn drain_action_control_pending(&mut self, doc: &mut AutoCommit) {
+    fn drain_action_control_pending(&mut self, doc: &AutoCommit) {
         self.drain_pending(doc);
         if let Some(hit) = self.directory_import_pending.take() {
             self.activate_directory_status(hit);
@@ -14800,7 +14783,7 @@ impl Widget for PhotosApp {
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        let (doc, path) = ui::doc::document(doc, path);
+        let (doc, path) = ui::doc::document_ref(doc, path);
         self.follow_cancellations();
         self.open_launched();
         self.reconcile_content();
@@ -14828,7 +14811,7 @@ impl Widget for PhotosApp {
             });
         }
         self.drain_picker(doc);
-        self.drain_directory_import(doc);
+        self.drain_directory_import();
         self.refresh();
         self.library_search.sync(doc, path);
         if let Some(query) = self.library_search.take_dirty() {
@@ -17073,7 +17056,7 @@ mod history_reconcile_tests {
 
     /// Present `doc`'s library to `app` as the framework does after a change,
     /// then sync it.
-    fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
+    fn sync(app: &mut PhotosApp, doc: &AutoCommit) {
         present(app, doc);
         Widget::sync(app, doc, &ROOT);
     }
@@ -17092,11 +17075,11 @@ mod history_reconcile_tests {
         PhotosApp::with_content(content)
             .with_dispatcher(ui::framework::testing::dispatcher("so.tilo.photos"))
     }
-    fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
+    fn restore(doc: &AutoCommit, selected: &[automerge::ChangeHash]) {
         ui::history_source::steps::restore(doc, selected, &[]).unwrap();
     }
     /// Change the document's content: every photograph removed.
-    fn empty_library(doc: &mut AutoCommit) {
+    fn empty_library(doc: &AutoCommit) {
         let mut library = PhotosDoc::library(doc);
         library.photos.clear();
         PhotosDoc::set_library(doc, &library);
@@ -17530,12 +17513,12 @@ mod history_reconcile_tests {
         (app, doc, ids)
     }
 
-    fn activate_album_control(app: &mut PhotosApp, doc: &mut AutoCommit, target: &str) {
+    fn activate_album_control(app: &mut PhotosApp, doc: &AutoCommit, target: &str) {
         assert!(app.perform_semantic_action(target, &AccessAction::Activate, doc, &ROOT));
         app.sync(doc, &ROOT);
     }
 
-    fn seed_membership_album(doc: &mut AutoCommit, ids: &[String; 4]) {
+    fn seed_membership_album(doc: &AutoCommit, ids: &[String; 4]) {
         let mut library = PhotosDoc::library(doc);
         library.albums.push(crate::model::Album {
             id: "photos.album:membership".into(),

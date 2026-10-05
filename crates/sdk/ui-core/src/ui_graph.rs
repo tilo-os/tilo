@@ -3375,7 +3375,7 @@ mod tests {
             )]),
         );
         let mut doc = AutoCommit::new();
-        Widget::sync(root.as_mut(), &mut doc, &ROOT);
+        Widget::sync(root.as_mut(), &doc, &ROOT);
         assert_eq!(
             named_value(root.as_ref(), "title-b").as_deref(),
             Some("Atlas")
@@ -3402,7 +3402,7 @@ mod tests {
         );
         // What every input over the path shows is the app's value.
         title.set("Atlas II".to_owned());
-        Widget::sync(root.as_mut(), &mut doc, &ROOT);
+        Widget::sync(root.as_mut(), &doc, &ROOT);
         assert_eq!(
             named_value(root.as_ref(), "title-b").as_deref(),
             Some("Atlas II")
@@ -4032,8 +4032,8 @@ mod tests {
                 }
             })
             .unwrap();
-        let mut doc = AutoCommit::new();
-        Widget::sync(&mut live, &mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        Widget::sync(&mut live, &doc, &automerge::ROOT);
         assert_eq!(named_state(&live, "name"), before);
         assert_eq!(
             named_widget_ptr(&live, "name"),
@@ -4076,8 +4076,8 @@ mod tests {
                 value: serde_json::json!("After"),
             }])
             .unwrap();
-        let mut doc = AutoCommit::new();
-        Widget::sync(&mut live, &mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        Widget::sync(&mut live, &doc, &automerge::ROOT);
         assert_eq!(named_state(&live, "name"), before);
         assert_ne!(
             named_widget_ptr(&live, "name"),
@@ -4109,8 +4109,8 @@ mod tests {
             "rejected apply must surface an error, got {error}"
         );
         assert_eq!(handle.to_json_pretty().unwrap(), before);
-        let mut doc = AutoCommit::new();
-        Widget::sync(&mut live, &mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        Widget::sync(&mut live, &doc, &automerge::ROOT);
         assert!(
             crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360))
                 .inspection_json()

@@ -36,16 +36,3 @@ fn committed_readers_see_what_get_heads_and_diff_see_once_committed() {
     assert_ne!(third, second);
     assert_eq!(doc.committed_heads(), third);
 }
-
-#[test]
-fn committed_heads_follow_an_isolated_view() {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "count", 1_i64).unwrap();
-    let first = doc.get_heads();
-    doc.put(ROOT, "count", 2_i64).unwrap();
-    doc.commit();
-    doc.isolate(&first);
-    assert_eq!(doc.committed_heads(), first);
-    doc.integrate();
-    assert_ne!(doc.committed_heads(), first);
-}

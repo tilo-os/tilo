@@ -3328,15 +3328,15 @@ mod tests {
     }
 
     thread_local! {
-        /// The body each [`Scribe`] last saw, by its text; `Some(None)` for a
+        /// The body each [`Scribe`] last saw, by its text; empty for a
         /// document without one.
-        static SEEN: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
+        static SEEN: std::cell::RefCell<std::collections::HashMap<String, String>> =
             std::cell::RefCell::default();
     }
 
     /// What the [`Scribe`] named `text` last saw: `None` when it was never
     /// handed a document.
-    fn seen_by(text: &str) -> Option<Option<String>> {
+    fn seen_by(text: &str) -> Option<String> {
         SEEN.with_borrow(|seen| seen.get(text).cloned())
     }
 
@@ -3360,7 +3360,7 @@ mod tests {
                 Ok(Some((automerge::Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
                 _ => None,
             };
-            SEEN.with_borrow_mut(|seen| seen.insert(self.text.clone(), body));
+            SEEN.with_borrow_mut(|seen| seen.insert(self.text.clone(), body.unwrap_or_default()));
         }
         fn build_layout(
             &mut self,
@@ -3624,7 +3624,7 @@ mod tests {
             })));
             host.bind_record(store.clone(), checkout.clone());
             for _ in 0..2 {
-                host.sync(&mut AutoCommit::new(), &ROOT);
+                host.sync(&AutoCommit::new(), &ROOT);
                 store.tick();
                 store.flush();
                 assert!(
@@ -3989,11 +3989,11 @@ mod tests {
                 .unwrap()
                 .initialize(|_| Ok(()))
                 .unwrap();
-            host.sync(&mut AutoCommit::new(), &ROOT);
+            host.sync(&AutoCommit::new(), &ROOT);
             assert!(host.record_error.is_none());
             assert!(host.automatic_history);
             let owner = host.history_owner().unwrap();
-            host.sync(&mut AutoCommit::new(), &ROOT);
+            host.sync(&AutoCommit::new(), &ROOT);
             assert!(owner.same_owner(&host.history_owner().unwrap()));
             let mut count = 0;
             crate::history_mode::capability::visit_framework_history(&host, &mut |_, _| count += 1);
@@ -4063,8 +4063,8 @@ mod tests {
                 assert!(host.history_owner().is_none());
                 assert!(!host.automatic_history);
                 for _ in 0..2 {
-                    host.sync(&mut AutoCommit::new(), &ROOT);
-                    host.update(&mut AutoCommit::new(), &ROOT);
+                    host.sync(&AutoCommit::new(), &ROOT);
+                    host.update(&AutoCommit::new(), &ROOT);
                     assert!(
                         host.record_error.is_some(),
                         "refusal must survive ordinary frames"
@@ -4147,7 +4147,7 @@ mod tests {
                 opens: None,
             })));
             host.bind_record(first.clone(), checkout.clone());
-            host.sync(&mut AutoCommit::new(), &ROOT);
+            host.sync(&AutoCommit::new(), &ROOT);
             host.bind_record(second.clone(), checkout.clone());
             assert!(
                 host.binding.as_ref().unwrap().store.same_owner(&second),
@@ -4179,7 +4179,7 @@ mod tests {
                 .initialize(|doc| {
                     use automerge::transaction::Transactable;
                     doc.put(ROOT, "body", "the other kind's body")
-                        .map(|_| ())
+                        .map(|()| ())
                         .map_err(|error| error.to_string())
                 })
                 .unwrap();
@@ -4189,7 +4189,7 @@ mod tests {
                 opens: Some(file),
             })));
             host.bind_or_create_record(store.clone(), scratch.clone());
-            host.sync(&mut AutoCommit::new(), &ROOT);
+            host.sync(&AutoCommit::new(), &ROOT);
 
             assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
             assert!(
@@ -4203,7 +4203,7 @@ mod tests {
             );
             assert_ne!(
                 seen_by("kept off another kind"),
-                Some(Some("the other kind's body".into())),
+                Some(String::from("the other kind's body")),
                 "the app is never handed a record of another kind"
             );
             let driver =
@@ -4240,13 +4240,13 @@ mod tests {
             );
 
             std::fs::remove_file(&root).unwrap();
-            host.sync(&mut AutoCommit::new(), &ROOT);
+            host.sync(&AutoCommit::new(), &ROOT);
             assert!(host.pending_binding.is_none());
             assert!(host.record_error.is_none());
             assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
             assert_eq!(
                 seen_by("recovered"),
-                Some(None),
+                Some(String::new()),
                 "the app is handed the recovered scratch record"
             );
         }
@@ -4264,7 +4264,7 @@ mod tests {
                 opens: Some(file),
             })));
             host.bind_or_create_record(store.clone(), checkout.clone());
-            host.sync(&mut AutoCommit::new(), &ROOT);
+            host.sync(&AutoCommit::new(), &ROOT);
             assert!(host.record_error.is_some());
             assert_eq!(host.binding.as_ref().unwrap().live, checkout.id);
             assert_eq!(
@@ -4403,7 +4403,7 @@ mod tests {
         // open is that file's.
         {
             let store = RecordStore::in_memory();
-            let mut parent = AutoCommit::new();
+            let parent = AutoCommit::new();
 
             let mut scratch = TileHost::new(TileContent::App(Box::new(Scribe {
                 text: "unsaved".into(),
@@ -4411,10 +4411,10 @@ mod tests {
             })));
             scratch.bind_or_create_record(store.clone(), tab_checkout(1));
             write_body(&store, &RecordId::for_tab(1), "the first tab");
-            scratch.sync(&mut parent, &ROOT);
+            scratch.sync(&parent, &ROOT);
             assert_eq!(
                 seen_by("unsaved"),
-                Some(Some("the first tab".into())),
+                Some(String::from("the first tab")),
                 "a tab with no file shows the record the tab is",
             );
 
@@ -4430,16 +4430,16 @@ mod tests {
             write_body(&store, &RecordId::for_file(&file), "the report's body");
             opened.bind_or_create_record(store.clone(), tab_checkout(2));
             write_body(&store, &RecordId::for_tab(2), "the second tab");
-            opened.sync(&mut parent, &ROOT);
+            opened.sync(&parent, &ROOT);
             assert_eq!(
                 seen_by("the report"),
-                Some(Some("the report's body".into())),
+                Some(String::from("the report's body")),
                 "an app that has a file open shows that file's record, \
                  not the scratch record its tab started on",
             );
             assert_eq!(
                 seen_by("unsaved"),
-                Some(Some("the first tab".into())),
+                Some(String::from("the first tab")),
                 "the other tab is untouched by any of it",
             );
         }
@@ -4456,7 +4456,7 @@ mod tests {
             })));
             host.bind_or_create_record(store.clone(), scratch.clone());
             assert!(store.open_existing_record_checked(&scratch).is_ok());
-            host.sync(&mut AutoCommit::new(), &ROOT);
+            host.sync(&AutoCommit::new(), &ROOT);
             assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
             assert!(host.record_error.is_some());
             assert!(
@@ -4472,7 +4472,7 @@ mod tests {
         // diverge, and no amount of merging makes two copies one file again.
         {
             let store = RecordStore::in_memory();
-            let mut parent = AutoCommit::new();
+            let parent = AutoCommit::new();
             let file = std::path::PathBuf::from("/work/shared.odt");
             store.open_record(&RecordCheckout::new(
                 RecordId::for_file(&file),
@@ -4485,7 +4485,7 @@ mod tests {
                     opens: Some(file.clone()),
                 })));
                 host.bind_or_create_record(store.clone(), tab_checkout(tab));
-                host.sync(&mut parent, &ROOT);
+                host.sync(&parent, &ROOT);
             }
             assert_eq!(
                 store.open_records().len(),
@@ -4495,7 +4495,7 @@ mod tests {
             for text in ["first", "second"] {
                 assert_eq!(
                     seen_by(text),
-                    Some(Some("one shared body".into())),
+                    Some(String::from("one shared body")),
                     "both tabs show the one document",
                 );
             }

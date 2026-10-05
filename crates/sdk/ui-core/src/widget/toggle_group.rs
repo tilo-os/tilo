@@ -1440,8 +1440,8 @@ mod tests {
 
         // A value set elsewhere (a keyboard shortcut) is shown on sync.
         state.set('a');
-        let mut doc = AutoCommit::new();
-        Widget::sync(&mut rail, &mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        Widget::sync(&mut rail, &doc, &automerge::ROOT);
         assert_eq!(rail.selected(), 0);
 
         // An icon segment's label and shortcut are its tooltip.

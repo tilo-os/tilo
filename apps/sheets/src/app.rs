@@ -4599,7 +4599,7 @@ impl Widget for SheetsApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+        let (state, _) = ui::doc::document_ref(state, path);
         if let Some(locale) = &self.locale {
             self.global = locale.get();
         }

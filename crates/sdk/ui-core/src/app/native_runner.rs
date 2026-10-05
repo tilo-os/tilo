@@ -3215,7 +3215,7 @@ impl AppHandler {
         let app = &mut self.app;
         if app.root_widget.on_nav_gesture(
             crate::gesture::NavDirection::Back,
-            &mut app.state.doc,
+            &app.state.doc,
             &app.state.root,
         ) {
             app.needs_sync = true;

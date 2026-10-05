@@ -88,7 +88,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         app.root_widget = Box::new(crate::widget::Column::new().push(Box::new(
             crate::widget::TextInput::local().with_id("draft-editor"),
         )));
-        app.root_widget.sync(&mut app.state.doc, &ROOT);
+        app.root_widget.sync(&app.state.doc, &ROOT);
         layout(&mut app);
         let editor = node_for_test_id(&app, "draft-editor");
         app.set_focused_node(Some(editor));
@@ -2337,7 +2337,7 @@ fn legacy_ids_and_effects_cannot_reach_a_replacement_owner() {
         unsafe {
             (*tile_pointer).bind_record(b.clone(), checkout.clone());
         }
-        app.root_widget.sync(&mut app.state.doc, &ROOT);
+        app.root_widget.sync(&app.state.doc, &ROOT);
         app.rebuild_structure();
         let new_node = app
             .layout

@@ -80,7 +80,7 @@ impl RichTextSource for DraftField {
         self.read_only || self.field.read_only()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit) {
+    fn sync(&mut self, doc: &AutoCommit) {
         self.field.sync(doc);
     }
 
