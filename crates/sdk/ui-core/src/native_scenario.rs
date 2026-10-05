@@ -16,6 +16,13 @@ pub(crate) mod host_clock;
 #[path = "native_log.rs"]
 pub(crate) mod log;
 
+// Namespace-local PIDs and render counters can collide across normal sandboxes.
+// This lifetime identity exposes no host PID or host namespace information.
+pub(crate) fn observer_session_id() -> uuid::Uuid {
+    static SESSION: std::sync::OnceLock<uuid::Uuid> = std::sync::OnceLock::new();
+    *SESSION.get_or_init(uuid::Uuid::new_v4)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {

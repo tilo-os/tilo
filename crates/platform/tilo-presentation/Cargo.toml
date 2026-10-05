@@ -11,6 +11,9 @@ description = "Native presentation feedback, input provenance and clock observat
 [dependencies]
 winit.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = "0.1"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 
