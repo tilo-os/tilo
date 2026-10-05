@@ -867,6 +867,7 @@ fn check_signed_target(
             && signed.architecture == target.architecture
             && signed.isa == target.isa
             && target.runtime.as_deref() == Some(signed.runtime.as_str())
+            && target.interfaces.is_empty()
     });
     if !matches {
         return Err(BundleReviewError::TargetMismatch {
@@ -900,8 +901,12 @@ fn check_native_target(
         .isa
         .for_arch(architecture)
         .map(|isa| isa.wire_label().to_string());
+    // The interfaces a version records are exactly the ones its signed
+    // manifest requires: a device decides what to offer from them before it
+    // has the package, so an entry must not understate them.
     if manifest_isa.as_deref() != Some(target.isa.as_str())
         || manifest.package.native_runtime_binding() != target.runtime.as_deref()
+        || manifest.required_interface_wire() != target.interfaces
     {
         return Err(BundleReviewError::TargetMismatch {
             version: version.version.clone(),
@@ -1058,6 +1063,13 @@ mod tests {
                 inspect_bytes(&entry, &entry.versions[0], &bytes),
                 Err(BundleReviewError::TargetMismatch { .. })
             ));
+            // The interfaces a version claims are the manifest's, exactly.
+            entry.versions[0].target.isa = "aarch64-v8.2".into();
+            entry.versions[0].target.interfaces = vec!["system@1".into()];
+            assert!(matches!(
+                inspect_bytes(&entry, &entry.versions[0], &bytes),
+                Err(BundleReviewError::TargetMismatch { .. })
+            ));
         }
     }
 
@@ -1110,6 +1122,7 @@ mod tests {
             architecture: signed.architecture,
             isa: signed.isa,
             runtime: Some(signed.runtime),
+            interfaces: Vec::new(),
         };
         assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
 
@@ -1126,6 +1139,7 @@ mod tests {
             architecture: "x86_64".into(),
             isa: "x86_64-v3".into(),
             runtime: Some("tilo-runtime/2026.07".into()),
+            interfaces: Vec::new(),
         };
         assert!(matches!(
             inspect_bytes(&entry, &as_native, &bytes),
@@ -1176,6 +1190,7 @@ mod tests {
             architecture: "aarch64".into(),
             isa: "aarch64".into(),
             runtime: Some("tilo-runtime/2026.07".into()),
+            interfaces: Vec::new(),
         };
         assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
 
@@ -1240,6 +1255,7 @@ mod tests {
             architecture: "aarch64".into(),
             isa: "aarch64".into(),
             runtime: Some("tilo-runtime/2026.07".into()),
+            interfaces: Vec::new(),
         };
         assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
 
@@ -1348,6 +1364,7 @@ type = "gui"
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 1,

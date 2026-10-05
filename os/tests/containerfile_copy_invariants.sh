@@ -108,7 +108,9 @@ containerfile="$repo/os/Containerfile"
 # is a deliberate addition.
 # /usr/bin/terminal, /usr/bin/file-explorer and /usr/bin/settings are
 # deliberate removals: those apps ship only as packages in the app store.
-expected_contract=da5bf1843cbf27b03e017323160cf622d07482d0168c0a747330722fa699b5c1
+# The system-interface declaration (/usr/share/tilo/system-interfaces.toml),
+# which says what app builds this OS can run, is a deliberate addition.
+expected_contract=1bc647b84344453fca7941751d821e0998ef390e21528730cb373890a9c08755
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
