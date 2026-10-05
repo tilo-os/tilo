@@ -15,6 +15,7 @@ import sys
 
 import collection
 import collection_app_runtime as app_runtime
+import collection_font_catalog as fonts
 import collection_local_runtime as runtime
 from collection_native import inspect_bundle_metadata, load_paths, read_entitlements, run
 from collection_stages import bounded_build
@@ -71,6 +72,7 @@ def make_plan(args):
             'sdk': str(sdk), 'sdk_sha256': collection.digest(sdk),
             'runtime_plan': runtime_plan, 'payload': str(payload),
             'payload_receipt_sha256': collection.digest(payload / 'receipt.json'),
+            'font_catalog': fonts.make_plan(root),
             'minimum_macos': '27.0', 'general_product_minimum_unchanged': '13.0',
             'signed': False, 'notarized': False, 'runtime_qualified': False}
     if args.app_profile:
@@ -127,9 +129,16 @@ def inspect_app(app, plan):
     code = set(binaries)
     allowed_files = {app / relative for relative in plan['runtime_plan']['assets']}
     allowed_files |= code | {app / 'Contents/Info.plist', app / 'Contents/Resources/tilo-app.toml'}
+    if plan.get('font_catalog'):
+        fonts.inspect(app, plan['font_catalog'])
+        allowed_files |= {app / relative for relative in plan['font_catalog']['files']}
     if plan['app']['icon_sha256']:
         allowed_files.add(app / 'Contents/Resources/AppIcon.icns')
     for path in app.rglob('*'):
+        if plan.get('font_catalog') and path == app / fonts.LOOKUP_LINK:
+            # The exact relative in-bundle target was checked above. Other
+            # symlinks remain forbidden by this private bundle adapter.
+            continue
         if path.is_symlink() or (path.is_file() and path not in allowed_files):
             raise ValueError(f'unexpected bundle content: {path.relative_to(app)}')
         if path.is_file() and os.access(path, os.X_OK) and path not in code:
@@ -140,6 +149,8 @@ def inspect_app(app, plan):
     macos_files = {main, helper, app / 'Contents/MacOS/tilo-runtime-mcp.real'}
     if extended:
         macos_files.add(app / extended['main_real'])
+    if plan.get('font_catalog'):
+        macos_files.add(app / fonts.LOOKUP_LINK)
     if set((app / 'Contents/MacOS').iterdir()) != macos_files:
         raise ValueError('unexpected helper directory contents')
     result = {'runtime': facts, 'app': runtime.image_info(main, 'arm64', 15),
@@ -219,6 +230,7 @@ def assemble(out, plan, resume=False, guard=None):
     required = plan.get('binary_facts', {}).get('bytes', 0)
     required += sum(item.get('bytes', 0) for item in plan['runtime_plan']['images'].values())
     required += sum(item['bytes'] for item in plan['runtime_plan'].get('assets', {}).values())
+    required += sum(item['bytes'] for item in plan.get('font_catalog', {}).get('files', {}).values())
     required += 64 * 1024**2
     if shutil.disk_usage(out.parent).free < 20 * 1024**3 + required:
         raise ValueError('insufficient headroom above the 20 GiB floor for SDK copies and runtime overlay')
@@ -252,6 +264,8 @@ def assemble(out, plan, resume=False, guard=None):
         read_entitlements(policy)
         original_info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         overlay(app, plan)
+        if plan.get('font_catalog'):
+            fonts.stage(app, plan['font_catalog'])
         if plan.get('app_runtime'):
             app_runtime.augment(app, plan, guard)
         facts = inspect_app(app, plan)

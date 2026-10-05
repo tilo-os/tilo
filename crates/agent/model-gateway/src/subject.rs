@@ -86,6 +86,12 @@ pub fn segment(image: &VisionImage) -> Result<String, String> {
     {
         let file = std::fs::read(&installed.path)
             .map_err(|error| format!("the subject model cannot be read: {error}"))?;
+        // The store checks only the file's size when it is looked up; the
+        // bytes run here are checked against the digest the signed
+        // catalogue pinned, once per load.
+        if hex_digest(&file) != installed.sha256 {
+            return Err(TAMPERED.to_string());
+        }
         let model = SubjectModel::load(file, family)
             .map_err(|error| error.to_string())?
             .with_threads(threads());
@@ -139,6 +145,21 @@ pub fn segment(image: &VisionImage) -> Result<String, String> {
     .map_err(|error| error.to_string())
 }
 
+/// Why a model whose bytes no longer match their pinned digest is refused.
+const TAMPERED: &str = "the subject model on this device does not match its verified download; remove it and set it up again in Settings › Models";
+
+/// The SHA-256 of `bytes` in lowercase hexadecimal, as the store names files.
+fn hex_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    use std::fmt::Write as _;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
+
 fn millis(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
@@ -146,6 +167,14 @@ fn millis(since: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_digest_is_spelt_as_the_store_names_files() {
+        assert_eq!(
+            hex_digest(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     #[test]
     fn only_known_model_families_run() {

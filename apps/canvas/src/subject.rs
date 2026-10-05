@@ -35,7 +35,8 @@ pub const REFINE_PIXELS: f64 = 6.0; // a reach in the picture's pixels, not spac
 /// The most a caller may ask an edge be fitted over, in units.
 const MOST_REFINE: f64 = 200.0; // a reach in artwork units, not spacing
 
-/// What the model said about the last subject found, for the answer.
+/// What the model said about the last subject found, for the answer an
+/// agent gets.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     pub model: String,
@@ -56,7 +57,8 @@ pub fn take_found() -> Option<Found> {
 /// Where to find the model when none is set up, said in a refusal.
 pub const SET_UP: &str = "settings://models/u2net-subject";
 
-/// The area `select` asks for by subject or refine, and its soft edge.
+/// The area `select` asks for by subject or refine, and its soft edge,
+/// found here and now (an agent's action waits for it).
 ///
 /// # Errors
 /// Returns why: no model is set up (and where to set it up), no subject
@@ -68,12 +70,58 @@ pub fn find(
     art: &Artwork,
 ) -> Result<(Region, Option<Matte>), String> {
     let subject = select.subject == Some(true);
+    let (area, matte, found) = prepare(select, renderer, text, art)?.finish()?;
+    if subject {
+        LAST.with_borrow_mut(|last| *last = Some(found));
+    }
+    Ok((area, matte))
+}
+
+/// What the artwork shows, ready for the model and the edge filter: the
+/// part drawn on the window's thread; [`Prepared::finish`] does the slow
+/// part anywhere, so a person's window keeps drawing meanwhile.
+pub struct Prepared {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    view: ui::vello::kurbo::Rect,
+    to_cells: Affine,
+    /// The point `at` names, in the render's pixels.
+    at: Option<(usize, usize)>,
+    /// Where `at` was, in units, for a refusal.
+    at_units: Option<[f64; 2]>,
+    subject: bool,
+    /// The selection to refine when there is no subject to find, as cells.
+    current: Option<Vec<bool>>,
+    reach: f64,
+    bounds: ui::vello::kurbo::Rect,
+}
+
+/// Draw what `select` needs to find its area.
+///
+/// # Errors
+/// Returns why the request is malformed or the artwork cannot be drawn.
+pub fn prepare(
+    select: &Select,
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+) -> Result<Prepared, String> {
+    let subject = select.subject == Some(true);
     let refine = select.refine.unwrap_or(0.0);
     if !refine.is_finite() || !(0.0..=MOST_REFINE).contains(&refine) {
         return Err(format!("refine is 0 to {MOST_REFINE} units"));
     }
     if select.colour.is_some() {
         return Err("subject and refine find the area themselves; leave colour out".into());
+    }
+    if let Some([x, y]) = select.at
+        && !art.bounds().contains(Point::new(x, y))
+    {
+        return Err(format!(
+            "at [{x}, {y}] is outside the artwork (0, 0, {}, {})",
+            art.width, art.height
+        ));
     }
     let current = art.selection.as_ref().map(crate::model::Selection::region);
     let (view, scale) = view_of(art, subject, current.as_ref(), refine)?;
@@ -90,29 +138,22 @@ pub fn find(
     });
     renderer.pictures.patient = patient;
     let (rgba, width, height) = shown?;
-    let (columns, rows) = (width as usize, height as usize);
     // The render's own pixels per unit, after rounding its size.
     let to_cells = Affine::scale_non_uniform(
         f64::from(width) / view.width().max(1e-9),
         f64::from(height) / view.height().max(1e-9),
     ) * Affine::translate((-view.x0, -view.y0));
-    let mut found = Found::default();
-    let matte = if subject {
-        subject_matte(select, art, (&rgba, width, height), to_cells, &mut found)?
+    let at = select.at.map(|[x, y]| {
+        let cell = to_cells * Point::new(x, y);
+        (index(cell.x), index(cell.y))
+    });
+    let current = if subject {
+        None
     } else {
         let Some(current) = &current else {
             return Err("nothing is selected to refine; select an area first".into());
         };
-        let cells = current.cells(to_cells, columns, rows);
-        tilo_subject::Matte::new(
-            columns,
-            rows,
-            cells
-                .iter()
-                .map(|&inside| f32::from(u8::from(inside)))
-                .collect(),
-        )
-        .ok_or("the selection is too small to refine")?
+        Some(current.cells(to_cells, width as usize, height as usize))
     };
     let reach = if select.refine.is_some() {
         refine * scale
@@ -121,51 +162,109 @@ pub fn find(
     } else {
         0.0
     };
-    let began = ui::time::now();
-    let matte = if reach > 0.0 {
-        let picture = tilo_subject::Picture {
-            rgba: &rgba,
+    Ok(Prepared {
+        rgba,
+        width,
+        height,
+        view,
+        to_cells,
+        at,
+        at_units: select.at,
+        subject,
+        current,
+        reach,
+        bounds: art.bounds(),
+    })
+}
+
+impl Prepared {
+    /// Find the subject (asking the model) or take the selection, fit its
+    /// edge to the picture, and keep the soft edge as content: the area,
+    /// the soft edge, and what it took.
+    ///
+    /// # Errors
+    /// Returns why: no model is set up, no subject or nothing was left.
+    pub fn finish(self) -> Result<(Region, Option<Matte>, Found), String> {
+        let (columns, rows) = (self.width as usize, self.height as usize);
+        let mut found = Found::default();
+        let matte = match &self.current {
+            None => self.subject_matte(&mut found)?,
+            Some(cells) => tilo_subject::Matte::new(
+                columns,
+                rows,
+                cells
+                    .iter()
+                    .map(|&inside| f32::from(u8::from(inside)))
+                    .collect(),
+            )
+            .ok_or("the selection is too small to refine")?,
+        };
+        let began = ui::time::now();
+        let matte = if self.reach > 0.0 {
+            let picture = tilo_subject::Picture {
+                rgba: &self.rgba,
+                width: columns,
+                height: rows,
+            };
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a reach of at most a few thousand pixels"
+            )]
+            tilo_subject::refine_edge(&picture, &matte, self.reach as f32)
+                .map_err(|error| error.to_string())?
+        } else {
+            matte
+        };
+        found.refine_ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let area = Coverage {
             width: columns,
             height: rows,
-        };
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a reach of at most a few thousand pixels"
-        )]
-        tilo_subject::refine_edge(&picture, &matte, reach as f32)
-            .map_err(|error| error.to_string())?
-    } else {
-        matte
-    };
-    found.refine_ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let area = Coverage {
-        width: columns,
-        height: rows,
-        cells: &matte.values,
-    }
-    .traced(to_cells.inverse())
-    .combine(&Region::of_rect(art.bounds()), Op::Intersect);
-    if area.is_empty() {
-        return Err(if subject {
-            "no subject stands out in the picture; select it by hand, or try at on it".into()
+            cells: &matte.values,
+        }
+        .traced(self.to_cells.inverse())
+        .combine(&Region::of_rect(self.bounds), Op::Intersect);
+        if area.is_empty() {
+            return Err(if self.subject {
+                "no subject stands out in the picture; select it by hand, or try at on it".into()
+            } else {
+                "refining left nothing selected".into()
+            });
+        }
+        let soft = self.reach > 0.0
+            && matte
+                .values
+                .iter()
+                .any(|value| *value > 0.0 && *value < 1.0);
+        let kept = if soft {
+            Some(kept_matte(&matte, self.view.origin(), self.to_cells)?)
         } else {
-            "refining left nothing selected".into()
-        });
+            None
+        };
+        Ok((area, kept, found))
     }
-    let soft = reach > 0.0
-        && matte
-            .values
-            .iter()
-            .any(|value| *value > 0.0 && *value < 1.0);
-    let kept = if soft {
-        Some(kept_matte(&matte, view.origin(), to_cells)?)
-    } else {
-        None
-    };
-    if subject {
-        LAST.with_borrow_mut(|last| *last = Some(found));
+
+    /// The subject the model finds in the render, or with `at` the one
+    /// object there.
+    fn subject_matte(&self, found: &mut Found) -> Result<tilo_subject::Matte, String> {
+        let subject = tilo_subject::find_subject(&self.rgba, self.width, self.height)
+            .map_err(|error| {
+                if error.needs_model() {
+                    format!(
+                        "select subject needs the on-device subject model (U²-Net, 176 MB, Apache-2.0), which is not set up: set it up in Settings › Models ({SET_UP}), then select again ({error})"
+                    )
+                } else {
+                    format!("the subject could not be found: {error}")
+                }
+            })?;
+        found.model = format!("{}@{}", subject.model_id, short(&subject.revision));
+        found.load_ms = subject.load_ms;
+        found.infer_ms = subject.infer_ms;
+        let (Some((x, y)), Some([ux, uy])) = (self.at, self.at_units) else {
+            return Ok(subject.matte);
+        };
+        tilo_subject::object_at(&subject.matte, x, y)
+            .ok_or_else(|| format!("no object is at [{ux}, {uy}]"))
     }
-    Ok((area, kept))
 }
 
 /// The part of the artwork to look at, and how closely: all of it for a
@@ -190,41 +289,6 @@ fn view_of(
         .intersect(art.bounds());
     let scale = (SIDE / around.width().max(around.height()).max(1.0)).min(MOST_PIXELS_PER_UNIT);
     Ok((around, scale))
-}
-
-/// The subject the model finds in the render `(rgba, width, height)`, or
-/// with `at` the one object there.
-fn subject_matte(
-    select: &Select,
-    art: &Artwork,
-    (rgba, width, height): (&[u8], u32, u32),
-    to_cells: Affine,
-    found: &mut Found,
-) -> Result<tilo_subject::Matte, String> {
-    let subject = tilo_subject::find_subject(rgba, width, height).map_err(|error| {
-        if error.needs_model() {
-            format!(
-                "select subject needs the on-device subject model (U²-Net, 176 MB, Apache-2.0), which is not set up: set it up in Settings › Models ({SET_UP}), then select again ({error})"
-            )
-        } else {
-            format!("the subject could not be found: {error}")
-        }
-    })?;
-    found.model = format!("{}@{}", subject.model_id, short(&subject.revision));
-    found.load_ms = subject.load_ms;
-    found.infer_ms = subject.infer_ms;
-    let Some([x, y]) = select.at else {
-        return Ok(subject.matte);
-    };
-    if !art.bounds().contains(Point::new(x, y)) {
-        return Err(format!(
-            "at [{x}, {y}] is outside the artwork (0, 0, {}, {})",
-            art.width, art.height
-        ));
-    }
-    let cell = to_cells * Point::new(x, y);
-    tilo_subject::object_at(&subject.matte, index(cell.x), index(cell.y))
-        .ok_or_else(|| format!("no object is at [{x}, {y}]"))
 }
 
 /// The soft edge kept as content, laid over the artwork where the render
@@ -440,12 +504,34 @@ fn clean_picture(
     }
     let picture = image::RgbaImage::from_raw(width as u32, height as u32, out)
         .ok_or("the cleaned picture is malformed")?;
-    let mut png = std::io::Cursor::new(Vec::new());
-    picture
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(|error| format!("the cleaned picture could not be kept: {error}"))?;
-    crate::resource::store(&png.into_inner()).map(Some)
+    crate::resource::store(&encode_like(&picture, &bytes)?).map(Some)
 }
+
+/// `picture` encoded as its source was: a photograph that came as a JPEG
+/// stays one (at a quality that adds no visible loss), so the cleaned copy
+/// costs about what the original did to keep and sync, rather than a PNG
+/// several times its size; anything else is kept losslessly as PNG.
+fn encode_like(picture: &image::RgbaImage, source: &[u8]) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder as _;
+    let mut out = std::io::Cursor::new(Vec::new());
+    let kept = if image::guess_format(source).ok() == Some(image::ImageFormat::Jpeg) {
+        let rgb = image::DynamicImage::ImageRgba8(picture.clone()).to_rgb8();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, CLEANED_JPEG_QUALITY)
+            .write_image(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+    } else {
+        picture.write_to(&mut out, image::ImageFormat::Png)
+    };
+    kept.map_err(|error| format!("the cleaned picture could not be kept: {error}"))?;
+    Ok(out.into_inner())
+}
+
+/// The quality a cleaned JPEG photograph is kept at.
+const CLEANED_JPEG_QUALITY: u8 = 95;
 
 /// `matte` at a point between pixel centres, interpolated; 0 outside.
 #[allow(

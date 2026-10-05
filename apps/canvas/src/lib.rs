@@ -18,6 +18,7 @@ pub mod adjust;
 pub mod answer;
 pub mod author;
 pub mod brushes;
+pub mod described;
 pub mod detail;
 pub mod doc;
 pub mod document;
@@ -25,6 +26,7 @@ pub mod fonts;
 pub mod gesture;
 pub mod locales;
 pub mod media;
+pub mod menu;
 pub mod model;
 pub mod panels;
 pub mod picture;
@@ -67,6 +69,7 @@ impl ResourceApp for App {
         let tools = tools::Tools::default();
         let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
         let canvas: Element = Box::new(preview::VersionPreview::new(canvas, tools.preview.clone()));
+        let canvas = menu::over(canvas, &tools, cx.live(), cx.dispatcher());
         let dock = LocalState::new(Dock::Layers);
         let staged = dock.clone();
         cx.on_stage(move |scenario| {
@@ -258,7 +261,7 @@ fn sheets(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Vec<Element> {
         })
         .secondary_action(lookup("canvas-cancel"), cancel)
         .on_dismiss(dismiss)
-        .with_max_size(520.0, 460.0)
+        .with_max_size(780.0, 460.0)
     };
     let keys = ui::widget::ModalDialog::new(
         lookup("canvas-keys-title"),

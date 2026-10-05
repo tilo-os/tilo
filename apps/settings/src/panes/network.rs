@@ -7,7 +7,7 @@
 //! Network pane — Wi-Fi radio toggle, scanned network list, refresh
 //! button, connection-status row.
 //!
-//! Plumbs `os_actions::network::{get_wifi, set_wifi,
+//! Plumbs `os_actions::network::{get_radio_state, set_wifi,
 //! list_wifi_networks, connect_wifi}`. Every `NetworkManager` query runs
 //! on the app runtime's blocking pool, never on the UI thread: the pane
 //! appears in a pending state, reads one snapshot on construction and
@@ -373,12 +373,13 @@ impl NetworkSnapshot {
     /// system bus, so this never runs on the UI thread.
     fn read(lister: &NetworkLister, vpn_lister: &VpnLister, initial: bool) -> Self {
         let profiles = os_actions::list_saved_network_profiles();
+        let radios = os_actions::get_radio_state();
         Self {
             networks: lister(),
-            wifi_enabled: initial.then(os_actions::get_wifi),
+            wifi_enabled: initial.then(|| wifi_enabled_from(&radios)),
             sims: initial.then(os_actions::list_mobile_sims),
             wired: Some(os_actions::get_wired()),
-            radios: Some(os_actions::get_radio_state()),
+            radios: Some(radios),
             connectivity: Some(os_actions::get_connectivity()),
             profile_settings: profiles
                 .as_deref()
@@ -424,6 +425,16 @@ struct NetworkReadErrors {
 
 /// Keep `value` on success and record why it failed otherwise. `None` (the
 /// part was not read this time) leaves both as they were.
+/// The Wi-Fi switch position from the radio state. A machine without a Wi-Fi
+/// adapter has its Wi-Fi off — a state the Wi-Fi card names — and only a radio
+/// state that could not be read is an error.
+fn wifi_enabled_from(radios: &Result<os_actions::RadioState, String>) -> Result<bool, String> {
+    radios
+        .as_ref()
+        .map(|radios| radios.wifi_available && radios.wifi_enabled)
+        .map_err(Clone::clone)
+}
+
 fn adopt<T>(part: Part<T>, error: &mut Option<String>) -> Option<T> {
     match part? {
         Ok(value) => {
@@ -611,6 +622,8 @@ pub struct NetworkPane {
     tool_opener: ToolOpener,
     initial_wifi_enabled: bool,
     last_wifi_enabled: bool,
+    /// The last radio state read lists no Wi-Fi device: a wired-only machine.
+    wifi_adapter_absent: bool,
     /// Shared only with the Settings operation host; it is process-local and
     /// never written to the CRDT alongside the radio latches below.
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
@@ -765,6 +778,7 @@ impl NetworkPane {
             tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
+            wifi_adapter_absent: false,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             command_state: ui::LocalState::new(None),
             local_doc: AutoCommit::new(),
@@ -881,6 +895,7 @@ impl NetworkPane {
             }
         }
         if let Some(radios) = radios {
+            self.wifi_adapter_absent = !radios.wifi_available;
             self.radios = radios;
             if !initial {
                 for (key, value) in [
@@ -1490,7 +1505,9 @@ impl NetworkPane {
             Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY).with_id("network.wifi");
         let wifi_toggle = match crate::actions::network_bool_binding("wifi") {
             // An unread radio state is not offered as a switch position.
-            Some(binding) if self.read_errors.wifi_enabled.is_none() => {
+            Some(binding)
+                if self.read_errors.wifi_enabled.is_none() && !self.wifi_adapter_absent =>
+            {
                 wifi_toggle.on_action(binding)
             }
             _ => wifi_toggle.with_enabled(false),
@@ -1499,9 +1516,13 @@ impl NetworkPane {
 
         let mut wifi_rows: Vec<El> = Vec::new();
         let status_label = t("net-status");
-        match self.wifi_status_error() {
-            Some(error) => wifi_rows.push(error_row(&status_label, &error)),
-            None => wifi_rows.push(value_row(&status_label, &self.connection_status_text())),
+        if self.wifi_adapter_absent {
+            wifi_rows.push(value_row(&status_label, &t("net-no-wifi-adapter")));
+        } else {
+            match self.wifi_status_error() {
+                Some(error) => wifi_rows.push(error_row(&status_label, &error)),
+                None => wifi_rows.push(value_row(&status_label, &self.connection_status_text())),
+            }
         }
         if let Some(notice) = &self.connection_notice {
             wifi_rows.push(caption(notice));
@@ -3666,6 +3687,47 @@ mod tests {
                 .any(|line| line.contains("Can't read network status")),
             "{text:#?}"
         );
+    }
+
+    /// A wired-only machine has no Wi-Fi adapter. That is a state of the
+    /// device, named as such, and the switch for a radio that is not there
+    /// is not offered; it is never a failed read.
+    #[test]
+    fn a_machine_without_wifi_says_so_instead_of_reporting_a_read_error() {
+        let radios = Ok(os_actions::RadioState::default());
+        assert_eq!(wifi_enabled_from(&radios), Ok(false));
+        assert_eq!(
+            wifi_enabled_from(&Err("nmcli not installed".into())),
+            Err("nmcli not installed".to_string())
+        );
+
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            Vec::new(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut wired_only = unreadable_snapshot("unused");
+        wired_only.networks = Ok(Vec::new());
+        wired_only.wifi_enabled = Some(wifi_enabled_from(&radios));
+        wired_only.radios = Some(radios);
+        wired_only.connectivity = Some(Ok(ConnectivityState::Full));
+        pane.apply_snapshot(&mut doc, &root, wired_only);
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "No Wi-Fi adapter on this device"),
+            "{text:#?}"
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.contains("Can't read network status")),
+            "{text:#?}"
+        );
+        assert!(!text.contains(&t("net-wifi-off")), "{text:#?}");
     }
 
     /// MDI signal glyphs, one row per network, refresh and the first snapshot via the wake.

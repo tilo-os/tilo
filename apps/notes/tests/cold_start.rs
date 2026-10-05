@@ -25,7 +25,7 @@ fn typed_notebook(directory: &std::path::Path) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::open_data_dir(directory).unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, 0, "Bugs")).unwrap())
+    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "Bugs")).unwrap())
         .unwrap();
     let mut peer = app.peer_document();
     let block = NotesDoc::page_block_snapshots(&peer, page)[0].0.clone();

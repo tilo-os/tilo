@@ -109,6 +109,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: String::new(),
                 runtime: None,
+                interfaces: Vec::new(),
             },
         }
     }

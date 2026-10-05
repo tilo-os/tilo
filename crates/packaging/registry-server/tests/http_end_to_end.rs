@@ -325,6 +325,7 @@ fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: None,
+                interfaces: Vec::new(),
             },
         }],
         updated_at_unix: updated_at,

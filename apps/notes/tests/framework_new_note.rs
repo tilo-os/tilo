@@ -98,8 +98,16 @@ fn the_published_surface_validates_as_the_host_checks_it() {
     app.settle();
     let open = app.harness().component_contract_violations();
     assert!(open.is_empty(), "a note open for editing: {open:#?}");
-    app.invoke(Invoke::apply(&new_page_action(PageId::new_v4(), None, 1, "Second")).unwrap())
-        .unwrap();
+    app.invoke(
+        Invoke::apply(&new_page_action(
+            PageId::new_v4(),
+            None,
+            "b".into(),
+            "Second",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
     let two = app.harness().component_contract_violations();
     assert!(two.is_empty(), "notebook with two notes: {two:#?}");
 }
@@ -164,14 +172,17 @@ fn notes_made_one_after_another_over_actions_stay_in_order() {
             .unwrap();
     }
     app.settle();
-    let mut pages = app.read_document(NotesDoc::list_pages);
-    pages.sort_by_key(|page| page.order);
+    let pages = app.read_document(NotesDoc::list_pages);
     assert_eq!(
         pages
             .iter()
-            .map(|page| (page.title.as_str(), page.order))
+            .map(|page| page.title.as_str())
             .collect::<Vec<_>>(),
-        vec![("First", 0), ("Second", 1), ("Third", 2)]
+        vec!["First", "Second", "Third"]
+    );
+    assert!(
+        pages.windows(2).all(|pair| pair[0].order < pair[1].order),
+        "each note gets a key after the last"
     );
     let surface = app.agent_surface();
     for page in &pages {
@@ -188,4 +199,108 @@ fn notes_made_one_after_another_over_actions_stay_in_order() {
     }
     let violations = app.harness().component_contract_violations();
     assert!(violations.is_empty(), "three notes: {violations:#?}");
+}
+
+/// The notebook projects, and the running app publishes every one of `titles`
+/// in that order with no contract violation: the notebook is shown, not
+/// refused.
+fn assert_shows(app: &mut TestApp<NotesShell>, titles: &[&str]) {
+    app.settle();
+    let pages = app.read_document(|doc| {
+        notes::notebook::project(doc, None)
+            .expect("the notebook projects")
+            .children_of(None)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        pages
+            .iter()
+            .map(|page| page.title.as_str())
+            .collect::<Vec<_>>(),
+        titles
+    );
+    let surface = app.agent_surface();
+    for page in &pages {
+        let note = notes::actions::page_resource_id(page.id);
+        assert!(
+            surface
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["resource"] == note.as_str() && row["action"] == "rename"),
+            "{} is published: {surface:#}",
+            page.title
+        );
+    }
+    let violations = app.harness().component_contract_violations();
+    assert!(violations.is_empty(), "{violations:#?}");
+}
+
+/// Two devices each append a note at the same moment. Both get the key after
+/// the last note, so the two share it; the page id orders them, the same way
+/// on both replicas, and the notebook stays shown on both.
+#[test]
+fn notes_created_at_once_on_two_replicas_converge_and_stay_shown() {
+    use tilo_actions::Action as _;
+    let mut app = fresh();
+    app.call("new-page", serde_json::json!({ "value": "Existing" }))
+        .unwrap();
+    app.settle();
+    let mut peer = app.peer_document();
+    app.call("new-page", serde_json::json!({ "value": "Mine" }))
+        .unwrap();
+    notes::actions::append_page_action(PageId::new_v4(), None, "Theirs")
+        .apply(&mut peer)
+        .unwrap();
+    peer.commit();
+    app.merge_peer(&mut peer).unwrap();
+
+    let ours = app.read_document(NotesDoc::list_pages);
+    assert_eq!(ours, NotesDoc::list_pages(&peer), "both replicas converge");
+    let [_, first, second] = ours.as_slice() else {
+        panic!("three notes: {ours:#?}");
+    };
+    assert_eq!(first.order, second.order, "both appended at the same key");
+    assert!(first.id < second.id, "the page id breaks the tie");
+    notes::notebook::project(&peer, None).expect("the peer's notebook projects");
+    let (first, second) = (first.title.clone(), second.title.clone());
+    assert_shows(&mut app, &["Existing", &first, &second]);
+
+    // A note made afterwards still goes last.
+    app.call("new-page", serde_json::json!({ "value": "Later" }))
+        .unwrap();
+    assert_shows(&mut app, &["Existing", &first, &second, "Later"]);
+}
+
+/// Undoing a note's creation after someone added a note behind it leaves a
+/// gap in front of the later note. The notebook stays shown with the later
+/// note in it.
+#[test]
+fn undoing_a_create_after_a_later_note_keeps_the_notebook_shown() {
+    use tilo_actions::Action as _;
+    let mut app = fresh();
+    app.call("new-page", serde_json::json!({ "value": "First" }))
+        .unwrap();
+    app.call("new-page", serde_json::json!({ "value": "Mine" }))
+        .unwrap();
+    app.settle();
+    let mut peer = app.peer_document();
+    notes::actions::append_page_action(PageId::new_v4(), None, "Theirs")
+        .apply(&mut peer)
+        .unwrap();
+    peer.commit();
+    app.merge_peer(&mut peer).unwrap();
+    assert_shows(&mut app, &["First", "Mine", "Theirs"]);
+
+    assert!(app.undo(), "the create of Mine undoes");
+    assert_shows(&mut app, &["First", "Theirs"]);
+    app.merge_peer(&mut peer).unwrap();
+    assert_eq!(
+        app.read_document(NotesDoc::list_pages),
+        NotesDoc::list_pages(&peer),
+        "the undo reaches the peer and both converge"
+    );
+    notes::notebook::project(&peer, None).expect("the peer's notebook projects");
 }

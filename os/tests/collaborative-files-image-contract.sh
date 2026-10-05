@@ -59,7 +59,7 @@ PY
 echo "== collaborative Files shipped-image contract ($mode) =="
 
 # Executables and the host FUSE prerequisite must be in the immutable image.
-for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
+for path in /usr/bin/fs /usr/bin/tilo-launcher \
             /usr/bin/tilo-runtime-mcp \
             /usr/bin/tilo-install /usr/bin/tilo-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/tilo/files-atspi-smoke.sh \
@@ -229,13 +229,12 @@ PY
 # A thin app links the runtime bundle's shared libraries, which the launcher
 # puts on its loader path.
 require_file "/usr/lib/tilo-runtime/$runtime_version/lib/libruntime_dylib.so"
-# These are deliberately allowed to be distinct signed build artifacts.  The
-# loose binary is the privileged recovery surface built with the OS, while the
-# launcher resolves the checksum-pinned app-collection payload.  Requiring
-# byte equality made every legitimate pinned-collection image fail before its
-# installed-session AT-SPI gate could run.  The checks below exercise the
-# recovery binary and verify the installed package independently; runtime mode
-# then launches this exact payload for the external AT-SPI smoke.
+# Files, Terminal and Settings ship only as packages that update through the
+# app registry; a loose copy on the image would be a second, stale build.
+# Runtime mode launches the installed payload for the external AT-SPI smoke.
+for loose in /usr/bin/file-explorer /usr/bin/terminal /usr/bin/settings; do
+  [ ! -e "$(at "$loose")" ] || die "$loose ships outside its package"
+done
 require_file "/usr/lib/tilo-runtime/$runtime_version/bundle.toml"
 require_file /usr/share/tilo/runtime-bundle-publisher.hex
 require_file /etc/tilo/runtime-bundle-trusted-publishers.txt
@@ -246,11 +245,6 @@ if [ "$root" = / ]; then
   fs_help="$(/usr/bin/fs --help)" || die "shipped fs --help failed"
   grep -Fq 'serve' <<<"$fs_help" || die "shipped fs lacks serve"
   grep -Fq 'recipient-service' <<<"$fs_help" || die "shipped fs lacks recipient-service"
-  scratch="$(mktemp -d)"
-  trap 'rm -rf "$scratch"' EXIT
-  HOME="$scratch" XDG_DATA_HOME="$scratch/data" XDG_CONFIG_HOME="$scratch/config" \
-    /usr/bin/file-explorer --headless-drive '{}' >/dev/null \
-    || die "shipped Files headless frame failed"
   /usr/bin/tilo-launcher --help >/dev/null || die "shipped launcher CLI failed"
   TILO_APPS_DATA_DIR=/usr/share/tilo-apps \
     /usr/bin/tilo-install verify so.tilo.file-explorer >/dev/null \

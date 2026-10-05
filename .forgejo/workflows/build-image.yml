@@ -72,6 +72,10 @@ on:
         description: "One-off x86 guest OCI digest; requires a paired FEX payload and Lenovo main dispatch"
         required: false
         default: ""
+      app_collection_source:
+        description: "Full source commit of an explicitly supplied app collection; must have the same app inputs as this OS commit."
+        required: false
+        default: ""
       app_collection_url:
         description: "Pinned tilo-apps-<arch>.tar.gz URL; empty uses vars.TILO_APP_COLLECTION_URL."
         required: false
@@ -128,7 +132,7 @@ jobs:
       skip: ${{ steps.matrix.outputs.skip }}
       hardware-profile: ${{ steps.matrix.outputs.hardware-profile }}
       boards: ${{ steps.matrix.outputs.boards }}
-      app_collection_source: ${{ steps.pins.outputs.app_collection_source }}
+      app_collection_source: ${{ github.event.inputs.app_collection_source || steps.pins.outputs.app_collection_source }}
       app_collection_url: ${{ steps.pins.outputs.app_collection_url }}
       app_collection_sha256: ${{ steps.pins.outputs.app_collection_sha256 }}
       app_collection_url_x86_64: ${{ steps.pins.outputs.app_collection_url_x86_64 }}
@@ -327,6 +331,32 @@ jobs:
             [[ -z ${LENOVO_FIRMWARE_REF:-} ]] || boards='["lenovo-83ed","orangepi-3b-v2-1"]'
           fi
           echo "boards=$boards" >> "$GITHUB_OUTPUT"
+
+
+      - name: Checkout app input policy
+        if: github.event_name != 'workflow_call' && steps.matrix.outputs.skip != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require the pinned apps to contain this commit's fixes
+        if: github.event_name != 'workflow_call' && steps.matrix.outputs.skip != 'true'
+        env:
+          COLLECTION_SOURCE: ${{ github.event.inputs.app_collection_source || steps.pins.outputs.app_collection_source }}
+          COLLECTION_URL_OVERRIDE: ${{ github.event.inputs.app_collection_url }}
+          COLLECTION_SOURCE_OVERRIDE: ${{ github.event.inputs.app_collection_source }}
+        run: |
+          set -euo pipefail
+          if [[ -n $COLLECTION_URL_OVERRIDE && -z $COLLECTION_SOURCE_OVERRIDE ]]; then
+            echo '::error::an explicit app collection URL requires its app_collection_source commit'
+            exit 1
+          fi
+          [[ $COLLECTION_SOURCE =~ ^[0-9a-f]{40}$ ]] || {
+            echo '::error::app collection source is missing; publish a compatible Release / apps collection first'
+            exit 1
+          }
+          git fetch --quiet --no-tags --depth=1 origin "$COLLECTION_SOURCE"
+          bash tools/ci/check_app_collection_source.sh "$COLLECTION_SOURCE" "$GITHUB_SHA"
 
   signing-preflight:
     needs: plan
@@ -609,12 +639,14 @@ jobs:
             fi
           done < <(tar -tzf "$work/apps.tar.gz")
           [[ $found == 1 ]]
-          if [[ $DEV_BUILD == true ]]; then
-            source="$(tar -xzOf "$work/apps.tar.gz" index.json | jq -r '.source // empty')"
-            [[ $source == "$COLLECTION_SOURCE" ]] || {
+          source="$(tar -xzOf "$work/apps.tar.gz" index.json | jq -r '.source // empty')"
+          if [[ $source != "$COLLECTION_SOURCE" ]]; then
+            if [[ $DEV_BUILD == true ]]; then
               echo "::notice::the collection records source '$source', not $COLLECTION_SOURCE; compiling the apps"
               exit 0
-            }
+            fi
+            echo "::error::the pinned collection records source '$source', not the verified source $COLLECTION_SOURCE"
+            exit 1
           fi
           tar --extract --gzip --file "$work/apps.tar.gz" --directory "$work" \
             --no-same-owner --no-same-permissions
