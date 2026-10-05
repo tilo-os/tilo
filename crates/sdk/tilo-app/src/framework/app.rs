@@ -890,7 +890,7 @@ fn launched_file(
     Ok(Some(file))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,

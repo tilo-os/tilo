@@ -641,6 +641,29 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.invoke_as(invoke, true)
     }
 
+    /// Discover the actions this participant may invoke on the running app,
+    /// including item and child resources. Descriptors include the complete
+    /// parameter, permission, confirmation and result contracts; discovery
+    /// never invokes an action. Addresses stay stable across relayouts.
+    ///
+    /// A saved descriptor is not an authority grant: every call checks the
+    /// running app's current permissions and resource state again.
+    ///
+    /// # Errors
+    /// Returns a refusal if the hosted component cannot be observed.
+    pub fn actions(
+        &mut self,
+    ) -> Result<Vec<tilo_actions::ActionDescriptor>, tilo_actions::DoorError> {
+        let instance = self.instance;
+        let resources = self.harness().bound_resources_of(Some(instance), None)?;
+        let mut actions = tilo_actions::door::survey(&resources);
+        actions.sort_by(|left, right| {
+            (&left.address.resource, &left.address.action)
+                .cmp(&(&right.address.resource, &right.address.action))
+        });
+        Ok(actions)
+    }
+
     /// What an agent sees of the running app: every published action with
     /// its address, label, description and typed parameters, in a stable
     /// order. Snapshot it so a change shows how it altered the vocabulary an
@@ -983,7 +1006,36 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
-        self.call_at(None, resource, id, arguments)
+        self.call_at(None, resource, id, arguments, false)
+    }
+
+    /// [`Self::call`] after the caller explicitly confirmed this invocation.
+    /// Argument validation and current permissions are still enforced.
+    ///
+    /// # Errors
+    /// As [`Self::call`], except that no confirmation is required.
+    pub fn call_confirmed(
+        &mut self,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_confirmed_on(<A::Resource as Resource>::KIND, id, arguments)
+    }
+
+    /// [`Self::call_on`] after the caller explicitly confirmed this invocation
+    /// on an item or child resource. Use the address returned by
+    /// [`Self::actions`]; no item id needs to be guessed or parsed from a label.
+    /// Confirmation applies to this call only and grants no authority.
+    ///
+    /// # Errors
+    /// As [`Self::call_on`], except that no confirmation is required.
+    pub fn call_confirmed_on(
+        &mut self,
+        resource: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_at(None, resource, id, arguments, true)
     }
 
     fn call_within(
@@ -992,7 +1044,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
-        self.call_at(ambient, <A::Resource as Resource>::KIND, id, arguments)
+        self.call_at(
+            ambient,
+            <A::Resource as Resource>::KIND,
+            id,
+            arguments,
+            false,
+        )
     }
 
     fn call_at(
@@ -1001,6 +1059,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         id: &str,
         arguments: serde_json::Value,
+        confirmed: bool,
     ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
         let serde_json::Value::Object(arguments) = arguments else {
             return Err(tilo_actions::DoorError::InvalidArguments(
@@ -1012,9 +1071,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
             address: tilo_actions::ActionAddress::new(resource, id),
         };
         let harness = self.harness();
-        let started = match ambient {
-            Some(ambient) => harness.invoke_bound_action_within(&address, &arguments, ambient)?,
-            None => harness.invoke_bound_action(&address, &arguments)?,
+        let started = if confirmed {
+            harness.invoke_bound_action_confirmed(&address, &arguments)?
+        } else {
+            match ambient {
+                Some(ambient) => {
+                    harness.invoke_bound_action_within(&address, &arguments, ambient)?
+                }
+                None => harness.invoke_bound_action(&address, &arguments)?,
+            }
         };
         harness.relayout();
         Ok(started.completed().and_then(|output| output.value))
