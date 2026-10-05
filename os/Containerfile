@@ -1077,7 +1077,9 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
-COPY os/usr/lib/systemd/user/tilo-ush.service /tilo-components/usr/lib/systemd/user/
+COPY os/usr/lib/systemd/user/tilo-ush.service \
+    os/usr/lib/systemd/user/tilo-app-host.service \
+    /tilo-components/usr/lib/systemd/user/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
     python3 /tilo-components/install-components.py \
@@ -1949,7 +1951,6 @@ COPY \
     os/usr/lib/systemd/user/tilo-models.socket \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
-    os/usr/lib/systemd/user/tilo-app-host.service \
     os/usr/lib/systemd/user/tilo-app-host.socket \
     /usr/lib/systemd/user/
 COPY \
