@@ -139,8 +139,19 @@ fn check_scaled_drawer_stays_inside_a_narrow_window() {
         app.harness()
             .relayout_themed((u32::from(window_w), 900), theme.clone())
             .unwrap();
-
-        let drawer = surface(&mut app, |notes| notes.sidebar_rect_for_test());
+        assert!(
+            app.harness()
+                .settle_for_capture(ui::time::Duration::from_secs(2)),
+            "the drawer's opening animation must settle before measuring its controls"
+        );
+        // A surface visit advances the following frame. Sample both parts
+        // together so the bounds and control describe the same layout.
+        let (drawer, plus) = surface(&mut app, |notes| {
+            (
+                notes.sidebar_rect_for_test(),
+                notes.sidebar_new_page_btn_center_for_test(),
+            )
+        });
         let reveal = f64::from(theme.tokens.spacing.s12);
         assert!(
             drawer.x1 <= f64::from(window_w) - reveal + 0.5,
@@ -151,9 +162,6 @@ fn check_scaled_drawer_stays_inside_a_narrow_window() {
             drawer.width() > 264.0,
             "the clamp must not undo the text-scale growth entirely: {drawer:?}"
         );
-        let plus = surface(&mut app, |notes| {
-            notes.sidebar_new_page_btn_center_for_test()
-        });
         assert!(
             plus.x < drawer.x1 && plus.x < f64::from(window_w),
             "the drawer's own new-page button must stay on screen: {plus:?} in {drawer:?}"

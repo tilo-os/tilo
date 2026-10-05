@@ -853,6 +853,7 @@ fn with_row(mut result: SearchResult, title: &str, row: &tilo_resource::SearchRo
 impl ResourceSearch {
     /// The search source over `indexed`, listed under `name` unless an
     /// entry names its own group.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn new(name: &'static str, indexed: Arc<IndexedEntries>) -> Self {
         Self {
             name,

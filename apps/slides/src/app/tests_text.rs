@@ -566,6 +566,20 @@ fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, Stri
         )
     });
     bench.app.harness().double_click_at(at.x, at.y);
+    bench.read(|editor| {
+        assert!(
+            editor.editing_text,
+            "physical double-click opens the text box"
+        );
+        let retained = editor
+            .text_editor
+            .as_ref()
+            .expect("the clicked text box has its retained rich-text editor");
+        assert_eq!(
+            retained.element_id, id,
+            "the retained editor belongs to the physically clicked box"
+        );
+    });
     (bench, id)
 }
 

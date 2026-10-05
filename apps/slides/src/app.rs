@@ -3808,7 +3808,9 @@ impl SlidesApp {
             // Double-click = same element, pressed again quickly and near
             // the first press.
             let double = self.last_click.as_ref().is_some_and(|(cid, t, cp)| {
-                cid == &id && t.elapsed().as_millis() < 400 && cp.distance(p) < 6.0
+                cid == &id
+                    && t.elapsed() < ui::gesture::multi_click_interval()
+                    && cp.distance(p) < 6.0
             });
             self.last_click = Some((id.clone(), ui::time::now(), p));
             self.editing_notes = false;

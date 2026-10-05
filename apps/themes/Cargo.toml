@@ -19,14 +19,10 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
-tilo-automerge.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

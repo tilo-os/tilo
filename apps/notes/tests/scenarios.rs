@@ -40,6 +40,9 @@ const NARROW_SCENARIOS: &[&str] = &[
 
 #[test]
 fn every_scenario_reaches_its_state() {
+    // Match --shots before starting capture workers: transient notifications
+    // belong to the captured scene and must not expire while it is prepared.
+    ui::clock::freeze_for_capture();
     let mut captures = NotesShell::scenarios()
         .iter()
         .map(|scenario| (Some(*scenario), NotesShell::shot_viewport(Some(scenario))))

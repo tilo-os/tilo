@@ -1647,7 +1647,7 @@ impl crate::widget::Button {
         let request = std::rc::Rc::new(std::cell::Cell::new(false));
         let flag = std::rc::Rc::clone(&request);
         MenuButton {
-            button: self.on_click(move || flag.set(true)),
+            button: self.on_view(move || flag.set(true)),
             menu: ContextMenu::with_items(items),
             request,
             window: None,
@@ -2892,6 +2892,12 @@ mod nested_and_anchored_tests {
                 })]);
         let mut framed = Framed::new(crate::State::new(), button, (800, 600), Theme::dark());
         let _ = Framed::harness_mut(&mut framed).poll_frame();
+        let audit = Framed::harness(&framed).native_app_audit();
+        assert!(
+            audit.is_certified(),
+            "the menu opener has an admitted view action: {:?}",
+            audit.issues
+        );
         let rect = framed.button().get_rect();
         Framed::harness_mut(&mut framed).click_at(rect.center().x, rect.center().y);
         let _ = Framed::harness_mut(&mut framed).poll_frame();
@@ -2900,5 +2906,31 @@ mod nested_and_anchored_tests {
         assert!(menu.y0 >= rect.y1, "under the button: {menu:?} vs {rect:?}");
         let node = Widget::accessibility(&*framed).unwrap();
         assert_eq!(node.state.expanded, Some(true));
+        let print = framed.menu_mut().item_rect(0).expect("Print is laid out");
+        Framed::harness_mut(&mut framed).click_at(print.center().x, print.center().y);
+        let _ = Framed::harness_mut(&mut framed).poll_frame();
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "the real Print item runs");
+        assert!(!framed.is_open(), "choosing Print closes the menu");
+        Framed::harness_mut(&mut framed)
+            .perform_named("more", &crate::a11y::Action::Activate)
+            .expect("assistive activation invokes the same admitted opener");
+        let _ = Framed::harness_mut(&mut framed).poll_frame();
+        assert!(framed.is_open(), "assistive activation opens the same menu");
+        assert!(
+            framed
+                .menu_mut()
+                .accessibility()
+                .unwrap()
+                .children
+                .iter()
+                .any(|item| item.name.as_deref() == Some("Print")),
+            "the same Print command is exported after assistive opening"
+        );
+        let audit = Framed::harness(&framed).native_app_audit();
+        assert!(
+            audit.is_certified(),
+            "open menu retains admitted coverage: {:?}",
+            audit.issues
+        );
     }
 }
