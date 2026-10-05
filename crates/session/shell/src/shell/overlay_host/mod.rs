@@ -688,6 +688,7 @@ pub struct ShellOverlayHost {
     /// `pump_permission_prompt` from the front of
     /// `chrome.pending_grants`. `None` when the queue is empty.
     permission_prompt: Option<PermissionPrompt>,
+    permission_prompt_id: Option<uuid::Uuid>,
     /// The portal's prompt queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
@@ -1823,6 +1824,10 @@ impl ShellOverlayHost {
             ),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::permission_prompts::PermissionPromptsProvider::default(
+            ),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::DesktopWindowsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -2089,6 +2094,7 @@ impl ShellOverlayHost {
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
+            permission_prompt_id: None,
             portal_prompts: None,
             host_shell_allows: Vec::new(),
             file_picker_overlay: FilePickerOverlay::default(),
@@ -5668,34 +5674,26 @@ impl ShellOverlayHost {
             return;
         };
 
-        // Step 1 — drain choice + maybe persist grant.
-        let drain_payload = self
+        // The widget and semantic actions answer the same exact pending request.
+        let choice = self
             .permission_prompt
-            .as_mut()
-            .and_then(|p| p.pending_choice.map(|c| (p.app_id.clone(), c)));
-        if let Some((widget_app_id, choice)) = drain_payload {
-            let mut st = chrome_handle.borrow_mut();
-            // Pop only if the head still belongs to the prompt clicked —
-            // a mid-frame portal push could otherwise apply the grant to
-            // the wrong app.
-            let head_matches = st
-                .pending_grants
-                .front()
-                .is_some_and(|p| p.app_id == widget_app_id);
-            if head_matches && let Some(mut pending) = st.pending_grants.pop_front() {
-                // The async portal flow owns persistence after receiving this
-                // answer. Keeping that state in its private consent store is
-                // essential: a personal portal decision must never become a
-                // replicated workspace capability visible to collaborators.
-                // Release the blocked portal call — otherwise the D-Bus
-                // method awaiting the oneshot never returns and the app
-                // hangs on its own Open dialog.
-                pending.answer(prompt_choice_to_outcome(choice));
-                st.bump();
+            .as_ref()
+            .and_then(|p| p.pending_choice);
+        if let Some(choice) = choice {
+            if let Some(id) = self.permission_prompt_id {
+                let _ = crate::shell::search::providers::permission_prompts::answer_pending_prompt(
+                    &mut chrome_handle.borrow_mut(),
+                    id,
+                    choice,
+                );
             }
-            // Discharged either way — drop it so the next frame latches
-            // fresh or paints nothing.
             self.permission_prompt = None;
+            self.permission_prompt_id = None;
+        }
+        let head_id = chrome_handle.borrow().pending_grants.front().map(|p| p.id);
+        if self.permission_prompt_id != head_id {
+            self.permission_prompt = None;
+            self.permission_prompt_id = None;
         }
 
         // Step 2 — latch a new prompt when the queue's front needs
@@ -5703,6 +5701,7 @@ impl ShellOverlayHost {
         if self.permission_prompt.is_none() {
             let st = chrome_handle.borrow();
             if let Some(pending) = st.pending_grants.front() {
+                self.permission_prompt_id = Some(pending.id);
                 let label = capability_label(&pending.capability);
                 let is_owner = is_active_workspace_owner(&st);
                 self.permission_prompt = Some(PermissionPrompt::new(
@@ -18795,7 +18794,7 @@ fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
 /// Map the prompt widget's choice onto the portal's outcome vocabulary.
 /// Two enums for one decision because they belong to different layers;
 /// keeping the mapping in one place stops them drifting.
-fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
+pub(crate) fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
     use crate::portal::PromptOutcome;
     match choice {
         PromptChoice::Allow => PromptOutcome::AllowOnce,
@@ -18807,7 +18806,7 @@ fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcom
 
 /// Human-readable label for the inline permission prompt from a
 /// [`Capability`] payload.
-fn capability_label(cap: &Capability) -> String {
+pub(crate) fn capability_label(cap: &Capability) -> String {
     match cap {
         Capability::Filesystem { path, mode, .. } => {
             let path = path.display().to_string();
@@ -18842,7 +18841,7 @@ fn capability_label(cap: &Capability) -> String {
 /// anyone given `Admin`). No recorded owner means no administrators
 /// (fail-closed) — [`crate::shell::state::WorkspaceTree::adopt_ownerless_workspaces`]
 /// keeps the local user's own workspaces out of that state.
-fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
+pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
     if let Some(forced) = state.test_only_owner_override {
         return forced;
     }
