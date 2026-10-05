@@ -1,5 +1,12 @@
 //! Cryptographic and canonical validation for contribution evidence.
 
+pub use neighbour_wire::contribution::{
+    ContributionAttestationDelegationV1, ContributionAttestorV1, ContributionCheckpointBodyV1,
+    ContributionContractV1, ContributionConversationReplyV1, ContributionOperationV1,
+    ContributionOriginalPolicyV1, ContributionPurposeV1, ContributionReceiptV1,
+    ContributionRoomBasisV1, ContributionTaskFrontierV1, DocumentContributionCheckpointV1,
+};
+
 mod checkpoint;
 mod delegation;
 
