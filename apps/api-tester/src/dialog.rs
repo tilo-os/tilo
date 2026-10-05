@@ -29,7 +29,14 @@ impl Fields {
 }
 
 fn field(label: &str, state: &LocalState<String>, kind: TextInputKind, focused: bool) -> Element {
+    let id = match label {
+        "Name" => "api.form-name",
+        "Variable key" => "api.form-variable-key",
+        "Variable value" => "api.form-variable-value",
+        _ => "api.form-field",
+    };
     let mut input = TextInput::from_state(state)
+        .with_id(id)
         .with_kind(kind)
         .with_accessible_name(label);
     if focused {
@@ -87,6 +94,7 @@ pub(crate) fn build(mode: FormMode, subject: &str, fields: &Fields, sink: &Sink)
     let dismiss = sink.clone();
     Box::new(
         ModalDialog::new(mode.heading(), body)
+            .with_test_id("api.form")
             .open(true)
             .with_max_width(440.0)
             .with_destructive(mode.is_destructive())

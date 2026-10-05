@@ -186,6 +186,8 @@ pub struct Scrollable {
     /// lane is reserved: vertical (trailing edge) and horizontal (bottom).
     /// Content that fits keeps the full width.
     reserve_vertical: bool,
+    /// Keep the themed trailing lane even when vertical content fits.
+    stable_vertical_gutter: bool,
     reserve_horizontal: bool,
     /// See [`Scrollable::with_edge_fade`].
     edge_fade: bool,
@@ -253,6 +255,7 @@ impl Scrollable {
             bar_thickness: BAR_THICKNESS,
             bar_margin: BAR_MARGIN,
             reserve_vertical: false,
+            stable_vertical_gutter: false,
             reserve_horizontal: false,
             edge_fade: false,
             gutter_probe: None,
@@ -313,6 +316,15 @@ impl Scrollable {
     #[must_use]
     pub fn with_scrollbar(mut self, show: bool) -> Self {
         self.show_scrollbar = show;
+        self
+    }
+
+    /// Keep the themed vertical scrollbar lane when content fits, so sibling
+    /// pages use the same content width across an overflow transition. The
+    /// scrollbar itself still appears only when scrolling is possible.
+    #[must_use]
+    pub fn with_stable_vertical_gutter(mut self) -> Self {
+        self.stable_vertical_gutter = true;
         self
     }
 
@@ -642,7 +654,8 @@ impl Scrollable {
         let vertical = self.axis_has_vertical()
             && self.show_scrollbar
             && viewport_h > 0.0
-            && content_h > viewport_h - self.active_bottom_content_inset() + FIT_EPS;
+            && (self.stable_vertical_gutter
+                || content_h > viewport_h - self.active_bottom_content_inset() + FIT_EPS);
         let horizontal = self.axis_has_horizontal()
             && self.show_scrollbar
             && viewport_w > 0.0
@@ -3692,5 +3705,67 @@ mod tests {
             scroll.primary_vertical_scroll().unwrap().metrics.offset,
             0.0
         );
+    }
+    #[test]
+    fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
+        use crate::headless::FrameHarness;
+        use crate::widget::{MediaAspect, MediaCard, MediaGrid, MediaSource};
+        for theme in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::dark().with_text_scale(2.0),
+        ] {
+            let mount = |count| {
+                let cards = (0..count)
+                    .map(|i| {
+                        MediaCard::new(format!("gutter-card-{i}"), MediaSource::Placeholder)
+                            .aspect(MediaAspect::Wide)
+                            .title("A media title")
+                            .meta("The creator")
+                    })
+                    .collect();
+                FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(
+                        Scrollable::new_vertical()
+                            .with_stable_vertical_gutter()
+                            .with_child(Box::new(MediaGrid::new(cards))),
+                    ),
+                    (952, 800),
+                    theme.clone(),
+                )
+            };
+            let mut short = mount(3);
+            let mut long = mount(12);
+            let short_root = short.inspection().root;
+            let long_root = long.inspection().root;
+            let short_grid = &short_root.children[0];
+            let long_grid = &long_root.children[0];
+            assert_eq!(
+                short_grid.rect[2], long_grid.rect[2],
+                "the short page keeps the same content width as its overflowing sibling"
+            );
+            assert!(
+                (short_grid.children[0].rect[2] - long_grid.children[0].rect[2]).abs() < 1.0,
+                "the real measured media cards retain equal widths"
+            );
+            let short_bar = short
+                .with_widget_mut(|scroll: &mut Scrollable| scroll.vbar_active())
+                .unwrap();
+            let long_bar = long
+                .with_widget_mut(|scroll: &mut Scrollable| scroll.vbar_active())
+                .unwrap();
+            assert!(
+                !short_bar,
+                "a stable empty lane does not fabricate a scrollbar"
+            );
+            assert!(long_bar, "overflow still exposes the real scrollbar");
+            assert!(
+                (short_grid.rect[2] - (952.0 - f64::from(theme.tokens.metrics.scrollbar_gutter)))
+                    .abs()
+                    < 0.1,
+                "the reserved lane follows the actual theme metric"
+            );
+        }
     }
 }

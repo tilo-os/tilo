@@ -83,7 +83,9 @@ fn page(children: Vec<Element>) -> Scrollable {
     for child in children {
         col = col.push(child);
     }
-    Scrollable::new_vertical().with_child(Box::new(col))
+    Scrollable::new_vertical()
+        .with_stable_vertical_gutter()
+        .with_child(Box::new(col))
 }
 
 /// Art for a card: the image from the store when there is one, the toolkit's

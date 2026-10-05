@@ -1510,6 +1510,7 @@ impl ContactsApp {
             Request::PickDate(iso) => {
                 if let Some(form) = &mut self.form {
                     form.set_value(crate::form::Slot::Birthday, &iso);
+                    form.collect();
                     form.calendar_open = false;
                 }
             }

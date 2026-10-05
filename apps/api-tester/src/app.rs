@@ -357,6 +357,7 @@ impl ApiTesterApp {
             Stack::new()
                 .push(Box::new(
                     Column::new()
+                        .with_rhythm(ui::tokens::Rhythm::Related)
                         .push(request::url_bar(sink))
                         .push(request::variable_hint(Rc::clone(env_vars)))
                         .push(Box::new(
