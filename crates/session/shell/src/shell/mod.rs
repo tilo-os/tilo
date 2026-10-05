@@ -369,7 +369,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         tab: &tab,
     };
     match mount_in_process(&request, &inputs) {
-        Some(tilo_desktop::resolver::TileResolution::App(_)) => return "App",
+        Some(tilo_desktop::resolver::TileResolution::App(..)) => return "App",
         Some(_) => return "Notice",
         None => {}
     }
@@ -1016,7 +1016,10 @@ pub fn mount_in_process(
         _ => return None,
     };
     Some(match mounted {
-        Ok(component) => TileResolution::App(component),
+        Ok(component) => {
+            let collaboration = apps.borrow().collaboration(&component, &room);
+            TileResolution::App(component, collaboration)
+        }
         Err(error) => TileResolution::Failed(error),
     })
 }

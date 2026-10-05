@@ -38,6 +38,10 @@ impl AppSurface for Region {
     }
 }
 
+/// How many frames an embedded app may run in one host frame to settle a
+/// sync or layout its previous frame left.
+const SETTLE_FRAMES: usize = 3;
+
 /// An app a host shows in a region of its own scene.
 pub struct EmbeddedApp {
     app: App,
@@ -231,8 +235,16 @@ impl Widget for EmbeddedApp {
             .is_some_and(|deadline| deadline <= crate::time::now());
         let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
         if self.wants_frame.get() || woken || due {
-            painted.reset();
-            let again = self.app.surface_frame(&self.region, &mut painted);
+            // A frame whose sync or layout leaves more to settle runs again
+            // at once, so what the host paints is the app at rest.
+            let mut again = true;
+            for _ in 0..SETTLE_FRAMES {
+                painted.reset();
+                again = self.app.surface_frame(&self.region, &mut painted);
+                if !again || !self.app.unsettled() {
+                    break;
+                }
+            }
             // What the host's accessibility walk reads of the app.
             let _ = self.app.refresh_semantic_tree();
             self.wants_frame

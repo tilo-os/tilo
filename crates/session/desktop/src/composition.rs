@@ -136,7 +136,7 @@ pub fn build_group(
             let checked = matches!(
                 &resolution,
                 crate::resolver::TileResolution::Component(_)
-                    | crate::resolver::TileResolution::App(_)
+                    | crate::resolver::TileResolution::App(..)
                     | crate::resolver::TileResolution::Retained(_)
             );
             let mut host = resolution.mount(failures, wake.clone());
@@ -735,7 +735,7 @@ impl DesktopSurface {
                                     let checked = matches!(
                                         &other,
                                         crate::resolver::TileResolution::Component(_)
-                                            | crate::resolver::TileResolution::App(_)
+                                            | crate::resolver::TileResolution::App(..)
                                             | crate::resolver::TileResolution::Retained(_)
                                     );
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
@@ -789,7 +789,7 @@ impl DesktopSurface {
                         let checked = matches!(
                             &resolution,
                             crate::resolver::TileResolution::Component(_)
-                                | crate::resolver::TileResolution::App(_)
+                                | crate::resolver::TileResolution::App(..)
                                 | crate::resolver::TileResolution::Retained(_)
                         );
                         let mut host = resolution.mount(&mut failures, wake_sink.clone());

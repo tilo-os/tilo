@@ -12,11 +12,19 @@ pub struct TileRequest<'a> {
     pub room: RoomId,
     pub tab: &'a Tab,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a resolution is mounted immediately; boxing the component would reshape the public variants hosts construct"
+)]
 pub enum TileResolution {
     Component(AppComponent),
     /// A component shown as an App of its own in the tile: its input,
-    /// focus, palette, history and collaboration are its App's.
-    App(AppComponent),
+    /// focus, palette, history and collaboration are its App's, the last
+    /// over the collaboration manager the host connected it with.
+    App(
+        AppComponent,
+        Option<ui::collaboration::CollaborationManager>,
+    ),
     /// A retained checked owner moved through a hierarchy rebuild.
     Retained(TileHost),
     Hosted(Box<dyn AppWidget>),
@@ -146,14 +154,17 @@ impl TileResolution {
                     }
                 }
             }
-            Self::App(component) => {
+            Self::App(component, collaboration) => {
                 // The portable toolkit has no App runner: there a component
                 // is its own tile.
                 #[cfg(not(target_arch = "wasm32"))]
-                let mounted = app_tile(component, move |_| wake())
+                let mounted = app_tile(component, collaboration, move |_| wake())
                     .map(|app| TileHost::new(ui::widget::TileContent::App(app)));
                 #[cfg(target_arch = "wasm32")]
-                let mounted = TileHost::mount_component(component, move |_| wake());
+                let mounted = {
+                    let _ = collaboration;
+                    TileHost::mount_component(component, move |_| wake())
+                };
                 match mounted {
                     Ok(host) => host,
                     Err(error) => {
@@ -190,19 +201,24 @@ impl TileResolution {
 }
 /// `component` as the app a tile shows: an App of its own, with the input,
 /// focus, palette, history and collaboration it has in a window, drawn in
-/// the tile. `wake` is told when its background work wants a frame.
+/// the tile, collaborating over `collaboration` when the host connected it.
+/// `wake` is told when its background work wants a frame.
 ///
 /// # Errors
 /// The app could not be built around the component.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn app_tile(
     component: ui::application::AppComponent,
+    collaboration: Option<ui::collaboration::CollaborationManager>,
     wake: impl Fn(ui::WakeEvent) + Send + Sync + 'static,
 ) -> Result<Box<dyn AppWidget>, LaunchError> {
-    let app = ui::App::from_component(
-        component,
-        ui::application::ComponentRunnerInputs::from_native_process(),
-    )?;
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    let app = match collaboration {
+        Some(collaboration) => {
+            ui::App::from_component_with_collaboration(component, inputs, collaboration)?
+        }
+        None => ui::App::from_component(component, inputs)?,
+    };
     Ok(Box::new(ui::app::EmbeddedApp::new(app, wake)?))
 }
 
