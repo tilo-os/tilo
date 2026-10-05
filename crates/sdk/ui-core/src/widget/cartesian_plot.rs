@@ -1205,14 +1205,16 @@ impl CartesianPlot {
         } else {
             tick_line + tight
         };
-        let left = (gap + y_title + widest_tick + gap).ceil();
+        // The y labels start on the plot's leading edge, the content edge
+        // the text around it stands on.
+        let left = (y_title + widest_tick + gap).ceil();
         let right = self.style.plot_padding.max(gap);
         let legend_rows = if self.style.legend == LegendPosition::Hidden {
             0
         } else {
             chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0 + left,
+                self.rect.x0,
                 self.rect.x1 - right,
             )
         };
@@ -1917,10 +1919,7 @@ impl CartesianPlot {
                 &title,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((
-                        self.rect.x0 + self.bands.gap,
-                        plot.center().y + f64::from(width) / 2.0,
-                    ))
+                    * Affine::translate((self.rect.x0, plot.center().y + f64::from(width) / 2.0))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
                 None,
                 &title_style.clone().with_weight(TextWeight::Semibold),
@@ -2531,7 +2530,8 @@ impl CartesianPlot {
         if self.style.legend == LegendPosition::Hidden {
             return;
         }
-        let left = self.rect.x0 + self.bands.left;
+        // The key stands on the content edge, like the labels beside it.
+        let left = self.rect.x0;
         let right = self.rect.x1 - self.bands.right;
         let y = if self.style.legend == LegendPosition::Top {
             self.rect.y0 + self.bands.legend_top
