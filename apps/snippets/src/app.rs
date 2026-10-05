@@ -845,10 +845,10 @@ impl SnippetsApp {
         )?;
         self.apply_layout(&taffy, node, Point::ZERO);
         // Settle the reveal so `sidebar_open`/reveal reflect the target.
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
         for _ in 0..240 {
-            if !Widget::update(self, &mut doc, &root) {
+            if !Widget::update(self, &doc, &root) {
                 break;
             }
         }

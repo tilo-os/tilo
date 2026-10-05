@@ -1056,8 +1056,8 @@ mod tests {
         cx.settings::<AccessibilityPrefs>()
             .update(|prefs| prefs.sticky_keys = true)
             .unwrap();
-        let mut doc = ui::automerge::AutoCommit::new();
-        pane.sync(&mut doc, &ui::automerge::ROOT);
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
         assert!(pane.shown.high_contrast.get());
         assert!(pane.shown.sticky_keys.get());
         assert!(pane.appearance().high_contrast);

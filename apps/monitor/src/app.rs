@@ -8252,7 +8252,7 @@ mod tests {
             first.selected_pid = first.model.processes.last().map(|process| process.pid);
 
             // A shared-document sync must not import first's uncommitted fields.
-            second.sync(&mut doc, &root);
+            second.sync(&doc, &root);
             assert_eq!(second.prefs, Prefs::default());
             assert!(second.search_input.value().is_empty());
             assert_eq!(second.sort_key, SortKey::Cpu);

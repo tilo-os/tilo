@@ -4854,10 +4854,10 @@ mod tests {
         // Case `fresh_player_shows_a_clean_empty_state_with_no_frame`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
-            let mut doc = automerge::AutoCommit::new();
+            let doc = automerge::AutoCommit::new();
             // Pumping the app before any file is opened must not fabricate a frame.
-            app.sync(&mut doc, &automerge::ROOT);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 app.player.latest_frame().is_none(),
                 "empty state: no picture until a file is opened"
@@ -4888,8 +4888,8 @@ mod tests {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
                 .expect("source identity available");
-            let mut doc = automerge::AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = automerge::AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 app.player.latest_frame().is_some(),
                 "a frame is produced once opened"
@@ -4920,8 +4920,8 @@ mod tests {
                 "disabled autoplay is honoured on open"
             );
 
-            let mut doc = automerge::AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = automerge::AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
             app.preferences.loop_enabled = true;
             configure_player_settings(
                 &mut app.player,
@@ -4940,10 +4940,10 @@ mod tests {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
                 .expect("source identity available");
-            let mut doc = automerge::AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT); // baseline the synth clock
+            let doc = automerge::AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT); // baseline the synth clock
             std::thread::sleep(std::time::Duration::from_millis(40));
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 app.player.position_ms() > 0,
                 "playhead advanced while playing"
@@ -4956,7 +4956,7 @@ mod tests {
 
             // Playback continues forward from the seek target, not back to the start.
             std::thread::sleep(std::time::Duration::from_millis(30));
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 app.player.position_ms() >= 50_000,
                 "seek stuck; playback rode on from it"

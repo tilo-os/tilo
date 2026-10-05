@@ -608,8 +608,8 @@ mod tests {
         cx.settings::<Locale>()
             .update(|locale| locale.measurement = Measurement::Imperial)
             .unwrap();
-        let mut doc = ui::automerge::AutoCommit::new();
-        pane.sync(&mut doc, &ui::automerge::ROOT);
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
         assert_eq!(pane.locale().measurement, Measurement::Imperial);
         assert_eq!(
             pane.shown.measurement.get(),

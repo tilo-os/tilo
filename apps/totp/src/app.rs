@@ -1975,13 +1975,13 @@ mod tests {
             let img = dir.join("acme-qr.png");
             render_qr_png(uri, &img);
 
-            let (mut app, mut state) = app_with_state();
+            let (mut app, state) = app_with_state();
             app.add_panel.open();
 
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Opened(img));
             ui::host::scoped(&services, || app.request_qr_via_portal());
-            app.sync(&mut state.doc, &state.root);
+            app.sync(&state.doc, &state.root);
 
             assert!(
                 app.portal_rx.is_none(),
@@ -1996,13 +1996,13 @@ mod tests {
 
         // Case `portal_cancel_leaves_the_add_panel_untouched`.
         {
-            let (mut app, mut state) = app_with_state();
+            let (mut app, state) = app_with_state();
             app.add_panel.open();
             let before = app.add_panel.field_snapshot();
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Cancelled);
             ui::host::scoped(&services, || app.request_qr_via_portal());
-            app.sync(&mut state.doc, &state.root);
+            app.sync(&state.doc, &state.root);
             assert!(
                 app.portal_rx.is_none(),
                 "the portal channel clears after a cancel"

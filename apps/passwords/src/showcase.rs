@@ -6135,7 +6135,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
             assert_eq!(app.next_wake_deadline(), Some(first));
             tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
-            app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            app.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(app.next_wake_deadline().is_none());
             let deadline = ui::time::now();
             app.revealed = Some((
@@ -6144,7 +6144,7 @@ mod tests {
                 deadline,
             ));
             assert_eq!(app.next_wake_deadline(), Some(deadline));
-            app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            app.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(app.revealed.is_none());
             assert!(app.next_wake_deadline().is_none());
         }

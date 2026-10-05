@@ -1337,17 +1337,17 @@ mod tests {
             let mut app = layout_at(app, 1200.0, 760.0);
             assert_eq!(app.search_query(), "", "starts with no query");
 
-            let mut doc = automerge::AutoCommit::new();
+            let doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
             app.search_state.set("night light".to_string());
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.search_query(), "night light");
             assert!(
                 app.take_structure_dirty(),
                 "a new query must flag a rebuild so the filtered sidebar recomposes"
             );
             // Re-syncing the same query is a no-op (no spurious rebuild).
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert!(!app.take_structure_dirty());
             assert!(
                 doc.get(&root, "settings.search.edit").unwrap().is_none(),
@@ -1362,7 +1362,7 @@ mod tests {
             app.search("light");
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(
                 app.search_query(),
                 "light",

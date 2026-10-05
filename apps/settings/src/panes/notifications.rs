@@ -1313,8 +1313,8 @@ mod tests {
                     .banners = Some(true);
             })
             .unwrap();
-        let mut doc = ui::automerge::AutoCommit::new();
-        pane.sync(&mut doc, &ui::automerge::ROOT);
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
         assert!(!pane.shown.banners.get());
         assert!(!pane.shown.apps["so.tilo.chat"].banners.get(), "inherited");
         assert!(pane.shown.apps["so.tilo.mail"].banners.get(), "overridden");

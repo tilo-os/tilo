@@ -2987,7 +2987,7 @@ mod tests {
             )
             .expect("structured library action applies");
             app.present_library(&crate::resource::Tube::read(&doc).unwrap());
-            Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut app, &doc, &automerge::ROOT);
             assert!(app.model.liked.iter().any(|id| id == "vid_donut"));
             assert!(
                 doc.get(&automerge::ROOT, "tube_state")
@@ -3000,9 +3000,9 @@ mod tests {
         {
             use automerge::transaction::Transactable;
 
-            let (mut first, mut doc) = fresh();
+            let (mut first, doc) = fresh();
             first.search_query.set("rust async".into());
-            Widget::sync(&mut first, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut first, &doc, &automerge::ROOT);
 
             assert!(
                 doc.get(&automerge::ROOT, "search_query")
@@ -3011,7 +3011,7 @@ mod tests {
             );
 
             let mut second = TubeApp::new();
-            Widget::sync(&mut second, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut second, &doc, &automerge::ROOT);
             assert!(second.search_query.get().is_empty());
             assert_eq!(first.search_query.get(), "rust async");
 
@@ -3022,7 +3022,7 @@ mod tests {
                 .put(&automerge::ROOT, "search_query", "remote query")
                 .expect("legacy search seed");
             let mut third = TubeApp::new();
-            Widget::sync(&mut third, &mut legacy_doc, &automerge::ROOT);
+            Widget::sync(&mut third, &legacy_doc, &automerge::ROOT);
             assert!(third.search_query.get().is_empty());
         }
     }
@@ -3268,9 +3268,9 @@ mod tests {
             assert!(store.pending() >= 1, "a load is in flight");
 
             let mut app = TubeApp::new().with_image_store(store);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let r = automerge::ROOT;
-            app.sync(&mut doc, &r);
+            app.sync(&doc, &r);
             assert!(
                 !Widget::take_structure_dirty(&mut app),
                 "an in-flight image load must NOT queue a whole-tree rebuild — images \

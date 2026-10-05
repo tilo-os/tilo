@@ -207,12 +207,12 @@ fn real_file_decodes_and_reaches_the_player_surface() {
                 .is_some_and(MediaEngine::is_real_decode),
             "the app must use the real decoder"
         );
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
 
         let deadline = tilo_test_env::hang_deadline();
         while ui::time::now() < deadline {
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             if app.player().latest_frame().is_some() {
                 break;
             }

@@ -98,7 +98,7 @@ impl Harness {
     /// the focusable order. Mirrors `shots::render_to_path` + `App::init_layout`.
     fn layout(&mut self) {
         let theme = ui::Theme::dark();
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let app_node = self.app.build_layout(&mut taffy, &theme, &mut node_map);
@@ -114,7 +114,7 @@ impl Harness {
                 &[app_node],
             )
             .unwrap();
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
         let measure_map = node_map.clone();
         let mut tr = TextRenderer::new();
         taffy
@@ -137,7 +137,7 @@ impl Harness {
         // Settling sync — the just-built leaf controls (search field, rows)
         // read back their bound CRDT values (this is what the shots harness
         // and the live app do after a structural rebuild).
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
 
         self.taffy = taffy;
         self.node_map = node_map;
@@ -253,7 +253,7 @@ impl Harness {
         }
         // Frame: sync consumes the field's SEARCH_KEY write; a changed query
         // flags a structure rebuild, which we run preserving focus by ordinal.
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
         if Widget::take_structure_dirty(&mut self.app) {
             self.rebuild();
         }
