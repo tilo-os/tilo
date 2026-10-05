@@ -150,7 +150,7 @@ mod tests {
             source(&refreshed)
                 .search("changed recovery")
                 .iter()
-                .any(|hit| hit.title == "changed recovery time backup")
+                .any(|hit| hit.title == "changed recovery time")
         );
     }
 }

@@ -157,6 +157,7 @@ pub struct SettingsPane {
     /// cannot diagnose this profile's disk permissions or free space.
     history_clear_error: Option<String>,
     private_window_request: Option<ui::LocalState<bool>>,
+    autofill_request: Option<ui::LocalState<Option<bool>>>,
 }
 
 impl SettingsPane {
@@ -175,6 +176,7 @@ impl SettingsPane {
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
             private_window_request: None,
+            autofill_request: None,
         }
     }
 
@@ -205,6 +207,13 @@ impl SettingsPane {
     #[must_use]
     pub fn with_private_window_request(mut self, request: ui::LocalState<bool>) -> Self {
         self.private_window_request = Some(request);
+        self
+    }
+
+    /// Open device-local password or address management through a published view control.
+    #[must_use]
+    pub fn with_autofill_request(mut self, request: ui::LocalState<Option<bool>>) -> Self {
+        self.autofill_request = Some(request);
         self
     }
 
@@ -284,6 +293,24 @@ impl SettingsPane {
                 large_text,
             ),
         ];
+        if let Some(request) = &self.autofill_request {
+            for (id, label, addresses) in [
+                ("browser.credentials.open", "Passwords", false),
+                ("browser.address.open", "Address autofill", true),
+            ] {
+                let request = request.clone();
+                privacy_rows.push(setting_row_described(
+                    label,
+                    "Manage filling on this device; opening does not enable it.",
+                    Box::new(
+                        Button::new(id, "Manage")
+                            .with_accessible_name(label)
+                            .on_view(move || request.set(Some(addresses))),
+                    ),
+                    large_text,
+                ));
+            }
+        }
         if let Some(error) = &self.history_clear_error {
             privacy_rows.push(Box::new(Text::new(error).with_role(ui::TextRole::Caption)));
         }

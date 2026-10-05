@@ -147,9 +147,7 @@ enum LibraryTab {
 /// What the picture area says when the decoder cannot play a video.
 const DECODER_FAILURE: &str = "The decoder could not play this video.";
 
-/// The clip a capture plays, and what the library lists beside it.
-#[cfg(test)]
-const DEMO_TITLE: &str = "Harbour at dusk";
+/// What the authored capture library lists beside its demo clip.
 const DEMO_QUEUE: &[(&str, &str)] = &[
     ("https://demo.local/market.mp4", "Market morning"),
     ("https://demo.local/night-train.mp4", "Night train"),
@@ -3415,9 +3413,9 @@ mod tests {
                     .map(|track| track.label.as_str())
                     .collect::<Vec<_>>(),
                 [
-                    "English stereo · selected",
+                    "English stereo is selected",
                     "Deutsch 5.1",
-                    "English captions · selected"
+                    "English captions is selected"
                 ]
             );
             assert!(
@@ -3452,59 +3450,95 @@ mod tests {
         }
     }
 
-    /// Press the left button with the pointer at `at`, the way the host
-    /// reports it to the app.
-    fn press_at(app: &mut PlayerApp, at: Point) -> bool {
-        app.last_cursor = at;
-        app.handle_app_pointer(&mut ui::widget::Edits::lend(
-            &mut automerge::AutoCommit::new(),
-        ))
-    }
-
     #[test]
     fn library_sheet_rows_tabs_and_scrim_answer_the_pointer() {
-        let mut app = lay_out_still(
-            PlayerApp::for_shot_open(None, Some("library")),
-            (1200.0, 800.0),
-            1.0,
+        use ui::framework::testing::TestApp;
+        fn surface<T>(
+            app: &mut TestApp<crate::resource::VideoPlayerShell>,
+            f: impl FnOnce(&mut PlayerApp) -> T,
+        ) -> T {
+            app.with_surface::<PlayerApp, T>(f).expect("mounted player")
+        }
+        let mut app = TestApp::<crate::resource::VideoPlayerShell>::new().unwrap();
+        surface(&mut app, |player| {
+            // Hermetic authored media, with live framework action admission.
+            player
+                .player
+                .set_engine(media::MediaEngine::new_synthesized());
+            player.stage_capture(None, Some("library"));
+        });
+        app.harness()
+            .relayout_themed(
+                ui::headless::viewport((1200.0, 800.0)),
+                Theme::dark().with_reduce_motion(true),
+            )
+            .unwrap();
+        app.settle();
+        let next = surface(&mut app, |player| player.queue[1].id.clone());
+        let row = surface(&mut app, |player| {
+            player
+                .library_row_hits
+                .iter()
+                .find(|hit| hit.id == next)
+                .cloned()
+                .expect("queued row placed")
+        });
+        app.harness()
+            .click_at(row.row.x0 + 20.0, row.row.center().y);
+        app.settle();
+        assert_eq!(
+            surface(&mut app, |player| player.current_queue_id.clone()),
+            Some(next.clone()),
+            "row body plays its canonical queue entry"
         );
-        let next = app.queue[1].id.clone();
-        let row = app
-            .library_row_hits
-            .iter()
-            .find(|hit| hit.id == next)
-            .cloned()
-            .expect("the queued row is placed");
-        let remove = row.remove.expect("a queued row can be removed");
-        // The row's body plays it, through the host action.
-        assert!(press_at(
-            &mut app,
-            Point::new(row.row.x0 + 20.0, row.row.center().y)
-        ));
-        let play = ui::widget::controls::take_control_invocation(&mut *app).expect("play intent");
-        assert_eq!(play.address.action, "play");
-        // Its action removes it; the press does not also play it.
-        assert!(press_at(&mut app, remove.center()));
-        let removal = ui::widget::controls::take_control_invocation(&mut *app).expect("remove");
-        assert_eq!(removal.address.action, "remove");
-        assert!(ui::widget::controls::take_control_invocation(&mut *app).is_none());
-        // A tab asks the host to show that list.
-        let recent_tab = app.library_recent_tab_rect.center();
-        assert!(press_at(&mut app, recent_tab));
-        let recent = ui::widget::controls::take_control_invocation(&mut *app).expect("recent");
-        assert_eq!(recent.address.resource, "video-player.history.local");
-        // Close hides the sheet.
-        let close_button = app.library_close_rect.center();
-        assert!(press_at(&mut app, close_button));
-        let close = ui::widget::controls::take_control_invocation(&mut *app).expect("close");
-        assert_eq!(close.address.action, "hide-library");
-        // So does a press on the scrim, which the drawer reads and no control
-        // under it receives: its hide action closes the library.
-        assert!(app.library_visible);
-        Framed::harness_mut(&mut app).click_at(40.0, 400.0);
-        assert!(!app.library_visible, "the scrim press hid the library");
-        // With the sheet closed the same press reaches the player.
-        assert!(!press_at(&mut app, Point::new(40.0, 400.0)));
+        let remove = surface(&mut app, |player| {
+            player
+                .library_row_hits
+                .iter()
+                .find(|hit| hit.id == next)
+                .and_then(|hit| hit.remove)
+                .expect("queued row removal control")
+        });
+        app.harness().click_at(remove.center().x, remove.center().y);
+        app.settle();
+        assert!(
+            surface(&mut app, |player| player
+                .queue
+                .iter()
+                .all(|entry| entry.id != next)),
+            "remove changes the queue without replaying the row"
+        );
+        let recent = surface(&mut app, |player| player.library_recent_tab_rect.center());
+        app.harness().click_at(recent.x, recent.y);
+        app.settle();
+        assert_eq!(
+            surface(&mut app, |player| player.library_tab_name()),
+            "recent"
+        );
+        let close = surface(&mut app, |player| player.library_close_rect.center());
+        app.harness().click_at(close.x, close.y);
+        app.settle();
+        assert!(!surface(&mut app, |player| player.library_visible));
+        app.effect(&VideoEffect::ShowLibrary {
+            tab: "queue".into(),
+        })
+        .unwrap();
+        assert!(surface(&mut app, |player| player.library_visible));
+        app.harness().click_at(40.0, 400.0);
+        app.settle();
+        assert!(
+            !surface(&mut app, |player| player.library_visible),
+            "the scrim closes the actual hosted library"
+        );
+        assert!(
+            !surface(&mut app, |player| {
+                player.last_cursor = Point::new(40.0, 400.0);
+                player.handle_app_pointer(&mut ui::widget::Edits::lend(
+                    &mut automerge::AutoCommit::new(),
+                ))
+            }),
+            "the closed library no longer captures the same press"
+        );
     }
 
     /// Run the production layout passes (sync → build → compute → apply) for
@@ -3722,7 +3756,7 @@ mod tests {
         let gave_up = PlayerApp::for_shot_open(None, Some("native-error"));
         assert_eq!(gave_up.open_error.as_deref(), Some(DECODER_FAILURE));
         assert!(gave_up.player.has_media());
-        assert_eq!(gave_up.title, DEMO_TITLE);
+        assert_eq!(gave_up.title, "Demo clip");
         assert!(
             gave_up.shot_loading,
             "the picture is held back for the failure"

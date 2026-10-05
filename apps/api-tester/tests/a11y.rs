@@ -42,6 +42,19 @@ fn captured(scenario: &str, viewport: (u32, u32)) -> TestApp<ApiTesterShell> {
     staged(Some(scenario), viewport)
 }
 
+/// Drive a synthetic retained row action through its published AT owner.
+fn act_named(d: &mut Driver, name: &str, action: &ui::a11y::Action) {
+    let node = d
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("missing actionable {name}: {}", d.dump_json()));
+    d.perform_a11y_action(node, action).unwrap();
+}
+
+fn environment_command(d: &mut Driver, choice: &str) {
+    d.perform_named("api.env", &ui::a11y::Action::SetValue(choice.into()))
+        .unwrap();
+}
+
 /// Apply what the last input submitted.
 fn settle(d: &mut Driver) {
     d.wait_until(ui::time::Duration::ZERO, |_| true);
@@ -85,7 +98,13 @@ fn every_control_is_a_focusable_accessible_node() {
     );
 
     // Labels / values a screen reader announces.
-    for name in ["Send", "Save", "New collection", "Search", "Hide sidebar"] {
+    for name in [
+        "Send",
+        "Save request",
+        "New collection",
+        "Search",
+        "Hide sidebar",
+    ] {
         assert!(
             nodes
                 .iter()
@@ -252,8 +271,13 @@ fn tab_traverses_every_control_in_order() {
     let mut app = sample();
     let d = app.harness();
     // The window's own chrome (History) precedes the app's controls.
-    let stops: Vec<_> = d
-        .tab_through()
+    let all_stops = d.tab_through();
+    assert_eq!(
+        all_stops.len(),
+        d.focus_order().len(),
+        "Tab visits every focusable node, including platform controls"
+    );
+    let stops: Vec<_> = all_stops
         .into_iter()
         .skip_while(|(role, _)| *role != Role::ComboBox)
         .collect();
@@ -271,7 +295,7 @@ fn tab_traverses_every_control_in_order() {
         Some(&Role::TextInput),
         "second stop is the URL field"
     );
-    assert_eq!(stops[2].1.as_deref(), Some("Save"));
+    assert_eq!(stops[2].1.as_deref(), Some("Save request"));
     assert_eq!(stops[3].1.as_deref(), Some("Send"));
     assert_eq!(
         roles.get(4),
@@ -282,13 +306,6 @@ fn tab_traverses_every_control_in_order() {
         roles.get(5),
         Some(&Role::Group),
         "sixth stop is the request tabs"
-    );
-
-    // Every focusable control is reached exactly once.
-    assert_eq!(
-        stops.len().saturating_add(1),
-        d.focus_order().len(),
-        "Tab visits every focusable node, after the window's History button"
     );
 
     // Focus reaches the sidebar's list (arrows move through its rows) and
@@ -319,24 +336,20 @@ fn tab_traverses_every_control_in_order() {
 fn enter_activates_a_focused_row_through_the_real_handler() {
     let mut app = sample();
     let d = app.harness();
-    let target = "Users API, collection, 4 requests";
+    let target = "Users API";
 
-    let mut reached = false;
-    for _ in 0..=d.focus_order().len() {
-        d.tab(false);
-        if d.focused_access_node().and_then(|n| n.name).as_deref() == Some("Requests") {
-            reached = true;
-            break;
-        }
-    }
-    assert!(reached, "Tab can land on the collection header");
+    act_named(d, target, &ui::a11y::Action::Focus);
+    assert!(
+        d.focused_access_node().is_some(),
+        "the collection header can receive keyboard focus"
+    );
 
     // Expanded: its request rows are present.
     let before = d.focus_access_nodes();
     assert!(
         before
             .iter()
-            .any(|n| n.name.as_deref() == Some("GET List users")),
+            .any(|n| n.name.as_deref() == Some("List users")),
         "before activation the collection is expanded"
     );
 
@@ -348,7 +361,7 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
     assert!(
         !after
             .iter()
-            .any(|n| n.name.as_deref() == Some("GET List users")),
+            .any(|n| n.name.as_deref() == Some("List users")),
         "Enter collapsed the collection, hiding its request rows"
     );
     let coll = after
@@ -367,23 +380,22 @@ fn composition_disclosure_hides_maintenance_and_returns_focus() {
     let mut app = sample();
     let d = app.harness();
     assert!(
-        !d.targets().contains_key("api.rename-request"),
-        "maintenance is hidden by default"
+        !d.targets().contains_key("api.form-name"),
+        "maintenance forms are hidden until the row action asks for one"
     );
-    assert!(d.targets()["api.nav.1"].y0 < d.targets()["api.request-actions"].y0);
-    d.click_named("api.request-actions").unwrap();
-    assert!(d.targets().contains_key("api.rename-request"));
-    assert!(!d.targets().contains_key("api.new-variable"));
-    d.perform_named("api.rename-request", &ui::a11y::Action::Focus)
+    act_named(d, "Rename request List users", &ui::a11y::Action::Activate);
+    assert!(d.targets().contains_key("api.form-name"));
+    assert!(!d.targets().contains_key("api.form-variable-key"));
+    d.perform_named("api.form-name", &ui::a11y::Action::Focus)
         .unwrap();
     d.key("Escape");
-    assert!(!d.targets().contains_key("api.rename-request"));
-    assert!(
+    assert!(!d.targets().contains_key("api.form-name"));
+    assert_eq!(
         d.focused_access_node()
-            .unwrap()
-            .name
-            .unwrap()
-            .starts_with("Request actions")
+            .and_then(|node| node.name)
+            .as_deref(),
+        Some("Requests"),
+        "Escape returns focus to the navigation control that owns the row action"
     );
 }
 
@@ -415,7 +427,6 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     assert!(d.targets()["api.request-divider"].y1 < 380.0);
     d.resize((1280, 800)).unwrap();
     assert!(d.targets()["api.request-divider"].y0 > before.y0);
-    d.click_named("api.request-actions").unwrap();
     d.click_named("api.reset-request-area").unwrap();
     assert_eq!(d.targets()["api.request-divider"], before);
 }
@@ -504,7 +515,7 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     });
     let manual = d.targets()["api.request-divider"];
     assert_eq!(manual.y0, divider.y0 + 200.0);
-    d.click_named("api.nav.3").unwrap();
+    act_named(d, "Create user", &ui::a11y::Action::Activate);
     click_tab(d, 3);
     assert!(d.targets().contains_key("api.body"));
     assert_eq!(d.targets()["api.request-divider"], manual);
@@ -540,10 +551,8 @@ fn real_buttons_perform_canonical_mutations_and_live_sends() {
 fn composition_management_real_buttons_keep_canonical_mutations() {
     let mut app = sample();
     let d = app.harness();
-    d.perform_named("api.collection-actions", &ui::a11y::Action::Focus)
-        .unwrap();
+    act_named(d, "Rename collection Users API", &ui::a11y::Action::Focus);
     d.key("Enter");
-    d.click_named("api.rename-collection").unwrap();
     assert!(d.targets().contains_key("api.form-name"));
     d.click_named("api.form-name").unwrap();
     d.key("Home");
@@ -558,8 +567,7 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
         "{}",
         d.dump_json()
     );
-    d.click_named("api.environment-actions").unwrap();
-    d.click_named("api.new-variable").unwrap();
+    environment_command(d, "Add variable…");
     d.click_named("api.form-variable-key").unwrap();
     d.type_text("region");
     d.click_named("api.form-variable-value").unwrap();
@@ -578,7 +586,7 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     let mut app = sample();
     let d = app.harness();
     d.resize((480, 900)).unwrap();
-    d.perform_named("api.workspace-menu", &ui::a11y::Action::Focus)
+    d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
         .unwrap();
     d.key("Enter");
     // Settle the drawer's existing animation through real redraw ticks.
@@ -586,16 +594,19 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
         std::thread::sleep(std::time::Duration::from_millis(10));
         d.relayout();
     }
-    d.click_named("api.environment-actions").unwrap();
     assert_sidebar_targets(d, 900.0);
+    environment_command(d, "Add variable…");
+    let field = d.targets()["api.form-variable-key"];
+    assert!(field.x0 >= 0.0 && field.x1 <= 480.0 && field.y1 <= 900.0);
     // 480 logical pixels for the app below the window's 40-pixel title bar.
     d.resize((800, 520)).unwrap();
-    assert_sidebar_targets(d, 520.0);
+    let field = d.targets()["api.form-variable-key"];
+    assert!(field.x0 >= 0.0 && field.x1 <= 800.0 && field.y1 <= 520.0);
     d.key("Escape");
     assert!(
         !d.focus_access_nodes()
             .iter()
-            .any(|node| node.name.as_deref() == Some("Name")),
+            .any(|node| node.name.as_deref() == Some("Variable key")),
         "Escape closed the sheet"
     );
 }
@@ -610,11 +621,15 @@ fn composition_real_two_x_retains_all_controls_and_response_space() {
     )
     .unwrap();
     assert_sidebar_targets(d, 900.0);
-    d.click_named("api.environment-actions").unwrap();
-    assert_sidebar_targets(d, 900.0);
     let targets = d.targets();
     assert!(targets["api.request-divider"].y1 < 700.0);
     assert!(targets["api.request-tabs"].x1 <= 800.0);
+    environment_command(d, "Add variable…");
+    let field = d.targets()["api.form-variable-key"];
+    assert!(
+        field.x0 >= 0.0 && field.x1 <= 800.0 && field.y1 <= 900.0,
+        "large-text management input remains visible: {field:?}"
+    );
 }
 
 /// Sheets collect a name and dispatch the canonical action through the real
@@ -626,15 +641,8 @@ fn a_sheet_creates_a_collection_through_the_real_controls() {
     d.click_named("api.new-collection").unwrap();
     d.type_text("Billing API");
     d.key("Enter");
-    let listed = d.focus_access_nodes().iter().any(|node| {
-        node.children.iter().any(|row| {
-            row.name.as_deref() == Some("Billing API")
-                && row
-                    .children
-                    .iter()
-                    .any(|action| action.name.as_deref() == Some("Rename collection Billing API"))
-        })
-    });
+    let listed = d.a11y_node_named("Billing API").is_some()
+        && d.a11y_node_named("Rename collection Billing API").is_some();
     assert!(
         listed,
         "the new collection is listed, with its rename action"

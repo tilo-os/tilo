@@ -1216,7 +1216,7 @@ impl PhotosApp {
         if self.header_back_visible()
             && let Some(node) = self.chrome.back.accessibility()
         {
-            header.push(node);
+            header.push(node.with_hashed_key("photos:back"));
         }
         if !self.chrome.title.is_empty() {
             header.push(

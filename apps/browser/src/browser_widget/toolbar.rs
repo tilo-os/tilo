@@ -118,7 +118,7 @@ impl BrowserWidget {
             .with_checked(self.active_pip),
             row(
                 "Pause history",
-                self.queue_command("browser.session", "toggle-history-pause"),
+                self.queue_command("browser.session", "toggle-pause"),
             )
             .with_checked(self.history_paused()),
             row(

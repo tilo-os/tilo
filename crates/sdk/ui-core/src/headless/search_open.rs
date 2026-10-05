@@ -111,4 +111,50 @@ mod tests {
             "one search at a time"
         );
     }
+
+    #[test]
+    fn a_component_owned_search_launcher_opens_the_host_palette() {
+        use crate::application::{LaunchTarget, RestoreInput};
+        use crate::application_test_support as probe;
+        let owner = probe::ProbeHost::new();
+        let mut component =
+            probe::instantiate_probe(&owner, 71, LaunchTarget::New, RestoreInput::None).unwrap();
+        struct Launcher(crate::widget::Button);
+        impl crate::widget::Decorator for Launcher {
+            type Inner = crate::widget::Button;
+            fn inner(&self) -> &Self::Inner {
+                &self.0
+            }
+            fn inner_mut(&mut self) -> &mut Self::Inner {
+                &mut self.0
+            }
+        }
+        impl crate::widget::AppWidget for Launcher {
+            fn permission_hint(&self) -> Option<crate::widget::AppKind> {
+                None
+            }
+            fn app_kind(&self) -> crate::widget::AppKind {
+                crate::widget::AppKind::Editor
+            }
+            fn app_title(&self) -> &'static str {
+                "Search fixture"
+            }
+            fn app_icon(&self) -> crate::widget::IconDescriptor {
+                crate::widget::IconDescriptor::Named("search".into())
+            }
+        }
+        component.root = Some(Box::new(Launcher(crate::search::search_button(
+            SearchRequest::within(ScopeDecl::new("folder:inbox", "Inbox")).with_query("invoice"),
+        ))));
+        let mut frame =
+            FrameHarness::from_component(component, (640, 480), probe::runner_inputs()).unwrap();
+        assert!(frame.action_palette.is_none());
+        frame.click_named("search-open-folder:inbox").unwrap();
+        let palette = frame.action_palette.as_deref().expect("host search opens");
+        assert_eq!(
+            palette.scope().map(|scope| scope.label.as_str()),
+            Some("Inbox")
+        );
+        assert_eq!(palette.query(), "invoice");
+    }
 }

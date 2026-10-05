@@ -102,6 +102,7 @@ fn sections(view: &SidebarView<'_>) -> Vec<NavSection> {
                 })
                 .collect();
             NavSection::new(collection_section_id(ci), &collection.name, items)
+                .collapsible()
                 .trailing_action(NavAction::new(RENAME, Icon::Pencil, "Rename collection"))
                 .empty_caption("No saved requests")
         })

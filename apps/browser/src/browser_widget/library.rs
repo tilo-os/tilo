@@ -354,7 +354,7 @@ impl BrowserWidget {
             header = header.push(Box::new(self.bind_button(
                 Button::new("browser.library.history-pause", label),
                 "browser.session",
-                "toggle-history-pause",
+                "toggle-pause",
             )));
         }
         if !self.library_filter.get().is_empty() {
@@ -365,7 +365,7 @@ impl BrowserWidget {
                     "Clear library filter",
                 ),
                 "browser.library",
-                "clear-filter",
+                "clear-library-filter",
             )));
         }
         // Search is the platform's: the button opens it narrowed to the

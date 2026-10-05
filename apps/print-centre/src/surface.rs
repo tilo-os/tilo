@@ -2290,6 +2290,9 @@ mod tests {
                 let mut centre =
                     TestApp::<PrintCentreShell>::capture_at(Some("scan-result"), (width, 760))
                         .unwrap();
+                centre
+                    .harness()
+                    .set_interaction_environment(ui::InteractionEnvironment::TOUCH);
                 let mut buttons = 0;
                 inspect(
                     print_centre(&centre.harness().inspection().root),

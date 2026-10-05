@@ -952,6 +952,7 @@ fn surface(
         ui::widget::NavShell::new()
             .with_id("clocks.shell")
             .mode(ui::widget::NavMode::Push)
+            .with_pane_state(&ui::LocalState::new(ui::widget::NavPane::Content))
             .sidebar(Box::new(sidebar))
             .sidebar_header("Clocks", Vec::new())
             .content(Box::new(

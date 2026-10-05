@@ -393,6 +393,10 @@ impl Resource for Calendar {
             ..Default::default()
         });
         let tasks = state.tasks.iter().map(|task| SearchEntry {
+            within: Some(
+                task.project
+                    .map_or_else(|| TASKS_SCOPE.to_owned(), project_scope),
+            ),
             anchor: Some(crate::actions::task_resource_id(task.id)),
             title: task.title.clone(),
             text: notes(task.id),

@@ -666,13 +666,12 @@ impl VideoEditorApp {
                 .clamp(0.0, self.project.duration());
             return;
         }
-        // Timeline gutter: add-track buttons and per-track mute pills.
-        if r.gutter.contains(p) {
-            for (kind, rect) in self.add_track_buttons(r) {
-                if rect.contains(p) {
-                    self.add_track(kind);
-                    return;
-                }
+        // The measured add-track controls may extend from the gutter into
+        // the lanes. Their actual painted bounds own the press there too.
+        for (kind, rect) in self.add_track_buttons(r) {
+            if rect.contains(p) {
+                self.add_track(kind);
+                return;
             }
         }
         // Timeline gutter: per-track mute, lock and solo.

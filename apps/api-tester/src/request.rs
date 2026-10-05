@@ -284,7 +284,6 @@ fn auth_kind_index(auth: &Auth) -> usize {
 }
 
 fn auth_input(sink: &Sink, which: AuthField, value: &str, secret: bool, name: &str) -> TextInput {
-    let sink = sink.clone();
     let input = TextInput::local()
         .with_kind(if secret {
             TextInputKind::Secret
@@ -292,11 +291,25 @@ fn auth_input(sink: &Sink, which: AuthField, value: &str, secret: bool, name: &s
             TextInputKind::Code
         })
         .with_initial_value(value)
-        .with_accessible_name(name)
-        .on_change(move |text| {
-            sink.borrow_mut()
-                .push(Cmd::EditAuth(which, text.to_owned()));
-        });
+        .with_accessible_name(name);
+    let input = match sink.actions.borrow().as_ref() {
+        Some(actions) if secret => {
+            actions.bind_effect(input, crate::actions::ApiTesterEffect::SET_CREDENTIAL)
+        }
+        Some(actions) => {
+            let field = match which {
+                AuthField::Username => "username",
+                AuthField::Header => "header",
+                _ => return input.disabled(true),
+            };
+            actions.bind_effect(
+                input,
+                crate::actions::ApiTesterEffect::EDIT_AUTH_FIELD
+                    .map(move |value: String| (field.to_owned(), value)),
+            )
+        }
+        None => input.disabled(true),
+    };
     if secret {
         input.with_secret(true)
     } else {

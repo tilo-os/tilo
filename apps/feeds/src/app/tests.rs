@@ -631,10 +631,36 @@ fn the_add_dialog_field_is_native_and_submits_a_subscription() {
             .map(|f| f.id)
             .expect("created folder");
         assert_eq!(a.active_filter(), Filter::Folder(folder));
+        // The managed record owns Undo; a detached view has no writer history.
+        let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+        host.with_widget(|app: &mut FeedsApp| {
+            app.core_mut().open_add_folder();
+            app.take_pending_modal();
+        })
+        .unwrap();
+        let field = host.harness().a11y_node_named("Folder name").unwrap();
+        host.harness()
+            .perform_a11y_action(field, &A11yAction::SetValue("Later".into()))
+            .unwrap();
+        let create = host.harness().a11y_node_named("Create folder").unwrap();
+        host.harness()
+            .perform_a11y_action(create, &A11yAction::Activate)
+            .unwrap();
+        host.settle();
         assert!(
-            ui::undo::take_committed_action(&mut a).is_some(),
-            "one undo step"
+            host.state()
+                .store
+                .folders
+                .iter()
+                .any(|folder| folder.name == "Later")
         );
+        assert_eq!(
+            host.versions().len(),
+            1,
+            "the dialog submits one canonical action"
+        );
+        assert!(host.undo(), "the record owns the undo step");
+        assert!(host.state().store.folders.is_empty());
     }
 }
 
@@ -825,6 +851,7 @@ fn opml_portal_import_and_export_report_honestly() {
         std::fs::write(&path, opml::sample_opml()).unwrap();
         let before = a.core().store.feeds.len();
         import_with(&a, PortalOutcome::Opened(path));
+        a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         a.sync(&mut doc, &automerge::ROOT);
         assert!(a.core().import_rx.is_none());
         assert_eq!(a.core().store.feeds.len(), before + 3);

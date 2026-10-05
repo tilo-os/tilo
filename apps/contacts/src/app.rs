@@ -2032,7 +2032,11 @@ impl Widget for ContactsApp {
 
 impl ui::widget::controls::ActionControls for ContactsApp {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        ui::widget::controls::take_control_invocation(&mut self.shell)
+        // This capability owns the whole mounted subtree, including modal
+        // table/selection/footer controls and the contextual menu.
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
     }
 }
 

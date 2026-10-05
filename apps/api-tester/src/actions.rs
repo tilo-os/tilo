@@ -73,6 +73,19 @@ pub enum ApiTesterEffect {
         #[param("The token, password or key, kept on this device")]
         secret: String,
     },
+    /// Edit authentication metadata
+    EditAuthField {
+        #[param("Authentication field", choices = ["username", "header"])]
+        field: String,
+        #[param("The shared field value; credentials use Set credential")]
+        value: String,
+    },
+    /// Choose an environment or open its management form
+    #[effect(view, idempotent)]
+    PickEnvironment {
+        #[param("Environment name, No environment, or an environment management command")]
+        choice: String,
+    },
     /// Set a secret variable's value
     SetSecretValue {
         #[param("Id of the variable")]
@@ -1293,6 +1306,7 @@ mod tests {
         large.collections[0].requests = (0..PUBLISHED_RECORDS + 10)
             .map(|index| Request::new(format!("Request {index}")))
             .collect();
+        large.index = resource_index(&large);
         let late = large.collections[0].requests.last().unwrap().id;
         let published = ui::tilo_resource::publish::<ApiTester>(ApiTester::KIND, "", &large);
         let collection = published

@@ -867,3 +867,61 @@ fn raw_root_dispatch_maps_history_composition_to_retained_input_and_returns_focu
     assert_eq!(frame.state.doc.get_heads(), heads);
     assert!(value.get().is_empty());
 }
+
+#[test]
+fn history_composition_keeps_app_modal_typing_and_focus_inside_the_dialog() {
+    use crate::widget::{ModalDialog, TextInput};
+    let registration = crate::history_mode::HistoryRegistration::new(
+        &PORTABLE_HISTORY,
+        vec![
+            crate::history_mode::HistorySourceRegistration::Unversioned {
+                scope: "document",
+                reason: "fixture history is unavailable",
+            },
+        ],
+    )
+    .unwrap();
+    let value = crate::local_state::LocalState::new(String::new());
+    let dialog = ModalDialog::new(
+        "Add item",
+        Column::new()
+            .push(Box::new(
+                TextInput::from_state(&value)
+                    .with_id("dialog-input")
+                    .with_accessible_name("Item name"),
+            ))
+            .push(Box::new(Button::new("dialog-last", "Last"))),
+    );
+    let root = Column::new()
+        .push(Box::new(Button::new("background", "Background")))
+        .push(Box::new(dialog));
+    let mut frame = FrameHarness::from_managed_root(
+        State::new(),
+        crate::history_mode::ManagedRoot::new(Box::new(root), registration),
+        (600, 400),
+    )
+    .unwrap();
+    frame
+        .perform_named("background", &crate::a11y::Action::Focus)
+        .unwrap();
+    frame
+        .with_widget_mut::<ModalDialog<Column>, _>(|dialog| dialog.set_open(true))
+        .unwrap();
+    assert_eq!(
+        frame.focused_access_node().unwrap().name.as_deref(),
+        Some("Item name")
+    );
+    frame.type_text("Harbour");
+    assert_eq!(value.get(), "Harbour");
+    for _ in 0..6 {
+        frame.tab(false);
+        assert!(matches!(
+            frame.focused_access_node().unwrap().name.as_deref(),
+            Some("Item name" | "Last")
+        ));
+    }
+    frame
+        .with_widget_mut::<ModalDialog<Column>, _>(|dialog| dialog.set_open(false))
+        .unwrap();
+    assert!(focused(&frame, "background"));
+}

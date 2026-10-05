@@ -73,9 +73,11 @@ mod tests {
         let expected = host
             .with_widget::<ContainersApp, _>(|app| app.engine.containers[0].id.clone())
             .unwrap();
-        host.effect(&crate::resource::ContainersEffect::SelectContainer {
-            id: Some(expected.clone()),
-        })
+        host.call_on(
+            &format!("container:{expected}"),
+            "select-container",
+            serde_json::json!({"id": expected.clone()}),
+        )
         .unwrap();
         host.with_widget::<ContainersApp, _>(|app| {
             assert_eq!(app.view.selected.as_deref(), Some(expected.as_str()));

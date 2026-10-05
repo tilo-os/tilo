@@ -3998,24 +3998,36 @@ mod responsive_body_tests {
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             self.w.sync(&self.state.doc, &self.state.root);
             let node = self.w.build_layout(&mut taffy, &theme, &mut nm);
-            let measure_map = nm.clone();
-            let trm = &mut self.tr;
-            taffy
-                .compute_layout_with_measure(
-                    node,
+            let frame = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(width),
+                            height: Dimension::length(height),
+                        },
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+            // SAFETY: this fixture exclusively owns the exact widget/layout
+            // tree and keeps both stable through admission and measurement.
+            unsafe {
+                bindings.rebuild(&self.w, &taffy, frame, &nm);
+                ui::widget::compute_widget_layout(
+                    &mut taffy,
+                    frame,
                     Size {
                         width: AvailableSpace::Definite(width),
                         height: AvailableSpace::Definite(height),
                     },
-                    |k, a, id, _, _| {
-                        if let Some(&p) = measure_map.get(&id) {
-                            unsafe { (*p).measure(k, a, trm) }
-                        } else {
-                            Size::ZERO
-                        }
-                    },
+                    &nm,
+                    &bindings,
+                    &mut self.tr,
                 )
                 .unwrap();
+            }
             self.w.apply_layout(&taffy, node, Point::ORIGIN);
             self.taffy = taffy;
             self.node = node;
