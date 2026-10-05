@@ -63,3 +63,56 @@ fn choosing_the_open_category_from_the_narrow_list_shows_it() {
         "choosing the selected category opens its pane instead of leaving the list on screen"
     );
 }
+
+/// The `[accessibility.atspi_acceptance]` strings the installed-image gate
+/// reads from the manifest: `root`, then `required`.
+fn manifest_scenario_names() -> Vec<String> {
+    let manifest = include_str!("../tilo-app.toml");
+    let section = manifest
+        .split("[accessibility.atspi_acceptance]")
+        .nth(1)
+        .expect("the manifest declares an AT-SPI acceptance scenario");
+    let value = |key: &str| -> Vec<String> {
+        let line = section
+            .lines()
+            .find(|line| {
+                line.split('=')
+                    .next()
+                    .is_some_and(|name| name.trim() == key)
+            })
+            .unwrap_or_else(|| panic!("the scenario sets {key}"));
+        line.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    };
+    let mut names = value("root");
+    names.extend(value("required"));
+    names
+}
+
+/// The gate finds the window by the app's name and the list's entries,
+/// after going Back once from the pane a narrow window opens on.
+#[test]
+fn the_manifest_scenario_names_are_on_the_narrow_list() {
+    let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
+    app.settle();
+    app.harness()
+        .resize(NARROW)
+        .expect("settings lays out narrow");
+    app.settle();
+    activate(&mut app, "Back");
+    let exposed: Vec<String> = app
+        .harness()
+        .a11y_nodes()
+        .iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect();
+    for name in manifest_scenario_names() {
+        assert!(
+            exposed.contains(&name),
+            "{name:?} is not exposed: {exposed:?}"
+        );
+    }
+}

@@ -314,8 +314,8 @@ class FakeSettings(CLIENT.AtspiClient):
     pane; narrow, it opens on the Network pane with a Back arrow to the list.
     Each screen maps a name to whether it can be clicked."""
 
-    LIST = {"Personal Settings": False, "Network": True, "Appearance": True, "Accessibility": True}
-    PANE = {"Personal Settings": False, "Back": True, "Network": False, "Connectivity": False}
+    LIST = {"Settings": False, "Network": True, "Appearance": True, "Accessibility": True}
+    PANE = {"Settings": False, "Back": True, "Network": False, "Connectivity": False}
 
     def __init__(self, narrow: bool):
         super().__init__("unix:path=/x", ":1.2")
@@ -355,7 +355,7 @@ class NarrowWindowTests(unittest.TestCase):
 
     def test_manifest_names_on_the_list_are_reached_from_a_narrow_pane(self):
         settings = FakeSettings(narrow=True)
-        CLIENT.wait_for_reachable(settings, ("Personal Settings", "Appearance", "Accessibility"), "settings")
+        CLIENT.wait_for_reachable(settings, ("Settings", "Appearance", "Accessibility"), "settings")
         self.assertEqual(settings.clicked, ["Back"])
 
     def test_a_name_missing_from_both_screens_fails_after_one_back(self):
