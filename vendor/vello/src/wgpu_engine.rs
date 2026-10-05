@@ -2400,14 +2400,28 @@ impl WgpuEngine {
                             },
                         );
                     } else {
-                        if image.data.is_empty() && image.width != 0 && image.height != 0 {
-                            panic!(
-                                "Tried to draw an invalid empty image (id: {}). \
-                                Maybe it was registered to a different renderer, or \
-                                unregistered before this render was submitted.",
-                                image.data.id()
-                            );
-                        }
+                        let expected = (image.width as usize)
+                            .saturating_mul(image.height as usize)
+                            .saturating_mul(block_size as usize);
+                        // An image whose pixels live in another renderer's
+                        // texture: ask the registered source for them, and
+                        // draw it transparent rather than abort when there
+                        // is none.
+                        let fetched;
+                        let data = if image.data.is_empty() && expected != 0 {
+                            fetched = crate::external_image_pixels(image.data.id())
+                                .filter(|pixels| pixels.len() >= expected)
+                                .unwrap_or_else(|| {
+                                    log::warn!(
+                                        "image {} has no pixels for this renderer; drawing it transparent",
+                                        image.data.id()
+                                    );
+                                    vec![0; expected]
+                                });
+                            fetched.as_slice()
+                        } else {
+                            image.data.data()
+                        };
                         queue.write_texture(
                             wgpu::TexelCopyTextureInfo {
                                 texture,
@@ -2415,7 +2429,7 @@ impl WgpuEngine {
                                 origin: wgpu::Origin3d { x: *x, y: *y, z: 0 },
                                 aspect: TextureAspect::All,
                             },
-                            image.data.data(),
+                            data,
                             wgpu::TexelCopyBufferLayout {
                                 offset: 0,
                                 bytes_per_row: Some(image.width * block_size),

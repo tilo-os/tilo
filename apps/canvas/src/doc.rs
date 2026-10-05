@@ -83,7 +83,7 @@ fn flag(doc: &Doc, obj: &ObjId, key: &str) -> Option<bool> {
     }
 }
 
-fn json<T: serde::de::DeserializeOwned>(doc: &Doc, obj: &ObjId, key: &str) -> Option<T> {
+pub(crate) fn json<T: serde::de::DeserializeOwned>(doc: &Doc, obj: &ObjId, key: &str) -> Option<T> {
     serde_json::from_str(&text(doc, obj, key)?).ok()
 }
 

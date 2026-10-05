@@ -367,7 +367,7 @@ mod macos_tests {
                 room: shell::shell::state::RoomId::new(),
                 tab: &tab,
             };
-            let Some(tilo_desktop::resolver::TileResolution::App(component)) =
+            let Some(tilo_desktop::resolver::TileResolution::App(component, _)) =
                 shell::shell::mount_in_process(&request, &inputs)
             else {
                 panic!("Files must be its own component, not a notice");

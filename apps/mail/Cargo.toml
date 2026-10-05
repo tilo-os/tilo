@@ -30,9 +30,6 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # email accounts from here (Settings owns the write lifecycle); credentials
 # are sealed in the vault, never in the plaintext store.
 accounts = { path = "../../crates/system/accounts", features = ["person"] }
-# Durable replace-after-portal-write; a failed/crashed export never leaves a
-# partially-written attachment at the destination the user chose.
-tilo-files = { path = "../../crates/platform/tilo-files" }
 # Content store for draft attachments. Drafts carry only a verified content
 # identity; the bytes live in the app's content store.
 tilo-content = { path = "../../crates/system/content" }

@@ -128,7 +128,17 @@ pub(crate) fn reconcile_trap(
             *before = focused;
             Some(order.first().copied())
         }
-        (true, false) => Some(before.take().filter(|id| order.contains(id))),
+        // Focus goes back to where it was before the trap, unless what the
+        // trap chose moved it somewhere that outlives the trap (a menu's
+        // "Rename" focusing the name it opened for editing).
+        (true, false) => {
+            let before = before.take();
+            if focused.is_some_and(|id| order.contains(&id) && Some(id) != before) {
+                None
+            } else {
+                Some(before.filter(|id| order.contains(id)))
+            }
+        }
         (true, true) if !focused.is_some_and(|id| order.contains(&id)) => {
             Some(order.first().copied())
         }
@@ -152,4 +162,36 @@ pub(crate) fn tab_index(order: &[NodeId], focused: Option<NodeId>, back: bool) -
             None => 0,
         },
     )
+}
+
+#[cfg(test)]
+mod trap_tests {
+    use super::*;
+
+    #[test]
+    fn a_closing_trap_restores_focus_unless_its_choice_moved_it() {
+        let ids: Vec<NodeId> = (0..4_u64).map(NodeId::from).collect();
+        let [canvas, label, menu, other] = [ids[0], ids[1], ids[2], ids[3]];
+        let page = [canvas, label, other];
+        // A menu opens over the canvas and closes without a choice.
+        let (mut active, mut before) = (false, None);
+        assert_eq!(
+            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
+            Some(Some(menu))
+        );
+        assert_eq!(
+            reconcile_trap(&mut active, &mut before, Some(menu), &page, false),
+            Some(Some(canvas))
+        );
+        // Again, and its choice focuses the label it began editing.
+        assert_eq!(
+            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
+            Some(Some(menu))
+        );
+        assert_eq!(
+            reconcile_trap(&mut active, &mut before, Some(label), &page, false),
+            None
+        );
+        assert_eq!(before, None);
+    }
 }

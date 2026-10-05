@@ -490,6 +490,124 @@ pub fn effect_binding(effect: &ThemesEffect) -> Option<tilo_actions::ActionBindi
     tilo_actions::ActionBinding::static_json(&library, &spec, effect.arguments()).ok()
 }
 
+/// The custom theme `spec`'s controls as actions on its child: each slider's
+/// value and the font.
+fn with_control_actions(mut child: Resource, spec: &ThemeSpec) -> Resource {
+    for control in CONTROLS {
+        let base = spec.clone();
+        child = child.with_action(
+            ActionSpec::typed(
+                control.id,
+                control.label,
+                "0–1",
+                ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required(
+                        "value",
+                        ParamType::Number,
+                        "Position on the control, from 0 to 1",
+                    )
+                    .with_schema(serde_json::json!({ "minimum": 0, "maximum": 1 })),
+                ],
+                move |args| {
+                    let norm = args.number("value").unwrap_or_default().clamp(0.0, 1.0);
+                    #[allow(clippy::cast_possible_truncation, reason = "a 0–1 control position")]
+                    encode(&(control.action)(base.id.clone(), norm as f32))
+                },
+            )
+            .with_contract(theme_contract()),
+        );
+    }
+    let base = spec.clone();
+    child = child.with_action(
+        ActionSpec::typed(
+            "set-font",
+            "Set font",
+            "font…",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required("font", ParamType::Text, "Interface font")
+                    .with_choices(crate::model::FONTS.iter().copied()),
+            ],
+            move |args| {
+                encode(&set_custom_theme_font_action(
+                    base.id.clone(),
+                    args.text("font").unwrap_or_default(),
+                ))
+            },
+        )
+        .with_contract(theme_contract()),
+    );
+    child
+}
+
+/// One of the customizer's sliders: the action it sets on a custom theme
+/// from the slider's 0–1 position.
+pub(crate) struct Control {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub action: fn(String, f32) -> ThemesAction,
+}
+
+/// The customizer's sliders, in the panel's order.
+pub(crate) const CONTROLS: [Control; 8] = [
+    Control {
+        id: "set-radius",
+        label: "Set corner radius",
+        action: |id, norm| set_custom_theme_radius_action(id, norm),
+    },
+    Control {
+        id: "set-spacing",
+        label: "Set interface spacing",
+        action: |id, norm| set_custom_theme_spacing_action(id, norm),
+    },
+    Control {
+        id: "set-motion",
+        label: "Set motion",
+        action: |id, norm| {
+            set_custom_theme_motion_action(id, crate::model::motion_scale_from_norm(norm))
+        },
+    },
+    Control {
+        id: "set-materials",
+        label: "Set materials",
+        action: |id, norm| {
+            set_custom_theme_material_action(id, crate::model::material_scale_from_norm(norm))
+        },
+    },
+    Control {
+        id: "set-icons",
+        label: "Set icons",
+        action: |id, norm| {
+            set_custom_theme_icon_action(id, crate::model::icon_scale_from_norm(norm))
+        },
+    },
+    Control {
+        id: "set-chrome-weight",
+        label: "Set chrome weight",
+        action: |id, norm| {
+            set_custom_theme_chrome_action(id, crate::model::chrome_weight_from_norm(norm))
+        },
+    },
+    Control {
+        id: "set-motion-character",
+        label: "Set motion character",
+        action: |id, norm| {
+            set_custom_theme_motion_character_action(
+                id,
+                crate::model::motion_character_from_norm(norm),
+            )
+        },
+    },
+    Control {
+        id: "set-material-tint",
+        label: "Set material tint",
+        action: |id, norm| {
+            set_custom_theme_material_tint_action(id, crate::model::material_tint_from_norm(norm))
+        },
+    },
+];
+
 /// One child per theme: apply / export it, and edit a custom one.
 pub(crate) fn document_children(state: &ThemesState) -> Vec<Resource> {
     let next_order = max_order(&state.catalog) + 1;
@@ -582,6 +700,7 @@ pub(crate) fn theme_resource(spec: &ThemeSpec, next_order: u32) -> Resource {
             )
             .with_contract(theme_contract()),
         );
+        child = with_control_actions(child, spec);
         child = child.with_action(
             immediate_spec(
                 "delete",

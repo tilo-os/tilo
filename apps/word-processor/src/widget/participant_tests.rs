@@ -743,3 +743,172 @@ fn a_participantless_invocation_builds_at_the_windows_own_view() {
         crate::actions::RichTextAction::InsertTable { ref after, .. } if *after == ids[0]
     ));
 }
+
+/// Invoke Writer's published `action` for one admitted execution of the
+/// rehearsal person, through the app's host door as the host delivers it.
+fn invoke_opening_action(
+    app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
+    participant: &ParticipantId,
+    action: &str,
+    arguments: serde_json::Value,
+) {
+    let resource = <crate::framework::Document as ui::tilo_resource::Resource>::KIND;
+    let published = tilo_actions::door::survey(&app.harness().resources())
+        .into_iter()
+        .any(|descriptor| {
+            descriptor.address.resource.as_str() == resource && descriptor.address.action == action
+        });
+    assert!(published, "Writer publishes the opening action `{action}`");
+    let invoker =
+        ActionInvoker::actor("person:opening-rehearsal").with_participant(participant.clone());
+    app.call_by(invoker, resource, action, arguments)
+        .unwrap_or_else(|error| panic!("`{action}` for {participant:?}: {error}"));
+    app.settle();
+}
+
+fn writer_view<O>(
+    app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
+    read: impl FnOnce(&WordProcessorWidget, &AutoCommit) -> O,
+) -> O {
+    let doc = app.read_document(Clone::clone);
+    app.with_widget(|wp: &mut WordProcessorWidget| read(wp, &doc))
+        .expect("the app's view is Writer's widget")
+}
+
+/// The PNG `hash` holds sits as an image block, with its real size and the
+/// paragraph after it, right after the second of the opening's paragraphs
+/// `ids`; its bytes are referenced and described by the document.
+fn assert_png_placed_after(doc: &AutoCommit, ids: &[String], hash: &str, png: &[u8]) {
+    let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    let blocks = tilo_doc::model::materialize(doc, &containers).blocks;
+    assert_eq!(blocks.len(), 5);
+    assert_eq!(blocks[0].id, ids[0]);
+    assert_eq!(blocks[0].text, "Hello to Tilo");
+    assert_eq!(blocks[1].id, ids[1]);
+    assert_eq!(blocks[1].text, "");
+    assert_eq!(blocks[2].kind, "image");
+    assert_eq!(
+        blocks[2].attrs.get("blob"),
+        Some(&tilo_doc::AttrVal::Str(hash.to_owned()))
+    );
+    assert_eq!(
+        blocks[2].attrs.get("width"),
+        Some(&tilo_doc::AttrVal::Int(2))
+    );
+    assert_eq!(
+        blocks[2].attrs.get("height"),
+        Some(&tilo_doc::AttrVal::Int(1))
+    );
+    assert_eq!(blocks[3].kind, "paragraph");
+    assert!(blocks[3].text.is_empty());
+    assert_eq!(blocks[4].id, ids[2]);
+    assert_eq!(blocks[4].kind, "paragraph");
+    assert!(blocks[4].text.is_empty());
+    assert!(tilo_doc::model::referenced_content(doc, &containers).contains(hash));
+    let meta = tilo_doc::model::blob_meta(doc, &containers, hash).unwrap();
+    assert_eq!(meta.mime, "image/png");
+    assert_eq!((meta.w, meta.h), (2, 1));
+    assert_eq!(meta.len, u64::try_from(png.len()).unwrap());
+}
+
+/// Synthetic opening proof only: two host-minted person executions drive actual
+/// Writer actions on one document. No Photos export or MCP transport is involved.
+#[test]
+fn two_person_executions_type_the_opening_and_place_real_png_independently() {
+    let callers = [
+        tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
+        tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
+    ];
+    assert_eq!(callers[0].principal(), callers[1].principal());
+    assert_ne!(callers[0].execution_id(), callers[1].execution_id());
+    let participants =
+        callers.map(|caller| ParticipantId::for_execution(caller.execution_id().unwrap()));
+    assert_ne!(participants[0], participants[1]);
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    let resource = <crate::framework::Document as ui::tilo_resource::Resource>::KIND;
+    for _ in 0..2 {
+        app.call_on(resource, "new-paragraph", serde_json::json!({}))
+            .unwrap();
+    }
+    app.settle();
+    let ids = app.read_document(body_ids);
+    assert_eq!(ids.len(), 3);
+    assert!(app.read_document(|doc| {
+        tilo_doc::model::open(doc, &automerge::ROOT)
+            .map(|containers| tilo_doc::model::materialize(doc, &containers).blocks)
+            .unwrap()
+            .iter()
+            .all(|block| block.text.is_empty())
+    }));
+    let local_before = writer_view(&mut app, |wp, _| wp.local_participant_view());
+    for (participant, block) in participants.iter().zip(&ids) {
+        invoke_opening_action(
+            &mut app,
+            participant,
+            "move-caret",
+            serde_json::json!({"to": "point", "block": block, "offset": 0}),
+        );
+        assert_eq!(
+            writer_view(&mut app, |wp, doc| wp.participant_view(participant, doc)),
+            Some(caret(block, 0))
+        );
+    }
+    assert_eq!(
+        writer_view(&mut app, |wp, _| wp.local_participant_view()),
+        local_before
+    );
+    invoke_opening_action(
+        &mut app,
+        &participants[0],
+        "type-text",
+        serde_json::json!({"text": "Hello to Tilo"}),
+    );
+    assert_eq!(
+        writer_view(&mut app, |wp, doc| wp.model().block_texts(doc)),
+        ["Hello to Tilo", "", ""]
+    );
+    let typed_view = writer_view(&mut app, |wp, doc| {
+        wp.participant_view(&participants[0], doc)
+    })
+    .unwrap();
+    assert_eq!(typed_view, caret(&ids[0], "Hello to Tilo".len()));
+    assert_eq!(
+        writer_view(&mut app, |wp, doc| wp
+            .participant_view(&participants[1], doc)),
+        Some(caret(&ids[1], 0))
+    );
+    assert_eq!(
+        writer_view(&mut app, |wp, _| wp.local_participant_view()),
+        local_before
+    );
+
+    // Real PNG bytes in the content store, not a stand-in hash or image metadata.
+    let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
+    let content = writer_view(&mut app, |wp, _| wp.inner.content_store().clone());
+    let hash = content.put(&png).unwrap();
+    assert_eq!(hash, tilo_content::hash_bytes(&png));
+    invoke_opening_action(
+        &mut app,
+        &participants[1],
+        "place-image",
+        serde_json::json!({tilo_actions::PROMPTED_PARAM: hash}),
+    );
+    let doc = app.read_document(Clone::clone);
+    assert_png_placed_after(&doc, &ids, &hash, &png);
+    assert_eq!(content.read(&hash).unwrap(), png);
+    assert_eq!(
+        writer_view(&mut app, |wp, doc| wp
+            .participant_view(&participants[0], doc)),
+        Some(typed_view)
+    );
+    assert_eq!(
+        writer_view(&mut app, |wp, doc| wp
+            .participant_view(&participants[1], doc)),
+        Some(caret(&ids[1], 0))
+    );
+    assert_eq!(
+        writer_view(&mut app, |wp, _| wp.local_participant_view()),
+        local_before
+    );
+}

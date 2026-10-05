@@ -204,6 +204,8 @@ const KEYS = {
   PageUp: 104, ArrowLeft: 105, ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109, Insert: 110, Delete: 111,
   MetaLeft: 125, MetaRight: 126,
 };
+/** Control, Shift, Alt and Meta, which never repeat. */
+const MODIFIERS = new Set([KEYS.ControlLeft, KEYS.ControlRight, KEYS.ShiftLeft, KEYS.ShiftRight, KEYS.AltLeft, KEYS.AltRight, KEYS.MetaLeft, KEYS.MetaRight]);
 
 /**
  * The Linux evdev keycode of a `KeyboardEvent.code`, or null. With `mac`,
@@ -491,7 +493,15 @@ export function createLegacyWindows({
     on('contextmenu', event => { if (entry.control) event.preventDefault(); });
     const key = pressed => event => {
       const keysym = evdevKey(event.code, {mac});
-      if (!entry.control || keysym === null || (pressed && event.repeat)) return;
+      if (!entry.control || keysym === null) return;
+      // The window repeats a held key only as the browser does: one more
+      // press of it. Modifiers do not repeat.
+      if (pressed && event.repeat) {
+        if (!entry.keys.has(keysym)) return;
+        event.preventDefault();
+        if (!MODIFIERS.has(keysym)) queueInput(entry, {Key: {keysym, pressed: true, modifiers: 0}});
+        return;
+      }
       // Paste: the browser's clipboard reaches the window first (the
       // `paste` event), then the key, so the window pastes this text.
       if (event.code === 'KeyV' && (event.ctrlKey || event.metaKey)) {

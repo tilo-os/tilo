@@ -6,13 +6,18 @@
 #   1. Ensures `tilo-runtime-bundle` is built (uses cargo, honours SCCACHE).
 #   2. Generates a fresh Ed25519 identity if $IDENTITY_JSON isn't already
 #      populated.
-#   3. Signs a bundle at $OUT_DIR/tilo-runtime/$RUNTIME_VERSION/ from $FROM.
+#   3. Signs a bundle at $OUT_DIR/tilo-runtime/<release>+native.<digest>/ from
+#      $FROM, named by its ABI digest, and writes that version to
+#      $VERSION_OUT.
 #   4. Writes the publisher pubkey to $OUT_DIR/runtime-bundle-publisher.hex
 #      and (if $TRUST_LIST is set) appends it to that file.
 #
 # Envs (overridable):
-#   RUNTIME_VERSION     bundle version tag written into bundle.toml + the
-#                       system path (/usr/lib/tilo-runtime/<v>/) [default: 1]
+#   RUNTIME_RELEASE     the runtime release apps declare (`tilo-runtime/<release>`);
+#                       the bundle's version is this release plus the digest
+#                       of its payload [required]
+#   VERSION_OUT         file the built bundle's version is written to
+#                       [default: $OUT_DIR/runtime-version]
 #   FROM                host prefix to copy source paths from [default: /]
 #   ARCH                target architecture [default: $(uname -m)]
 #   OUT_DIR             where the baked bundle + pubkey land
@@ -47,7 +52,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="$(cd "$OS_DIR/.." && pwd)"
 
-RUNTIME_VERSION="${RUNTIME_VERSION:-1}"
+RUNTIME_RELEASE="${RUNTIME_RELEASE:?RUNTIME_RELEASE is required}"
 FROM="${FROM:-/}"
 ARCH="${ARCH:-$(uname -m)}"
 OUT_DIR="${OUT_DIR:-$OS_DIR/output/runtime-bundle}"
@@ -55,6 +60,7 @@ IDENTITY_JSON="${IDENTITY_JSON:-}"
 TRUST_LIST="${TRUST_LIST:-}"
 BUNDLE_BIN="${BUNDLE_BIN:-}"
 EXTRA_LIBS="${EXTRA_LIBS:-}"
+VERSION_OUT="${VERSION_OUT:-$OUT_DIR/runtime-version}"
 
 msg() { printf '[bake-runtime-bundle] %s\n' "$*" >&2; }
 die() { printf '[bake-runtime-bundle] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -87,8 +93,7 @@ else
 fi
 
 # 3. Sign + bake.
-BUNDLE_DIR="$OUT_DIR/tilo-runtime/$RUNTIME_VERSION"
-msg "baking bundle at $BUNDLE_DIR (arch=$ARCH, from=$FROM)"
+msg "baking runtime $RUNTIME_RELEASE under $OUT_DIR/tilo-runtime (arch=$ARCH, from=$FROM)"
 
 # Shared objects to fold in beside the loader/libc set. Checked before the
 # bake so a missing toolkit is reported here rather than at an app's exec.
@@ -99,14 +104,17 @@ for lib in $EXTRA_LIBS; do
     msg "including shared object: $lib"
 done
 
-rm -rf "$BUNDLE_DIR"
+rm -rf "$OUT_DIR/tilo-runtime"
 "$BUNDLE_BIN" build \
-    --version "$RUNTIME_VERSION" \
+    --release "$RUNTIME_RELEASE" \
     --arch "$ARCH" \
     --from "$FROM" \
     --identity "$IDENTITY_JSON" \
     "${INCLUDE_ARGS[@]+"${INCLUDE_ARGS[@]}"}" \
-    --out "$BUNDLE_DIR"
+    --out-root "$OUT_DIR/tilo-runtime" \
+    --version-out "$VERSION_OUT"
+BUNDLE_DIR="$OUT_DIR/tilo-runtime/$(cat "$VERSION_OUT")"
+msg "baked runtime $(cat "$VERSION_OUT")"
 
 # 4. Extract + record the pubkey.
 PUBKEY_HEX="$("$BUNDLE_BIN" key pubkey --identity "$IDENTITY_JSON")"

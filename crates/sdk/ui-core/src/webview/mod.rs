@@ -544,6 +544,10 @@ pub trait WebViewEngine: Send + Sync {
     /// on engine activity. Synchronous engines don't need one.
     fn set_waker(&self, _waker: Box<dyn Fn() + Send + Sync>) {}
 
+    /// A view drew this engine's page just now. Engines that stop painting
+    /// pages nobody draws (see [`paint::PaintEngine`]) resume here.
+    fn presented(&self) {}
+
     /// The engine this one wraps, for what only a backend can answer.
     fn wrapped(&self) -> Option<&SharedEngine> {
         None

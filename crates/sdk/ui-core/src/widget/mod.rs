@@ -1205,6 +1205,12 @@ pub trait Widget {
         None
     }
 
+    /// Which side of the control its tooltip goes: below by default,
+    /// beside it for a control in a vertical rail.
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        crate::widget::tooltip::TooltipSide::Below
+    }
+
     fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
@@ -2410,6 +2416,8 @@ pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 mod floating_surface;
 pub use context_menu::{ContextMenu, MenuItem};
+pub mod context_menu_area;
+pub use context_menu_area::{ContextMenuArea, MenuEntry};
 pub mod data_table;
 mod virtual_table_semantics;
 pub use virtual_table_semantics::{

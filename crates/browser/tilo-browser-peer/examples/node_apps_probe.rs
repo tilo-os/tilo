@@ -1,9 +1,9 @@
-//! What a person's page does with a company node's legacy applications,
-//! from a native peer, against a running node: certify a browser device with
-//! the person's root, create and enter a workspace, find the session beside
-//! the node (`/node`), list the legacy applications it offers in the
-//! workspace, open one, and receive its window's frames on the live plane.
-//! Then close the window and see its stream end.
+//! What a person's page does with a company node's applications, from a
+//! native peer, against a running node: certify a browser device with the
+//! person's root, create and enter a workspace, find the session beside the
+//! node (`/node`), list the applications it offers in the workspace (legacy
+//! ones and Tilo apps such as Terminal), open one, and receive its window's
+//! frames on the live plane. Then close the window and see its stream end.
 //!
 //! ```text
 //! node_apps_probe --addr 127.0.0.1:8443 --cert-sha256 <hex> --root-key <file> --app chromium
@@ -328,8 +328,10 @@ async fn main() {
         .ok()?;
         page.rows.into_iter().find_map(|row| {
             let action = row.action.as_ref()?;
-            (action.resource_kind == "applications.host-app"
-                && action.address.action == "open"
+            (matches!(
+                action.resource_kind.as_str(),
+                "applications.host-app" | "applications.app"
+            ) && action.address.action == "open"
                 && action.resource_label.to_lowercase().contains(&args.app))
             .then(|| {
                 (

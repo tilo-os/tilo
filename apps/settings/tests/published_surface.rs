@@ -47,7 +47,7 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
         bindings.iter().any(|binding| matches!(
             &binding.kind,
             ui::widget::ControlBindingKind::Action(address) if address.action == open.action
-        ) && binding.control_id == "settings.sidebar.bluetooth"),
+        ) && binding.control_id == open.encode()),
         "the Bluetooth row opens its pane through {}: {bindings:#?}",
         open.action
     );
@@ -59,4 +59,19 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
         .surface::<settings::SettingsApp, _>(|settings| settings.selected())
         .expect("the settings surface is mounted");
     assert_eq!(selected, Category::Bluetooth);
+}
+
+/// A `settings://models/<id>` link opens Settings at Agent Models.
+#[test]
+fn a_model_link_opens_agent_models() {
+    let mut app = TestApp::<SettingsShell>::launched(&["settings://models/u2net-subject"])
+        .expect("settings opens on a link");
+    let shown = app
+        .harness()
+        .wait_until(ui::time::Duration::from_secs(20), |harness| {
+            harness
+                .inspection_json()
+                .is_ok_and(|frame| frame.contains("Private by design"))
+        });
+    assert!(shown, "the link opens Agent Models");
 }

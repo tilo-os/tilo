@@ -124,6 +124,12 @@ fn write_path(tile: Tile, tile_ix: u32, draw_flags: u32) {
     let n_segs = tile.segment_count_or_ix;
     if n_segs != 0u {
         var seg_ix = atomicAdd(&bump.segments, n_segs);
+        // Segments have their own reservation, separate from seg_counts:
+        // past it path_tiling's writes are dropped, so say so like any other
+        // overflow instead of rendering with the geometry missing.
+        if seg_ix + n_segs > config.segments_size {
+            atomicOr(&bump.failed, STAGE_COARSE);
+        }
         tiles[tile_ix].segment_count_or_ix = ~seg_ix;
         alloc_cmd(4u);
         ptcl[cmd_offset] = CMD_FILL;

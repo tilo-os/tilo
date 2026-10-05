@@ -303,7 +303,9 @@ impl ui::widget::controls::ActionControls for SidebarRow {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         self.open
             .iter()
-            .map(|open| open.metadata(format!("settings.sidebar.{}", self.category.slug())))
+            // The row's semantic node names the same address, so the audit
+            // pairs the binding with the control that offers it.
+            .map(|open| open.metadata(crate::effects::open_pane_address(self.category).encode()))
             .collect()
     }
 

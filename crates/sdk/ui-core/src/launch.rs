@@ -7,7 +7,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native")]
 use crate::App;
 use crate::Theme;
 use crate::headless::{self, FrameHarness};
@@ -910,11 +910,13 @@ fn dispatch_definition(
     args: &LaunchArgs,
 ) -> Result<DefinitionDispatch, LaunchError> {
     dispatch_definition_with_native(spec, args, |component, inputs, native_services| {
-        if native_services {
-            App::from_component_with_native_services(component, inputs)
-        } else {
-            App::from_component(component, inputs)
-        }
+        tilo_startup_metrics::span("app-construct", || {
+            if native_services {
+                App::from_component_with_native_services(component, inputs)
+            } else {
+                App::from_component(component, inputs)
+            }
+        })
     })
 }
 
@@ -968,14 +970,15 @@ fn dispatch_definition_with_manager(
     let prepare = spec
         .component_host
         .ok_or(LaunchError::MissingComponentHost)?;
-    let mut prepared = match prepare(spec.definition, args) {
-        Ok(prepared) => prepared,
-        Err(LaunchError::Record(error)) if args.headless.is_some() => {
-            eprintln!("headless: state open failed: {error}");
-            return Ok(DefinitionDispatch::Headless(3));
-        }
-        Err(error) => return Err(error),
-    };
+    let mut prepared =
+        match tilo_startup_metrics::span("app-prepare", || prepare(spec.definition, args)) {
+            Ok(prepared) => prepared,
+            Err(LaunchError::Record(error)) if args.headless.is_some() => {
+                eprintln!("headless: state open failed: {error}");
+                return Ok(DefinitionDispatch::Headless(3));
+            }
+            Err(error) => return Err(error),
+        };
     if let Some(scale) = args.text_scale {
         prepared.runner_inputs.text_renderer.set_text_scale(scale);
     }
@@ -984,8 +987,9 @@ fn dispatch_definition_with_manager(
             .bind_component(&prepared.context.callback_binding())
             .map_err(LaunchError::Operation)?;
     }
-    let component =
-        spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)?;
+    let component = tilo_startup_metrics::span("app-component", || {
+        spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)
+    })?;
     if let Some(headless) = &args.headless {
         return Ok(DefinitionDispatch::Headless(headless::run_component(
             headless,

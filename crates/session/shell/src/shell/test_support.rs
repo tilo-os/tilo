@@ -9,6 +9,19 @@ pub(crate) struct PopulatedShellFixture {
 #[cfg(test)]
 impl PopulatedShellFixture {
     pub(crate) fn new(viewport: (u32, u32), theme: ui::theme::Theme) -> Self {
+        Self::with_tree(
+            viewport,
+            theme,
+            crate::shell::state::WorkspaceTree::bootstrap_demo(),
+        )
+    }
+
+    /// The fixture over `tree` instead of the demo's.
+    pub(crate) fn with_tree(
+        viewport: (u32, u32),
+        theme: ui::theme::Theme,
+        tree: crate::shell::state::WorkspaceTree,
+    ) -> Self {
         let parent = tempfile::tempdir().expect("private populated shell fixture parent");
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
@@ -19,7 +32,6 @@ impl PopulatedShellFixture {
         let inputs =
             crate::shell::fixture_inputs::ShellFixtureInputs::new(parent.path(), renderer, theme)
                 .expect("owned populated shell fixture files");
-        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
         let tab_ids = tree
             .desktop
             .active_workspace()

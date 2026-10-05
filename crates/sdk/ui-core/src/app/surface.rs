@@ -648,6 +648,11 @@ impl App {
         }
     }
 
+    /// Whether the last frame left a sync or a layout to settle.
+    pub fn unsettled(&self) -> bool {
+        self.needs_sync || self.layout.layout_dirty || self.layout.structure_dirty
+    }
+
     /// The modifier keys held, as the surface reports them.
     pub fn set_surface_modifiers(&mut self, modifiers: winit::event::Modifiers) {
         self.input.modifiers = modifiers;
@@ -661,6 +666,9 @@ impl App {
     pub fn surface_frame(&mut self, surface: &dyn AppSurface, scene: &mut Scene) -> bool {
         let _entry = self.enter_wake_scope();
         let replaced = self.swap_requested_component();
+        // The model's own work, as a hosted worker's pump runs it:
+        // collaboration (inbound edits, directory requests, publication),
+        // invocations, idle model work and the record.
         self.pump_hosted_model();
         if self.layout.root_node.is_none() {
             self.init_layout();

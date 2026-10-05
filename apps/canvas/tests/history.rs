@@ -283,3 +283,45 @@ fn choosing_a_past_version_shows_it_in_place_of_the_artwork() {
         "the red version is shown in place of the blue artwork: {then:?}"
     );
 }
+
+#[test]
+fn history_names_each_step_by_what_it_did_for_people_and_agents_alike() {
+    let mut app = TestApp::<App>::new().unwrap();
+    draw(
+        &mut app,
+        &json!([
+            {"id": "sun", "name": "Sun", "shape": {"kind": "ellipse", "cx": 900, "cy": 160, "rx": 80, "ry": 80}, "fill": "#ffd966"},
+            {"id": "hill", "shape": {"kind": "rect", "x": 0, "y": 600, "width": 1200, "height": 300}, "fill": "#6aa84f"},
+        ]),
+    );
+    app.call(
+        "edit-marks",
+        json!({"ids": ["sun", "hill"], "fill": "#cc0000"}),
+    )
+    .unwrap();
+    app.call("edit-marks", json!({"ids": ["sun"], "move_by": [10, 0]}))
+        .unwrap();
+    app.call("add-layer", json!({"name": ""})).unwrap();
+    let history = app.call("history", json!({})).unwrap().unwrap();
+    let actions: Vec<&str> = history["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|version| version["action"].as_str())
+        .collect();
+    for expected in [
+        "Draw 2 shapes",
+        "Recolour 2 marks",
+        "Move Sun",
+        "Add Layer 2",
+    ] {
+        assert!(actions.contains(&expected), "{expected:?} in {actions:?}");
+    }
+    let layers: Vec<String> = app
+        .state()
+        .layers
+        .iter()
+        .map(|layer| layer.name.clone())
+        .collect();
+    assert_eq!(layers, ["Layer 1", "Layer 2"], "a new layer is numbered");
+}

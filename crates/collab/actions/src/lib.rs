@@ -113,7 +113,7 @@ pub use context::{
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,
     DiscoveryScope, ExecutionMode, LOCAL_DEVICE_ONLY, PROGRAMMATIC_TAG, PermissionRequirement,
-    ResultSpec, RetryPolicy, RiskLevel,
+    ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use envelope::ActionEnvelope;

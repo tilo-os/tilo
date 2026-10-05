@@ -135,11 +135,12 @@ class InstallerTests(unittest.TestCase):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             production = {c.name for c in installer.select_components(manifest, [], True)}
             dev = {c.name for c in installer.select_components(manifest, [], False, True)}
-            self.assertIn("control", dev)
             self.assertIn("vmd", dev)
             self.assertIn("shell", dev)
             self.assertIn("native-runtime-host", dev)
-            self.assertNotIn("control", production)
+            # The control CLI is a plain client every image ships.
+            self.assertIn("control", production)
+            self.assertNotIn("control", dev)
             self.assertNotIn("vmd", production)
             self.assertNotIn("test-registry", production)
             self.assertIn("shell", production)
@@ -149,7 +150,7 @@ class InstallerTests(unittest.TestCase):
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
             self.assertIn("dev-overrides", features)
-            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-control", "tilo-vmd",
+            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin",
                                          "tilo-test-registry"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertNotIn("dev-overrides", production_features)

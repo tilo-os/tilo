@@ -54,8 +54,15 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
         let projected = notes::notebook::project(&a, None).unwrap();
         assert_eq!(projected.pages().len(), 5);
         assert_eq!(projected.get(copied_root).unwrap().title, "Projects copy");
-        assert_eq!(projected.get(copied_root).unwrap().order, 1);
-        assert_eq!(projected.get(f.empty).unwrap().order, 2);
+        assert_eq!(
+            projected
+                .children_of(None)
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            vec![f.root, copied_root, f.empty],
+            "the copy lands right after its source"
+        );
         assert_eq!(
             projected.get(copied_child).unwrap().parent,
             Some(copied_root)
@@ -96,7 +103,7 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
                 id: uuid::Uuid::from_u128(0x1004),
                 title: "new child".into(),
                 parent: Some(f.root),
-                order: 1,
+                order: "b".into(),
             },
         );
         doc.commit();
@@ -297,8 +304,11 @@ fn bound_edits_are_one_owned_history_entry_each() {
         f.records
             .read(&checkout.id, |doc| {
                 let workspace = notes::notebook::project(doc, None).unwrap();
-                assert_eq!(workspace.get(f.empty).unwrap().order, 0);
-                assert_eq!(workspace.get(f.root).unwrap().order, 1);
+                let roots = workspace.children_of(None);
+                assert_eq!(
+                    roots.iter().map(|p| p.id).collect::<Vec<_>>(),
+                    vec![f.empty, f.root]
+                );
             })
             .unwrap();
         close_driver(&mut driver);
@@ -422,7 +432,14 @@ fn bound_edits_are_one_owned_history_entry_each() {
             .read(&checkout.id, |doc| {
                 let workspace = notes::notebook::project(doc, None).unwrap();
                 assert_eq!(workspace.get(f.empty).unwrap().parent, Some(f.root));
-                assert_eq!(workspace.get(f.empty).unwrap().order, 1);
+                assert_eq!(
+                    workspace
+                        .children_of(Some(f.root))
+                        .iter()
+                        .map(|p| p.id)
+                        .collect::<Vec<_>>(),
+                    vec![f.child, f.empty]
+                );
             })
             .unwrap();
         context_menu_select(&mut a, f.root, "Duplicate");
@@ -437,7 +454,7 @@ fn bound_edits_are_one_owned_history_entry_each() {
                     .iter()
                     .find(|p| p.title == "Projects copy")
                     .unwrap();
-                assert_eq!(copy.order, 1);
+                assert_eq!(workspace.children_of(None)[1].id, copy.id);
                 assert_eq!(workspace.children_of(Some(copy.id)).len(), 2);
                 copy.id
             })
@@ -571,7 +588,7 @@ fn bound_edits_are_one_owned_history_entry_each() {
                 }
                 "nil" => result[0].id = uuid::Uuid::nil().to_string(),
                 "bad-parent" => result[0].parent = "malformed".into(),
-                "order" => result[0].order = 99,
+                "order" => result[0].order = "Z".into(),
                 _ => unreachable!(),
             }
             let untouched = (candidate.base_heads(), candidate.pending_ops());

@@ -56,6 +56,9 @@ pub struct Segment {
     /// A short hint shown after the label in the tooltip: the segment's
     /// keyboard shortcut.
     pub hint: Option<String>,
+    /// Shown dimmed and never chosen: a choice that does not apply now
+    /// (exporting the selection with nothing selected).
+    pub disabled: bool,
 }
 
 impl Segment {
@@ -64,7 +67,16 @@ impl Segment {
             label: label.into(),
             icon: None,
             hint: None,
+            disabled: false,
         }
+    }
+
+    /// Whether the segment can be chosen now; a disabled one shows dimmed
+    /// and the pointer and keys pass over it.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.disabled = !enabled;
+        self
     }
 
     /// Show `icon` instead of the label.
@@ -328,7 +340,7 @@ impl ToggleGroup {
     }
 
     fn request_selection(&mut self, index: usize) {
-        if self.selected == index {
+        if self.selected == index || self.segments.get(index).is_some_and(|s| s.disabled) {
             return;
         }
         if let Some(action) = &mut self.action {
@@ -541,6 +553,8 @@ pub struct SegmentedFace<'a> {
     weight: crate::text_render::TextWeight,
     /// `Some(pad)` left-aligns labels instead of centring.
     label_pad_left: Option<f64>,
+    /// Segments of the same index drawn dimmed: not available now.
+    disabled: &'a [bool],
 }
 
 impl<'a> SegmentedFace<'a> {
@@ -556,7 +570,14 @@ impl<'a> SegmentedFace<'a> {
             text_size: 13.0,
             weight: crate::text_render::TextWeight::Medium,
             label_pad_left: None,
+            disabled: &[],
         }
+    }
+    /// Draw the segments of the same index dimmed.
+    #[must_use]
+    pub fn disabled(mut self, disabled: &'a [bool]) -> Self {
+        self.disabled = disabled;
+        self
     }
     #[must_use]
     pub fn style(mut self, style: SegmentedStyle) -> Self {
@@ -726,12 +747,21 @@ impl ToggleGroup {
         // Selected pills use a slightly heavier weight so the active choice
         // reads first.
         for (i, seg) in segs.iter().enumerate() {
+            let off = face.disabled.get(i).copied().unwrap_or(false);
             let (_, fg) = segment_colors(
                 theme,
                 face.style,
                 i == face.selected,
-                face.hovered == Some(i),
+                face.hovered == Some(i) && !off,
             );
+            let fg = if off {
+                crate::color_compat::ColorCompat::with_alpha_factor(
+                    fg,
+                    crate::widget::DISABLED_ALPHA,
+                )
+            } else {
+                fg
+            };
             if let Some(icon) = face.icons.get(i).copied().flatten() {
                 let side = (seg.width().min(seg.height()) * 0.5).clamp(14.0, 22.0);
                 let glyph = Rect::from_center_size(seg.center(), (side, side));
@@ -782,26 +812,43 @@ impl ToggleGroup {
         // The keys are in use: show where they act.
         self.pressed_into_focus = false;
         let len = self.segments.len();
-        let selection = match key.logical_key {
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => Some(
-                self.selected
-                    .checked_sub(1)
-                    .unwrap_or_else(|| len.saturating_sub(1)),
-            ),
-            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => {
-                Some(if self.selected == len.saturating_sub(1) {
-                    0
+        // Arrows step over choices that do not apply now.
+        let enabled = |index: usize| self.segments.get(index).is_some_and(|s| !s.disabled);
+        let step = |from: usize, forward: bool| -> usize {
+            let mut at = from;
+            for _ in 0..len {
+                at = if forward {
+                    if at.saturating_add(1) >= len {
+                        0
+                    } else {
+                        at.saturating_add(1)
+                    }
                 } else {
-                    self.selected.saturating_add(1)
-                })
+                    at.checked_sub(1).unwrap_or_else(|| len.saturating_sub(1))
+                };
+                if enabled(at) {
+                    return at;
+                }
             }
+            from
+        };
+        let selection = match key.logical_key {
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => {
+                Some(step(self.selected, false))
+            }
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => {
+                Some(step(self.selected, true))
+            }
+            _ => None,
+        }
+        .or(match key.logical_key {
             Key::Named(NamedKey::Home) if len > 0 => Some(0),
             Key::Named(NamedKey::End) if len > 0 => Some(len.saturating_sub(1)),
             // A segmented control is single-select: activation confirms its
             // current choice rather than toggling it off.
             Key::Named(NamedKey::Enter | NamedKey::Space) => Some(self.selected),
             _ => None,
-        };
+        });
         if let Some(selection) = selection {
             *handled = true;
             self.request_selection(selection);
@@ -1025,8 +1072,10 @@ impl Widget for ToggleGroup {
         let outer_shape = RoundedRect::from_rect(self.rect, radius);
         let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
         let icons: Vec<Option<Icon>> = self.segments.iter().map(|s| s.icon).collect();
+        let disabled: Vec<bool> = self.segments.iter().map(|s| s.disabled).collect();
         let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
             .icons(&icons)
+            .disabled(&disabled)
             .hovered(self.hovered)
             .style(self.style)
             .text_size(crate::text_metrics::renderer_type_size(
@@ -1120,6 +1169,15 @@ impl Widget for ToggleGroup {
         }
     }
 
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        // A vertical group is a rail: its neighbours are above and below.
+        if self.orientation == Orientation::Vertical {
+            crate::widget::tooltip::TooltipSide::Beside
+        } else {
+            crate::widget::tooltip::TooltipSide::Below
+        }
+    }
+
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         // Icon segments show no label, so their label is the tooltip.
         let index = self
@@ -1198,6 +1256,7 @@ impl Widget for ToggleGroup {
                     .with_name(s.label.clone())
                     .with_state(AccessState {
                         checked: Some(i == self.selected),
+                        disabled: s.disabled,
                         ..Default::default()
                     })
                     .with_position(i.saturating_add(1), count);
@@ -1586,6 +1645,33 @@ mod tests {
                 "left-labelled pill paint must emit draw commands",
             );
         }
+    }
+
+    #[test]
+    fn a_disabled_segment_is_never_chosen_and_the_keys_step_over_it() {
+        let mut g = group_at(
+            vec![
+                Segment::new("Whole"),
+                Segment::new("Selection").with_enabled(false),
+                Segment::new("View"),
+            ],
+            0,
+            Rect::new(0.0, 0.0, 300.0, 36.0),
+        );
+        dispatch(&mut g, &cursor_moved(150.0, 18.0));
+        dispatch(&mut g, &mouse_press());
+        assert_eq!(g.selected(), 0, "a click on it chooses nothing");
+        g.set_focus(true);
+        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowRight)));
+        assert_eq!(g.selected(), 2, "the arrow steps over it");
+        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowLeft)));
+        assert_eq!(g.selected(), 0);
+        let node = g.accessibility().expect("a group node");
+        assert!(
+            node.children
+                .get(1)
+                .is_some_and(|segment| segment.state.disabled)
+        );
     }
 
     #[test]

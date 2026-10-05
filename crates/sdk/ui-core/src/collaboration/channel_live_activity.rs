@@ -42,6 +42,9 @@ pub fn show(activity: Option<Value>) {
         state.activity = activity;
         state.unsent = true;
     }
+    // Without a broker transport (a page in a browser) nothing carries the
+    // activity out of the app.
+    #[cfg(feature = "broker-transport")]
     super::broker::flush_live_activity();
 }
 
@@ -64,12 +67,14 @@ pub fn take_controls() -> Vec<Value> {
 }
 
 /// An activity the worker has still to send: `None` ends it.
+#[cfg(feature = "broker-transport")]
 pub(super) struct Unsent {
     pub(super) activity: Option<Value>,
 }
 
 /// The activity to send, if it changed since it was last sent; the worker
 /// sends the current one again after the route rejoins (`resend`).
+#[cfg(feature = "broker-transport")]
 pub(super) fn take_unsent(resend: bool) -> Option<Unsent> {
     let mut state = state();
     if !state.unsent && !resend {
@@ -82,6 +87,7 @@ pub(super) fn take_unsent(resend: bool) -> Option<Unsent> {
 }
 
 /// The worker received `controls` from the shell.
+#[cfg(any(feature = "broker-transport", test, feature = "test-support"))]
 pub(super) fn received(controls: Vec<Value>) {
     state().controls.extend(controls);
 }

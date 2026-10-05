@@ -202,6 +202,10 @@ struct Command {
     edit: Edit,
     /// Shown by its icon alone at any width, as a row of alignments is.
     iconic: bool,
+    /// Asked of the canvas rather than made as an action (work that runs
+    /// off the window's thread): never moved into the menu, which can only
+    /// apply actions.
+    local: bool,
 }
 
 impl Command {
@@ -217,6 +221,23 @@ impl Command {
             bind: Box::new(move |button, cx| Box::new(cx.actions().bind(button, action))),
             edit,
             iconic: false,
+            local: false,
+        }
+    }
+
+    /// A command the canvas carries out off the window's thread: `select`,
+    /// handed to it when the button is pressed.
+    fn asking(icon: Icon, id: &str, tools: &Tools, select: impl Fn() -> Select + 'static) -> Self {
+        let finding = std::rc::Rc::clone(&tools.finding);
+        Self {
+            icon,
+            id: id.to_owned(),
+            bind: Box::new(move |button, _| {
+                Box::new(button.on_view(move || finding.borrow_mut().wanted = Some(select())))
+            }),
+            edit: std::sync::Arc::new(|| CanvasAction::Select(Box::default())),
+            iconic: true,
+            local: true,
         }
     }
 
@@ -319,16 +340,22 @@ fn strip(
     // What does not fit even as icons goes into the menu, from the end.
     let mut menu: Vec<Command> = Vec::new();
     while spare < 0.0 && groups.iter().map(Vec::len).sum::<usize>() > 0 {
-        let Some(group) = groups.iter_mut().rev().find(|group| !group.is_empty()) else {
+        let Some(group) = groups
+            .iter_mut()
+            .rev()
+            .find(|group| group.iter().any(|command| !command.local))
+        else {
             break;
         };
-        if let Some(command) = group.pop() {
-            spare += SLOT;
-            if menu.is_empty() {
-                spare -= SLOT;
-            }
-            menu.insert(0, command);
+        let Some(at) = group.iter().rposition(|command| !command.local) else {
+            break;
+        };
+        let command = group.remove(at);
+        spare += SLOT;
+        if menu.is_empty() {
+            spare -= SLOT;
         }
+        menu.insert(0, command);
     }
     groups.retain(|group| !group.is_empty());
     let mut row = Row::new()
@@ -452,6 +479,13 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         using(Icon::SquareDashed, "stroke"),
         using(Icon::Layers, "mask"),
         using(Icon::Eraser, "clear"),
+        {
+            let zoom = tools.zoom.clone();
+            Command::asking(Icon::Brush, "canvas-area-refine", tools, move || Select {
+                refine: Some(EDGE / zoom.with(|zoom| zoom.max(1e-6))),
+                ..Select::default()
+            })
+        },
         refine(tools, Icon::Plus, "canvas-area-grow", Refine::Grow(GROW)),
         refine(
             tools,
@@ -492,6 +526,9 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
 
 /// How far, in screen pixels, a click grows or shrinks the selection.
 const GROW: f64 = 4.0; // a step a person sees at the zoom they work at, not spacing
+/// How far, in screen pixels, a click fits the selection's edge to the
+/// picture.
+const EDGE: f64 = 8.0; // a reach a person sees at the zoom they work at, not spacing
 /// How wide, in screen pixels, a click softens the selection's edge.
 const FEATHER: f64 = 8.0; // a step a person sees at the zoom they work at, not spacing
 
@@ -709,6 +746,18 @@ fn menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             .with_id("canvas-menu")
             .with_accessible_name(lookup("canvas-menu"));
         menu.set_value_options(options);
+        // Each command's keys at its row's end, from the table `?` shows.
+        menu.set_option_shortcuts(
+            [
+                ("open", "canvas-keys-open"),
+                ("save", "canvas-keys-save"),
+                ("save-as", "canvas-keys-save-as"),
+                ("export", "canvas-keys-export"),
+                ("keys", "canvas-keys-shortcuts"),
+            ]
+            .into_iter()
+            .filter_map(|(value, does)| Some((value, super::shortcuts::keys_for(does)?))),
+        );
         Box::new(menu) as Element
     })
 }

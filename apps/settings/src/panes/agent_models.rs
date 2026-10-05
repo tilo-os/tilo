@@ -78,7 +78,22 @@ pub enum AgentModelsEffect {
     /// Show or hide what downloading the recommended model involves.
     #[effect(view)]
     ReviewModelDownload { show: bool },
-    /// Download and install the recommended model, accepting its license.
+    /// Show or hide what downloading one in-process model involves.
+    #[effect(view, row)]
+    ReviewLocalModel {
+        #[param("The model's id")]
+        model: String,
+        show: bool,
+    },
+    /// Show one signed in-process model in Agent Models, first, at its
+    /// licence confirmation when it is not installed yet. Installs nothing.
+    #[effect(view, label = "Show local model")]
+    ShowLocalModel {
+        #[param("Signed model id, for example u2net-subject")]
+        model: String,
+    },
+    /// Download and install the recommended model or an in-process one,
+    /// accepting its license.
     #[effect(job, label = "Install model")]
     InstallModel {
         #[param("The model's id")]
@@ -217,6 +232,10 @@ fn model_effect(model: &InstalledLocalModel, action: ModelAction) -> AgentModels
 
 /// Answer `effect`: the manager's work runs on a worker, then the models
 /// are read again; provider changes write the person's settings.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per effect of the area, each answered where it is read"
+)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AgentModelsEffect,
@@ -230,6 +249,26 @@ pub(crate) fn answer(
             model.reviewing.set(show);
             Ok(Effected::done())
         }
+        AgentModelsEffect::ReviewLocalModel { model: id, show } => {
+            let installable = model
+                .snapshot
+                .in_process_model(&id)
+                .is_some_and(InProcessLocalModel::installable);
+            if show && !installable {
+                return Err(t("agent-notice-inprocess-changed"));
+            }
+            model.reviewing_local.set(show.then_some(id));
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::ShowLocalModel { model: id } => {
+            drop(model);
+            // The pane switches at the next sync, as a sidebar pick does.
+            app.request_pane(crate::categories::Category::AgentModels);
+            let shared = app.agent_models().model();
+            let mut model = shared.borrow_mut();
+            model.reveal(&id)?;
+            Ok(Effected::done())
+        }
         AgentModelsEffect::SetUpAccelerator
         | AgentModelsEffect::InstallModel { .. }
         | AgentModelsEffect::StartModel { .. }
@@ -240,6 +279,7 @@ pub(crate) fn answer(
             let control = Arc::clone(&model.control);
             if matches!(effect, AgentModelsEffect::InstallModel { .. }) {
                 model.reviewing.set(false);
+                model.reviewing_local.set(None);
             }
             drop(model);
             Ok(cx.thread(
@@ -411,6 +451,27 @@ impl AgentModelsArea {
                 )
             })
             .collect();
+        // In-process models run inside the apps that use them on any CPU, so
+        // neither the hardware fit nor accelerator setup gates them.
+        for local in &model.snapshot.in_process {
+            let mut row = LiveRow::new(
+                format!("settings.agent-model:{}", local.package.id),
+                "settings.agent-model-in-process",
+                local.package.name.clone(),
+            );
+            if local.installable() {
+                row = row.operation(offer(AgentModelsEffect::InstallModel {
+                    model: local.package.id.clone(),
+                    revision: local.package.revision.clone(),
+                }));
+            }
+            if local.removable() {
+                row = row.operation(offer(AgentModelsEffect::RemoveModel {
+                    model: local.package.id.clone(),
+                }));
+            }
+            rows.push(row);
+        }
         if let Some(package) = &model.snapshot.recommendation {
             rows.push(
                 LiveRow::new(
@@ -468,6 +529,10 @@ pub struct AgentModelsModel {
     providers: Followed<AgentProviders>,
     /// Whether the download of the recommended model is being reviewed.
     reviewing: LocalState<bool>,
+    /// The in-process model whose download is being reviewed.
+    reviewing_local: LocalState<Option<String>>,
+    /// The in-process model a link asked to show; its card comes first.
+    revealed: Option<String>,
     notice: Option<String>,
     last_poll: Instant,
     /// API keys are deliberately process-local masked-input buffers. They
@@ -502,6 +567,8 @@ impl AgentModelsModel {
             manager_available,
             follow_local_profile: true,
             reviewing: LocalState::new(false),
+            reviewing_local: LocalState::new(None),
+            revealed: None,
             notice,
             last_poll: ui::time::now(),
             provider_key_buffers: Mutex::new(HashMap::new()),
@@ -584,11 +651,37 @@ impl AgentModelsModel {
         }
     }
 
+    /// Show one in-process model's card first, opened at its licence
+    /// confirmation when it is not installed yet. Nothing is downloaded
+    /// until the person accepts there.
+    fn reveal(&mut self, id: &str) -> Result<(), String> {
+        self.changed = true;
+        let Some(model) = self.snapshot.in_process_model(id) else {
+            let unknown = t_args(
+                "agent-notice-unknown-model",
+                &[("id", id.to_owned().into())],
+            );
+            self.notice = Some(unknown.clone());
+            return Err(unknown);
+        };
+        if model.installable() {
+            self.reviewing_local.set(Some(model.package.id.clone()));
+        }
+        self.revealed = Some(model.package.id.clone());
+        Ok(())
+    }
+
     fn is_busy(&self) -> bool {
         self.snapshot
             .models
             .iter()
             .any(|model| model.phase.is_transient())
+            || self.snapshot.in_process.iter().any(|model| {
+                model
+                    .phase
+                    .as_ref()
+                    .is_some_and(LocalModelPhase::is_transient)
+            })
             || self
                 .snapshot
                 .accelerator_setup
@@ -615,13 +708,23 @@ impl AgentModelsModel {
         };
         match effect {
             AgentModelsEffect::SetUpAccelerator => Ok(ManagerWork::Accelerator),
-            AgentModelsEffect::InstallModel { model, revision } => self
-                .snapshot
-                .recommendation
-                .clone()
-                .filter(|package| &package.id == model && &package.revision == revision)
-                .map(ManagerWork::Install)
-                .ok_or_else(|| t("agent-model-gone")),
+            AgentModelsEffect::InstallModel { model, revision } => {
+                if let Some(local) = self.snapshot.in_process_model(model) {
+                    // The action's label is the licence acceptance; it holds
+                    // only for the revision it was offered with.
+                    return if &local.package.revision == revision && local.installable() {
+                        Ok(ManagerWork::Install(local.package.clone()))
+                    } else {
+                        Err(t("agent-notice-inprocess-changed"))
+                    };
+                }
+                self.snapshot
+                    .recommendation
+                    .clone()
+                    .filter(|package| &package.id == model && &package.revision == revision)
+                    .map(ManagerWork::Install)
+                    .ok_or_else(|| t("agent-model-gone"))
+            }
             AgentModelsEffect::StartModel { model } => {
                 let model = installed(model)?;
                 allowed(model, ModelAction::Start)?;
@@ -641,6 +744,13 @@ impl AgentModelsModel {
                 Ok(ManagerWork::Install(model.package.clone()))
             }
             AgentModelsEffect::RemoveModel { model } => {
+                if let Some(local) = self.snapshot.in_process_model(model) {
+                    return if local.removable() {
+                        Ok(ManagerWork::Remove(local.package.id.clone()))
+                    } else {
+                        Err(t("agent-notice-inprocess-changed"))
+                    };
+                }
                 let model = installed(model)?;
                 allowed(model, ModelAction::Remove)?;
                 Ok(ManagerWork::Remove(model.package.id.clone()))
@@ -802,6 +912,27 @@ impl AgentModelsModel {
     }
 
     fn push_recommendation_confirm(&self, body: &mut Vec<El>, package: &LocalModelPackage) {
+        self.push_confirm(
+            body,
+            package,
+            (
+                "agent-models-confirm-install",
+                "agent-models-cancel-install",
+            ),
+            AgentModelsEffect::ReviewModelDownload { show: false },
+        );
+    }
+
+    /// The download, storage, source, revision and licence a person accepts,
+    /// with the accept and cancel controls (widget ids `controls`); cancel
+    /// invokes `cancel`.
+    fn push_confirm(
+        &self,
+        body: &mut Vec<El>,
+        package: &LocalModelPackage,
+        controls: (&str, &str),
+        cancel_effect: AgentModelsEffect,
+    ) {
         let download = t("agent-download");
         let download_size = byte_size(package.download_bytes);
         let after = t("agent-storage-after");
@@ -825,15 +956,15 @@ impl AgentModelsModel {
             Box::new(
                 Row::new()
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new("agent-models-confirm-install", &accept_btn).content_sized(),
+                        Button::new(controls.0, &accept_btn).content_sized(),
                         AgentModelsEffect::InstallModel {
                             model: package.id.clone(),
                             revision: package.revision.clone(),
                         },
                     )))
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new("agent-models-cancel-install", &cancel).content_sized(),
-                        AgentModelsEffect::ReviewModelDownload { show: false },
+                        Button::new(controls.1, &cancel).content_sized(),
+                        cancel_effect,
                     )))
                     .push(Box::new(Spacer::new())),
             ),
@@ -917,6 +1048,135 @@ impl AgentModelsModel {
         card_with_action(
             &t("agent-rec-title"),
             semantic_status_pill(&fit_label, fit_tone(hardware.fit)),
+            rows(body),
+        )
+    }
+
+    /// One in-process model: what it does, then setup with the same licence
+    /// confirmation as the recommendation, progress, or ready with Remove.
+    /// Never Start or Stop: it runs inside the apps that use it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every install phase of the card stays beside its controls"
+    )]
+    fn in_process_card(&self, model: &InProcessLocalModel) -> El {
+        let package = &model.package;
+        let widget_token = token(&package.id);
+        let mut body = vec![
+            value_row(&t("agent-inprocess-model"), &package.name),
+            caption(&package.description),
+            caption(&t("agent-inprocess-caption")),
+        ];
+        let confirming = self
+            .reviewing_local
+            .with(|reviewing| reviewing.as_deref() == Some(package.id.as_str()));
+        if confirming && model.installable() {
+            let confirm_id = format!("agent-models-inprocess-confirm-{widget_token}");
+            let cancel_id = format!("agent-models-inprocess-cancel-{widget_token}");
+            self.push_confirm(
+                &mut body,
+                package,
+                (&confirm_id, &cancel_id),
+                AgentModelsEffect::ReviewLocalModel {
+                    model: package.id.clone(),
+                    show: false,
+                },
+            );
+        } else {
+            match &model.phase {
+                None => {
+                    body.push(value_row(
+                        &t("agent-download"),
+                        &byte_size(package.download_bytes),
+                    ));
+                }
+                Some(
+                    phase @ LocalModelPhase::Downloading {
+                        downloaded_bytes,
+                        total_bytes,
+                    },
+                ) => {
+                    let progress = t_args(
+                        "agent-progress-downloading",
+                        &[("name", package.name.as_str().into())],
+                    );
+                    body.push(Box::new(
+                        ProgressBar::new(phase_progress(phase).unwrap_or(0.0)).with_label(progress),
+                    ));
+                    let done = byte_size(*downloaded_bytes);
+                    let total = byte_size(*total_bytes);
+                    body.push(caption(&t_args(
+                        "agent-download-progress",
+                        &[("done", done.as_str().into()), ("total", total.into())],
+                    )));
+                }
+                Some(LocalModelPhase::Installing { message, .. }) => {
+                    let progress = t_args(
+                        "agent-progress-installing",
+                        &[("name", package.name.as_str().into())],
+                    );
+                    body.push(Box::new(ProgressBar::indeterminate().with_label(progress)));
+                    body.push(caption(message));
+                }
+                Some(LocalModelPhase::Ready { .. }) => {
+                    body.push(value_row(
+                        &t("agent-model-storage"),
+                        &byte_size(package.installed_bytes),
+                    ));
+                    body.push(value_row(&t("agent-license"), &package.license));
+                    body.push(caption(&t("agent-inprocess-ready-caption")));
+                }
+                Some(LocalModelPhase::Error { message }) => {
+                    body.push(caption(message));
+                    body.push(caption(&t("agent-inprocess-error-caption")));
+                }
+            }
+            let mut row = Row::new();
+            let mut any = false;
+            if model.installable() {
+                row = row.push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-inprocess-setup-{widget_token}"),
+                            &t("agent-setup-device"),
+                        )
+                        .content_sized()
+                        .with_enabled(self.manager_available),
+                        AgentModelsEffect::ReviewLocalModel {
+                            model: package.id.clone(),
+                            show: true,
+                        },
+                    ),
+                ));
+                any = true;
+            }
+            if model.removable() {
+                row = row.push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-inprocess-remove-{widget_token}"),
+                            &action_label(ModelAction::Remove),
+                        )
+                        .content_sized(),
+                        AgentModelsEffect::RemoveModel {
+                            model: package.id.clone(),
+                        },
+                    ),
+                ));
+                any = true;
+            }
+            if any {
+                body.push(Box::new(row.push(Box::new(Spacer::new()))));
+            }
+        }
+        let (status, tone) = match &model.phase {
+            None => (t("agent-status-not-installed"), StatusTone::Neutral),
+            Some(LocalModelPhase::Ready { .. }) => (t("agent-status-ready"), StatusTone::Success),
+            Some(phase) => (phase.status(), phase_tone(phase)),
+        };
+        card_with_action(
+            &package.capability_title(),
+            semantic_status_pill(&status, tone),
             rows(body),
         )
     }
@@ -1305,7 +1565,21 @@ impl AgentModelsModel {
         if let Some(accelerator) = self.accelerator_card() {
             cards.push(accelerator);
         }
+        // A link to one in-process model puts its card first, where the
+        // person who followed it sees it without hunting.
+        let revealed = self
+            .revealed
+            .as_deref()
+            .and_then(|id| self.snapshot.in_process_model(id));
+        if let Some(model) = revealed {
+            cards.push(self.in_process_card(model));
+        }
         cards.push(self.recommendation_card());
+        for model in &self.snapshot.in_process {
+            if revealed.is_none_or(|shown| shown.package.id != model.package.id) {
+                cards.push(self.in_process_card(model));
+            }
+        }
         if self.snapshot.models.is_empty() {
             cards.push(card(
                 &t("agent-models-empty-title"),
@@ -1426,6 +1700,10 @@ pub struct HardwareRecommendation {
     pub reason: String,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag mirrors an independent signed declaration of the release"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalModelPackage {
     pub id: String,
@@ -1445,6 +1723,24 @@ pub struct LocalModelPackage {
     /// general image-analysis model must not gain this capability implicitly.
     #[serde(default)]
     pub face_recognition: bool,
+    /// The model runs inside the apps that use it: it is installed, never
+    /// started, and is not a chat model for the local provider profile.
+    #[serde(default)]
+    pub in_process: bool,
+    /// Signed salient-object segmentation capability ("Select subject").
+    #[serde(default)]
+    pub segmentation: bool,
+}
+
+impl LocalModelPackage {
+    /// The card title naming what an in-process model does for the person.
+    fn capability_title(&self) -> String {
+        if self.segmentation {
+            t("agent-inprocess-segmentation-title")
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1498,6 +1794,30 @@ pub struct InstalledLocalModel {
     pub phase: LocalModelPhase,
 }
 
+/// A signed model that runs in-process, offered whether or not it is
+/// installed. `phase` is absent until it is set up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InProcessLocalModel {
+    pub package: LocalModelPackage,
+    #[serde(default)]
+    pub phase: Option<LocalModelPhase>,
+}
+
+impl InProcessLocalModel {
+    /// Whether setting it up (again) is what the card offers.
+    pub(crate) fn installable(&self) -> bool {
+        matches!(self.phase, None | Some(LocalModelPhase::Error { .. }))
+    }
+
+    /// Whether there are local bytes or a failed record to remove.
+    pub(crate) fn removable(&self) -> bool {
+        matches!(
+            self.phase,
+            Some(LocalModelPhase::Ready { .. } | LocalModelPhase::Error { .. })
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AcceleratorSetupState {
@@ -1531,8 +1851,17 @@ pub struct LocalModelSnapshot {
     pub recommendation: Option<LocalModelPackage>,
     #[serde(default)]
     pub models: Vec<InstalledLocalModel>,
+    /// Every signed in-process model, installed or not.
+    #[serde(default)]
+    pub in_process: Vec<InProcessLocalModel>,
     #[serde(default)]
     pub accelerator_setup: Option<AcceleratorSetup>,
+}
+
+impl LocalModelSnapshot {
+    pub(crate) fn in_process_model(&self, id: &str) -> Option<&InProcessLocalModel> {
+        self.in_process.iter().find(|model| model.package.id == id)
+    }
 }
 
 /// Boundary implemented by Tilo' model service. The production adapter is a
@@ -1646,6 +1975,7 @@ fn fallback_snapshot() -> LocalModelSnapshot {
         },
         recommendation: None,
         models: Vec::new(),
+        in_process: Vec::new(),
         accelerator_setup: None,
     }
 }
@@ -1690,7 +2020,12 @@ fn action_slug(action: ModelAction) -> &'static str {
 }
 
 fn byte_size(bytes: u64) -> String {
-    format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+    // In-process models are a few hundred megabytes; "0.2 GiB" says little.
+    if bytes < 1_073_741_824 {
+        format!("{:.0} MB", bytes as f64 / 1_000_000.0)
+    } else {
+        format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+    }
 }
 
 fn phase_progress(phase: &LocalModelPhase) -> Option<f32> {
@@ -1713,7 +2048,9 @@ fn synced_local_profile(
 ) -> Option<ProviderProfile> {
     let ready = models
         .iter()
-        .filter(|model| matches!(model.phase, LocalModelPhase::Ready { .. }))
+        .filter(|model| {
+            !model.package.in_process && matches!(model.phase, LocalModelPhase::Ready { .. })
+        })
         .collect::<Vec<_>>();
     if ready.is_empty() {
         return None;
@@ -1826,8 +2163,11 @@ impl LocalModelControl for SampleManager {
                 installed_bytes: 10_737_418_240,
                 vision: false,
                 face_recognition: false,
+                in_process: false,
+                segmentation: false,
             }),
             models: Vec::new(),
+            in_process: Vec::new(),
             accelerator_setup: None,
         })
     }
@@ -1867,7 +2207,189 @@ mod tests {
             installed_bytes: 10_737_418_240,
             vision: false,
             face_recognition: false,
+            in_process: false,
+            segmentation: false,
         }
+    }
+
+    fn subject_package() -> LocalModelPackage {
+        LocalModelPackage {
+            id: "u2net-subject".into(),
+            name: "Subject selection (U²-Net)".into(),
+            description: "Finds the main subject of a photo".into(),
+            source: "https://artifacts.example.test/u2net.onnx".into(),
+            revision: "8d10f".into(),
+            license: "Apache-2.0".into(),
+            license_url: "https://artifacts.example.test/LICENSE".into(),
+            download_bytes: 175_997_641,
+            installed_bytes: 175_997_641,
+            vision: false,
+            face_recognition: false,
+            in_process: true,
+            segmentation: true,
+        }
+    }
+
+    fn with_subject(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
+        LocalModelSnapshot {
+            in_process: vec![InProcessLocalModel {
+                package: subject_package(),
+                phase,
+            }],
+            ..snapshot(None)
+        }
+    }
+
+    fn rendered_names(model: &AgentModelsModel) -> Vec<String> {
+        let composition = model.build_composition();
+        let mut nodes = Vec::new();
+        collect_accessibility(composition.as_ref(), &mut nodes);
+        nodes.into_iter().filter_map(|node| node.name).collect()
+    }
+
+    /// An in-process model has its own card with the recommendation's
+    /// licence confirmation, a link opens it at that confirmation without
+    /// downloading anything, and the install action is itself the
+    /// acceptance of the revision it was offered with.
+    #[test]
+    fn in_process_models_are_set_up_with_the_same_confirmation() {
+        // Case `setup_confirms_before_install`.
+        {
+            let control = mock(with_subject(None));
+            let model = model_over(control.clone());
+            // The recommendation's and the subject model's own.
+            assert_eq!(
+                rendered_names(&model)
+                    .iter()
+                    .filter(|name| *name == "Set up on this device")
+                    .count(),
+                2
+            );
+            model.reviewing_local.set(Some("u2net-subject".into()));
+            assert!(
+                rendered_names(&model)
+                    .iter()
+                    .any(|name| name == "Accept license & download")
+            );
+            assert!(control.calls.lock().unwrap().is_empty());
+            model
+                .manager_work(&AgentModelsEffect::InstallModel {
+                    model: "u2net-subject".into(),
+                    revision: "8d10f".into(),
+                })
+                .unwrap()
+                .run(control.as_ref())
+                .unwrap();
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["install:u2net-subject@8d10f"]
+            );
+            assert!(
+                model
+                    .manager_work(&AgentModelsEffect::InstallModel {
+                        model: "u2net-subject".into(),
+                        revision: "stale".into(),
+                    })
+                    .is_err(),
+                "the acceptance holds only for the revision it was offered with"
+            );
+        }
+
+        // Case `a_link_reveals_the_card_at_its_confirmation`.
+        {
+            let control = mock(with_subject(None));
+            let mut model = model_over(control.clone());
+            model.reveal("u2net-subject").unwrap();
+            assert_eq!(
+                model.reviewing_local.with(Clone::clone).as_deref(),
+                Some("u2net-subject")
+            );
+            assert_eq!(model.revealed.as_deref(), Some("u2net-subject"));
+            assert!(control.calls.lock().unwrap().is_empty());
+            assert!(model.reveal("no-such-model").is_err());
+        }
+
+        // Case `each_model_is_a_row_with_its_install`.
+        {
+            let model = model_over(mock(with_subject(None)));
+            let area = AgentModelsArea {
+                cx: model.cx.clone(),
+                model: std::cell::OnceCell::from(Rc::new(std::cell::RefCell::new(model))),
+            };
+            let published = area
+                .rows()
+                .into_iter()
+                .find(|row| row.id() == "settings.agent-model:u2net-subject")
+                .expect("the in-process model is a row")
+                .into_resource();
+            assert!(
+                published
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "install-model")
+            );
+            assert!(
+                !published
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "remove-model")
+            );
+        }
+    }
+
+    /// A ready in-process model offers only Remove, a destructive action the
+    /// host confirms, and never joins the local chat profile.
+    #[test]
+    fn ready_in_process_models_offer_only_a_confirmed_remove() {
+        let ready = LocalModelPhase::Ready {
+            running: false,
+            endpoint: None,
+        };
+        let control = mock(with_subject(Some(ready.clone())));
+        let model = model_over(control.clone());
+        let names = rendered_names(&model);
+        assert!(!names.iter().any(|name| name == "Start"));
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| *name == "Set up on this device")
+                .count(),
+            1,
+            "only the recommendation still offers setup"
+        );
+        let remove = SettingsEffect::from(AgentModelsEffect::RemoveModel {
+            model: "u2net-subject".into(),
+        })
+        .bound();
+        assert_eq!(
+            remove.contract.confirmation,
+            ui::tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert!(
+            model
+                .manager_work(&AgentModelsEffect::StartModel {
+                    model: "u2net-subject".into(),
+                })
+                .is_err(),
+            "an in-process model is never started"
+        );
+        model
+            .manager_work(&AgentModelsEffect::RemoveModel {
+                model: "u2net-subject".into(),
+            })
+            .unwrap()
+            .run(control.as_ref())
+            .unwrap();
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["remove:u2net-subject"]
+        );
+
+        let installed = vec![InstalledLocalModel {
+            package: subject_package(),
+            phase: ready,
+        }];
+        assert!(synced_local_profile(None, &installed).is_none());
     }
 
     fn snapshot(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
@@ -1885,6 +2407,7 @@ mod tests {
             models: phase
                 .map(|phase| vec![InstalledLocalModel { package, phase }])
                 .unwrap_or_default(),
+            in_process: Vec::new(),
             accelerator_setup: None,
         }
     }

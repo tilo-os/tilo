@@ -380,6 +380,9 @@ pub struct QuickSettingsState {
     /// `Balanced` so a host without `power-profiles-daemon` still
     /// renders a sensible label.
     pub power_profile: PowerProfile,
+    /// The profiles the power daemon offers on this machine; empty until
+    /// read. The power row cycles only through these.
+    pub power_profiles: Vec<PowerProfile>,
     /// Apps currently keeping the screen awake (an idle inhibitor held
     /// through Wayland, the portal or `org.freedesktop.ScreenSaver`), named
     /// as they asked. Shown on the power row so a screen that never locks
@@ -460,6 +463,7 @@ impl Default for QuickSettingsState {
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            power_profiles: Vec::new(),
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,
@@ -507,6 +511,7 @@ impl QuickSettingsState {
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            power_profiles: Vec::new(),
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,

@@ -375,6 +375,7 @@ impl Widget for WebView {
             &self.rect,
         );
 
+        self.engine.presented();
         self.share_page();
         // A display list replaces pixels: draw it like any other widget
         // content, in this toolkit's own text and Vello.
@@ -466,6 +467,19 @@ impl Widget for WebView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // Someone is using the page: it is on screen, whether or not a frame
+        // has been drawn since it came back.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Focused(true)
+                | WindowEvent::Occluded(false)
+        ) {
+            self.engine.presented();
+        }
         if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
             self.scale_factor = to_f32(ctx.scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.

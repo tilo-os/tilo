@@ -10,6 +10,8 @@
 # FINAL_RECEIPT_POLICY inputs. It uploads immutable packages, submits each
 # tapp to the signed registry, assembles each collection and, for main's
 # default collection, advances the TILO_APP_COLLECTION_* repository variables.
+# Last, it offers the runtime build the apps link as the registry package
+# so.tilo.runtime, so a device without that build fetches it with the apps.
 set -euo pipefail
 audience=$MAIN_AUDIENCE
 [[ -n $audience ]] || { printf 'app release Authorized Integration audience is required\n' >&2; exit 1; }
@@ -246,7 +248,41 @@ while IFS= read -r id; do
   }
 done < <(cut -f1 "$publication_plan" | uniq)
 
-[[ -n ${COLLECTION:-} ]] || exit 0
+# Offer the runtime build every app above links, as `so.tilo.runtime`: its
+# thin package beside its content-addressed payload objects, which devices
+# fetch through the registry before an app that names the build. A build the
+# registry already offers is not submitted again. Runs last so a refusal here
+# fails the job loudly without holding back the apps or the collections;
+# until it is offered, devices refuse those apps with a clear message rather
+# than installing apps they cannot start.
+runtime_failed=0
+publish_runtimes() {
+  local index metadata
+  metadata="$RUNNER_TEMP/tilo-runtime-metadata.json"
+  jq -n '{name: {en: "Tilo runtime"},
+          description: {en: "The shared libraries Tilo apps are built against. The Store installs the build an app needs together with the app."},
+          tagline: {en: "Runtime for Tilo apps"},
+          supported_languages: ["en"],
+          source_url: "https://code.tilo.so/tilo/tilo"}' > "$metadata"
+  for index in release/*/index.json; do
+    VERSION=$VERSION TILO_PACKAGE_TOKEN=$jwt PACKAGE_API=$package_api \
+      REGISTRY_URL=$registry_url OWNER=$owner REGISTRY_CLI=$registry_cli \
+      REGISTRY_IDENTITY=$registry_identity \
+      tools/apps/publish-runtime-package.sh "${index%/index.json}/runtime-package" \
+      "$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")" \
+      so.tilo.runtime tilo-app-runtime "$metadata" \
+      || runtime_failed=1
+  done
+  (( runtime_failed == 0 )) || {
+    printf 'the runtime build the published apps link is not offered by the registry\n' >&2
+    return 1
+  }
+}
+
+if [[ -z ${COLLECTION:-} ]]; then
+  publish_runtimes
+  exit
+fi
 collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
 python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
 source_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
@@ -372,3 +408,5 @@ if [[ $GITHUB_REF == refs/heads/main && $COLLECTION == default ]]; then
   fi
   echo '::notice::advanced the default OS app-collection channel'
 fi
+
+publish_runtimes

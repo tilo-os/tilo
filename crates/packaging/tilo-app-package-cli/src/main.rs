@@ -198,6 +198,18 @@ enum Command {
         /// The .tapp to thin.
         file: PathBuf,
     },
+    /// Split a full .tapp for hosting: write its thin form under the same
+    /// file name into `--out`, plus every payload blob as `<blake3>.blob`,
+    /// or, past 16 MiB, as `<blake3>.chunks` naming 16 MiB `<blake3>.blob`
+    /// chunks. Upload every file in `--out` into one directory, then build
+    /// the entry from the thin .tapp with `entry --objects <out>`.
+    Split {
+        /// Directory for the thin .tapp and its payload objects.
+        #[arg(long)]
+        out: PathBuf,
+        /// The full .tapp to split.
+        file: PathBuf,
+    },
     /// Re-sign an existing .tapp with the given identity, writing the result back into the same file.
     Sign {
         #[arg(long)]
@@ -360,6 +372,10 @@ struct EntryArgs {
     /// Newest pre-releases kept per target; older ones leave the entry.
     #[arg(long, default_value_t = registry_types::retention::DEFAULT_RETAINED_PER_CHANNEL)]
     keep_prereleases: usize,
+    /// Payload objects of a thin .tapp, as `split` wrote them; they are
+    /// hosted beside the .tapp at `--url`.
+    #[arg(long)]
+    objects: Option<PathBuf>,
     /// The .tapp to describe.
     file: PathBuf,
 }
@@ -430,6 +446,7 @@ fn main() -> Result<()> {
         }),
         Command::SealImage(args) => cmd_seal_image(&args),
         Command::Thin { output, file } => cmd_thin(&file, &output),
+        Command::Split { out, file } => cmd_split(&file, &out),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
         Command::Inspect { file } => cmd_inspect(&file),
@@ -734,6 +751,33 @@ fn cmd_thin(file: &Path, output: &Path) -> Result<()> {
     let (tapp, _) = read_tapp(file, false)?;
     write_tapp(output, &tapp.meta, None)?;
     eprintln!("wrote thin {} -> {}", tapp.meta.id, output.display());
+    Ok(())
+}
+
+fn cmd_split(file: &Path, out: &Path) -> Result<()> {
+    let name = file
+        .file_name()
+        .ok_or_else(|| anyhow!("{} has no file name", file.display()))?;
+    std::fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
+    let thin_path = out.join(name);
+    if thin_path.exists() && std::fs::canonicalize(&thin_path)? == std::fs::canonicalize(file)? {
+        bail!("--out must not be the directory holding {}", file.display());
+    }
+    let reader = std::io::BufReader::new(
+        File::open(file).with_context(|| format!("open {}", file.display()))?,
+    );
+    let split = tilo_app_package::chunks::split(reader, out)
+        .with_context(|| format!("split {}", file.display()))?;
+    write_tapp(&thin_path, &split.meta, None)?;
+    eprintln!(
+        "split {} -> {}: {} whole blob(s), {} chunked blob(s) in {} chunk(s), {} payload bytes",
+        split.meta.id,
+        out.display(),
+        split.whole_blobs,
+        split.chunked_blobs,
+        split.chunks,
+        split.payload_bytes,
+    );
     Ok(())
 }
 
@@ -1183,16 +1227,32 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
                 .context("decode entry metadata JSON")
         })
         .transpose()?;
-    let entry = registry_client::build_entry(
-        &tapp_bytes,
-        url,
-        &signer,
-        platform.into(),
-        arch,
-        previous.as_ref(),
-        metadata.as_ref(),
-        &retention,
-    )?;
+    let entry = if let Some(objects) = &args.objects {
+        registry_client::build_entry_with_objects(
+            registry_client::ThinPackage {
+                tapp: &tapp_bytes,
+                objects: &tilo_app_package::chunks::ObjectDir::new(objects),
+            },
+            url,
+            &signer,
+            platform.into(),
+            arch,
+            previous.as_ref(),
+            metadata.as_ref(),
+            &retention,
+        )?
+    } else {
+        registry_client::build_entry(
+            &tapp_bytes,
+            url,
+            &signer,
+            platform.into(),
+            arch,
+            previous.as_ref(),
+            metadata.as_ref(),
+            &retention,
+        )?
+    };
     let output = action.map_or_else(
         || serde_json::to_value(&entry),
         |action| {

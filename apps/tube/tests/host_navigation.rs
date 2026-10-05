@@ -15,8 +15,14 @@ fn names(harness: &FrameHarness) -> Vec<String> {
         .collect()
 }
 
-fn opens_settings_from(scenario: &str) {
-    let mut app = TestApp::<TubeShell>::capture(Some(scenario)).unwrap();
+/// Open the rail's Settings from `screen` in a live window (a capture's
+/// controls start no effects).
+fn opens_settings_from(screen: &str) {
+    let mut app = TestApp::<TubeShell>::new().unwrap();
+    app.effect(&tube::actions::TubeEffect::ShowScreen {
+        screen: screen.into(),
+    })
+    .unwrap();
     let harness = app.harness();
     harness.relayout();
     let home = names(harness);
@@ -29,6 +35,8 @@ fn opens_settings_from(scenario: &str) {
         .map(|centre| (centre.x, centre.y))
         .expect("the rail's Settings item is placed");
     harness.click_at(x, y);
+    app.settle();
+    let harness = app.harness();
     harness.relayout();
     let settings = names(harness);
     assert_ne!(home, settings, "Settings did not open: {settings:?}");
@@ -40,6 +48,6 @@ fn clicking_settings_in_the_rail_opens_settings() {
 }
 
 #[test]
-fn the_rail_works_from_a_watch_page() {
-    opens_settings_from("watch");
+fn the_rail_works_from_another_screen() {
+    opens_settings_from("trending");
 }

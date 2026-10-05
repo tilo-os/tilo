@@ -98,6 +98,20 @@ pub struct Selection {
     /// How far its edge fades, in units.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub feather: f64,
+    /// Its edge refined to the picture: how much of each pixel near it is
+    /// in, where a path can only say in or out (strands of fur and hair).
+    /// A mask made of the selection draws it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<Matte>,
+}
+
+/// A selection's soft edge: a picture, white where selected and as see-through
+/// as each pixel is out, laid over the artwork at `rect`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Matte {
+    pub src: String,
+    /// `[x, y, w, h]`.
+    pub rect: [f64; 4],
 }
 
 impl Selection {

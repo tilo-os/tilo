@@ -109,6 +109,7 @@ struct VariantOptions {
     device_only: Option<bool>,
     risk: Option<syn::Path>,
     programmatic: bool,
+    untrusted: bool,
     participant: bool,
     permission: Option<String>,
 }
@@ -151,13 +152,15 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
             } else if meta.path.is_ident("programmatic") {
                 options.programmatic = true;
+            } else if meta.path.is_ident("untrusted") {
+                options.untrusted = true;
             } else if meta.path.is_ident("participant") {
                 options.participant = true;
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic`, `participant` or `permission`",
+                     `risk`, `programmatic`, `untrusted`, `participant` or `permission`",
                 ));
             }
             Ok(())
@@ -341,6 +344,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let row = options.row;
         let programmatic = options.programmatic;
+        let untrusted = options.untrusted;
         if options.participant && !options.view {
             return Err(syn::Error::new(
                 variant.span(),
@@ -368,6 +372,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 device_only: #device_only,
                 risk_of: #risk_of,
                 programmatic: #programmatic,
+                untrusted: #untrusted,
                 participant: #participant,
             }
         });

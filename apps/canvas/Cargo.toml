@@ -27,6 +27,8 @@ serde.workspace = true
 serde_json.workspace = true
 # Ids derived from an action's content, so every replica names marks alike.
 blake3.workspace = true
+# Tiles an export or a look waits for are painted side by side.
+rayon = "1.12.0"
 # Ids minted where a layer is authored.
 uuid.workspace = true
 # Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
@@ -44,6 +46,9 @@ tracing.workspace = true
 i_overlay = { version = "9.0", default-features = false }
 # An SVG or reference picture named by a path is read where files have one.
 tilo-files = { path = "../../crates/platform/tilo-files" }
+# A photo's subject is found on this device by the model the person set
+# up, through the model gateway; its edge is refined to the picture here.
+tilo-subject = { path = "../../crates/platform/tilo-subject" }
 # A saved artwork is a ZIP package carrying its pictures.
 zip.workspace = true
 
