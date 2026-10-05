@@ -277,31 +277,31 @@ pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
     let (inbox, projects, launch, reading, recipes, formulas) =
         (page(1), page(2), page(3), page(4), page(5), page(6));
     let mut notes = vec![
-        (inbox, None, 0, "Inbox"),
-        (projects, None, 1, "Projects"),
-        (launch, Some(projects), 0, LAUNCH),
-        (reading, None, 2, "Reading list"),
-        (recipes, None, 3, "Recipes"),
-        (formulas, None, 4, "Formula notebook"),
+        (inbox, None, "Inbox"),
+        (projects, None, "Projects"),
+        (launch, Some(projects), LAUNCH),
+        (reading, None, "Reading list"),
+        (recipes, None, "Recipes"),
+        (formulas, None, "Formula notebook"),
     ];
     let references = (1..=28)
         .map(|index| format!("Reference {index:02}"))
         .collect::<Vec<_>>();
     if scenario == Some("sidebar_scroll") {
         for (index, title) in (0u32..).zip(&references) {
-            notes.push((page(100 + u128::from(index)), None, 5 + index, title));
+            notes.push((page(100 + u128::from(index)), None, title));
         }
     }
     if types_into_new_note(scenario) {
-        notes.push((page(7), None, 5, WRITING));
+        notes.push((page(7), None, WRITING));
     }
     let mut out = notes
         .iter()
-        .map(|(id, parent, order, title)| actions::new_page_action(*id, *parent, *order, title))
+        .map(|(id, parent, title)| actions::append_page_action(*id, *parent, title))
         .collect::<Vec<_>>();
     let titles = notes
         .iter()
-        .map(|(id, _, _, title)| ((*title).to_owned(), *id))
+        .map(|(id, _, title)| ((*title).to_owned(), *id))
         .collect::<std::collections::HashMap<_, _>>();
     let launch_body = launch_body(scenario);
     for (id, body) in [

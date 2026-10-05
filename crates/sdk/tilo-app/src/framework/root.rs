@@ -1000,9 +1000,9 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             && request.type_id == READ_TYPE
         {
             let output = read::<R>(&self.live.get(), doc, request.payload)?;
-            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                output,
-            )));
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
         }
         if let Some(request) = op.unscoped()
             && request.type_id == super::history::VIEW_TYPE
