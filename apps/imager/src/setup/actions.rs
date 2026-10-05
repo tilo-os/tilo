@@ -933,6 +933,10 @@ fn folders_phrase(count: usize) -> String {
     }
 }
 
+fn yes_no(value: bool) -> &'static str {
+    if value { "Yes" } else { "No" }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1133,8 +1137,4 @@ mod tests {
                 .all(|action| action.kind == OperationKind::Effect)
         );
     }
-}
-
-fn yes_no(value: bool) -> &'static str {
-    if value { "Yes" } else { "No" }
 }

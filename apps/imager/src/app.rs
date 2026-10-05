@@ -3106,7 +3106,7 @@ mod tests {
 
             assert!(app.targets.is_empty());
             assert_eq!(app.selected, None);
-            assert!(app.confirm_text.as_str().is_empty());
+            assert!(app.confirm_text.is_empty());
         }
 
         // Phase `rescan_preserves_only_the_same_physical_target`.
@@ -3136,7 +3136,7 @@ mod tests {
                 "a reused OS device slot is not the reviewed drive"
             );
             assert!(
-                app.confirm_text.as_str().is_empty(),
+                app.confirm_text.is_empty(),
                 "consent never carries to replacement hardware"
             );
 
@@ -3150,7 +3150,7 @@ mod tests {
                 app.selected, None,
                 "a drive without stable identity must be chosen again after rescan"
             );
-            assert!(app.confirm_text.as_str().is_empty());
+            assert!(app.confirm_text.is_empty());
         }
 
         // Phase `internal_and_system_disks_can_never_be_selected`.

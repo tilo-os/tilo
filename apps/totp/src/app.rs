@@ -1356,8 +1356,6 @@ mod tests {
         Framed::new(state, app, (w, h), Theme::dark())
     }
 
-    /// Run the next frame at a concrete window size.
-
     /// Route one event through the app's real `handle_event`, returning
     /// whether it was marked handled.
     fn dispatch(
@@ -1604,11 +1602,11 @@ mod tests {
     /// Search filtering, including the contextual empty message.
     #[test]
     fn search_filters_the_visible_accounts() {
+        use ui::search::SearchProvider as _;
         use ui::tilo_resource::Resource as _;
         let mut app = hosted((1000, 800), None);
         let count = app.state().len();
         let entries = Totp::search(&app.state());
-        use ui::search::SearchProvider as _;
         let provider = ui::framework::testing::search_source::<Totp>(entries);
         let matches = provider.search_page(&ui::search::SearchQuery::new("github"), None, 100, 100);
         assert_eq!(

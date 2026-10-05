@@ -39,8 +39,8 @@ fn click(app: &mut SheetsApp, doc: &mut AutoCommit, p: Point) {
 
 /// A seeded app, laid out and painted once at 1280 × 800.
 fn painted() -> (SheetsApp, AutoCommit, TextRenderer, Theme) {
-    let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(1280.0, 800.0, 1.0);
-    app.sync(&mut doc, &automerge::ROOT);
+    let (mut app, doc, mut tr, theme) = measured_app_with_doc(1280.0, 800.0, 1.0);
+    app.sync(&doc, &automerge::ROOT);
     paint_frame(&mut app, &mut tr, &theme);
     (app, doc, tr, theme)
 }
@@ -82,7 +82,7 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         let row = menu.item_rect(percent).expect("the row is laid out");
         click(&mut app, &mut doc, row.center());
         assert_eq!(shown_menu(&app), None, "choosing a row closes the menu");
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert_eq!(
             app.current_active_format.category(),
             FormatCategory::Percent,
@@ -107,10 +107,10 @@ fn painted_chrome_answers_pointer_and_keyboard() {
     {
         let (mut app, mut doc, mut tr, theme) = painted();
         app.grid.select_only((1, 1));
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert!(!app.active_cell_bold);
         click_command(&mut app, &mut doc, chrome::bar::BOLD);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert!(app.active_cell_bold, "the Bold command bolds the cell");
         paint_frame(&mut app, &mut tr, &theme);
         let bold = Widget::accessibility(&app.toolbar)
@@ -122,7 +122,7 @@ fn painted_chrome_answers_pointer_and_keyboard() {
             .expect("the Bold toggle");
         assert_eq!(bold.state.checked, Some(true), "the toggle reads as on");
         assert!(feed(&mut app, &mut doc, &char_event("b"), ctrl_mods()));
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert!(!app.active_cell_bold, "Ctrl+B takes it off again");
     }
 
@@ -190,7 +190,7 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         );
         click(&mut app, &mut doc, first);
         assert!(!app.tab_colour.is_open(), "choosing closes the popover");
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert_eq!(
             app.sheet_colors.first().copied().flatten(),
             Some(0),
@@ -214,7 +214,7 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
         // the rest in More, whatever the commands measure at.
         let width = whole * 2.0 / 3.0 + 2.0 * probe.metrics.s3;
         let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(width, 600.0, 1.0);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         paint_frame(&mut app, &mut tr, &theme);
         assert!(
             app.toolbar.has_overflow(),
@@ -247,7 +247,7 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
         let (fits, _doc, _tr, _theme) = measured_app_with_doc(800.0, 600.0, 1.0);
         assert!(!fits.toolbar.has_overflow(), "the bar fits 800 px at 1x");
         let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(390.0, 844.0, 1.0);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         paint_frame(&mut app, &mut tr, &theme);
         app.toolbar.open_overflow();
         paint_frame(&mut app, &mut tr, &theme);

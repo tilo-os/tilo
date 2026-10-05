@@ -1304,8 +1304,10 @@ pub(crate) mod tests {
             .into_iter()
             .find(|node| node.name.as_deref() == Some(name) && node.bounds.is_some())
             .and_then(|node| node.bounds)
-            .map(ui::a11y::AccessBounds::to_rect)
-            .unwrap_or_else(|| panic!("missing actual control {name}"))
+            .map_or_else(
+                || panic!("missing actual control {name}"),
+                ui::a11y::AccessBounds::to_rect,
+            )
     }
 
     fn reveal(app: &mut Hosted, name: &str) {
@@ -1460,7 +1462,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .content_mut()
                 .tree
-                .scroll_by(0.0, -10000.0)
+                .scroll_by(0.0, -10000.0);
         });
         settle(&mut app);
         let offset = panel(&mut app, |p| {
@@ -1535,7 +1537,7 @@ pub(crate) mod tests {
     fn add_panel_uri_build_and_save_fill_and_validate_the_form() {
         let mut app = opened((1280, 900));
         panel(&mut app, |p| {
-            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45")
+            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45");
         });
         settle(&mut app);
         assert_eq!(
@@ -1547,9 +1549,9 @@ pub(crate) mod tests {
         assert_eq!(account.digits, 8);
         assert_eq!(account.period, 45);
         assert!(panel(&mut app, |p| p.sheet.borrow().advanced_open));
-        panel(&mut app, |p| p.open());
+        panel(&mut app, super::AddAccountPanel::open);
         panel(&mut app, |p| {
-            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP")
+            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
         });
         settle(&mut app);
         assert!(!panel(&mut app, |p| p.sheet.borrow().advanced_open));

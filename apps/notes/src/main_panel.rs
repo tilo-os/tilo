@@ -1960,6 +1960,15 @@ impl Widget for MainPanel {
     }
 }
 
+impl MainPanel {
+    pub fn take_tag_open(&mut self) -> Option<crate::model::TagId> {
+        self.pending_tag_open.take()
+    }
+    pub fn take_backlink_open(&mut self) -> Option<PageId> {
+        self.pending_backlink_open.take()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2271,14 +2280,5 @@ mod tests {
                 == format!("notes.backlink-chip:{source}")
                 && b.kind == ui::widget::ControlBindingKind::Action(expected.address().clone())));
         }
-    }
-}
-
-impl MainPanel {
-    pub fn take_tag_open(&mut self) -> Option<crate::model::TagId> {
-        self.pending_tag_open.take()
-    }
-    pub fn take_backlink_open(&mut self) -> Option<PageId> {
-        self.pending_backlink_open.take()
     }
 }

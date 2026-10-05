@@ -3408,6 +3408,10 @@ impl ui::widget::controls::ActionControls for CameraApp {
 // Shared chrome + control helpers
 // ====================================================================
 
+fn now_secs() -> i64 {
+    ui::clock::local_now().timestamp()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3896,9 +3900,9 @@ mod tests {
         {
             let dir = std::env::temp_dir().join("camera-recovery-test-refresh");
             let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             app.camera_issue = Some(CameraIssue::NoDevice);
             let mut app = render_at(app, doc, 390.0, 844.0);
             let (camera, state) = Framed::split(&mut app);
@@ -5014,8 +5018,4 @@ mod tests {
             "a page operation waits for a page"
         );
     }
-}
-
-fn now_secs() -> i64 {
-    ui::clock::local_now().timestamp()
 }

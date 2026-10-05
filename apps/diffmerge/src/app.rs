@@ -1117,6 +1117,15 @@ fn read_text(path: &Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| failed(&e))
 }
 
+fn position_label(position: Option<(usize, usize)>) -> String {
+    position.map_or_else(String::new, |(current, total)| {
+        t_args(
+            "diff-status-position",
+            &[("current", count(current)), ("total", count(total))],
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1558,7 +1567,6 @@ mod tests {
     /// The compact source switcher is only useful when the surrounding chrome
     /// is usable too. Keep the complete one-row phone toolbar on screen and
     /// non-overlapping (both modes, file open/sample, and change navigation).
-
     fn phone_toolbar_keeps_every_control_visible_without_overlap() {
         let mut app = TestApp::<DiffmergeShell>::capture_at(Some("merge"), (390, 760)).unwrap();
         let controls = header_controls(&mut app);
@@ -1591,7 +1599,6 @@ mod tests {
     /// Every toolbar control is sized from its measured label and centred on
     /// the measured bar, at 1× and at 200% text; the content starts below the
     /// bar that was actually painted.
-
     fn toolbar_controls_fit_their_measured_labels_at_every_text_scale() {
         let mut unscaled = None;
         for scale in [1.0f32, 2.0] {
@@ -2105,13 +2112,4 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"File loading failed"), "{names:?}");
     }
-}
-
-fn position_label(position: Option<(usize, usize)>) -> String {
-    position.map_or_else(String::new, |(current, total)| {
-        t_args(
-            "diff-status-position",
-            &[("current", count(current)), ("total", count(total))],
-        )
-    })
 }

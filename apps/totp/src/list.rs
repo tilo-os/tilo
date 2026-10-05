@@ -911,14 +911,14 @@ mod tests {
         assert!(dispatch(&mut list, &wheel(100.0)));
         assert!(list.scroll.abs() < 0.001);
         let first = list.accounts.first().unwrap().id;
-        let last = list.accounts.last().unwrap().id;
+        let final_account = list.accounts.last().unwrap().id;
         assert!(
-            list.account_bounds(last).is_none(),
+            list.account_bounds(final_account).is_none(),
             "offscreen rows have no admitted bounds"
         );
-        list.reveal(last);
+        list.reveal(final_account);
         let visible = list
-            .account_bounds(last)
+            .account_bounds(final_account)
             .expect("the revealed row is admitted");
         assert!(visible.y0 >= list.rect.y0 && visible.y1 <= list.rect.y1);
         assert!(list.account_bounds(first).is_none());

@@ -291,6 +291,10 @@ mod tests {
             );
             assert_eq!(page.results.len(), 1, "the one track that matches");
         }
+        assert_search_pagination();
+    }
+
+    fn assert_search_pagination() {
         // Case `pages_bound_work_and_materialisation_without_losing_broad_hits`.
         {
             let mut project = Project::new("large");

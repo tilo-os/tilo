@@ -1539,6 +1539,36 @@ pub(super) fn truncate(
     "\u{2026}".to_string()
 }
 
+impl FileView {
+    #[must_use]
+    pub fn with_workspace_roots(mut self, roots: Rc<[PathBuf]>) -> Self {
+        self.workspace_roots = roots;
+        self
+    }
+    #[must_use]
+    pub fn with_hover(mut self, index: Option<usize>) -> Self {
+        self.hover = index;
+        self
+    }
+    pub(crate) fn prefetch_thumbnails(
+        ctx: &ThumbCtx,
+        entries: &[Entry],
+        workspace_roots: &[PathBuf],
+    ) {
+        for entry in entries.iter().filter(|entry| !entry.is_dir) {
+            let key = Self::thumb_key(ctx, entry);
+            let in_workspace = crate::model::path_under_any(&entry.path, workspace_roots);
+            let _ = Self::request_thumb_in(
+                ctx,
+                entry,
+                key,
+                category_for_path(&entry.path),
+                in_workspace,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -2974,35 +3004,5 @@ mod tests {
         assert_eq!(node.children[1].pos_in_set, Some(2));
         assert_eq!(node.children[1].set_size, Some(2));
         assert_description_has_every_fact(node.children[1].description.as_deref());
-    }
-}
-
-impl FileView {
-    #[must_use]
-    pub fn with_workspace_roots(mut self, roots: Rc<[PathBuf]>) -> Self {
-        self.workspace_roots = roots;
-        self
-    }
-    #[must_use]
-    pub fn with_hover(mut self, index: Option<usize>) -> Self {
-        self.hover = index;
-        self
-    }
-    pub(crate) fn prefetch_thumbnails(
-        ctx: &ThumbCtx,
-        entries: &[Entry],
-        workspace_roots: &[PathBuf],
-    ) {
-        for entry in entries.iter().filter(|entry| !entry.is_dir) {
-            let key = Self::thumb_key(ctx, entry);
-            let in_workspace = crate::model::path_under_any(&entry.path, workspace_roots);
-            let _ = Self::request_thumb_in(
-                ctx,
-                entry,
-                key,
-                category_for_path(&entry.path),
-                in_workspace,
-            );
-        }
     }
 }

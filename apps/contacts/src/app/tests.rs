@@ -337,11 +337,8 @@ fn a_phone_window_pushes_the_person_over_the_list() {
         );
         assert_eq!(app.shell.front_pane(), NavPane::Overview);
     }
-    let grace = id_named(&*harness, "Grace Hopper");
-    (&mut *harness)
-        .shared
-        .borrow_mut()
-        .push(Request::Select(grace));
+    let grace = id_named(&harness, "Grace Hopper");
+    harness.shared.borrow_mut().push(Request::Select(grace));
     harness.harness_mut().send(&WindowEvent::RedrawRequested);
     let app = &*harness;
     assert_eq!(app.selected, Some(grace));
@@ -490,7 +487,7 @@ fn the_list_selects_by_pointer_keyboard_and_semantics() {
     // Escape leaves the form; the arrows then move through the list.
     harness.harness_mut().key("Escape");
     assert_eq!(harness.mode, Mode::View);
-    let rows = list_ids(&*harness);
+    let rows = list_ids(&harness);
     harness.harness_mut().key("Down");
     assert_eq!(harness.selected, rows.get(2).copied());
     harness.harness_mut().key("Up");
@@ -555,7 +552,7 @@ fn a_contact_menu_without_a_pointer_opens_under_its_row() {
             .unwrap();
         (grace, row)
     };
-    (&mut *harness)
+    harness
         .shared
         .borrow_mut()
         .push(Request::ContextMenu(grace, None));
@@ -712,184 +709,21 @@ fn header_commands_favorite_delete_and_open_the_website() {
 /// deletes reconcile and announce errors without claiming success.
 #[test]
 fn retained_forms_preserve_persistence_and_refusals() {
-    // --- phase: save_round_trips_through_doc ---
-    {
-        let mut app = synced();
-        let c = selected_contact(&app);
-        let id = c.id;
-        ask(&mut app, Request::EditSelected);
-        app.form
-            .as_ref()
-            .unwrap()
-            .set_value(Slot::Title, "Edited Title");
-        ask(&mut app, Request::Save);
-        assert_eq!(app.mode, Mode::View);
-        let stored = app.book();
-        assert_eq!(
-            stored.iter().find(|x| x.id == id).unwrap().title,
-            "Edited Title"
-        );
-        assert_eq!(toast(&app), Some("Saved"));
-    }
+    check_save_round_trips_through_doc();
 
-    // --- phase: refused_save_reconciles_and_announces_an_error_without_claiming_success ---
-    {
-        let mut app = synced();
-        let contact = selected_contact(&app);
-        app.app
-            .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
-        app.settle();
-        app.begin_edit(contact.clone(), false);
-        app.save_edit();
+    check_refused_save_reconciles_and_announces_an_error_without_claiming_success();
 
-        assert_eq!(app.mode, Mode::Edit, "the rejected draft remains editable");
-        assert!(app.form.is_some());
-        assert!(
-            app.store.get(contact.id).is_none(),
-            "store reconciles from the document"
-        );
-        let message = toast(&app).unwrap().to_owned();
-        assert!(message.starts_with("Couldn't save contact:"));
-        assert!(
-            live_message(&app.accessibility().unwrap(), &message).is_some(),
-            "the refusal is announced through the live region"
-        );
-    }
+    check_refused_favorite_and_delete_reconcile_without_false_success();
 
-    // --- phase: refused_favorite_and_delete_reconcile_without_false_success ---
-    {
-        let mut app = synced();
-        let contact = selected_contact(&app);
-        app.app
-            .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
-        app.settle();
-        // A control can still have the last rendered contact when the peer's
-        // tombstone reaches the door. Submit that real stale view request;
-        // a helper looking up the already-reconciled store would do nothing.
-        app.store.upsert(contact.clone());
-        app.selected = Some(contact.id);
-        app.request(Request::ToggleFavorite);
-        assert!(
-            !app.book().iter().any(|row| row.id == contact.id),
-            "a tombstoned toggle is rejected"
-        );
-        assert!(
-            app.store.get(contact.id).is_none(),
-            "favorite refusal reconciles"
-        );
-        assert!(
-            toast(&app)
-                .unwrap()
-                .starts_with("Couldn't change the address book:")
-        );
+    check_seeds_sample_contacts_and_selects_one();
 
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = theme.tokens.colors.surfaces.base;
-            let selected = ui::widget::ChipStyle::Live.colors(&theme, ground, true, false);
-            assert!(
-                ui::a11y::contrast_ratio(selected.ink, selected.fill) >= ON_FILL_MIN_CONTRAST,
-                "selected chip label must remain readable on its resolved fill"
-            );
-            assert!(
-                ui::a11y::contrast_ratio(selected.edge.unwrap_or(selected.fill), ground)
-                    >= ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                "the painted outline or filled chip boundary remains distinguishable from its pane"
-            );
-        }
-    }
+    check_view_mode_frame_does_not_panic();
 
-    // --- phase: seeds_sample_contacts_and_selects_one ---
-    {
-        let mut app = sampled();
-        let doc = AutoCommit::new();
-        app.sync(&doc, &ROOT);
-        assert_eq!(app.store.len(), 7);
-        assert!(app.selected.is_some(), "a contact must be auto-selected");
-        // The seeded selection points at a real, richly-populated record.
-        let sel = app.store.get(app.selected.unwrap()).unwrap();
-        assert!(!sel.phones.is_empty());
-    }
+    check_edit_mode_with_repeated_fields_frame_does_not_panic();
 
-    // --- phase: view_mode_frame_does_not_panic ---
-    {
-        let mut app = sampled();
-        drive_frame(&mut app, 1280, 800);
-    }
+    check_calendar_and_type_popups_frame_does_not_panic();
 
-    // --- phase: edit_mode_with_repeated_fields_frame_does_not_panic ---
-    {
-        let mut app = sampled();
-        // Seed first.
-        let doc = AutoCommit::new();
-        app.sync(&doc, &ROOT);
-        // Enter edit on the selected contact and add repeated fields.
-        let c = app
-            .selected
-            .and_then(|id| app.store.get(id))
-            .cloned()
-            .unwrap();
-        app.begin_edit(c, false);
-        app.form.as_mut().unwrap().add(crate::form::RowKind::Phone);
-        app.form
-            .as_mut()
-            .unwrap()
-            .add(crate::form::RowKind::Address);
-        app.form_epoch = app.form_epoch.wrapping_add(1);
-        drive_frame(&mut app, 1280, 800);
-        assert_eq!(app.mode, Mode::Edit);
-    }
-
-    // --- phase: calendar_and_type_popups_frame_does_not_panic ---
-    {
-        let mut h = Harness::new(1280, 800);
-        h.app.request(Request::EditSelected);
-        h.app.request(Request::ToggleCalendar);
-        h.relayout();
-        assert!(h.app.form.as_ref().unwrap().calendar_open);
-        let calendar = h.app.harness_mut().a11y_node_named("Birthday calendar");
-        assert!(calendar.is_some(), "the shared date picker is hosted");
-        let menu = target(&h.app, "contacts.form.type.phone-0");
-        assert!(h.press_left(menu.center()));
-        assert!(
-            h.app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
-                node.role() == ui::accesskit::Role::ComboBox
-                    && node.label() == Some("Phone 1 type")
-                    && node.is_expanded() == Some(true)
-            }),
-            "the shared type selector opens"
-        );
-    }
-
-    // --- phase: importing_state_is_visible_and_announced_as_busy ---
-    {
-        let mut app = sampled();
-        let work = app
-            .begin_file_work(FileWork::Import)
-            .expect("production import guard");
-        drive_frame(&mut app, 1280, 800);
-        let progress = named_widget(&app, "Importing contacts", Role::ProgressBar)
-            .expect("the shared live progress indicator")
-            .accessibility()
-            .unwrap();
-        assert!(progress.state.busy);
-        assert!(!progress.state.focusable);
-        assert!(progress.live.is_some(), "the busy label is announced");
-        assert!(
-            app.more_rows().contains(&(MoreAction::Import, false)),
-            "the actual import action is unavailable while running"
-        );
-        assert!(
-            app.begin_file_work(FileWork::Import).is_err(),
-            "duplicate file work is refused"
-        );
-        drop(work);
-        drive_frame(&mut app, 1280, 800);
-        assert!(
-            named_widget(&app, "Importing contacts", Role::ProgressBar).is_none(),
-            "completion removes the running indicator"
-        );
-        assert!(app.more_rows().contains(&(MoreAction::Import, true)));
-    }
+    check_importing_state_is_visible_and_announced_as_busy();
 }
 
 /// The window offers importing and exporting the book beside its actions.
@@ -1111,133 +945,17 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
 /// Narrow windows push the detail over the list (by selection, row press or Enter) and back; wide windows stay docked; resizing reflows the same instance.
 #[test]
 fn single_pane_push_navigation_follows_width() {
-    // --- phase: narrow_frame_resolves_single_pane_push ---
-    {
-        let mut app = sampled();
-        // A narrow viewport drives the single-pane master-detail push.
-        drive_frame(&mut app, 480, 860);
-        assert!(
-            (!app.shell.geometry().side_by_side),
-            "a narrow viewport resolves to single-pane push"
-        );
-        assert_eq!(
-            app.shell.front_pane(),
-            NavPane::Overview,
-            "a fresh narrow frame opens to the list"
-        );
-    }
+    check_narrow_frame_resolves_single_pane_push();
 
-    // --- phase: narrow_selection_pushes_detail_then_back_returns_to_list ---
-    {
-        let mut app = sampled();
-        let doc = AutoCommit::new();
-        app.sync(&doc, &ROOT);
-        drive_frame(&mut app, 480, 860);
-        assert!((!app.shell.geometry().side_by_side));
-        // Snap the push to the detail pane (as a row selection would) and
-        // confirm the pushed-detail frame renders without panicking.
-        app.shell.show(NavPane::Content);
-        app.shell.snap();
-        assert_eq!(app.shell.front_pane(), NavPane::Content);
-        drive_frame(&mut app, 480, 860);
-        // The Back affordance must be laid out (hittable) in the pushed pane.
-        assert!(
-            target(&app, "nav-shell-back").width() > 0.0,
-            "pushed detail shows a Back affordance"
-        );
-    }
+    check_narrow_selection_pushes_detail_then_back_returns_to_list();
 
-    // --- phase: wide_frame_stays_docked_side_by_side ---
-    {
-        let mut app = sampled();
-        drive_frame(&mut app, 1280, 800);
-        assert!(
-            app.shell.geometry().side_by_side,
-            "a desktop-width viewport keeps the docked split"
-        );
-        // The list pane sits left of the detail pane (classic split).
-        assert!(
-            app.shell.geometry().overview_column.x1
-                <= app.shell.geometry().content_column.x0 + 0.001
-        );
-    }
+    check_wide_frame_stays_docked_side_by_side();
 
-    // --- phase: narrow_row_press_pushes_detail_then_back_returns_to_list ---
-    {
-        fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
-            let mut h = Harness::new(460, 880);
-            assert!((!h.app.shell.geometry().side_by_side));
-            assert_eq!(h.app.shell.front_pane(), NavPane::Overview);
-            // Press a list row → the detail pane is pushed in.
-            let row = h.row_center(1);
-            assert!(h.press_left(row));
-            assert_eq!(
-                h.app.shell.front_pane(),
-                NavPane::Content,
-                "selecting pushes the detail in"
-            );
-            h.relayout();
-            assert!(
-                target(&h.app, "nav-shell-back").width() > 0.0,
-                "the Back affordance is laid out"
-            );
-            // Press Back → return to the list.
-            let back = target(&h.app, "nav-shell-back").center();
-            assert!(h.press_left(back));
-            assert_eq!(
-                h.app.shell.front_pane(),
-                NavPane::Overview,
-                "Back returns to the full-width list"
-            );
-        }
-        narrow_row_press_pushes_detail_then_back_returns_to_list();
-    }
+    check_narrow_row_press_pushes_detail_then_back_returns_to_list();
 
-    // --- phase: enter_opens_the_selected_contact_in_narrow_push_navigation ---
-    {
-        let mut h = Harness::new(420, 800);
-        assert!(
-            (!h.app.shell.geometry().side_by_side),
-            "phone width uses push navigation"
-        );
-        assert_eq!(h.app.shell.front_pane(), NavPane::Overview);
+    check_enter_opens_the_selected_contact_in_narrow_push_navigation();
 
-        assert!(
-            h.press_named(NamedKey::Enter),
-            "Enter opens the selected contact"
-        );
-        assert_eq!(h.app.shell.front_pane(), NavPane::Content);
-    }
-
-    // --- phase: resizing_wide_to_narrow_reflows_the_same_instance ---
-    {
-        // Guards against the "responsive on first launch, frozen after resize"
-        // bug: the breakpoint must be re-derived from the CURRENT width on
-        // every layout pass, not cached from the first frame.
-        // Lay the SAME instance out wide, then narrow, then wide again.
-        let mut app = Live::sample(1280, 800);
-        assert!(
-            app.shell.geometry().side_by_side,
-            "wide viewport is the docked split"
-        );
-        assert!(
-            app.shell.geometry().overview_column.x1
-                <= app.shell.geometry().content_column.x0 + 0.001,
-            "list sits left of detail"
-        );
-
-        rerender_at(&mut app, 560, 720);
-        assert!(
-            (!app.shell.geometry().side_by_side),
-            "shrinking below the breakpoint reflows to single-pane push"
-        );
-
-        rerender_at(&mut app, 1280, 800);
-        assert!(
-            app.shell.geometry().side_by_side,
-            "growing back above the breakpoint restores the docked split"
-        );
-    }
+    check_resizing_wide_to_narrow_reflows_the_same_instance();
 }
 
 /// 200% text reflows and scales interaction geometry and full names fit the detail row.
@@ -1253,7 +971,7 @@ fn text_scale_reflows_geometry_and_names_fit() {
     let row_1x = app.shared.borrow().painted[0].1.height();
     let theme = Theme::dark().with_text_scale(2.0);
     app.harness_mut()
-        .relayout_themed((1280, 900), theme.clone())
+        .relayout_themed((1280, 900), theme)
         .unwrap();
     assert!(
         !app.shell.geometry().side_by_side,
@@ -1323,7 +1041,7 @@ fn text_scale_reflows_geometry_and_names_fit() {
 )]
 #[test]
 fn saves_persist_and_refusals_never_claim_success() {
-    fn set_title(app: &mut ContactsApp, title: &str) {
+    fn set_title(app: &ContactsApp, title: &str) {
         app.form
             .as_ref()
             .expect("the editor exposes a title input")
@@ -1340,7 +1058,7 @@ fn saves_persist_and_refusals_never_claim_success() {
             .unwrap();
         let id = c.id;
         app.begin_edit(c, false);
-        set_title(&mut app, "Edited Title");
+        set_title(&app, "Edited Title");
         app.save_edit();
         app.settle();
         assert_eq!(app.mode, Mode::View);
@@ -1358,7 +1076,7 @@ fn saves_persist_and_refusals_never_claim_success() {
             .cloned()
             .unwrap();
         app.begin_edit(contact.clone(), false);
-        set_title(&mut app, "Unsaved draft");
+        set_title(&app, "Unsaved draft");
         // A collaborator deletes the record while it is being edited.
         app.app
             .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
@@ -1457,7 +1175,7 @@ fn saves_persist_and_refusals_never_claim_success() {
         );
         let draft = Contact::new();
         app.begin_edit(draft, true);
-        set_title(&mut app, "Not mine to add");
+        set_title(&app, "Not mine to add");
         app.save_edit();
         app.settle();
         assert_eq!(app.mode, Mode::Edit, "the draft stays open");
@@ -2933,138 +2651,13 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
 /// Arrow, n and e keys drive the list; the wheel scrolls it and large books virtualise while keeping selection in view.
 #[test]
 fn list_keyboard_and_scroll_navigation() {
-    // --- phase: arrow_keys_move_the_list_selection ---
-    {
-        let mut h = Harness::new(1280, 800);
-        let ids = h.app.visible_ids();
-        let pos = ids
-            .iter()
-            .position(|x| *x == h.app.selected.unwrap())
-            .unwrap();
-        assert!(
-            pos + 1 < ids.len(),
-            "the seeded selection isn't the last row"
-        );
-        assert!(h.press_named(NamedKey::ArrowDown));
-        assert_eq!(
-            h.app.selected,
-            Some(ids[pos + 1]),
-            "ArrowDown selects the next contact"
-        );
-        assert!(h.press_named(NamedKey::ArrowUp));
-        assert_eq!(
-            h.app.selected,
-            Some(ids[pos]),
-            "ArrowUp returns to the previous"
-        );
-    }
+    check_arrow_keys_move_the_list_selection();
 
-    // --- phase: n_key_opens_new_and_e_key_edits_selection ---
-    {
-        let mut h = Harness::new(1280, 800);
-        assert!(h.press_char("n"));
-        assert_eq!(h.app.mode, Mode::Edit);
-        assert!(
-            h.app.form.as_ref().unwrap().is_new,
-            "'n' opens a NEW contact form"
-        );
-        // Escape out, then 'e' edits the existing selection.
-        h.press_named(NamedKey::Escape);
-        assert_eq!(h.app.mode, Mode::View);
-        assert!(h.press_char("e"));
-        assert_eq!(h.app.mode, Mode::Edit);
-        assert!(
-            !h.app.form.as_ref().unwrap().is_new,
-            "'e' edits the selected contact"
-        );
-    }
+    check_n_key_opens_new_and_e_key_edits_selection();
 
-    // --- phase: mouse_wheel_scrolls_the_overflowing_contact_list ---
-    {
-        // A short, wide window overflows the list so scrolling has an effect.
-        let mut h = Harness::new(1000, 320);
-        assert!(
-            h.app.shell.geometry().side_by_side,
-            "1000px stays the docked split"
-        );
-        let before = h.app.shared.borrow().painted.clone();
-        h.move_to(h.app.shell.geometry().overview_column.center());
-        h.dispatch(&WindowEvent::MouseWheel {
-            device_id: device_id(),
-            delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
-        h.relayout();
-        assert!(
-            h.app.shared.borrow().painted != before,
-            "scrolling down moves the list; clamp keeps it in range"
-        );
-    }
+    check_mouse_wheel_scrolls_the_overflowing_contact_list();
 
-    // --- phase: large_books_virtualize_rows_and_keep_keyboard_selection_in_view ---
-    {
-        // The CRDT/search model may legitimately hold an imported company
-        // directory.  Layout and accessibility must scale with the viewport,
-        // not with the directory's total cardinality.
-        let mut h = Harness::new(900, 640);
-        let directory: Vec<Contact> = (0..1_000)
-            .map(|index| Contact {
-                id: uuid::Uuid::new_v4(),
-                first: format!("Directory {index:04}"),
-                ..Contact::default()
-            })
-            .collect();
-        h.app.app.merge_peer_edit(|doc| {
-            for contact in ContactsDoc::list_contacts(doc) {
-                ContactsDoc::delete_contact(doc, contact.id);
-            }
-            for contact in &directory {
-                ContactsDoc::create_contact(doc, contact);
-            }
-        });
-        h.app.settle();
-        h.app.selected = Some(directory[0].id);
-        h.relayout();
-        let row_height = h.app.shared.borrow().painted[0].1.height();
-        let viewport_capacity = (list_bounds(&h.app).height() / row_height).ceil() as usize;
-        assert_eq!(h.app.shared.borrow().rows.len(), 1_000);
-        assert!(
-            h.app.shared.borrow().painted.len() <= viewport_capacity + 1,
-            "only the viewport and its boundary row are materialized"
-        );
-
-        h.app.move_selection(40);
-        h.relayout();
-        let selected = h.app.selected.expect("selection remains available");
-        assert!(
-            h.app
-                .shared
-                .borrow()
-                .painted
-                .iter()
-                .any(|(id, _)| *id == selected),
-            "keyboard selection scrolls itself into the virtualized viewport"
-        );
-
-        let nodes = h.app.harness_mut().a11y_nodes();
-        let (_, list) = nodes
-            .iter()
-            .find(|(_, node)| node.role() == ui::accesskit::Role::List)
-            .expect("contacts list is exported within the shared shell");
-        assert_eq!(list.children().len(), h.app.shared.borrow().painted.len());
-        assert!(
-            list.children().len() < h.app.shared.borrow().rows.len(),
-            "accessibility mirrors the bounded viewport rather than allocating every row"
-        );
-        let selected_row = nodes
-            .iter()
-            .find(|(id, node)| list.children().contains(id) && node.is_selected() == Some(true))
-            .expect("selected row is in the semantic viewport")
-            .1
-            .clone();
-        assert_eq!(selected_row.position_in_set(), Some(41));
-        assert_eq!(selected_row.size_of_set(), Some(1_000));
-    }
+    check_large_books_virtualize_rows_and_keep_keyboard_selection_in_view();
 }
 
 /// The divider resizes the split and the compact toolbar fits with tooltips at phone width.
@@ -3733,159 +3326,15 @@ fn saved_book_persists_across_restarts_and_imports() {
 /// imports are silent no-ops.
 #[test]
 fn imports_recognise_identities_without_duplicating() {
-    // --- phase: reimporting_an_export_recognises_its_uid ---
-    {
-        let dir = scratch_dir();
-        std::fs::create_dir_all(&dir).unwrap();
-        let card = sample_contacts().into_iter().next().unwrap();
-        let vcf = dir.join("contacts-export.vcf");
-        std::fs::write(&vcf, vcard::to_vcard(&card, VCardVersion::V4)).unwrap();
+    check_reimporting_an_export_recognises_its_uid();
 
-        let mut app = Live::empty(1280, 800);
+    check_reimporting_the_same_uidless_card_is_idempotent();
 
-        let first = app.import_paths(std::slice::from_ref(&vcf));
-        assert_eq!(first.created, 1);
-        assert_eq!(app.store.len(), 1);
-        let second = app.import_paths(std::slice::from_ref(&vcf));
-        assert_eq!(second.created, 0);
-        assert_eq!(second.unchanged, 1);
-        assert_eq!(
-            app.store.len(),
-            1,
-            "an exported UID resolves to the existing contact rather than a duplicate"
-        );
-        assert_eq!(app.store.contacts[0].id, card.id);
+    check_disconnected_uidless_imports_converge_on_one_contact_and_stable_rows();
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    check_hostile_known_uid_is_reported_for_review_without_overwriting_contact();
 
-    // --- phase: reimporting_the_same_uidless_card_is_idempotent ---
-    {
-        let (dir, _path) = scratch_book();
-        std::fs::create_dir_all(&dir).unwrap();
-        let vcf = dir.join("external.vcf");
-        std::fs::write(
-            &vcf,
-            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nEND:VCARD\r\n",
-        )
-        .unwrap();
-
-        let mut app = Live::empty(1280, 800);
-        let first = app.import_paths(std::slice::from_ref(&vcf));
-        let second = app.import_paths(std::slice::from_ref(&vcf));
-
-        assert_eq!(first.created, 1);
-        assert_eq!(second.created, 0);
-        assert_eq!(second.unchanged, 1);
-        assert_eq!(app.store.len(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // --- phase: disconnected_uidless_imports_converge_on_one_contact_and_stable_rows ---
-    {
-        let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nCATEGORIES:Pioneers\r\nEND:VCARD\r\n";
-        let mut ancestor = AutoCommit::new();
-        ancestor.commit();
-        let mut left = ancestor.fork();
-        let mut right = ancestor.fork();
-        let left_contact = vcard::parse_vcards(card).pop().unwrap();
-        let right_contact = vcard::parse_vcards(card).pop().unwrap();
-        assert_eq!(left_contact, right_contact);
-
-        tilo_actions::Action::apply(
-            &crate::actions::create_contact_action(&left_contact),
-            &mut left,
-        )
-        .unwrap();
-        tilo_actions::Action::apply(
-            &crate::actions::create_contact_action(&right_contact),
-            &mut right,
-        )
-        .unwrap();
-        left.commit();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
-
-        let merged = ContactsDoc::list_contacts(&left);
-        assert_eq!(
-            merged.len(),
-            1,
-            "the repeated external import is one entity"
-        );
-        assert_eq!(merged[0].phones.len(), 1);
-        assert_eq!(merged[0].emails.len(), 1);
-        assert_eq!(merged[0].groups.len(), 1);
-        assert_eq!(merged[0].id, left_contact.id);
-        assert_eq!(merged[0].phones[0].id, left_contact.phones[0].id);
-    }
-
-    // --- phase: hostile_known_uid_is_reported_for_review_without_overwriting_contact ---
-    {
-        let dir = scratch_dir();
-        std::fs::create_dir_all(&dir).unwrap();
-        let original = sample_contacts().into_iter().next().unwrap();
-        let malicious = vcard::to_vcard(&original, VCardVersion::V4)
-            .replace(&original.emails[0].value, "attacker@example.invalid");
-        let original_file = dir.join("original.vcf");
-        let malicious_file = dir.join("malicious.vcf");
-        std::fs::write(&original_file, vcard::to_vcard(&original, VCardVersion::V4)).unwrap();
-        std::fs::write(&malicious_file, malicious).unwrap();
-
-        let mut app = Live::empty(1280, 800);
-        assert_eq!(app.import_paths(&[original_file]).created, 1);
-
-        let result = app.import_paths(&[malicious_file]);
-        assert_eq!(result.conflicts, 1);
-        assert!(result.failure_message().contains("review"));
-        let review = app
-            .import_conflict_rows()
-            .into_iter()
-            .next()
-            .expect("the pending collision has an addressable review resource")
-            .into_resource();
-        assert!(
-            review
-                .actions
-                .iter()
-                .any(|action| action.id == "keep-existing")
-        );
-        assert!(
-            review
-                .actions
-                .iter()
-                .any(|action| action.id == "import-as-new")
-        );
-        assert_eq!(app.store.len(), 1);
-        assert_eq!(
-            app.store.get(original.id).unwrap().emails[0].value,
-            original.emails[0].value
-        );
-        assert!(toast(&app).is_some_and(|message| message.contains("review")));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // --- phase: import_of_nothing_is_a_clean_noop ---
-    {
-        // An empty selection (or a cancelled picker) fabricates nothing: the
-        // book stays empty and disk is untouched — the button never silently
-        // invents contacts.
-        let (dir, path) = scratch_book();
-        let mut app = Live::empty(1280, 800);
-        assert!(app.store.is_empty());
-
-        // Empty selection.
-        assert!(!app.import_paths(&[]).completed());
-        // A cancelled picker, through the import effect.
-        import_with(&mut app, ui::portal::MultiOutcome::Cancelled);
-        app.settle();
-
-        assert!(app.store.is_empty(), "import of nothing adds nothing");
-        assert!(app.book().is_empty(), "and writes nothing to the doc");
-        assert!(!path.exists(), "and never touches disk");
-        let _ = &path;
-        assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    check_import_of_nothing_is_a_clean_noop();
 }
 
 /// Importing reads the chosen files off the UI thread and merges them as
@@ -3946,6 +3395,12 @@ fn import_and_export_run_through_the_file_chooser() {
 #[test]
 
 fn duplicate_and_conflict_review_is_accessible() {
+    check_import_conflict_decisions();
+    check_responsive_duplicate_choices();
+    check_duplicate_resource_and_compact_header();
+}
+
+fn check_import_conflict_decisions() {
     fn conflicting_app(w: u32, h: u32) -> (Live, Contact, Contact) {
         let original = sample_contacts().into_iter().next().unwrap();
         let mut incoming = original.clone();
@@ -4001,100 +3456,102 @@ fn duplicate_and_conflict_review_is_accessible() {
             assert_eq!(app.book().len(), 2, "Import as new reached the document");
         }
     }
-    {
-        let mut app = Live::scenario("duplicate-review", 390, 844);
+}
+
+fn check_responsive_duplicate_choices() {
+    let mut app = Live::scenario("duplicate-review", 390, 844);
+    app.harness_mut()
+        .set_theme(Theme::dark().with_text_scale(2.0));
+    app.recompose();
+    let review = app.duplicate_review.as_ref().expect("review is open");
+    assert_eq!(
+        review.choices.len(),
+        7,
+        "every scalar conflict is exercised"
+    );
+    let modal = column_dialog(&*app);
+    let body = modal.body_rect();
+    assert!(
+        modal.content().get_rect().height() > body.height(),
+        "the full conflict content overflows its scrollable body"
+    );
+    assert!(
+        modal.secondary_rect().y1 <= modal.primary_rect().y0,
+        "footer actions stack at large text phone width"
+    );
+    assert!(
         app.harness_mut()
-            .set_theme(Theme::dark().with_text_scale(2.0));
-        app.recompose();
-        let review = app.duplicate_review.as_ref().expect("review is open");
-        assert_eq!(
-            review.choices.len(),
-            7,
-            "every scalar conflict is exercised"
-        );
-        let modal = column_dialog(&*app);
-        let body = modal.body_rect();
-        assert!(
-            modal.content().get_rect().height() > body.height(),
-            "the full conflict content overflows its scrollable body"
-        );
-        assert!(
-            modal.secondary_rect().y1 <= modal.primary_rect().y0,
-            "footer actions stack at large text phone width"
-        );
-        assert!(
-            app.harness_mut()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| format!("{:?}", node.role()) == "Dialog")
-        );
-        act_named(
-            &mut app,
-            "Organization to keep",
-            &ui::a11y::Action::SetValue("Keep the other card's".into()),
-        );
-        assert!(
-            app.duplicate_review
-                .as_ref()
-                .unwrap()
-                .take_from_source()
-                .contains(&crate::actions::MergeField::Organization)
-        );
-        act_named(
-            &mut app,
-            "Organization to keep",
-            &ui::a11y::Action::SetValue("Keep this card's".into()),
-        );
-        assert!(
-            !app.duplicate_review
-                .as_ref()
-                .unwrap()
-                .take_from_source()
-                .contains(&crate::actions::MergeField::Organization)
-        );
-    }
-    {
-        let mut app = Live::scenario("duplicates", 1280, 800);
-        let candidate = app
-            .duplicate_candidate
-            .clone()
-            .expect("a shared email/name identifies a candidate");
-        let published = app.app.agent_surface().to_string();
-        assert!(
-            published.contains("contacts.duplicate"),
-            "the exact duplicate resource is published"
-        );
-        app.choose_more(MoreAction::ReviewDuplicate);
-        let opened = app
-            .duplicate_review
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| format!("{:?}", node.role()) == "Dialog")
+    );
+    act_named(
+        &mut app,
+        "Organization to keep",
+        &ui::a11y::Action::SetValue("Keep the other card's".into()),
+    );
+    assert!(
+        app.duplicate_review
             .as_ref()
-            .expect("canonical review opens");
-        assert_eq!(opened.survivor.id, candidate.survivor_id);
-        assert_eq!(opened.source.id, candidate.source_id);
-        act_named(&mut app, "Cancel", &ui::a11y::Action::Activate);
-        app.harness_mut()
-            .set_theme(Theme::dark().with_text_scale(2.0));
-        app.harness_mut().resize((390, 844)).unwrap();
-        app.recompose();
-        let controls = app.harness_mut().controls();
-        let header: Vec<_> = ["Search", "More actions", "New contact"]
-            .into_iter()
-            .map(|name| {
-                controls
-                    .iter()
-                    .find(|control| control.name.as_deref() == Some(name))
-                    .unwrap_or_else(|| panic!("missing actual header {name}: {controls:?}"))
-                    .bounds
-                    .unwrap()
-            })
-            .collect();
-        for pair in header.windows(2) {
-            assert!(
-                pair[0].intersect(pair[1]).area() <= 0.0,
-                "header controls remain disjoint"
-            );
-            assert!(pair[0].width() >= 40.0 && pair[1].width() >= 40.0);
-        }
+            .unwrap()
+            .take_from_source()
+            .contains(&crate::actions::MergeField::Organization)
+    );
+    act_named(
+        &mut app,
+        "Organization to keep",
+        &ui::a11y::Action::SetValue("Keep this card's".into()),
+    );
+    assert!(
+        !app.duplicate_review
+            .as_ref()
+            .unwrap()
+            .take_from_source()
+            .contains(&crate::actions::MergeField::Organization)
+    );
+}
+
+fn check_duplicate_resource_and_compact_header() {
+    let mut app = Live::scenario("duplicates", 1280, 800);
+    let candidate = app
+        .duplicate_candidate
+        .clone()
+        .expect("a shared email/name identifies a candidate");
+    let published = app.app.agent_surface().to_string();
+    assert!(
+        published.contains("contacts.duplicate"),
+        "the exact duplicate resource is published"
+    );
+    app.choose_more(MoreAction::ReviewDuplicate);
+    let opened = app
+        .duplicate_review
+        .as_ref()
+        .expect("canonical review opens");
+    assert_eq!(opened.survivor.id, candidate.survivor_id);
+    assert_eq!(opened.source.id, candidate.source_id);
+    act_named(&mut app, "Cancel", &ui::a11y::Action::Activate);
+    app.harness_mut()
+        .set_theme(Theme::dark().with_text_scale(2.0));
+    app.harness_mut().resize((390, 844)).unwrap();
+    app.recompose();
+    let controls = app.harness_mut().controls();
+    let header: Vec<_> = ["Search", "More actions", "New contact"]
+        .into_iter()
+        .map(|name| {
+            controls
+                .iter()
+                .find(|control| control.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing actual header {name}: {controls:?}"))
+                .bounds
+                .unwrap()
+        })
+        .collect();
+    for pair in header.windows(2) {
+        assert!(
+            pair[0].intersect(pair[1]).area() <= 0.0,
+            "header controls remain disjoint"
+        );
+        assert!(pair[0].width() >= 40.0 && pair[1].width() >= 40.0);
     }
 }
 
@@ -4232,7 +3689,7 @@ fn detail_and_editor_semantics() {
         "activation dispatches the canonical collaborative action"
     );
     let contact = app.store.get(id).cloned().unwrap();
-    app.begin_edit(contact.clone(), false);
+    app.begin_edit(contact, false);
     app.recompose();
     let first = crate::form::field_name(Slot::First);
     assert!(
@@ -4471,9 +3928,6 @@ fn rerender_at(app: &mut Live, w: u32, h: u32) {
         .expect("contacts frame lays out");
 }
 
-/// Perform `action` on the semantic `target` the surface publishes, as
-/// assistive technology does, and run the frame after it.
-
 /// Form rows, pills, panel lifts, rows and toolbar faces are authored at 1x and grow with the text scale on every preset.
 #[allow(
     clippy::too_many_lines,
@@ -4603,4 +4057,573 @@ fn details_read_like_an_envelope() {
     assert_eq!(crate::detail::kind_label("cell"), "Mobile");
     assert_eq!(crate::detail::kind_label("Ham radio"), "Ham radio");
     assert_eq!(crate::detail::kind_label(""), "Other");
+}
+
+fn check_save_round_trips_through_doc() {
+    let mut app = synced();
+    let c = selected_contact(&app);
+    let id = c.id;
+    ask(&mut app, Request::EditSelected);
+    app.form
+        .as_ref()
+        .unwrap()
+        .set_value(Slot::Title, "Edited Title");
+    ask(&mut app, Request::Save);
+    assert_eq!(app.mode, Mode::View);
+    let stored = app.book();
+    assert_eq!(
+        stored.iter().find(|x| x.id == id).unwrap().title,
+        "Edited Title"
+    );
+    assert_eq!(toast(&app), Some("Saved"));
+}
+
+fn check_refused_save_reconciles_and_announces_an_error_without_claiming_success() {
+    let mut app = synced();
+    let contact = selected_contact(&app);
+    app.app
+        .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+    app.settle();
+    app.begin_edit(contact.clone(), false);
+    app.save_edit();
+
+    assert_eq!(app.mode, Mode::Edit, "the rejected draft remains editable");
+    assert!(app.form.is_some());
+    assert!(
+        app.store.get(contact.id).is_none(),
+        "store reconciles from the document"
+    );
+    let message = toast(&app).unwrap().to_owned();
+    assert!(message.starts_with("Couldn't save contact:"));
+    assert!(
+        live_message(&app.accessibility().unwrap(), &message).is_some(),
+        "the refusal is announced through the live region"
+    );
+}
+
+fn check_refused_favorite_and_delete_reconcile_without_false_success() {
+    let mut app = synced();
+    let contact = selected_contact(&app);
+    app.app
+        .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+    app.settle();
+    // A control can still have the last rendered contact when the peer's
+    // tombstone reaches the door. Submit that real stale view request;
+    // a helper looking up the already-reconciled store would do nothing.
+    app.store.upsert(contact.clone());
+    app.selected = Some(contact.id);
+    app.request(Request::ToggleFavorite);
+    assert!(
+        !app.book().iter().any(|row| row.id == contact.id),
+        "a tombstoned toggle is rejected"
+    );
+    assert!(
+        app.store.get(contact.id).is_none(),
+        "favorite refusal reconciles"
+    );
+    assert!(
+        toast(&app)
+            .unwrap()
+            .starts_with("Couldn't change the address book:")
+    );
+
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let ground = theme.tokens.colors.surfaces.base;
+        let selected = ui::widget::ChipStyle::Live.colors(&theme, ground, true, false);
+        assert!(
+            ui::a11y::contrast_ratio(selected.ink, selected.fill) >= ON_FILL_MIN_CONTRAST,
+            "selected chip label must remain readable on its resolved fill"
+        );
+        assert!(
+            ui::a11y::contrast_ratio(selected.edge.unwrap_or(selected.fill), ground)
+                >= ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            "the painted outline or filled chip boundary remains distinguishable from its pane"
+        );
+    }
+}
+
+fn check_seeds_sample_contacts_and_selects_one() {
+    let mut app = sampled();
+    let doc = AutoCommit::new();
+    app.sync(&doc, &ROOT);
+    assert_eq!(app.store.len(), 7);
+    assert!(app.selected.is_some(), "a contact must be auto-selected");
+    // The seeded selection points at a real, richly-populated record.
+    let sel = app.store.get(app.selected.unwrap()).unwrap();
+    assert!(!sel.phones.is_empty());
+}
+
+fn check_view_mode_frame_does_not_panic() {
+    let mut app = sampled();
+    drive_frame(&mut app, 1280, 800);
+}
+
+fn check_edit_mode_with_repeated_fields_frame_does_not_panic() {
+    let mut app = sampled();
+    // Seed first.
+    let doc = AutoCommit::new();
+    app.sync(&doc, &ROOT);
+    // Enter edit on the selected contact and add repeated fields.
+    let c = app
+        .selected
+        .and_then(|id| app.store.get(id))
+        .cloned()
+        .unwrap();
+    app.begin_edit(c, false);
+    app.form.as_mut().unwrap().add(crate::form::RowKind::Phone);
+    app.form
+        .as_mut()
+        .unwrap()
+        .add(crate::form::RowKind::Address);
+    app.form_epoch = app.form_epoch.wrapping_add(1);
+    drive_frame(&mut app, 1280, 800);
+    assert_eq!(app.mode, Mode::Edit);
+}
+
+fn check_calendar_and_type_popups_frame_does_not_panic() {
+    let mut h = Harness::new(1280, 800);
+    h.app.request(Request::EditSelected);
+    h.app.request(Request::ToggleCalendar);
+    h.relayout();
+    assert!(h.app.form.as_ref().unwrap().calendar_open);
+    let calendar = h.app.harness_mut().a11y_node_named("Birthday calendar");
+    assert!(calendar.is_some(), "the shared date picker is hosted");
+    let menu = target(&h.app, "contacts.form.type.phone-0");
+    assert!(h.press_left(menu.center()));
+    assert!(
+        h.app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
+            node.role() == ui::accesskit::Role::ComboBox
+                && node.label() == Some("Phone 1 type")
+                && node.is_expanded() == Some(true)
+        }),
+        "the shared type selector opens"
+    );
+}
+
+fn check_importing_state_is_visible_and_announced_as_busy() {
+    let mut app = sampled();
+    let work = app
+        .begin_file_work(FileWork::Import)
+        .expect("production import guard");
+    drive_frame(&mut app, 1280, 800);
+    let progress = named_widget(&app, "Importing contacts", Role::ProgressBar)
+        .expect("the shared live progress indicator")
+        .accessibility()
+        .unwrap();
+    assert!(progress.state.busy);
+    assert!(!progress.state.focusable);
+    assert!(progress.live.is_some(), "the busy label is announced");
+    assert!(
+        app.more_rows().contains(&(MoreAction::Import, false)),
+        "the actual import action is unavailable while running"
+    );
+    assert!(
+        app.begin_file_work(FileWork::Import).is_err(),
+        "duplicate file work is refused"
+    );
+    drop(work);
+    drive_frame(&mut app, 1280, 800);
+    assert!(
+        named_widget(&app, "Importing contacts", Role::ProgressBar).is_none(),
+        "completion removes the running indicator"
+    );
+    assert!(app.more_rows().contains(&(MoreAction::Import, true)));
+}
+
+fn check_narrow_frame_resolves_single_pane_push() {
+    let mut app = sampled();
+    // A narrow viewport drives the single-pane master-detail push.
+    drive_frame(&mut app, 480, 860);
+    assert!(
+        (!app.shell.geometry().side_by_side),
+        "a narrow viewport resolves to single-pane push"
+    );
+    assert_eq!(
+        app.shell.front_pane(),
+        NavPane::Overview,
+        "a fresh narrow frame opens to the list"
+    );
+}
+
+fn check_narrow_selection_pushes_detail_then_back_returns_to_list() {
+    let mut app = sampled();
+    let doc = AutoCommit::new();
+    app.sync(&doc, &ROOT);
+    drive_frame(&mut app, 480, 860);
+    assert!((!app.shell.geometry().side_by_side));
+    // Snap the push to the detail pane (as a row selection would) and
+    // confirm the pushed-detail frame renders without panicking.
+    app.shell.show(NavPane::Content);
+    app.shell.snap();
+    assert_eq!(app.shell.front_pane(), NavPane::Content);
+    drive_frame(&mut app, 480, 860);
+    // The Back affordance must be laid out (hittable) in the pushed pane.
+    assert!(
+        target(&app, "nav-shell-back").width() > 0.0,
+        "pushed detail shows a Back affordance"
+    );
+}
+
+fn check_wide_frame_stays_docked_side_by_side() {
+    let mut app = sampled();
+    drive_frame(&mut app, 1280, 800);
+    assert!(
+        app.shell.geometry().side_by_side,
+        "a desktop-width viewport keeps the docked split"
+    );
+    // The list pane sits left of the detail pane (classic split).
+    assert!(
+        app.shell.geometry().overview_column.x1 <= app.shell.geometry().content_column.x0 + 0.001
+    );
+}
+
+fn check_narrow_row_press_pushes_detail_then_back_returns_to_list() {
+    fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
+        let mut h = Harness::new(460, 880);
+        assert!((!h.app.shell.geometry().side_by_side));
+        assert_eq!(h.app.shell.front_pane(), NavPane::Overview);
+        // Press a list row → the detail pane is pushed in.
+        let row = h.row_center(1);
+        assert!(h.press_left(row));
+        assert_eq!(
+            h.app.shell.front_pane(),
+            NavPane::Content,
+            "selecting pushes the detail in"
+        );
+        h.relayout();
+        assert!(
+            target(&h.app, "nav-shell-back").width() > 0.0,
+            "the Back affordance is laid out"
+        );
+        // Press Back → return to the list.
+        let back = target(&h.app, "nav-shell-back").center();
+        assert!(h.press_left(back));
+        assert_eq!(
+            h.app.shell.front_pane(),
+            NavPane::Overview,
+            "Back returns to the full-width list"
+        );
+    }
+    narrow_row_press_pushes_detail_then_back_returns_to_list();
+}
+
+fn check_enter_opens_the_selected_contact_in_narrow_push_navigation() {
+    let mut h = Harness::new(420, 800);
+    assert!(
+        (!h.app.shell.geometry().side_by_side),
+        "phone width uses push navigation"
+    );
+    assert_eq!(h.app.shell.front_pane(), NavPane::Overview);
+
+    assert!(
+        h.press_named(NamedKey::Enter),
+        "Enter opens the selected contact"
+    );
+    assert_eq!(h.app.shell.front_pane(), NavPane::Content);
+}
+
+fn check_resizing_wide_to_narrow_reflows_the_same_instance() {
+    // Guards against the "responsive on first launch, frozen after resize"
+    // bug: the breakpoint must be re-derived from the CURRENT width on
+    // every layout pass, not cached from the first frame.
+    // Lay the SAME instance out wide, then narrow, then wide again.
+    let mut app = Live::sample(1280, 800);
+    assert!(
+        app.shell.geometry().side_by_side,
+        "wide viewport is the docked split"
+    );
+    assert!(
+        app.shell.geometry().overview_column.x1 <= app.shell.geometry().content_column.x0 + 0.001,
+        "list sits left of detail"
+    );
+
+    rerender_at(&mut app, 560, 720);
+    assert!(
+        (!app.shell.geometry().side_by_side),
+        "shrinking below the breakpoint reflows to single-pane push"
+    );
+
+    rerender_at(&mut app, 1280, 800);
+    assert!(
+        app.shell.geometry().side_by_side,
+        "growing back above the breakpoint restores the docked split"
+    );
+}
+
+fn check_arrow_keys_move_the_list_selection() {
+    let mut h = Harness::new(1280, 800);
+    let ids = h.app.visible_ids();
+    let pos = ids
+        .iter()
+        .position(|x| *x == h.app.selected.unwrap())
+        .unwrap();
+    assert!(
+        pos + 1 < ids.len(),
+        "the seeded selection isn't the last row"
+    );
+    assert!(h.press_named(NamedKey::ArrowDown));
+    assert_eq!(
+        h.app.selected,
+        Some(ids[pos + 1]),
+        "ArrowDown selects the next contact"
+    );
+    assert!(h.press_named(NamedKey::ArrowUp));
+    assert_eq!(
+        h.app.selected,
+        Some(ids[pos]),
+        "ArrowUp returns to the previous"
+    );
+}
+
+fn check_n_key_opens_new_and_e_key_edits_selection() {
+    let mut h = Harness::new(1280, 800);
+    assert!(h.press_char("n"));
+    assert_eq!(h.app.mode, Mode::Edit);
+    assert!(
+        h.app.form.as_ref().unwrap().is_new,
+        "'n' opens a NEW contact form"
+    );
+    // Escape out, then 'e' edits the existing selection.
+    h.press_named(NamedKey::Escape);
+    assert_eq!(h.app.mode, Mode::View);
+    assert!(h.press_char("e"));
+    assert_eq!(h.app.mode, Mode::Edit);
+    assert!(
+        !h.app.form.as_ref().unwrap().is_new,
+        "'e' edits the selected contact"
+    );
+}
+
+fn check_mouse_wheel_scrolls_the_overflowing_contact_list() {
+    // A short, wide window overflows the list so scrolling has an effect.
+    let mut h = Harness::new(1000, 320);
+    assert!(
+        h.app.shell.geometry().side_by_side,
+        "1000px stays the docked split"
+    );
+    let before = h.app.shared.borrow().painted.clone();
+    h.move_to(h.app.shell.geometry().overview_column.center());
+    h.dispatch(&WindowEvent::MouseWheel {
+        device_id: device_id(),
+        delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+        phase: winit::event::TouchPhase::Moved,
+    });
+    h.relayout();
+    assert!(
+        h.app.shared.borrow().painted != before,
+        "scrolling down moves the list; clamp keeps it in range"
+    );
+}
+
+fn check_large_books_virtualize_rows_and_keep_keyboard_selection_in_view() {
+    // The CRDT/search model may legitimately hold an imported company
+    // directory.  Layout and accessibility must scale with the viewport,
+    // not with the directory's total cardinality.
+    let mut h = Harness::new(900, 640);
+    let directory: Vec<Contact> = (0..1_000)
+        .map(|index| Contact {
+            id: uuid::Uuid::new_v4(),
+            first: format!("Directory {index:04}"),
+            ..Contact::default()
+        })
+        .collect();
+    h.app.app.merge_peer_edit(|doc| {
+        for contact in ContactsDoc::list_contacts(doc) {
+            ContactsDoc::delete_contact(doc, contact.id);
+        }
+        for contact in &directory {
+            ContactsDoc::create_contact(doc, contact);
+        }
+    });
+    h.app.settle();
+    h.app.selected = Some(directory[0].id);
+    h.relayout();
+    let row_height = h.app.shared.borrow().painted[0].1.height();
+    let viewport_capacity = (list_bounds(&h.app).height() / row_height).ceil() as usize;
+    assert_eq!(h.app.shared.borrow().rows.len(), 1_000);
+    assert!(
+        h.app.shared.borrow().painted.len() <= viewport_capacity + 1,
+        "only the viewport and its boundary row are materialized"
+    );
+
+    h.app.move_selection(40);
+    h.relayout();
+    let selected = h.app.selected.expect("selection remains available");
+    assert!(
+        h.app
+            .shared
+            .borrow()
+            .painted
+            .iter()
+            .any(|(id, _)| *id == selected),
+        "keyboard selection scrolls itself into the virtualized viewport"
+    );
+
+    let nodes = h.app.harness_mut().a11y_nodes();
+    let (_, list) = nodes
+        .iter()
+        .find(|(_, node)| node.role() == ui::accesskit::Role::List)
+        .expect("contacts list is exported within the shared shell");
+    assert_eq!(list.children().len(), h.app.shared.borrow().painted.len());
+    assert!(
+        list.children().len() < h.app.shared.borrow().rows.len(),
+        "accessibility mirrors the bounded viewport rather than allocating every row"
+    );
+    let selected_row = nodes
+        .iter()
+        .find(|(id, node)| list.children().contains(id) && node.is_selected() == Some(true))
+        .expect("selected row is in the semantic viewport")
+        .1
+        .clone();
+    assert_eq!(selected_row.position_in_set(), Some(41));
+    assert_eq!(selected_row.size_of_set(), Some(1_000));
+}
+
+fn check_reimporting_an_export_recognises_its_uid() {
+    let dir = scratch_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let card = sample_contacts().into_iter().next().unwrap();
+    let vcf = dir.join("contacts-export.vcf");
+    std::fs::write(&vcf, vcard::to_vcard(&card, VCardVersion::V4)).unwrap();
+
+    let mut app = Live::empty(1280, 800);
+
+    let first = app.import_paths(std::slice::from_ref(&vcf));
+    assert_eq!(first.created, 1);
+    assert_eq!(app.store.len(), 1);
+    let second = app.import_paths(std::slice::from_ref(&vcf));
+    assert_eq!(second.created, 0);
+    assert_eq!(second.unchanged, 1);
+    assert_eq!(
+        app.store.len(),
+        1,
+        "an exported UID resolves to the existing contact rather than a duplicate"
+    );
+    assert_eq!(app.store.contacts[0].id, card.id);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn check_reimporting_the_same_uidless_card_is_idempotent() {
+    let (dir, _path) = scratch_book();
+    std::fs::create_dir_all(&dir).unwrap();
+    let vcf = dir.join("external.vcf");
+    std::fs::write(
+    &vcf,
+    "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nEND:VCARD\r\n",
+)
+.unwrap();
+
+    let mut app = Live::empty(1280, 800);
+    let first = app.import_paths(std::slice::from_ref(&vcf));
+    let second = app.import_paths(std::slice::from_ref(&vcf));
+
+    assert_eq!(first.created, 1);
+    assert_eq!(second.created, 0);
+    assert_eq!(second.unchanged, 1);
+    assert_eq!(app.store.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn check_disconnected_uidless_imports_converge_on_one_contact_and_stable_rows() {
+    let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nCATEGORIES:Pioneers\r\nEND:VCARD\r\n";
+    let mut ancestor = AutoCommit::new();
+    ancestor.commit();
+    let mut left = ancestor.fork();
+    let mut right = ancestor.fork();
+    let left_contact = vcard::parse_vcards(card).pop().unwrap();
+    let right_contact = vcard::parse_vcards(card).pop().unwrap();
+    assert_eq!(left_contact, right_contact);
+
+    tilo_actions::Action::apply(
+        &crate::actions::create_contact_action(&left_contact),
+        &mut left,
+    )
+    .unwrap();
+    tilo_actions::Action::apply(
+        &crate::actions::create_contact_action(&right_contact),
+        &mut right,
+    )
+    .unwrap();
+    left.commit();
+    right.commit();
+    left.merge_incoming(&mut right).unwrap();
+
+    let merged = ContactsDoc::list_contacts(&left);
+    assert_eq!(
+        merged.len(),
+        1,
+        "the repeated external import is one entity"
+    );
+    assert_eq!(merged[0].phones.len(), 1);
+    assert_eq!(merged[0].emails.len(), 1);
+    assert_eq!(merged[0].groups.len(), 1);
+    assert_eq!(merged[0].id, left_contact.id);
+    assert_eq!(merged[0].phones[0].id, left_contact.phones[0].id);
+}
+
+fn check_hostile_known_uid_is_reported_for_review_without_overwriting_contact() {
+    let dir = scratch_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let original = sample_contacts().into_iter().next().unwrap();
+    let malicious = vcard::to_vcard(&original, VCardVersion::V4)
+        .replace(&original.emails[0].value, "attacker@example.invalid");
+    let original_file = dir.join("original.vcf");
+    let malicious_file = dir.join("malicious.vcf");
+    std::fs::write(&original_file, vcard::to_vcard(&original, VCardVersion::V4)).unwrap();
+    std::fs::write(&malicious_file, malicious).unwrap();
+
+    let mut app = Live::empty(1280, 800);
+    assert_eq!(app.import_paths(&[original_file]).created, 1);
+
+    let result = app.import_paths(&[malicious_file]);
+    assert_eq!(result.conflicts, 1);
+    assert!(result.failure_message().contains("review"));
+    let review = app
+        .import_conflict_rows()
+        .into_iter()
+        .next()
+        .expect("the pending collision has an addressable review resource")
+        .into_resource();
+    assert!(
+        review
+            .actions
+            .iter()
+            .any(|action| action.id == "keep-existing")
+    );
+    assert!(
+        review
+            .actions
+            .iter()
+            .any(|action| action.id == "import-as-new")
+    );
+    assert_eq!(app.store.len(), 1);
+    assert_eq!(
+        app.store.get(original.id).unwrap().emails[0].value,
+        original.emails[0].value
+    );
+    assert!(toast(&app).is_some_and(|message| message.contains("review")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn check_import_of_nothing_is_a_clean_noop() {
+    // An empty selection (or a cancelled picker) fabricates nothing: the
+    // book stays empty and disk is untouched — the button never silently
+    // invents contacts.
+    let (dir, path) = scratch_book();
+    let mut app = Live::empty(1280, 800);
+    assert!(app.store.is_empty());
+
+    // Empty selection.
+    assert!(!app.import_paths(&[]).completed());
+    // A cancelled picker, through the import effect.
+    import_with(&mut app, ui::portal::MultiOutcome::Cancelled);
+    app.settle();
+
+    assert!(app.store.is_empty(), "import of nothing adds nothing");
+    assert!(app.book().is_empty(), "and writes nothing to the doc");
+    assert!(!path.exists(), "and never touches disk");
+    let _ = &path;
+    assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
+    let _ = std::fs::remove_dir_all(&dir);
 }

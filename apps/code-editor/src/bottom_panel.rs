@@ -634,6 +634,25 @@ impl Widget for BottomPanel {
     }
 }
 
+impl BottomPanel {
+    pub fn set_search(&mut self, search: SearchState) {
+        if self.search != search {
+            self.search = search;
+            if self.tab == PanelTab::Search {
+                self.rebuild_list();
+            }
+            self.dirty = true;
+        }
+    }
+    pub fn take_search_jump(&self) -> Option<usize> {
+        if self.tab == PanelTab::Search {
+            self.activated.take()
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,24 +726,5 @@ mod tests {
         assert!(
             (wanted - (ui::widget::tabs::TAB_BAR_HEIGHT + VISIBLE_ROWS as f64 * row)).abs() < 1e-9
         );
-    }
-}
-
-impl BottomPanel {
-    pub fn set_search(&mut self, search: SearchState) {
-        if self.search != search {
-            self.search = search;
-            if self.tab == PanelTab::Search {
-                self.rebuild_list();
-            }
-            self.dirty = true;
-        }
-    }
-    pub fn take_search_jump(&self) -> Option<usize> {
-        if self.tab == PanelTab::Search {
-            self.activated.take()
-        } else {
-            None
-        }
     }
 }

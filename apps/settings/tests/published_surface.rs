@@ -75,8 +75,8 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
         })
         .expect("the retained Bluetooth row exposes its actual pointer bounds");
     app.harness().click_at(
-        (bluetooth.x0 + bluetooth.x1) / 2.0,
-        (bluetooth.y0 + bluetooth.y1) / 2.0,
+        f64::midpoint(bluetooth.x0, bluetooth.x1),
+        f64::midpoint(bluetooth.y0, bluetooth.y1),
     );
     app.settle();
     let selected = app

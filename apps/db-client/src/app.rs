@@ -1282,8 +1282,8 @@ mod tests {
 
     fn synced() -> (DbClientApp, AutoCommit) {
         let mut app = DbClientApp::sampled();
-        let mut doc = sample_document();
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        let doc = sample_document();
+        Widget::sync(&mut app, &doc, &ROOT);
         (app, doc)
     }
 
@@ -1554,14 +1554,14 @@ mod tests {
         let mut doc = AutoCommit::new();
         doc.commit();
         let heads = doc.get_heads();
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        Widget::sync(&mut app, &doc, &ROOT);
 
         let mut profile = ConnectionProfile::new("Prod", Engine::Postgres);
         profile.host = "127.0.0.1".into();
         profile.port = 1;
         profile.password = "hunter2".into();
         app.link.ask(Intent::SaveConnection(Box::new(profile)));
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        Widget::sync(&mut app, &doc, &ROOT);
         assert_eq!(app.dialog, None, "saving closes the dialog");
         let id = app
             .pending_connect_id
@@ -1772,11 +1772,11 @@ mod tests {
             app.call_on(&connection, "connect", serde_json::json!({}))
                 .unwrap();
             tilo_test_env::wait_until("the query fixture connection to open", || {
-                app.settle();
                 fn has_schema(rows: &[Resource]) -> bool {
                     rows.iter()
                         .any(|row| row.kind == "database.schema" || has_schema(&row.children))
                 }
+                app.settle();
                 has_schema(&app.harness().resources())
             });
             // The start door returns a receipt only for an Accepted job;

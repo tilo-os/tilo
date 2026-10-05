@@ -232,13 +232,13 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
             Zeroizing::new("fixture secret".into()),
             deadline,
         ));
-        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        Widget::sync(&mut app, &doc, &automerge::ROOT);
         assert!(app.core().revealed.is_none());
     }
 
     eprintln!("phase a pending transfer keeps the host polling on a fixed deadline");
     {
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let mut app = PasswordsSurface::demo();
         app.core_mut().toast = None;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -247,7 +247,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
         std::thread::sleep(std::time::Duration::from_millis(2));
         assert_eq!(app.core().next_wake(), Some(first));
         tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
-        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        Widget::sync(&mut app, &doc, &automerge::ROOT);
         assert!(app.core().next_wake().is_none());
     }
 

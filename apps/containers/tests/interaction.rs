@@ -375,22 +375,23 @@ fn container_resources_open_terminal_and_log_detail() {
     }
 }
 
+fn assert_number_keys_navigate_sections() {
+    let mut d = offline();
+    d.key("3");
+    assert_eq!(app(&mut d).section(), Section::Volumes);
+    d.key("4");
+    assert_eq!(app(&mut d).section(), Section::Distrobox);
+    d.key("2");
+    assert_eq!(app(&mut d).section(), Section::Images);
+    d.key("1");
+    assert_eq!(app(&mut d).section(), Section::Containers);
+}
+
 /// Number keys switch sections, the sidebar and the list respond to the
 /// pointer and to assistive technology, and the tabs switch the detail.
 #[test]
 fn keyboard_pointer_and_semantic_navigation() {
-    // --- phase: number_keys_navigate_sections ---
-    {
-        let mut d = offline();
-        d.key("3");
-        assert_eq!(app(&mut d).section(), Section::Volumes);
-        d.key("4");
-        assert_eq!(app(&mut d).section(), Section::Distrobox);
-        d.key("2");
-        assert_eq!(app(&mut d).section(), Section::Images);
-        d.key("1");
-        assert_eq!(app(&mut d).section(), Section::Containers);
-    }
+    assert_number_keys_navigate_sections();
 
     // --- phase: the_sidebar_and_the_list_take_assistive_activation ---
     {
@@ -447,7 +448,10 @@ fn keyboard_pointer_and_semantic_navigation() {
             .find(|(_, node)| node.label() == Some(label.as_str()))
             .and_then(|(_, node)| node.bounds())
             .expect("the first container row is laid out");
-        d.click((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+        d.click(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        );
         d.frame();
         assert!(
             d.app().selected().is_some(),

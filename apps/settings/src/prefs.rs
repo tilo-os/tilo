@@ -1778,7 +1778,6 @@ mod tests {
             }),
             policy: ui::theme::DistributionPolicy {
                 pins: vec![ui::theme::PIN_EMPHASIS.into()],
-                ..ui::theme::DistributionPolicy::default()
             },
             ..ui::theme::DistributionDefaults::default()
         });

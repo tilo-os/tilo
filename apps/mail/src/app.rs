@@ -5406,7 +5406,7 @@ mod tests {
                 .push_command(Command::OpenFolder(0, Folder::Sent));
             app.apply_commands(&mut ui::widget::Edits::lend(&mut doc));
             assert_eq!(app.shared.borrow().folder, Folder::Sent);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.overview_title, "Sent", "the list's header follows");
         }
 
@@ -7562,7 +7562,7 @@ mod tests {
             let dialog = app.accessibility().expect("setup dialog stays available");
             assert_eq!(dialog.role, ui::a11y::Role::Dialog);
             // The form shows the new error once it syncs.
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             let sheet = &app.setup.as_ref().expect("sheet stays open").dialog;
             assert!(
                 find_access(sheet, &|node| {

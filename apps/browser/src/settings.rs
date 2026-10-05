@@ -594,6 +594,20 @@ impl Widget for SettingsPane {
     }
 }
 
+impl SettingsPane {
+    pub(crate) fn with_notices(mut self, notices: Vec<crate::notice::Notice>) -> Self {
+        self.notices = notices;
+        self
+    }
+}
+pub(crate) fn page(parts: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
+    Box::new(
+        parts
+            .into_iter()
+            .fold(ui::widget::Page::new(), ui::widget::Page::section),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,18 +779,4 @@ mod tests {
             );
         }
     }
-}
-
-impl SettingsPane {
-    pub(crate) fn with_notices(mut self, notices: Vec<crate::notice::Notice>) -> Self {
-        self.notices = notices;
-        self
-    }
-}
-pub(crate) fn page(parts: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
-    Box::new(
-        parts
-            .into_iter()
-            .fold(ui::widget::Page::new(), ui::widget::Page::section),
-    )
 }

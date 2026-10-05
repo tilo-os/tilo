@@ -2297,8 +2297,8 @@ mod tests {
             first.prefs.show_kernel_threads = true;
             first.commit_filter("shell".into());
             first.set_sort(SortKey::Name);
-            first.sync(&mut doc, &automerge::ROOT);
-            second.sync(&mut doc, &automerge::ROOT);
+            first.sync(&doc, &automerge::ROOT);
+            second.sync(&doc, &automerge::ROOT);
             assert_eq!(second.prefs, Prefs::default());
             assert_eq!(
                 doc.get_heads(),

@@ -899,6 +899,23 @@ mod interaction_tests {
         }
     }
 
+    fn headings(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
+        fn semantic(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
+            if matches!(node.role, ui::a11y::Role::Heading { .. }) {
+                out.push(node.clone());
+            }
+            for child in node.children {
+                semantic(child, out);
+            }
+        }
+        if let Some(node) = widget.accessibility() {
+            semantic(node, out);
+        }
+        for child in widget.children() {
+            headings(child, out);
+        }
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -993,22 +1010,6 @@ mod interaction_tests {
             h.layout(1280.0, 720.0);
             let second = h.app.core.borrow().model.locations[1].name.clone();
             // The column titles are the header row's headings.
-            fn headings(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
-                fn semantic(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
-                    if matches!(node.role, ui::a11y::Role::Heading { .. }) {
-                        out.push(node.clone());
-                    }
-                    for child in node.children {
-                        semantic(child, out);
-                    }
-                }
-                if let Some(node) = widget.accessibility() {
-                    semantic(node, out);
-                }
-                for child in widget.children() {
-                    headings(child, out);
-                }
-            }
             let mut headings_found = Vec::new();
             headings(&h.app.nav, &mut headings_found);
             assert!(
@@ -1087,7 +1088,7 @@ mod interaction_tests {
                 app.core.borrow().model.selected_location().unwrap().id,
                 chosen
             );
-            assert!(app.nav.front_pane() == ui::widget::NavPane::Content);
+            assert_eq!(app.nav.front_pane(), ui::widget::NavPane::Content);
             assert!(!app.update(&state.doc, &state.root));
         }
         // Case `arrow_keys_navigate_cities_and_fetch`.

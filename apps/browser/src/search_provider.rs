@@ -317,10 +317,11 @@ mod tests {
 
         // Phase `library_sections_are_scopes_that_admit_only_their_own_hits`.
         {
+            use ui::tilo_resource::Resource as _;
+
             let mut history = crate::history::History::new();
             history.record_at("https://rust.example.test", "Rust notes", 1);
             let mut document = automerge::AutoCommit::new();
-            use ui::tilo_resource::Resource as _;
             crate::resource::Browser::initialize(&mut document).unwrap();
             tilo_actions::Action::apply(
                 &crate::actions::BrowserAction::AddBookmark {
