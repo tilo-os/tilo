@@ -189,7 +189,7 @@ pub fn spawn_auth(
         // Err path returns here.
         if let Err(error) = result {
             let failure = Failure::from(&error);
-            tracing::warn!(?failure, detail = ?error.detail(), "sign-in did not start a session");
+            tracing::warn!(?failure, "sign-in did not start a session");
             let _ = proxy.send_event(UserEvent::External(AuthUpdate::Failed(failure).encode()));
         }
     });
