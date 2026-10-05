@@ -3,6 +3,9 @@
 use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 mod committed_document;
+#[cfg(test)]
+#[path = "broker_services/native_effect_tests.rs"]
+mod native_effect_tests;
 mod nearby_transfer;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
@@ -76,7 +79,17 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
                         .await;
                 }
             }
-            owner.commit_document(request, std::time::SystemTime::now())
+            if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
+            ) {
+                let (key, governor) =
+                    tilo_identity_host::broker::trusted_current_device(&request.room)
+                        .map_err(|error| format!("effect governor custody unavailable: {error}"))?;
+                owner.commit_effect_receipt(&request, &governor, &key, std::time::SystemTime::now())
+            } else {
+                owner.commit_document(request, std::time::SystemTime::now())
+            }
         })
     }
 }

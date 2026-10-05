@@ -58,6 +58,9 @@ pub(crate) struct StoredRoom {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub workspace_memberships:
         BTreeMap<String, crate::workspace_membership::StoredMembershipReceipt>,
+    /// Exact broker terminal bindings, committed with the signed room checkpoint.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effect_receipts: BTreeMap<String, crate::effect_receipt::StoredEffectReceipt>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DescriptorFloor {
