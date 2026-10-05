@@ -23,17 +23,24 @@ struct Swapper {
     child: Box<dyn Widget>,
     swap: Rc<Cell<bool>>,
     replaced: bool,
+    replace_on_poll: bool,
     rect: Rect,
 }
 
 impl Widget for Swapper {
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
-        if self.swap.replace(false) {
+        if !self.replace_on_poll && self.swap.replace(false) {
             self.child = Box::new(Text::new("after"));
             self.replaced = true;
         }
     }
     fn take_structure_dirty(&mut self) -> bool {
+        // Like ViewCx::switch, the topology poll can reconcile local state
+        // and drop the old child before returning its dirty signal.
+        if self.replace_on_poll && self.swap.replace(false) {
+            self.child = Box::new(Text::new("after"));
+            self.replaced = true;
+        }
         std::mem::take(&mut self.replaced)
     }
     fn build_layout(
@@ -100,6 +107,7 @@ fn a_sync_that_replaces_widgets_leaves_no_node_pointing_at_them() {
             child: Box::new(Text::new("before")),
             swap: Rc::clone(&swap),
             replaced: false,
+            replace_on_poll: false,
             rect: Rect::ZERO,
         }),
     );
@@ -119,5 +127,40 @@ fn a_sync_that_replaces_widgets_leaves_no_node_pointing_at_them() {
     assert!(
         app.layout.structure_dirty,
         "the next frame lays the new widgets out"
+    );
+}
+
+#[test]
+fn a_topology_poll_that_replaces_widgets_retires_nodes_before_pointer_queries() {
+    let swap = Rc::new(Cell::new(false));
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(Swapper {
+            child: Box::new(Text::new("before")),
+            swap: Rc::clone(&swap),
+            replaced: false,
+            replace_on_poll: true,
+            rect: Rect::ZERO,
+        }),
+    );
+    app.init_layout();
+    assert!(app.layout.node_map.len() >= 2);
+    swap.set(true);
+    // This is the idle runner's topology boundary, before a queued move
+    // looks up its tooltip and before the redraw rebuilds the layout.
+    assert!(app.forget_replaced_widgets());
+    assert!(app.layout.node_map.is_empty());
+    assert!(app.layout.structure_dirty);
+    assert!(app.tooltip_target_at(Point::new(10.0, 10.0)).is_none());
+    assert!(app.resolve_cursor(Point::new(10.0, 10.0)).is_none());
+    app.rebuild_structure();
+    assert!(!app.layout.node_map.is_empty());
+    let mut alive = HashSet::new();
+    live(app.root_widget.as_ref(), &mut alive);
+    assert!(
+        app.layout
+            .node_map
+            .values()
+            .all(|p| alive.contains(&p.cast::<()>().addr()))
     );
 }

@@ -1026,9 +1026,12 @@ impl HistoryHost {
         let Ok(heads) = self.source().committed_heads(doc) else {
             return true;
         };
-        self.controller
-            .as_ref()
-            .is_some_and(|controller| super::sorted_heads(heads) != controller.observed_live_heads)
+        // Closed history does not consume the new frontier in refresh.
+        // Leave it pending until opening, instead of rebuilding every frame.
+        self.open
+            && self.controller.as_ref().is_some_and(|controller| {
+                super::sorted_heads(heads) != controller.observed_live_heads
+            })
     }
     pub(crate) fn review_is_open(&self) -> bool {
         self.review.is_some()
