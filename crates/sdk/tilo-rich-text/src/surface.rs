@@ -276,7 +276,7 @@ impl<S: RichTextSource> RichTextSurface<S> {
     /// Refuses read-only, composing, missing or changed selection targets.
     pub fn image_paste_action(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         target: &ui::widget::block_editor::ImagePasteTarget,
         text: String,
     ) -> Result<RichTextAction, ActionError> {
