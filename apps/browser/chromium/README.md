@@ -66,6 +66,18 @@ Diagnostics use stderr or the profile's `cef.log`. Resize dimensions, pointer
 coordinates and wheel deltas are physical pixels; the host converts them to CEF
 logical coordinates using `scale_factor`.
 
+Resource navigation uses `scoped_navigation` with a strictly increasing positive
+signed-32-bit `request_id`, a `command` (`navigate`, `back`, `forward`, `reload`,
+or `history_entry`), and the command's URL or history snapshot/entry fields.
+`cancel_navigation` invalidates the matching owner. `navigation_outcome` echoes
+that owner, the actual final URL, and an optional failure. Redirects retain the
+owner; bootstrap and legacy visual load events cannot complete an owned action.
+Renderer termination fails affected owners explicitly; its visual event cannot
+invalidate a subsequently admitted recovery. Helper closure fails outstanding
+requests. Navigation waits for document-start script registration and the prior
+native lifecycle, and replacements stop the prior load without crediting its
+callbacks to a new action.
+
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only the newest pending CPU frame is kept. Frames are copied during OnPaint;
 no CEF-owned pixel pointer or GPU handle survives the callback. Dropdown popup
@@ -216,6 +228,12 @@ history visit per completion, a concrete refused-connection failure, and recover
 followed by the same history route. Chromium runs unprivileged with its sandbox
 enabled. A fixture supervisor reaps its descendants before the ordinary isolated
 test profile is removed. Missing engine dependencies or observations fail the run.
+`--host PATH` selects an existing runtime's exact executable and reports its
+SHA256 while preserving the same unprivileged supervisor and sandbox. The
+fixture also checks startup navigation ownership, redirects, repeated URLs,
+explicit internal-URL rejection at the Browser boundary, and native-engine
+blank/canonical URL, cancellation/recovery, history refusal, and renderer
+termination followed by Reload.
 
 ## Remaining integration work
 
