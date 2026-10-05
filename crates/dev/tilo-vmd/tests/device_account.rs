@@ -95,6 +95,7 @@ impl Device {
             runner: SystemRunner { cwd: None },
             receipt: Receipt::new(self.dir.path(), vec![]),
             warnings: Vec::new(),
+            peer: None,
         }
     }
 

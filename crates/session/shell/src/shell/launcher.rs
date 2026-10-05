@@ -3087,6 +3087,19 @@ fn start_launch(
 
         let launcher_pid = child.id();
         let status = child.wait();
+        // Every end of an app, clean or not, with how it ended (a signal has
+        // no exit code). The session's default log passes errors only, so a
+        // clean exit would otherwise leave no trace; stderr is recorded.
+        match &status {
+            Ok(status) => eprintln!(
+                "app-exit: package={} launcher_pid={launcher_pid} status={status}",
+                app.package_id
+            ),
+            Err(error) => eprintln!(
+                "app-exit: package={} launcher_pid={launcher_pid} wait_failed={error}",
+                app.package_id
+            ),
+        }
         let tail = stderr_drain
             .and_then(|drain| drain.join().ok())
             .unwrap_or_default();
