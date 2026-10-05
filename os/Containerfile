@@ -74,7 +74,7 @@ ARG ENV_RUNTIME_REF=scratch
 # boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
 # The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
-ARG CHROMIUM_RUNTIME_VERSION=2026.10.0-chromium
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.1-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
@@ -1077,6 +1077,7 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
+COPY os/usr/lib/systemd/user/tilo-ush.service /tilo-components/usr/lib/systemd/user/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
     python3 /tilo-components/install-components.py \
@@ -2021,7 +2022,6 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 COPY os/usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf \
      /usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf
 COPY \
-    os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-ush.socket \
     os/usr/lib/systemd/user/tilo-fs-recipient.service \
     os/usr/lib/systemd/user/tilo-fs-recipient.socket \

@@ -13,6 +13,7 @@
 //! closed channel and drops to no presenter, so a lost display doesn't take the session (and
 //! clients' unsaved work) with it. The headless backend stays synchronous, since its `submit_frame` output is read back immediately by the test-control `snapshot` command.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -32,6 +33,17 @@ pub const QUEUE_DEPTH: usize = 1;
 /// hard reboot does not erase the last completed diagnostic boundary.
 const SLOW_FRAME_LIFECYCLE: Duration = Duration::from_millis(100);
 
+/// Physical presentation proven by a kernel event, never a renderer return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysicalPresentation {
+    pub timestamp: Duration,
+    pub sequence: u64,
+    pub refresh: Option<Duration>,
+}
+
+/// Physical outcome associated with one exact producer-frame serial.
+pub type PhysicalOutcome = (u64, Option<PhysicalPresentation>);
+
 /// The half of a backend that turns a finished scene into photons.
 ///
 /// Split off a `super::backend::Backend` by `super::backend::Backend::take_presenter` and
@@ -44,6 +56,17 @@ pub trait Presenter: Send {
     /// scene. Default presenters remain dense and therefore compatible with plain scenes.
     fn present_frame(&mut self, frame: &FramePaint, output: OutputId) {
         self.present(&frame.scene, output);
+    }
+
+    /// Return physical proof only when the exact submitted scene reached scanout.
+    /// Nested/headless presenters deliberately return no proof.
+    fn present_frame_observed(
+        &mut self,
+        frame: &FramePaint,
+        output: OutputId,
+    ) -> Option<PhysicalPresentation> {
+        self.present_frame(frame, output);
+        None
     }
 
     /// Build the renderer before the first frame arrives. Called once on the render thread as it
@@ -101,6 +124,7 @@ pub struct PresentPipe {
     /// from. The timestamp and serial are read under one lock so metrics never
     /// associate an old time with a newer frame.
     last_retirement: Arc<Mutex<Option<(u64, Instant)>>>,
+    physical_results: Arc<Mutex<VecDeque<PhysicalOutcome>>>,
     /// Ticks on which the paint gate declined because the pipe was full. Surfaced in the paint stats — a large number means the GPU is the bottleneck, a different diagnosis from a slow scene build.
     backpressured: u64,
     /// Set by the render thread just before it returns; lets [`Self::shutdown`] tell "finished" from "wedged" without committing to a `join` that might never return.
@@ -125,6 +149,8 @@ impl PresentPipe {
         let presented_frames = Arc::new(AtomicU64::new(0));
         let submitted_frames = Arc::new(AtomicU64::new(0));
         let last_retirement = Arc::new(Mutex::new(None));
+        let physical_results = Arc::new(Mutex::new(VecDeque::new()));
+        let thread_physical_results = physical_results.clone();
         let thread_inflight = inflight.clone();
         let thread_presented = presented_frames.clone();
         let thread_last_retirement = last_retirement.clone();
@@ -148,7 +174,11 @@ impl PresentPipe {
                         } => {
                             let render_started = Instant::now();
                             let queue_wait = render_started.saturating_duration_since(enqueued_at);
-                            presenter.present_frame(&frame, output);
+                            let physical = presenter.present_frame_observed(&frame, output);
+                            thread_physical_results
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push_back((serial, physical));
                             let render_done = Instant::now();
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
@@ -209,10 +239,20 @@ impl PresentPipe {
             presented: presented_frames,
             submitted: submitted_frames,
             last_retirement,
+            physical_results,
             backpressured: 0,
             finished,
             handle,
         }
+    }
+
+    /// Drain exact-frame physical outcomes on the Wayland dispatch thread.
+    pub fn take_physical_results(&self) -> Vec<PhysicalOutcome> {
+        self.physical_results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect()
     }
 
     /// Whether another frame may be built and handed over.
@@ -434,6 +474,62 @@ mod tests {
     /// `PresentPipe::spawn` with a retire signal that does nothing — what most of these tests want, since they assert on the counters rather than the wakeup.
     fn spawn_with_retire(p: Box<dyn Presenter>) -> PresentPipe {
         PresentPipe::spawn(p, Box::new(|| {}))
+    }
+
+    #[test]
+    fn physical_outcomes_keep_exact_frame_serials_separate_from_retirement() {
+        struct Observed {
+            proof: Option<PhysicalPresentation>,
+        }
+        impl Presenter for Observed {
+            fn present(&mut self, _: &Scene, _: OutputId) {}
+            fn present_frame_observed(
+                &mut self,
+                _: &FramePaint,
+                _: OutputId,
+            ) -> Option<PhysicalPresentation> {
+                self.proof.take()
+            }
+        }
+        let proof = PhysicalPresentation {
+            timestamp: Duration::new(123, 456_000),
+            sequence: 789,
+            refresh: None,
+        };
+        let mut pipe = spawn_with_retire(Box::new(Observed { proof: Some(proof) }));
+        let first = pipe
+            .submit_frame(FramePaint::full(Scene::new()), OutputId(0))
+            .unwrap();
+        let second = pipe
+            .submit_frame(FramePaint::full(Scene::new()), OutputId(0))
+            .unwrap();
+        tilo_test_env::wait_until("both submitted frames to retire", || {
+            pipe.presented() == second
+        });
+        assert_eq!(
+            pipe.take_physical_results(),
+            vec![(first, Some(proof)), (second, None)]
+        );
+        assert!(pipe.latest_retirement().is_some());
+        assert!(
+            pipe.take_physical_results().is_empty(),
+            "physical events drain once"
+        );
+        pipe.shutdown();
+        let mut plain = spawn_with_retire(Box::new(Blocking {
+            gate: Arc::new(Mutex::new(())),
+            seen: Arc::new(AtomicU64::new(0)),
+            resizes: Arc::new(Mutex::new(Vec::new())),
+            dpms: Arc::new(Mutex::new(Vec::new())),
+        }));
+        assert!(plain.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("plain presenter to return", || plain.presented() == 1);
+        assert_eq!(
+            plain.take_physical_results(),
+            vec![(1, None)],
+            "returning from a presenter cannot prove physical scanout"
+        );
+        plain.shutdown();
     }
 
     // Declaration order in the gate-holding tests below: each spawns the pipe *before* taking the

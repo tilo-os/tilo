@@ -190,6 +190,12 @@ pub enum StoreEffect {
         #[param("App name, publisher, category, or description")]
         query: String,
     },
+    /// Browse apps from a configured Flatpak repository.
+    #[effect(job, permission = "read")]
+    BrowseRemote {
+        #[param("Configured repository resource identity, including its account or device scope")]
+        remote: String,
+    },
     /// Filter apps by source.
     #[effect(permission = "read")]
     SetSource {
@@ -429,6 +435,13 @@ const SCENARIOS: &[&str] = &[
 /// The app the moderation screenshots report.
 const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
+pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
+    "en-US",
+    &[("en-US", include_str!("../locales/en-US.ftl"))],
+    "store-remotes-title",
+)
+.with_system_locale();
+
 /// Framework app.
 pub struct StoreShell;
 
@@ -440,6 +453,10 @@ impl ResourceApp for StoreShell {
     const OPENS: &'static [&'static str] = &["application/vnd.flatpak.ref"];
     /// A `.flatpakref` to show, or a `tilo-store:app/<id>` link.
     const ARGUMENTS: usize = 1;
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&STORE_CATALOG)
+    }
 
     fn view(cx: &mut ViewCx<Store>) -> Element {
         cx.surface(StoreApp::new())
@@ -702,6 +719,19 @@ mod tests {
             if let Some(effect) = effect {
                 app.effect(&effect).unwrap();
                 app.settle();
+            }
+            for name in match page {
+                "catalogue" => &["Refresh", "Remotes"][..],
+                "remotes" => &["Back to apps", "Refresh"][..],
+                _ => &[],
+            } {
+                let control = app
+                    .harness()
+                    .controls()
+                    .into_iter()
+                    .find(|control| control.name.as_deref() == Some(*name))
+                    .unwrap_or_else(|| panic!("{page}: missing control {name}"));
+                assert!(!control.disabled, "{page}: live owner control {name}");
             }
             let resources = app.harness().resources();
             let bindings =

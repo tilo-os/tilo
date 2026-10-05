@@ -297,6 +297,18 @@ impl Window {
         }
     }
 
+    pub fn present_with_feedback(
+        &self,
+        observer: crate::platform::wayland::WaylandPresentationObserver,
+        present: impl FnOnce(),
+    ) -> bool {
+        let guard = self.window_state.lock().unwrap();
+        let accepted = guard.observe_next_present(observer);
+        present();
+        drop(guard);
+        accepted
+    }
+
     #[inline]
     pub fn pre_present_notify(&self) {
         self.window_state.lock().unwrap().request_frame_callback();

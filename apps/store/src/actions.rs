@@ -141,6 +141,9 @@ pub fn execute_with_host(
     action: ActionKind,
     staging_dir: &Path,
 ) -> ActionOutcome {
+    if let Some((_, reason)) = item.unavailable_action(action) {
+        return ActionOutcome::fail(reason);
+    }
     match (action, &item.source) {
         (ActionKind::Open, StoreSource::Tilo { .. })
         | (ActionKind::Update, StoreSource::Tilo { .. }) => {
@@ -157,7 +160,7 @@ pub fn execute_with_host(
         (ActionKind::Unmark, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
             host.pin(id, false).map(|()| "Unmarked app.".into())
         }),
-        (ActionKind::FlatpakInstall, StoreSource::Flathub) => {
+        (ActionKind::FlatpakInstall, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             let reference = match item.install_ref_path.as_deref() {
                 Some(path) => match std::fs::read(path) {
                     Ok(bytes) if bytes.len() <= 64 * 1024 => Some(bytes),
@@ -171,22 +174,39 @@ pub fn execute_with_host(
                 None => None,
             };
             host_result(host, |host| {
-                host.flatpak(
-                    app_host::client::FlatpakAction::Install,
-                    &item.id,
-                    reference.as_deref(),
-                )
+                if let StoreSource::FlatpakRemote {
+                    name,
+                    branch,
+                    user_managed,
+                    ..
+                } = &item.source
+                {
+                    if !*user_managed {
+                        return Err("This repository belongs to the device. Ask its administrator to install the app.".into());
+                    }
+                    host.flatpak_install_remote(name, &item.id, branch)
+                } else {
+                    host.flatpak(
+                        app_host::client::FlatpakAction::Install,
+                        &item.id,
+                        reference.as_deref(),
+                    )
+                }
             })
         }
-        (ActionKind::FlatpakUpdate, StoreSource::Flathub) => host_result(host, |host| {
-            host.flatpak(app_host::client::FlatpakAction::Update, &item.id, None)
-        }),
-        (ActionKind::FlatpakOpen, StoreSource::Flathub) => {
+        (ActionKind::FlatpakUpdate, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
+            host_result(host, |host| {
+                host.flatpak(app_host::client::FlatpakAction::Update, &item.id, None)
+            })
+        }
+        (ActionKind::FlatpakOpen, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             host_result(host, |host| host.launch_desktop(&item.id))
         }
-        (ActionKind::FlatpakRemove, StoreSource::Flathub) => host_result(host, |host| {
-            host.flatpak(app_host::client::FlatpakAction::Remove, &item.id, None)
-        }),
+        (ActionKind::FlatpakRemove, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
+            host_result(host, |host| {
+                host.flatpak(app_host::client::FlatpakAction::Remove, &item.id, None)
+            })
+        }
         (ActionKind::NeedsFlatpakHost, _) => {
             ActionOutcome::fail("Install flatpak on the host to use this action.")
         }
@@ -201,7 +221,7 @@ fn open_tilo(
     host: Option<&app_host::client::BlockingClient>,
     item: &StoreItem,
     action: ActionKind,
-    staging_dir: &Path,
+    _staging_dir: &Path,
 ) -> ActionOutcome {
     let Some(host) = host else {
         return ActionOutcome::fail("App service is unavailable; no host command was attempted.");
@@ -220,12 +240,6 @@ fn open_tilo(
         let Some(version) = item.versions.first() else {
             return ActionOutcome::fail("registry entry has no version");
         };
-        let Some(url) = version.download_url.clone() else {
-            return ActionOutcome::fail(format!(
-                "{}: no download URL in registry entry",
-                item.name
-            ));
-        };
         let Some(root) = version
             .root_hash_hex
             .as_deref()
@@ -233,19 +247,6 @@ fn open_tilo(
         else {
             return ActionOutcome::fail("registry entry has an invalid package root");
         };
-        let dest = staging_dir.join(format!("{root}.tapp"));
-        if let Err(e) = download_tapp(&url, &dest, version.size_bytes) {
-            return ActionOutcome::fail(format!("{}: {e}", item.name));
-        }
-        let bytes = match std::fs::read(&dest) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return ActionOutcome::fail(format!("{}: read staged package: {error}", item.name));
-            }
-        };
-        // Clean the staged file regardless — the bytes now live in
-        // the content-addressed store.
-        let _ = std::fs::remove_file(&dest);
         let Some(publisher) = item.publisher_pubkey_hex.as_deref() else {
             return ActionOutcome::fail("registry entry has no publisher identity");
         };
@@ -267,7 +268,10 @@ fn open_tilo(
                 );
             }
         };
-        match host.install(&bytes, &expected) {
+        let StoreSource::Tilo { registry_name } = &item.source else {
+            return ActionOutcome::fail("This package has no Tilo repository.");
+        };
+        match host.install_offer(registry_name, &expected) {
             Ok(installed) => package_root = Some(installed),
             Err(error) => {
                 return ActionOutcome::fail(format!("{}: install refused: {error}", item.name));

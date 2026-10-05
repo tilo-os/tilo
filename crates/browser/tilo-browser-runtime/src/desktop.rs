@@ -781,8 +781,9 @@ fn stored_desktop(
 
 /// The desktop as peers share it: the tree and each tab's record.
 pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_json::Value {
-    serde_json::to_value(stored_desktop(handle, &shared.records.borrow()))
-        .unwrap_or(serde_json::Value::Null)
+    let mut desktop = stored_desktop(handle, &shared.records.borrow());
+    desktop.tree = handle.shared_tree();
+    serde_json::to_value(desktop).unwrap_or(serde_json::Value::Null)
 }
 
 /// Take a desktop a peer shared: bind its tabs' records, then hand the tree
@@ -812,7 +813,8 @@ pub(crate) fn apply_shared(
             }
         }
     }
-    handle.replace_tree(desktop.tree);
+    let local_tabs: Vec<_> = shared.peer_windows.borrow().keys().copied().collect();
+    handle.replace_shared_tree(desktop.tree, &local_tabs);
     shared.wake();
     Ok(())
 }

@@ -103,7 +103,7 @@ class InstallerTests(unittest.TestCase):
         out.mkdir(parents=True)
         manifest = installer.load_manifest(REPO / "os/components.toml")
         for entry in manifest.files():
-            if entry.source and not entry.source.startswith("/"):
+            if entry.source and not entry.source.startswith(("/", "@manifest/")):
                 (out / entry.source).parent.mkdir(parents=True, exist_ok=True)
                 (out / entry.source).write_bytes(b"\x7fELF" + entry.source.encode())
                 (out / entry.source).chmod(0o700)
@@ -112,6 +112,19 @@ class InstallerTests(unittest.TestCase):
     def run_installer(self, *args: str) -> int:
         with contextlib.redirect_stdout(io.StringIO()):
             return installer.main(list(args))
+
+    def test_ush_swap_installs_the_service_pin_with_the_binary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = self.build_outputs(root)
+            (out / "tilo-ush").write_bytes(b"fixture-ush")
+            layer = root / "layer"
+            self.assertEqual(self.run_installer("--from", str(out), "--dest", str(layer), "ush"), 0)
+            self.assertEqual((layer / "usr/libexec/tilo-ush").read_bytes(), b"fixture-ush")
+            unit = layer / "usr/lib/systemd/user/tilo-ush.service"
+            self.assertEqual(unit.read_bytes(), (REPO / "os/usr/lib/systemd/user/tilo-ush.service").read_bytes())
+            self.assertIn("Environment=TILO_USH_BIN=/usr/libexec/tilo-ush", unit.read_text())
+            self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
 
     def test_installer_selects_manifest_layers_and_keeps_dev_and_production_apart(self):
         with self.subTest(phase='image layers match manifest'):
@@ -130,6 +143,7 @@ class InstallerTests(unittest.TestCase):
                 shell = image / "desktop-binaries/usr/bin/shell"
                 self.assertEqual(shell.stat().st_mode & 0o777, 0o755)
                 self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/store"), "app")
+                self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/ush"), "../libexec/tilo-ush")
                 self.assertFalse((image / "desktop-binaries/usr/bin/browser").exists())
         with self.subTest(phase='production selection never includes dev only components'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
@@ -145,6 +159,23 @@ class InstallerTests(unittest.TestCase):
             self.assertNotIn("test-registry", production)
             self.assertIn("shell", production)
             self.assertIn("native-runtime-host", production)
+        with self.subTest(phase='developer CLI installs globally through its VM component'):
+            manifest = installer.load_manifest(REPO / "os/components.toml")
+            component = manifest.component("vm-cli")
+            self.assertEqual(component.scope, "vm")
+            self.assertTrue(component.dev_only)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                out = self.build_outputs(root)
+                image = root / "cli-layer"
+                status = self.run_installer("--from", str(out), "--dest", str(image),
+                                            "vm-cli")
+                self.assertEqual(status, 0)
+                binary = image / "usr/bin/tilo-vm"
+                self.assertEqual(binary.read_bytes(), b"\x7fELFtilo-vm")
+                self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+                self.assertEqual({p.relative_to(image).as_posix() for p in image.rglob("*")
+                                  if p.is_file()}, {"usr/bin/tilo-vm"})
         with self.subTest(phase='dev cargo plan adds dev features'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)

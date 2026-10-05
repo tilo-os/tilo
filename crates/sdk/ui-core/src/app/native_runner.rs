@@ -25,6 +25,7 @@ struct AppHandler {
     animation_schedule: animation_schedule::AnimationSchedule,
     native_scenario: Option<crate::native_scenario::Scenario>,
     native_input_ids: Vec<usize>,
+    physical_input_trace: Option<crate::physical_input_trace::Trace>,
     native_input_origin: Option<Instant>,
     native_input_pointer_passthrough: bool,
     native_input_route_isolation: bool,
@@ -459,7 +460,7 @@ fn create_window_render_prepared(
     };
     // After this, every GPU call happens on its render worker.
     let window_id = window.id();
-    let render = spawn_render_thread(
+    let render = crate::render_thread::spawn_render_thread_for_window(
         render_cx,
         surface,
         renderer,
@@ -467,6 +468,7 @@ fn create_window_render_prepared(
             // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
             let _ = proxy.send_event(UserEvent::RenderReady(window_id));
         }),
+        Some(window.clone()),
     )?;
     tilo_startup_metrics::mark("window-render-context-done");
     Ok(render)
@@ -1824,38 +1826,18 @@ impl AppHandler {
             })
             .unwrap_or_default()
         };
-        let native_targets = visible_interactions
-            .iter()
-            .filter_map(|interaction| {
-                crate::action_locus::interaction_bounds(app.semantic_tree(), &bindings, interaction)
-                    .map(|bounds| (interaction.clone(), bounds))
-            })
-            .collect::<Vec<_>>();
-        for (interaction, rect) in native_targets {
-            let user = crate::permissions::UserId(interaction.actor.id);
-            let label = app.presence_ctx.display_name(&user);
-            app.presence_ctx.draw_peer_outline_labeled(
-                &mut crate::paint::PaintCtx::new(
-                    &mut scene,
-                    transform,
-                    &mut app.text_renderer,
-                    &app.theme,
-                ),
-                &user,
-                &label,
-                rect,
-                f64::from(app.theme.tokens.radii.sm),
-            );
-        }
-        // Action/resource callers have no synthetic pointer. Their truthful
-        // semantic lifecycle is painted as an app-level activity rail until a
-        // domain widget projects the stable anchor into native geometry.
-        app.presence_ctx.draw_interactions(
-            &mut scene,
-            transform,
+        crate::action_locus::draw_action_presence(
+            &mut crate::paint::PaintCtx::new(
+                &mut scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+            ),
+            &mut app.presence_ctx,
+            &app.accessibility.semantic_tree,
+            &bindings,
             window_rect,
-            &mut app.text_renderer,
-            &app.theme,
+            app.window.app_id.as_deref().unwrap_or("native-primary"),
             interaction_now,
         );
 
@@ -1973,12 +1955,26 @@ impl AppHandler {
             full_redraw_required,
             !damage_regions.is_empty(),
         ) {
+            let cpu_frame_id = app
+                .profiler
+                .as_ref()
+                .and_then(|profiler| profiler.history().back())
+                .map(|sample| sample.frame)
+                .or_else(|| {
+                    self.physical_input_trace
+                        .as_ref()
+                        .map(|_| self.primary_frames_sent.saturating_add(1))
+                });
+
+            if let Some(trace) = self.physical_input_trace.as_mut()
+                && trace.has_pending()
+                && let Some(row) = trace.drawn(cpu_frame_id, app.native_input_snapshot())
+            {
+                crate::native_scenario::log::emit_json("tilo-physical-frame", row);
+            }
+
             let req = RenderRequest::Frame {
-                cpu_frame_id: app
-                    .profiler
-                    .as_ref()
-                    .and_then(|profiler| profiler.history().back())
-                    .map(|sample| sample.frame),
+                cpu_frame_id,
                 scene,
                 width,
                 height,
@@ -2732,6 +2728,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             self.text_input_touched = true;
         }
+        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+        {
+            let state = self
+                .physical_input_trace
+                .as_ref()
+                .and_then(|_| self.app.native_input_snapshot());
+            self.physical_input_trace
+                .as_mut()
+                .and_then(|trace| trace.begin(&event, state))
+        } else {
+            None
+        };
         self.note_host_appearance_event(&event);
         self.replay_unsettled_pointer(event_loop, window_id, &event);
         self.route_window_event(
@@ -2740,6 +2752,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event,
             native_input_isolation::EventOrigin::Platform,
         );
+        if let Some(input) = physical_input {
+            crate::native_scenario::log::emit_json(
+                "tilo-physical-input",
+                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot()),
+            );
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -2915,6 +2933,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.pump_collab_presence() {
             request_primary_redraw();
         }
+        if app.presence_ctx.prune_interactions(crate::time::now()) {
+            request_primary_redraw();
+        }
         if app.poll_model_invocations() {
             request_primary_redraw();
         }
@@ -2987,6 +3008,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(
+                    app.presence_ctx
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -3016,6 +3041,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(
+                    app.presence_ctx
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -3032,16 +3061,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Reduced motion lets the loop go idle since animated widgets
         // already paint their resting state.
-        let needs_frame = app.root_widget.needs_animation_frame();
+        let widget_animation = app.root_widget.needs_animation_frame();
+        let needs_frame = widget_animation
+            || app
+                .presence_ctx
+                .interaction_animation_demand(crate::time::now(), &app.theme);
         let (animation_due, animation_deadline) = self.animation_schedule.poll(
             crate::time::now(),
             any_render_available && animation_pump_needed(needs_frame, app.theme.reduce_motion),
         );
         if animation_due {
-            app.needs_sync = true;
+            app.needs_sync |= widget_animation;
             // Forces `apply_layout` since an animation tick (e.g. momentum
             // fling) can reposition content without an input event.
-            app.layout.layout_dirty = true;
+            app.layout.layout_dirty |= widget_animation;
             request_primary_redraw();
             for surface in &self.floating_windows {
                 if auxiliary_redraw_allowed(surface.render.as_ref()) {
@@ -3460,6 +3493,9 @@ impl App {
             pointer_unsettled: false,
             native_scenario,
             native_input_ids: Vec::new(),
+            physical_input_trace: std::env::var("TILO_PROFILE_PRESENTATION")
+                .is_ok_and(|value| value == "1")
+                .then(crate::physical_input_trace::Trace::default),
             native_input_origin: None,
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,

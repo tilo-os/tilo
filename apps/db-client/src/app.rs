@@ -5410,14 +5410,17 @@ mod behavior_tests {
             "{inspection}"
         );
 
+        assert!(
+            of_kind(&app.harness().resources(), "database.schema").is_none(),
+            "saved SQL and its filename do not mean the connection is open"
+        );
         let connection = crate::resource::connection_resource_id(profile.id);
         app.call_on(&connection, "connect", serde_json::json!({}))
             .unwrap();
         tilo_test_env::wait_until("the connection to open its catalog", || {
             app.settle();
-            app.harness()
-                .inspection_json()
-                .is_ok_and(|inspection| inspection.contains("proof"))
+            of_kind(&app.harness().resources(), "database.schema")
+                .is_some_and(|schema| schema.label == "main")
         });
         let heads = app.read_document(|doc| doc.clone().get_heads());
         app.effect_confirmed(&crate::resource::DbEffect::Query {

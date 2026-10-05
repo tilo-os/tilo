@@ -102,6 +102,7 @@ pub struct WindowState {
 
     /// The state of the compositor to create WlRegions.
     compositor: Arc<CompositorState>,
+    presentation: Option<Arc<super::super::types::wp_presentation::PresentationState>>,
 
     /// The current cursor grabbing mode.
     cursor_grab_mode: GrabState,
@@ -187,6 +188,7 @@ impl WindowState {
             blur: None,
             blur_manager: winit_state.kwin_blur_manager.clone(),
             compositor,
+            presentation: winit_state.presentation.clone(),
             connection,
             csd_fails: false,
             cursor_grab_mode: GrabState::new(),
@@ -221,6 +223,17 @@ impl WindowState {
             viewport,
             window,
         }
+    }
+
+    pub fn observe_next_present(
+        &self,
+        observer: crate::platform::wayland::WaylandPresentationObserver,
+    ) -> bool {
+        let Some(presentation) = &self.presentation else {
+            return false;
+        };
+        presentation.observe(self.window.wl_surface(), &self.queue_handle, observer);
+        true
     }
 
     /// Apply closure on the given pointer.

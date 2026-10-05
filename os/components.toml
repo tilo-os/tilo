@@ -272,6 +272,8 @@ user_units = ["tilo-ush.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-ush", to = "/usr/libexec/tilo-ush", mode = "0755" },
+  { link = "../libexec/tilo-ush", to = "/usr/bin/ush" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-ush.service", to = "/usr/lib/systemd/user/tilo-ush.service", mode = "0644" },
   # A Terminal environment on a relay: the pty's far end, and what tells
   # the relay picker which relays run environments.
   { from = "tilo-relay-environment", to = "/usr/libexec/tilo-relay-environment", mode = "0755" },
@@ -539,7 +541,7 @@ files = [
 [[component]]
 name = "vm-cli"
 kind = "userspace"
-scope = "session"
+scope = "vm"
 packages = ["tilo-vm"]
 bins = ["tilo-vm"]
 layer = "dev-tools"

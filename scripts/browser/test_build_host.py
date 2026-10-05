@@ -1,9 +1,11 @@
 """Runtime acquisition must fail closed on corrupt/unexpected SDK input."""
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("build_host", Path(__file__).with_name("build-host.py"))
 build_host = importlib.util.module_from_spec(SPEC)
@@ -11,6 +13,29 @@ SPEC.loader.exec_module(build_host)
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_blocker_uses_cargos_native_artifact_instead_of_guessing_the_target_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "native-target/aarch64/thin-app/libtilo_chromium_blocker.a"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"static library")
+            metadata = {
+                "reason": "compiler-artifact",
+                "target": {"name": "tilo_chromium_blocker", "crate_types": ["staticlib", "rlib"]},
+                "filenames": [str(artifact.with_suffix(".rlib")), str(artifact)],
+            }
+            with patch.object(build_host.subprocess, "run") as run:
+                run.return_value.stdout = json.dumps(metadata) + "\n"
+                self.assertEqual(build_host.build_blocker_library(), artifact)
+                self.assertIn("--locked", run.call_args.args[0])
+                artifact.unlink()
+                with self.assertRaisesRegex(ValueError, "did not report"):
+                    build_host.build_blocker_library()
+                metadata["target"]["name"] = "another_crate"
+                artifact.write_bytes(b"another library")
+                run.return_value.stdout = json.dumps(metadata) + "\n"
+                with self.assertRaisesRegex(ValueError, "did not report"):
+                    build_host.build_blocker_library()
+
     def test_platform_and_range_inputs_are_validated_exactly(self):
         for system, machine, want in (
             ("Darwin", "arm64", "macosarm64"),

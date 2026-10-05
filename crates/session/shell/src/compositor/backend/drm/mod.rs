@@ -699,6 +699,23 @@ mod direct_eligibility_tests {
     }
 }
 
+fn physical_flip_proof(
+    retirement: scanout::DirectRetirement,
+    events: &[smithay::reexports::drm::control::PageFlipEvent],
+    crtc: smithay::reexports::drm::control::crtc::Handle,
+    eligible_clock: bool,
+) -> Option<crate::shell::present::PhysicalPresentation> {
+    if retirement != scanout::DirectRetirement::Complete || !eligible_clock {
+        return None;
+    }
+    let event = events.iter().find(|event| event.crtc == crtc)?;
+    Some(crate::shell::present::PhysicalPresentation {
+        timestamp: event.duration,
+        sequence: u64::from(event.frame),
+        refresh: None,
+    })
+}
+
 impl DrmPresenter {
     /// Frame-production body, identical to the pre-split `submit_frame`.
     fn render(&mut self, scene: &Scene) {
@@ -729,17 +746,24 @@ impl DrmPresenter {
             &mut self.direct_bypass_reported,
         );
         if sample.direct_queued {
-            self.retire_direct_flip();
+            let _ = self.retire_direct_flip();
         }
         self.emit_phase_profile(sample);
         report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
     }
 
-    fn render_frame(&mut self, frame: &FramePaint) {
+    fn render_frame(
+        &mut self,
+        frame: &FramePaint,
+    ) -> Option<crate::shell::present::PhysicalPresentation> {
         self.drain_commands();
         if self.blanked || self.paused {
-            return;
+            return None;
         }
+        let before = self
+            .scanouts
+            .first()
+            .map(|entry| entry.scanout.flip_submission());
         let sample = paint_scanouts(
             &mut self.scanouts,
             &self.outputs,
@@ -761,38 +785,76 @@ impl DrmPresenter {
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
-        if sample.direct_queued {
-            self.retire_direct_flip();
-        }
+        let physical = if sample.direct_queued {
+            self.retire_direct_flip()
+        } else if self.scanouts.len() == 1
+            && self
+                .scanouts
+                .first()
+                .map(|entry| entry.scanout.flip_submission())
+                != before
+        {
+            self.retire_physical_flip(0)
+        } else {
+            None
+        };
         self.emit_phase_profile(sample);
         report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
+        physical
     }
 
     /// Tighten `Presenter::present_frame`'s completion boundary to the KMS
     /// page-flip event for direct scanout. `PresentPipe` only frees producer
     /// capacity after this method returns, so no second frame is rendered
     /// while both double-buffered targets remain owned by KMS.
-    fn retire_direct_flip(&mut self) {
-        let Some(index) = self
+    fn retire_direct_flip(&mut self) -> Option<crate::shell::present::PhysicalPresentation> {
+        let index = self
             .scanouts
             .iter()
-            .position(|entry| entry.direct_targets.is_some())
-        else {
-            return;
-        };
-        let Some(entry) = self.scanouts.get_mut(index) else {
-            return;
-        };
+            .position(|entry| entry.direct_targets.is_some())?;
+        self.retire_physical_flip(index)
+    }
+
+    fn retire_physical_flip(
+        &mut self,
+        index: usize,
+    ) -> Option<crate::shell::present::PhysicalPresentation> {
+        let single_output = self.scanouts.len() == 1;
+        let entry = self.scanouts.get_mut(index)?;
         let (retirement, completions) = entry
             .scanout
             .wait_flip_completions(DIRECT_RETIREMENT_TIMEOUT);
+        if retirement != scanout::DirectRetirement::Complete {
+            entry.scanout.invalidate_physical_feedback();
+        }
         self.phase_window.record_flip_completions(completions.len());
-        for crtc in completions {
+        let proof = physical_flip_proof(
+            retirement,
+            &completions,
+            entry.scanout.crtc(),
+            single_output && entry.scanout.can_prove_physical_flip(),
+        )
+        .map(|mut proof| {
+            proof.refresh = if entry.scanout.adaptive_sync_active() {
+                None
+            } else {
+                self.outputs
+                    .first()
+                    .and_then(|output| output.refresh_mhz)
+                    .and_then(|rate| 1_000_000_000_000_u64.checked_div(u64::from(rate)))
+                    .map(Duration::from_nanos)
+            };
+            proof
+        });
+        for event in completions {
+            let crtc = event.crtc;
             if let Some(targets) = entry.direct_targets.as_mut() {
                 entry.scanout.mark_direct_flip_complete(targets, crtc);
+            } else {
+                entry.scanout.mark_flip_complete(crtc);
             }
         }
-        if retirement == scanout::DirectRetirement::TimedOut {
+        if retirement == scanout::DirectRetirement::TimedOut && entry.direct_targets.is_some() {
             let hdr = entry
                 .direct_targets
                 .as_ref()
@@ -807,6 +869,7 @@ impl DrmPresenter {
                 ),
             );
         }
+        proof
     }
 
     fn emit_phase_profile(&mut self, sample: PaintScanoutSample) {
@@ -2380,7 +2443,15 @@ impl Presenter for DrmPresenter {
     }
 
     fn present_frame(&mut self, frame: &FramePaint, _output: OutputId) {
-        self.render_frame(frame);
+        let _ = self.render_frame(frame);
+    }
+
+    fn present_frame_observed(
+        &mut self,
+        frame: &FramePaint,
+        _output: OutputId,
+    ) -> Option<crate::shell::present::PhysicalPresentation> {
+        self.render_frame(frame)
     }
 
     fn set_dpms(&mut self, on: bool) {
@@ -3014,5 +3085,39 @@ mod tests {
                 "a live wgpu bridge must never cross the thread boundary"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod presentation_proof_tests {
+    use super::*;
+    #[test]
+    fn physical_flip_proof_preserves_the_kernel_fields_and_rejects_uncertain_completion() {
+        let own: smithay::reexports::drm::control::crtc::Handle = std::num::NonZeroU32::new(11)
+            .expect("nonzero fixture CRTC")
+            .into();
+        let sibling: smithay::reexports::drm::control::crtc::Handle = std::num::NonZeroU32::new(12)
+            .expect("nonzero fixture CRTC")
+            .into();
+        let event = smithay::reexports::drm::control::PageFlipEvent {
+            crtc: own,
+            frame: 76543,
+            duration: Duration::new(1_234_567, 987_654_000),
+        };
+        let events = [event];
+        let proof =
+            physical_flip_proof(scanout::DirectRetirement::Complete, &events, own, true).unwrap();
+        assert_eq!(proof.timestamp, events[0].duration);
+        assert_eq!(proof.sequence, u64::from(events[0].frame));
+        assert!(
+            physical_flip_proof(scanout::DirectRetirement::TimedOut, &events, own, true).is_none()
+        );
+        assert!(
+            physical_flip_proof(scanout::DirectRetirement::Complete, &events, own, false).is_none()
+        );
+        assert!(
+            physical_flip_proof(scanout::DirectRetirement::Complete, &events, sibling, true)
+                .is_none()
+        );
     }
 }
