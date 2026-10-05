@@ -30,7 +30,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::toolbar::Orientation;
 use ui::widget::{
     Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalHit,
@@ -205,6 +205,8 @@ struct ScrollRegion {
     scroller: Scroller,
     max_y: f64,
     max_x: f64,
+    /// The ground the content stands on, which the edge fades blend into.
+    ground: vello::peniko::Color,
 }
 
 /// One owned repository operation. Completion stays available until its action
@@ -320,6 +322,9 @@ pub struct GitClientApp {
     /// the pointer, and which region that is.
     scrollbar: Scrollbar,
     scrollbar_region: Option<Scroller>,
+    /// The bars show while a region scrolls or the pointer is on one, then
+    /// fade out like every toolkit scroll view's.
+    bar_fade: BarFade,
 }
 
 impl Default for GitClientApp {
@@ -504,6 +509,7 @@ impl GitClientApp {
             scroll_regions: Vec::new(),
             scroll_bars: Vec::new(),
             scrollbar: Scrollbar::vertical(),
+            bar_fade: BarFade::default(),
             scrollbar_region: None,
         }
     }
@@ -1507,6 +1513,7 @@ impl GitClientApp {
             scroller: Scroller::ChangesList,
             max_y: out.content_height - out.viewport_height,
             max_x: 0.0,
+            ground: ctx.theme.tokens.colors.surfaces.content,
         });
         self.changes_scroll = self
             .changes_scroll
@@ -1547,6 +1554,7 @@ impl GitClientApp {
             scroller: Scroller::HistoryList,
             max_y: out.content_height - list.height(),
             max_x: 0.0,
+            ground: ctx.theme.tokens.colors.surfaces.content,
         });
     }
 
@@ -1797,6 +1805,7 @@ impl GitClientApp {
             scroller: Scroller::Diff,
             max_y,
             max_x: out.max_hscroll,
+            ground: ctx.theme.tokens.colors.surfaces.content,
         });
     }
 
@@ -1819,6 +1828,7 @@ impl GitClientApp {
             scroller: Scroller::Detail,
             max_y,
             max_x: 0.0,
+            ground: ctx.theme.tokens.colors.surfaces.content,
         });
     }
 
@@ -1863,6 +1873,7 @@ impl GitClientApp {
             scroller: Scroller::Panels,
             max_y,
             max_x: 0.0,
+            ground: ctx.theme.tokens.colors.surfaces.content,
         });
     }
 
@@ -2092,6 +2103,7 @@ impl GitClientApp {
         };
         let max_y = region.max_y.max(0.0);
         let max_x = region.max_x.max(0.0);
+        self.bar_fade.wake(ui::time::now());
         match region.scroller {
             Scroller::ChangesList => {
                 self.changes_scroll = (self.changes_scroll - dy).clamp(0.0, max_y);
@@ -2128,12 +2140,49 @@ impl GitClientApp {
             Scroller::Panels => &mut self.panels_scroll,
         };
         *slot = offset;
+        self.bar_fade.wake(ui::time::now());
     }
 
-    /// The toolkit scroll thumb along the trailing edge of every region
-    /// whose content overflows, so a list cut by its edge shows that it
-    /// goes on; records the tracks for the pointer.
+    /// Whether the bars stay shown: a thumb is held, or the pointer is on a
+    /// bar's track.
+    fn bars_held(&self) -> bool {
+        self.scrollbar.is_active()
+            || self.pointer.is_some_and(|p| {
+                self.scroll_bars
+                    .iter()
+                    .any(|(_, track, _)| track.inflate(4.0, 0.0).contains(p))
+            })
+    }
+
+    /// Fade each region's content out at an edge more of it can scroll in
+    /// from, so a list or a diff cut by its edge shows that it goes on.
+    fn paint_edge_fades(&self, ctx: &mut PaintCtx<'_>) {
+        use ui::surface::{ContentEdge, content_edge_fade};
+        for region in &self.scroll_regions {
+            let offset = self.scroll_offset(region.scroller);
+            let mut edges = Vec::new();
+            if offset > 0.5 {
+                edges.push(ContentEdge::Top);
+            }
+            if region.max_y - offset > 0.5 {
+                edges.push(ContentEdge::Bottom);
+            }
+            // The diff's line numbers stand still while its code scrolls
+            // sideways, so only the trailing edge fades.
+            if region.scroller == Scroller::Diff && region.max_x - self.diff_hscroll > 0.5 {
+                edges.push(ContentEdge::Trailing);
+            }
+            for edge in edges {
+                content_edge_fade(ctx.scene, ctx.transform, region.rect, edge, region.ground);
+            }
+        }
+    }
+
+    /// The edge fades, then the toolkit scroll thumb along the trailing edge
+    /// of every region whose content overflows, shown while it scrolls or is
+    /// pointed at and faded out at rest; records the tracks for the pointer.
     fn paint_scroll_bars(&mut self, ctx: &mut PaintCtx<'_>) {
+        self.paint_edge_fades(ctx);
         // The toolkit scroll view's bar: a thumb `s2` thick, held half an
         // `s1` off the region's edges.
         let s = &ctx.theme.tokens.spacing;
@@ -2163,13 +2212,25 @@ impl GitClientApp {
                 })
             })
             .collect();
+        let opacity = self.bar_fade.opacity_at(ui::time::now(), self.bars_held());
+        if opacity <= 0.003 {
+            return;
+        }
         for &(scroller, track, metrics) in &self.scroll_bars {
             let bar = if self.scrollbar_region == Some(scroller) {
                 self.scrollbar
             } else {
                 Scrollbar::vertical()
             };
+            ctx.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                opacity,
+                ctx.transform,
+                &track,
+            );
             bar.draw(ctx.scene, ctx.transform, track, metrics, ctx.theme, false);
+            ctx.scene.pop_layer();
         }
     }
 
@@ -2226,6 +2287,10 @@ impl GitClientApp {
             })
             .map(|(scroller, _, _)| *scroller);
         self.scrollbar.set_hover(hovered.is_some());
+        if hovered.is_some() {
+            // Leaving the bar lets it rest a moment before it fades.
+            self.bar_fade.wake(ui::time::now());
+        }
         self.scrollbar_region = hovered;
     }
 
@@ -2997,6 +3062,13 @@ impl Widget for GitClientApp {
             || self.commit_input.needs_animation_frame()
             || self.branch_input.needs_animation_frame()
             || self.open_input.needs_animation_frame()
+            || self.bar_fade.fading_at(ui::time::now(), self.bars_held())
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        // The bars start to fade once a scroll has rested a moment.
+        self.bar_fade
+            .fade_deadline_at(ui::time::now(), self.bars_held())
     }
 
     fn draw_with_presence(
