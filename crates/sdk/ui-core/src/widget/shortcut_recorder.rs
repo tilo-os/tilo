@@ -39,7 +39,8 @@ pub struct ShortcutRecorder {
     capturing: bool,
     platform: PlatformConventions,
     interaction: InteractionEnvironment,
-    /// The keycaps' width, measured with the text renderer.
+    /// The width of the keycaps, or of the capture prompt while capturing,
+    /// measured with the text renderer.
     keys_width: f64,
     /// The geometry of the latest theme: the control's height, the reset
     /// button's edge and the gap before it.
@@ -117,7 +118,10 @@ impl ShortcutRecorder {
             text.measure_style(CAPTURE_PROMPT, None, &theme.text(TextRole::Label))
                 .0,
         );
-        self.keys_width = keys.max(prompt).ceil();
+        // The control is as wide as what it shows: its keycaps, or the
+        // prompt while it captures. Room kept for the prompt beside short
+        // chords would leave their caps short of the column's edge.
+        self.keys_width = if self.capturing { prompt } else { keys }.ceil();
     }
 
     fn binding(&self) -> KeyboardBinding {
@@ -482,6 +486,29 @@ fn chord_from_event(key: &Key, modifiers: winit::event::Modifiers) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A short chord's control ends where its last keycap does, so a column
+    /// of recorders and fixed keycaps shares one trailing edge.
+    #[test]
+    fn the_control_is_as_wide_as_its_keycaps() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut short = ShortcutRecorder::new("x", "x", "Super+L", "Super+L");
+        short.measure_keys(&mut text, &theme);
+        let caps = InputHint::measure_width(
+            &InputBinding::Keyboard(short.binding()),
+            LegendConventions::new(short.platform, &short.interaction),
+            &mut text,
+            &theme,
+        );
+        assert!((short.content_width() - caps.ceil()).abs() < 0.5);
+        short.capturing = true;
+        short.measure_keys(&mut text, &theme);
+        assert!(
+            short.content_width() > caps,
+            "the prompt takes its own room while capturing"
+        );
+    }
 
     #[test]
     fn binding_display_names_keys_and_offers_reset_only_when_changed() {

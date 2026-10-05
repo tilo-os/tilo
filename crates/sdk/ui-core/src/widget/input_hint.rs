@@ -633,6 +633,29 @@ impl Widget for InputHint {
         }
     }
 
+    /// The estimate `build_layout` reserved becomes the keycaps' measured
+    /// width, so the hint ends where its last keycap does and a column of
+    /// hints shares one trailing edge.
+    fn adjust_layout_with_measure(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let width =
+            Self::measure_width(&self.binding, self.conventions(), text, &self.layout_theme).ceil();
+        let Ok(current) = tree.style(node) else {
+            return false;
+        };
+        let wanted = Dimension::length(crate::num::f32_of_f64(width));
+        if current.size.width == wanted {
+            return false;
+        }
+        let mut style = current.clone();
+        style.size.width = wanted;
+        tree.set_style(node, style).is_ok()
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
