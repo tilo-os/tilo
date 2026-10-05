@@ -9189,9 +9189,11 @@ mod tests {
         );
         assert_eq!(
             driver
-                .focus_access_nodes()
-                .iter()
-                .filter(|access| access.state.focused)
+                .node_map
+                .keys()
+                .filter(|&&node| driver
+                    .inspect_node(node, |widget| widget.is_focused())
+                    .unwrap_or(false))
                 .count(),
             1,
             "recomposition must not focus the unrelated control with the same name"
