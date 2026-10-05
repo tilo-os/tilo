@@ -994,6 +994,10 @@ pub(crate) struct SessionLaunches {
     /// compositor never asked, and the person never reached the app to ask
     /// it. However the process then exits, the window was lost.
     vanished: Mutex<HashSet<String>>,
+    /// Launch keys whose app has been handed an action invocation since it
+    /// started: an agent, another device or the person drove it, so a
+    /// window it then closes was closed on request.
+    acted_on: Mutex<HashSet<String>>,
     /// User launches still waiting for a window. This outlives the short
     /// placement claim: Wine's first window can announce `wineboot.exe` long
     /// after that claim expires, and it still belongs to the launch the
@@ -1027,6 +1031,7 @@ impl Default for SessionLaunches {
             surfaces: Mutex::default(),
             presented: Mutex::default(),
             vanished: Mutex::default(),
+            acted_on: Mutex::default(),
             awaiting_window: Mutex::default(),
             unresolved_owners: Mutex::default(),
             session_helpers: Mutex::default(),
@@ -3422,6 +3427,7 @@ pub(crate) fn note_surface_gone(surface_id: u64, closed: bool) {
     let key = lock(&session.surfaces).remove(&surface_id);
     if let Some(key) = key
         && !closed
+        && !lock(&session.acted_on).contains(&key)
     {
         tracing::error!(
             target: "tilo::app_launch",
@@ -3431,6 +3437,20 @@ pub(crate) fn note_surface_gone(surface_id: u64, closed: bool) {
         );
         lock(&session.vanished).insert(key);
     }
+}
+
+/// An action invocation was handed to the app of launch `key`. Driving an
+/// app through its actions is reaching it as much as a key or a click is.
+pub fn note_launch_acted_on(key: &str) {
+    lock(&LaunchSession::current().acted_on).insert(key.to_string());
+}
+
+/// Launch `key` started again: what was said of its previous run no
+/// longer holds.
+pub(crate) fn note_launch_restarted(key: &str) {
+    let session = LaunchSession::current();
+    lock(&session.vanished).remove(key);
+    lock(&session.acted_on).remove(key);
 }
 
 /// Whether a window of launch `key` went away without being closed since
@@ -3453,6 +3473,7 @@ pub(crate) fn clear_launched_for_test() {
     lock(&session.restartable_helpers).clear();
     lock(&session.presented).clear();
     lock(&session.vanished).clear();
+    lock(&session.acted_on).clear();
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
