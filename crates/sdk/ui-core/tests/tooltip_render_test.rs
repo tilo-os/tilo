@@ -53,15 +53,15 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
         Rect::new(120.0, 24.0, 160.0, 60.0),
     ];
     let mut buttons = [
-        Button::new("search", "", None)
+        Button::new("search", "")
             .with_icon(Icon::Search)
             .ghost()
             .tooltip("Search"),
-        Button::new("add", "", None)
+        Button::new("add", "")
             .with_icon(Icon::Plus)
             .ghost()
             .tooltip("New folder"),
-        Button::new("more", "", None)
+        Button::new("more", "")
             .with_icon(Icon::MoreHorizontal)
             .ghost()
             .tooltip("View options"),

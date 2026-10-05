@@ -1,9 +1,13 @@
 //! Exercise the production owner-worker backend, not the synchronous unit-test backend.
-#![allow(clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::expect_used, clippy::panic, reason = "test assertions")]
 
 use std::time::Duration;
 use tilo_content::ContentStore;
-use ui::headless::FrameHarness;
+use ui::framework::testing::TestApp;
+use ui::tilo_resource::Invoke;
+
+use pdf_viewer::PdfViewerShell;
+use pdf_viewer::actions::PdfViewerAction;
 
 fn require_raster_worker(path: &std::path::Path) {
     use pdf_viewer::source::{RasterEvent, RasterHandle};
@@ -26,24 +30,33 @@ fn require_raster_worker(path: &std::path::Path) {
 }
 
 #[test]
-fn capture_waits_for_production_visual_work_and_fails_when_unfinished() {
-    let content = ContentStore::memory();
+fn capture_waits_for_production_visual_work() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pdf");
     require_raster_worker(&path);
-    let mut harness = FrameHarness::new_with_theme(
-        ui::State::new(),
-        pdf_viewer::app_root_open_with_content(&path, content.clone()),
-        (1280, 800),
-        ui::theme::Theme::dark(),
-    )
-    .with_records(ui::RecordSet::in_memory(), automerge::AutoCommit::new());
-    harness
+    let profile = tempfile::tempdir().expect("profile");
+    let mut app = TestApp::<PdfViewerShell>::open_data_dir(profile.path())
+        .and_then(|app| app.relaunch(&[path.to_str().expect("utf-8 fixture path")]))
+        .expect("the reader launches on the fixture");
+    app.harness()
         .wait_for_visuals(tilo_test_env::hang_bound())
         .expect("production document open and visible images finish");
     assert!(
-        !harness.resources().is_empty(),
+        !app.harness().resources().is_empty(),
         "opened PDF exposes its resources"
     );
+    let opened = std::fs::read(&path).expect("opened bytes");
+    assert_eq!(
+        app.state().source.map(|source| source.hash),
+        Some(tilo_content::hash_bytes(&opened)),
+        "the record pins the bytes its markup is made against"
+    );
+    // The profile's content store is the one the reader keeps documents in.
+    let content = ContentStore::in_dir(profile.path().join("content"));
+    assert!(
+        content.has(&tilo_content::hash_bytes(&opened)),
+        "the opened document is kept in the content-addressed store"
+    );
+
     // Arrival of an imported payload must invalidate the materialised plan,
     // even though the CRDT plan itself does not change. (The opened file is
     // itself pinned in the store, so the import is a different PDF.)
@@ -52,48 +65,46 @@ fn capture_waits_for_production_visual_work_and_fails_when_unfinished() {
             .join("../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"),
     )
     .expect("fixture bytes");
-    assert!(
-        content.has(&tilo_content::hash_bytes(
-            &std::fs::read(&path).expect("opened bytes")
-        )),
-        "the opened document is kept in the content-addressed store"
-    );
     let hash = tilo_content::hash_bytes(&bytes);
     assert!(
         !content.has(&hash),
         "the imported payload must be absent before exercising hydration"
     );
-    pdf_viewer::PdfDoc::import_pages(
-        &mut harness.state_mut().doc,
-        Some("source-1"),
-        &[pdf_viewer::doc::PagePlanEntry {
-            id: "late-import".into(),
-            source_page: 1,
-            imported: Some(pdf_viewer::doc::ImportedPage {
-                hash: hash.clone(),
-                kind: "pdf".into(),
-                page: 1,
-                width_milli: 612_000,
-                height_milli: 792_000,
-            }),
-            rotation: 0,
-        }],
+    app.invoke(
+        Invoke::apply(&PdfViewerAction::ImportPages {
+            after_id: Some("source-1".into()),
+            pages: vec![pdf_viewer::doc::PagePlanEntry {
+                id: "late-import".into(),
+                source_page: 1,
+                imported: Some(pdf_viewer::doc::ImportedPage {
+                    hash: hash.clone(),
+                    kind: "pdf".into(),
+                    page: 1,
+                    width_milli: 612_000,
+                    height_milli: 792_000,
+                }),
+                rotation: 0,
+            }],
+        })
+        .expect("an import action"),
+    )
+    .expect("the owner imports pages");
+    app.harness().relayout();
+    assert!(
+        app.harness()
+            .wait_for_visuals(Duration::from_millis(30))
+            .is_err()
     );
-    harness.relayout();
-    assert!(harness.wait_for_visuals(Duration::from_millis(30)).is_err());
     assert_eq!(content.put(&bytes).ok(), Some(hash));
-    harness
+    app.harness()
         .wait_for_visuals(tilo_test_env::hang_bound())
         .expect("arrival of imported bytes completes page rendering");
+}
 
-    {
-        let mut harness = FrameHarness::new_with_theme(
-            ui::State::new(),
-            pdf_viewer::app_root_loading(),
-            (1280, 800),
-            ui::theme::Theme::dark(),
-        )
-        .with_records(ui::RecordSet::in_memory(), automerge::AutoCommit::new());
-        assert!(harness.wait_for_visuals(Duration::from_millis(5)).is_err());
+#[test]
+fn every_scenario_settles_into_a_capture() {
+    for scenario in <PdfViewerShell as ui::framework::ResourceApp>::scenarios() {
+        TestApp::<PdfViewerShell>::capture(Some(scenario))
+            .unwrap_or_else(|error| panic!("scenario {scenario} captures: {error}"));
     }
 }

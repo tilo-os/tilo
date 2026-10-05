@@ -88,8 +88,16 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 /// launcher reports it as a failed launch rather than a clean exit.
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
+#[cfg(feature = "native")]
+mod surface;
 #[cfg(all(windows, feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
+#[cfg(feature = "native")]
+pub use surface::AppSurface;
+#[cfg(feature = "native")]
+mod embedded;
+#[cfg(feature = "native")]
+pub use embedded::EmbeddedApp;
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
@@ -134,31 +142,6 @@ const ACTION_DIRECTORY_MAX_BYTES: usize = 64 * 1024;
 const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
-
-/// Portable, declared launcher payload used by any app that hands verified
-/// qdoc media to another installed app. The broker stages the bytes and owns
-/// the target process; the source app never supplies a local path.
-#[derive(serde::Deserialize)]
-struct ApplicationLaunchPayload {
-    app_id: String,
-    content_hash: String,
-}
-
-impl ApplicationLaunchPayload {
-    fn valid(&self) -> bool {
-        !self.app_id.is_empty()
-            && self.app_id.len() <= 128
-            && self
-                .app_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
-            && self.content_hash.len() == 64
-            && self
-                .content_hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }
-}
 
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
 /// `WindowEvent`(s) and routes through the same handler, so injected and
@@ -579,8 +562,6 @@ pub struct App {
         crate::collaboration::RouteSpec,
         crate::collaboration::CommittedDocument,
     )>,
-    /// To distinguish app-driven from compositor-driven transitions.
-    pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     persistence: PersistenceRuntime,
     autosave_generation: u64,
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
@@ -907,12 +888,14 @@ impl App {
         }
         let history = component.history.take();
         let behaviour = component.behaviour;
+        let input_surface_id = (behaviour.window == crate::application::WindowRole::InputSurface)
+            .then(|| component.app_id().to_owned());
         let Some(component) = assembly.component.take() else {
             return Err(crate::launch::LaunchError::Operation(
                 "component assembly no longer owns its component".to_owned(),
             ));
         };
-        let mut root = Box::new(crate::widget::BoundAppWidget { component });
+        let mut root = Box::new(crate::widget::BoundAppWidget::new(component));
         let mut root_custody = retirement_assembly::AppAssemblyCustody {
             retirement: assembly.retirement.take(),
             root: None,
@@ -940,6 +923,9 @@ impl App {
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
+        if let Some(app_id) = input_surface_id {
+            app.window.app_id = Some(app_id);
+        }
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {
@@ -1132,7 +1118,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: &mut focus,
@@ -1151,7 +1137,11 @@ impl App {
         };
         let activated = self
             .dispatch_node(focused, |widget, doc, root| {
-                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+                widget.perform_action(
+                    &crate::a11y::Action::Activate,
+                    &mut crate::widget::Edits::lend(doc),
+                    root,
+                )
             })
             .unwrap_or(false);
         if activated {
@@ -1290,7 +1280,7 @@ impl App {
         registration: crate::history_mode::HistoryRegistration,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.root_widget.sync(&self.state.doc, &self.state.root);
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
@@ -1409,7 +1399,7 @@ impl App {
         Self::with_parts(Some(scope), state, root, inputs)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn from_scoped_parts_with_controlled_custody(
         scope: crate::WakeScope,
         state: State,
@@ -2339,8 +2329,7 @@ impl App {
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
-        self.invalidate_widget_resource_cache();
+        self.sync_model(true);
         self.update_focusable_order();
     }
 
@@ -2429,7 +2418,7 @@ impl App {
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.root_widget.sync(&self.state.doc, &self.state.root);
         self.needs_sync = false;
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
@@ -2451,42 +2440,6 @@ impl App {
             };
         }
         self.invalidate_widget_resource_cache();
-    }
-
-    /// Pair with [`crate::persist::open`], which hands back the document the
-    /// previous session left plus its writer:
-    ///
-    /// ```ignore
-    /// let (state, autosave) = tilo_ui::persist::open("so.tilo.my-app");
-    /// tilo_ui::App::from_factory(state, my_app::app_root)
-    ///     .with_autosave(autosave)
-    ///     .run();
-    /// ```
-    #[must_use]
-    /// # Panics
-    /// Fails closed if the host storage lifetime counter is exhausted.
-    #[allow(
-        clippy::expect_used,
-        reason = "storage identity must fail closed rather than wrap and admit an old owner"
-    )]
-    #[cfg(feature = "native")]
-    pub(crate) fn history_storage_generation(&self) -> u64 {
-        self.autosave_generation
-    }
-    #[cfg(feature = "native")]
-    pub(crate) fn install_app_state_history(
-        &mut self,
-        definition: &'static crate::history_mode::HistoryDefinition,
-    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        if self.persistence.records.is_some() {
-            return Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner);
-        }
-        let registration = crate::history_mode::HistoryRegistration::installed_app_state(
-            definition,
-            self.persistence.autosave.as_ref(),
-            uuid::Uuid::new_v4(),
-        )?;
-        self.install_history(registration)
     }
 
     /// Inspect controlled launch composition without opening a native window.
@@ -2517,6 +2470,13 @@ impl App {
     pub fn with_window_app_id(mut self, app_id: impl Into<String>) -> Self {
         self.window.app_id = Some(app_id.into());
         self
+    }
+
+    /// The Wayland application id the window announces when it is not the
+    /// process's own package id: an input surface's, or one set with
+    /// [`Self::with_window_app_id`].
+    pub fn window_app_id(&self) -> Option<&str> {
+        self.window.app_id.as_deref()
     }
 
     /// `None` clears the override and restores automatic resolution.
@@ -2846,6 +2806,10 @@ mod number_input_layout_tests;
 #[path = "app/history_tests.rs"]
 pub(crate) mod framework_history_tests;
 
+#[cfg(test)]
+#[path = "app/person_record_tests.rs"]
+mod person_record_tests;
+
 #[path = "app/history.rs"]
 mod framework_history;
 
@@ -2870,44 +2834,6 @@ mod participant_invocation_tests;
 #[path = "app/large_document_tests.rs"]
 mod large_document_tests;
 
-/// Finish the current writer and every retained outgoing-owner failure before
-/// reporting widget-owned durability. Reports remain owned by the runner.
-///
-/// # Errors
-/// Returns the current writer failure or a retained owner's unresolved failure.
-pub(crate) fn flush_widget_owned_persistence(
-    root: &mut dyn Widget,
-    reports: &mut Vec<crate::application::ComponentCloseReport>,
-) -> Result<(), String> {
-    reports.extend(crate::component_lifecycle::take_component_close_reports(
-        root,
-    ));
-    let current = crate::component_lifecycle::try_flush_owned_persistence(root)
-        .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()));
-    reports.extend(crate::component_lifecycle::take_component_close_reports(
-        root,
-    ));
-    for report in reports.iter_mut() {
-        if report.record_error.is_some() && report.record_retry.is_some() {
-            // The report retains the actual outgoing owner and exact legacy
-            // record target. Successful retry clears only that owner's error.
-            let _ = report.retry_record();
-        }
-    }
-    current?;
-    for report in reports.iter() {
-        if let Some(error) = report
-            .record_error
-            .as_ref()
-            .or(report.view_error.as_ref())
-            .or(report.teardown_error.as_ref())
-        {
-            return Err(error.clone());
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod render_retry_tests {
     use super::*;
@@ -2930,12 +2856,11 @@ mod render_retry_tests {
 mod legacy_owner_routing_tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use std::{collections::HashMap, rc::Rc};
+    use std::collections::HashMap;
 
     struct OwnerProbe {
         label: &'static str,
         report: Option<crate::application::ComponentCloseReport>,
-        flushes: Rc<Cell<usize>>,
     }
 
     impl Widget for OwnerProbe {
@@ -2983,7 +2908,7 @@ mod legacy_owner_routing_tests {
             &mut self,
             target: &str,
             action: &crate::a11y::Action,
-            doc: &mut crate::widget::AppModel,
+            doc: &mut crate::widget::Edits<'_>,
             path: &crate::widget::ModelPath,
         ) -> bool {
             let (doc, _) = crate::doc::document(doc, path);
@@ -2992,7 +2917,8 @@ mod legacy_owner_routing_tests {
             }
             match action {
                 crate::a11y::Action::Activate => {
-                    doc.put(ROOT, "selected", format!("{} named", self.label))
+                    doc.document_mut()
+                        .put(ROOT, "selected", format!("{} named", self.label))
                         .unwrap();
                     true
                 }
@@ -3004,14 +2930,15 @@ mod legacy_owner_routing_tests {
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],
-            doc: &mut crate::widget::AppModel,
+            doc: &mut crate::widget::Edits<'_>,
             path: &crate::widget::ModelPath,
         ) -> bool {
             let (doc, _) = crate::doc::document(doc, path);
             if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
-            doc.put(ROOT, "selected", format!("{} keyed", self.label))
+            doc.document_mut()
+                .put(ROOT, "selected", format!("{} keyed", self.label))
                 .unwrap();
             true
         }
@@ -3022,14 +2949,6 @@ mod legacy_owner_routing_tests {
             &mut self,
         ) -> Vec<crate::application::ComponentCloseReport> {
             self.report.take().into_iter().collect()
-        }
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            assert!(
-                self.report.is_none(),
-                "the outgoing failure has moved into host custody"
-            );
-            self.flushes.set(self.flushes.get() + 1);
-            Some(Ok(()))
         }
     }
     impl crate::widget::AppWidget for OwnerProbe {
@@ -3056,7 +2975,6 @@ mod legacy_owner_routing_tests {
             crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(OwnerProbe {
                 label,
                 report: None,
-                flushes: Rc::new(Cell::new(0)),
             })));
         tile.bind_record(store.clone(), checkout.clone());
         tile
@@ -3163,35 +3081,6 @@ mod legacy_owner_routing_tests {
                     .unwrap(),
                 "first named"
             );
-        }
-
-        // Case `widget_owned_runner_rejects_outgoing_error_drained_before_final_flush`.
-        {
-            let flushes = Rc::new(Cell::new(0));
-            let probe = OwnerProbe {
-                label: "current owner",
-                flushes: Rc::clone(&flushes),
-                report: Some(crate::application::ComponentCloseReport {
-                    recovery: None,
-                    view_error: None,
-                    view_retry: None,
-                    record_error: Some("outgoing owner could not persist".into()),
-                    record_retry: None,
-                    record_retry_target: None,
-                    teardown_error: None,
-                }),
-            };
-            let inputs = crate::launch::LegacyLaunchInputs::new(
-                State::new(),
-                Box::new(probe),
-                crate::persist::DocWriter::disabled("fixture owns storage"),
-            )
-            .with_widget_owned_persistence();
-            assert_eq!(
-                crate::headless::run_initialized(&crate::headless::Spec::default(), inputs),
-                3
-            );
-            assert_eq!(flushes.get(), 1, "the current owner must still be flushed");
         }
     }
 }
@@ -3532,14 +3421,18 @@ pub(crate) mod ordinary_confirmation_tests {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut automerge::AutoCommit,
+            doc: &mut crate::widget::Edits<'_>,
             path: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
             let Some(request) = op
                 .unscoped()
                 .filter(|request| request.type_id == "fixture.control")
             else {
-                return self.child.start_operation(op, doc, path);
+                return self.child.start_operation(
+                    op,
+                    &mut crate::widget::Edits::lend(doc.document_mut()),
+                    path,
+                );
             };
             self.ledger
                 .borrow_mut()
@@ -3612,8 +3505,7 @@ pub(crate) mod ordinary_confirmation_tests {
         let ledger = Rc::new(RefCell::new(vec![]));
         let widget = Fixture {
             child: Box::new(
-                crate::widget::Button::new("ordinary-emitter", "Emit request", None)
-                    .on_action(binding),
+                crate::widget::Button::new("ordinary-emitter", "Emit request").on_action(binding),
             ),
             resources: resources.clone(),
             ledger: ledger.clone(),
@@ -3731,9 +3623,7 @@ pub(crate) mod ordinary_confirmation_tests {
             instance.mount(|_| {}).unwrap();
             let binding = instance.callback_binding();
             (
-                Box::new(crate::widget::BoundAppWidget {
-                    component: instance,
-                }),
+                Box::new(crate::widget::BoundAppWidget::new(instance)),
                 OwnerGuard::Component(binding, host),
             )
         } else {
@@ -3857,7 +3747,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.bindings.clear();
                     app.layout.node_map.clear();
                     app.focused_node = None;
-                    app.root_widget.sync(&mut app.state.doc, &app.state.root);
+                    app.root_widget.sync(&app.state.doc, &app.state.root);
                     layout(app)
                 }
                 Self::Driver(driver) => driver.relayout(),
@@ -4333,7 +4223,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     move |_, _| projection.get(),
                     move |changed| values[usize::from(*changed)].take().unwrap(),
                 );
-                model.sync(&mut automerge::AutoCommit::new(), &automerge::ROOT);
+                model.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
                 let mut host = Host::new(native, old_guard.managed(Box::new(model)));
                 host.activate("Emit request");
                 host.value("CONFIRM");

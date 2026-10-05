@@ -177,7 +177,7 @@ impl StandaloneHistoryHost {
             session: None,
             session_id: None,
             toolbar: Some(
-                Button::new("standalone-history-open", "standalone-history-title", None)
+                Button::new("standalone-history-open", "standalone-history-title")
                     .on_action(binding)
                     .with_enabled(false),
             ),
@@ -342,7 +342,7 @@ impl StandaloneHistoryHost {
                 .shortcut(platform)
                 .label(platform);
             self.search = Some(
-                Button::new("standalone-search-open", "standalone-search-title", None)
+                Button::new("standalone-search-open", "standalone-search-title")
                     .tooltip(format!(
                         "{} ({shortcut})",
                         I18nManager::lookup_plain("standalone-search-title")
@@ -959,7 +959,7 @@ impl StandaloneHistoryHost {
         content_origin
     }
 
-    pub(crate) fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    pub(crate) fn sync(&mut self, doc: &AutoCommit, path: &ObjId) {
         for button in self.in_window_controls_mut() {
             button.sync(doc, path);
         }

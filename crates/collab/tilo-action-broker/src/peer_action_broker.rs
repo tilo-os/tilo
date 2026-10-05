@@ -332,6 +332,7 @@ impl CapnpBrokerState {
                     request.peer_id,
                     offered,
                     InvocationInputs {
+                        caller: None,
                         execution: None,
                         argument: request.argument.as_deref(),
                         actor: &actor,

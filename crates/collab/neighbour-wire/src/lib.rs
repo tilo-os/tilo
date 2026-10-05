@@ -391,6 +391,33 @@ pub enum NeighbourMsg {
         user_public_key: [u8; 32],
         update: Box<tilo_user_identity::DirectoryUpdate>,
     },
+    /// A device asking the room for one piece of content a record of
+    /// `app_id` in room `cluster_id` refers to, by its BLAKE3 `hash`. Rides
+    /// the room's topic, so only peers admitted to read the room see it;
+    /// any of them holding the content answers with
+    /// [`Self::RecordContentPiece`]. Appended to preserve every existing
+    /// Postcard discriminant.
+    RecordContentWant {
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
+    /// One bounded piece of a record's content, answering `requester`'s
+    /// [`Self::RecordContentWant`]: `bytes` start at `offset` of the
+    /// `total`-byte content named by `hash`. The receiver keeps the content
+    /// only once every piece arrived and the bytes hash to `hash`. Appended
+    /// to preserve every existing Postcard discriminant.
+    RecordContentPiece {
+        responder: PeerId,
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+        total: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
 }
 
 #[cfg(test)]
@@ -731,6 +758,28 @@ mod tests {
                 },
             ),
             (
+                "record content want",
+                NeighbourMsg::RecordContentWant {
+                    requester: 0x00AB_CDEF,
+                    app_id: "so.tilo.slides".into(),
+                    cluster_id: "room".into(),
+                    hash: "ab".into(),
+                },
+            ),
+            (
+                "record content piece",
+                NeighbourMsg::RecordContentPiece {
+                    responder: 0x123_456,
+                    requester: 0x00AB_CDEF,
+                    app_id: "so.tilo.slides".into(),
+                    cluster_id: "room".into(),
+                    hash: "ab".into(),
+                    total: 3,
+                    offset: 0,
+                    bytes: vec![1, 2, 3],
+                },
+            ),
+            (
                 "scrollback request",
                 NeighbourMsg::ScrollbackRequest {
                     artifact: artifact(0x33),
@@ -799,10 +848,12 @@ mod tests {
             NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
             NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
             NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
+            NeighbourMsg::RecordContentWant { .. } => "RecordContentWant",
+            NeighbourMsg::RecordContentPiece { .. } => "RecordContentPiece",
         }
     }
 
-    const VARIANT_COUNT: usize = 26;
+    const VARIANT_COUNT: usize = 28;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -941,6 +992,14 @@ mod tests {
                 "0def9baf05056e6f7465732436623366396131302d303030302d343030302d38",
                 "3030302d303030303030303030303063020405020308",
             ),
+        ),
+        (
+            "record content want",
+            "1aef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
+        ),
+        (
+            "record content piece",
+            "1bd6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162030003010203",
         ),
         (
             "scrollback request",

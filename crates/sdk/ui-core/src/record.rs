@@ -36,6 +36,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 mod native_file;
 pub use native_file::{FileHistoryReader, InitialFileHistory};
+pub mod person;
 pub mod transfer;
 
 /// Key, in a record's own document, of the map holding its identity.
@@ -2172,6 +2173,30 @@ impl RecordOwners {
         package_id: &str,
         workspace_id: &str,
     ) -> Result<RecordStore, RecordOpenError> {
+        self.open_with(package_id, workspace_id, true)
+    }
+
+    /// The owner of `package_id`'s records in the person's own room `room`
+    /// ([`person`]). Unlike [`Self::open`] it never joins a native
+    /// component's construction: the person's records are opened beside the
+    /// component's own and are not the history it was launched to read.
+    ///
+    /// # Errors
+    /// Rejects an invalid package or room.
+    pub fn open_person(
+        &mut self,
+        package_id: &str,
+        room: &str,
+    ) -> Result<RecordStore, RecordOpenError> {
+        self.open_with(package_id, room, false)
+    }
+
+    fn open_with(
+        &mut self,
+        package_id: &str,
+        workspace_id: &str,
+        joins_construction: bool,
+    ) -> Result<RecordStore, RecordOpenError> {
         if self.portable.is_some() {
             app_state::validate_record_namespace(package_id, workspace_id)?;
         } else {
@@ -2198,9 +2223,7 @@ impl RecordOwners {
             portable: self.portable.clone(),
             pending: HashMap::new(),
             next_reservation: 0,
-            native_initial: self
-                .portable
-                .is_none()
+            native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
             file_mode_selected: false,
@@ -2667,6 +2690,12 @@ impl RecordStore {
     }
     /// The package and home workspace (room) this store's records belong
     /// to, which name their replication route.
+    /// The durable store this set's records live in, when it has one.
+    pub(crate) fn backend(&self) -> Option<Rc<dyn DurableStore>> {
+        let set = self.0.borrow();
+        set.backend.clone().or_else(|| set.documents.clone())
+    }
+
     pub fn package_and_home(&self) -> (String, String) {
         let set = self.0.borrow();
         (set.package_id.clone(), set.home.clone())

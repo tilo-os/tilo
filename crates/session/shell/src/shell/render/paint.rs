@@ -6358,9 +6358,27 @@ mod tests {
             state: ElementState::Released,
             button: MouseButton::Left,
         };
-        let _ = frame.dispatch_event(&cursor, &modifiers, document, &ROOT, focus);
-        let pressed = frame.dispatch_event(&press, &modifiers, document, &ROOT, focus);
-        let released = frame.dispatch_event(&release, &modifiers, document, &ROOT, focus);
+        let _ = frame.dispatch_event(
+            &cursor,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
+        let pressed = frame.dispatch_event(
+            &press,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
+        let released = frame.dispatch_event(
+            &release,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
         assert!(
             pressed || released,
             "native benchmark target {target:?} must handle click"

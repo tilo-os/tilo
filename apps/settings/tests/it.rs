@@ -50,8 +50,6 @@ mod no_app_title_header;
 mod scroll;
 #[path = "search_focus.rs"]
 mod search_focus;
-#[path = "shots_smoke.rs"]
-mod shots_smoke;
 
 #[path = "composition_balance.rs"]
 mod composition_balance;

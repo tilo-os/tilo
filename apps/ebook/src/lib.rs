@@ -7,8 +7,8 @@
 //! [`paint`] (palettes + drawing), and [`app`] (the retained-mode
 //! [`Widget`](ui::widget::Widget) composing the shelf and reader).
 //!
-//! [`app_root`] is the one integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! [`EbookShell`] is the app: every host mounts its [`definition`], and the
+//! binary runs it.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -49,37 +49,17 @@ pub mod model;
 pub mod paginate;
 pub mod paint;
 mod reader_bubble;
+mod reader_keys;
 pub mod reader_theme;
 mod reading_settings;
 pub mod resource;
+mod scenarios;
 pub mod search_provider;
 mod shelf_controls;
 #[cfg(test)]
 mod test_epub;
-mod web_file;
 pub mod xhtml;
 
 pub use app::BooksApp;
 pub use component::definition;
-
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn ui::widget::Widget> {
-    Box::new(BooksApp::new())
-}
-
-/// Build the reader opened directly on the `.epub` at `path` — the entry point
-/// the OS uses when the reader is the handler for a book file.
-pub fn app_root_for_path(path: &std::path::Path) -> Box<dyn ui::widget::Widget> {
-    Box::new(BooksApp::open_path(path))
-}
-
-/// Like [`app_root`] but staged with a named scenario for the headless
-/// `--shots` renderer. See [`BooksApp::seed_shot_scenario`] for the
-/// recognised names; an empty/unknown name yields the default frame.
-pub fn app_root_for_shot(scenario: &str) -> Box<dyn ui::widget::Widget> {
-    let mut app = BooksApp::new();
-    app.seed_shot_scenario(scenario);
-    Box::new(app)
-}
-pub use resource::launch_spec;
-pub use resource::{Ebook, EbookShell, EbookState, standalone_launch};
+pub use resource::{BooksEffect, Ebook, EbookShell, EbookState};

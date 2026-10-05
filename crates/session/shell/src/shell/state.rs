@@ -535,6 +535,14 @@ pub fn local_user_id() -> UserId {
     std::env::var("USER").unwrap_or_else(|_| "local".to_string())
 }
 
+/// Whether `room` is the local person's own room. It is never a workspace:
+/// it has no roster to invite anyone into, and its records travel only
+/// between that person's devices, so no invite, enrollment or continuation
+/// may turn it into a room collaborators share.
+pub fn is_local_person_room(room: RoomId) -> bool {
+    collab_types::person_room_of(&local_user_id()) == Some(room.as_uuid())
+}
+
 /// Identity acting in a specific durable room.
 ///
 /// Registry errors fail back to the session identity for compatibility, but
@@ -2282,11 +2290,27 @@ impl WorkspaceTree {
         // resource limits (and resets the patch log, see `sync_room_doc`);
         // it reports a refusal as text, so keep this API's error type and
         // the detail in the log.
-        let candidate = tilo_peer_state::room::candidate(self.room_docs.get(&room), changes)
-            .map_err(|error| {
-                tracing::warn!(%error, room = %room, "room changes refused");
-                automerge::AutomergeError::Fail
-            })?;
+        // A local rename may still live only in the cache when a delayed
+        // reply arrives. Stage it in a copy of the existing room document
+        // before merging, so projection cannot erase it. Keep this private:
+        // a malformed or unauthorized reply must leave our heads unchanged.
+        let mut staged_before = None;
+        if self.governs_room(room)
+            && let Some(before) = self.room_docs.get(&room)
+            && let Some(workspace) = self.workspace_in_room(room)
+            && let Some(name) = Self::extract_governed_fields(before).0
+            && name != workspace.name
+        {
+            use automerge::transaction::Transactable as _;
+            let mut staged = before.clone();
+            staged.put(automerge::ROOT, "name", workspace.name.clone())?;
+            staged_before = Some(staged);
+        }
+        let before = staged_before.as_ref().or_else(|| self.room_docs.get(&room));
+        let candidate = tilo_peer_state::room::candidate(before, changes).map_err(|error| {
+            tracing::warn!(%error, room = %room, "room changes refused");
+            automerge::AutomergeError::Fail
+        })?;
 
         if Self::declared_room_mismatches(&candidate, room) {
             return Ok(false);
@@ -2801,7 +2825,7 @@ impl WorkspaceTree {
     /// Existing join semantics for an unpublished owner candidate. No state,
     /// filesystem authority, relay export or publisher side effects occur here.
     pub(crate) fn set_room_in_memory(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
-        if room.is_nil() {
+        if room.is_nil() || is_local_person_room(room) {
             return false;
         }
         // Joining a room some other local workspace is already in is not a
@@ -3844,6 +3868,7 @@ impl WorkspaceTree {
     /// The room's authenticated sync response supplies its real name/layout.
     pub fn adopt_continuation_room(&mut self, room: RoomId, _source_device: &str) -> bool {
         if room.is_nil()
+            || is_local_person_room(room)
             || self
                 .desktop
                 .workspaces
@@ -3870,11 +3895,12 @@ impl WorkspaceTree {
     /// This is membership, not a continuation offer, so turning app
     /// continuations off does not remove it.
     pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
-        if self
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.room == room)
+        if is_local_person_room(room)
+            || self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
         {
             return false;
         }
@@ -3897,7 +3923,7 @@ impl WorkspaceTree {
         person: &UserId,
         governor: Option<&PeerOrigin>,
     ) -> bool {
-        if room.is_nil() {
+        if room.is_nil() || is_local_person_room(room) {
             return false;
         }
         if let Some(index) = self

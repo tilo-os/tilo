@@ -337,7 +337,6 @@ impl Session {
             self.publish_chat(&::chat::actions::send_message_action(
                 &summons.channel,
                 &reply,
-                &self.cfg.agent_id,
                 now(),
                 "",
                 Some(summons.message.clone()),
@@ -358,7 +357,7 @@ impl Session {
         // Wait only when an explicit carried subject names an absent owning
         // app. Waiting is not pause, and nothing has been dispatched.
         if let Some(resource) = summons.subject.resource() {
-            let namespace = surface::app_of(resource);
+            let namespace = surface::namespace_of(summons.subject.kind(), resource);
             if !self
                 .held()
                 .iter()
@@ -405,7 +404,7 @@ impl Session {
             else {
                 continue;
             };
-            let offers = self.offers(&self.held(), &self.view(None));
+            let offers = self.offers(&self.held());
             let Some(offer) = surface::find(&offers, id).cloned() else {
                 return self.chat_refused("That action is no longer offered.");
             };

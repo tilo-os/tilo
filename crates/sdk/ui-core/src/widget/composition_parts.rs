@@ -77,14 +77,14 @@ macro_rules! retained_parts {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut AutoCommit,
+            doc: &mut crate::widget::Edits<'_>,
             path: &ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
             crate::widget::start_in_children(self, op, doc, path)
         }
         fn update(
             &mut self,
-            state: &mut crate::widget::AppModel,
+            state: &crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
             let mut changed = false;
@@ -93,7 +93,7 @@ macro_rules! retained_parts {
             }
             changed
         }
-        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             for child in &mut self.parts.children {
                 child.sync(state, path);
             }
@@ -203,7 +203,7 @@ mod tests {
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,
-            doc: &mut AutoCommit,
+            doc: &mut crate::widget::Edits<'_>,
             path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
             let request = op.unscoped().expect("a local operation");
@@ -212,7 +212,9 @@ mod tests {
             assert_eq!(request.payload, b"payload");
             self.calls.borrow_mut().push(request.invocation);
             if self.accepts {
-                doc.put(path, "admitted", "mutable follow-up").unwrap();
+                doc.document_mut()
+                    .put(path, "admitted", "mutable follow-up")
+                    .unwrap();
                 Ok(Some(ResourceOperationStart::Accepted))
             } else {
                 Ok(None)
@@ -250,7 +252,11 @@ mod tests {
                 "mutable.effect",
                 b"payload",
             )
-            .start(root.as_mut(), &mut doc, &path)
+            .start(
+                root.as_mut(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &path,
+            )
             .unwrap();
             assert_eq!(
                 &*calls.borrow(),

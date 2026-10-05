@@ -667,7 +667,7 @@ impl Widget for OverviewPanel {
         }
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         false
     }
 

@@ -30,8 +30,9 @@ use std::collections::HashMap;
 use super::SettingsApp;
 use automerge::AutoCommit;
 use taffy::{NodeId, TaffyTree};
+use ui::framework::HostDelivery as _;
 use ui::text_render::TextRenderer;
-use ui::widget::{ResourceOperation, Widget};
+use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NativeKeyCode, PhysicalKey, SmolStr};
@@ -113,7 +114,7 @@ impl Harness {
     /// the focusable order. Mirrors `shots::render_to_path` + `App::init_layout`.
     fn layout(&mut self) {
         let theme = ui::Theme::dark();
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let app_node = self.app.build_layout(&mut taffy, &theme, &mut node_map);
@@ -129,7 +130,7 @@ impl Harness {
                 &[app_node],
             )
             .unwrap();
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
         let measure_map = node_map.clone();
         let mut tr = TextRenderer::new();
         taffy
@@ -152,7 +153,7 @@ impl Harness {
         // Settling sync — the just-built leaf controls (search field, rows)
         // read back their bound CRDT values (this is what the shots harness
         // and the live app do after a structural rebuild).
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
 
         self.taffy = taffy;
         self.node_map = node_map;
@@ -228,7 +229,7 @@ impl Harness {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut self.doc,
+                    state: ui::widget::Edits::lend(&mut self.doc),
                     path: &root(),
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -248,13 +249,10 @@ impl Harness {
                 let payload = serde_json::to_vec(control).unwrap();
                 let started = self
                     .app
-                    .start_operation(
-                        &ResourceOperation::local(
-                            tilo_actions::InvocationId::new(),
-                            tilo_actions::OperationKind::View,
-                            "tilo.ui.control.invoke",
-                            &payload,
-                        ),
+                    .start_encoded(
+                        tilo_actions::OperationKind::View,
+                        "tilo.ui.control.invoke",
+                        &payload,
                         &mut self.doc,
                         &root(),
                     )
@@ -280,7 +278,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &root(),
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -293,7 +291,7 @@ impl Harness {
         }
         // Frame: sync consumes the field's SEARCH_KEY write; a changed query
         // flags a structure rebuild, which we run preserving focus by ordinal.
-        self.app.sync(&mut self.doc, &root());
+        self.app.sync(&self.doc, &root());
         if Widget::take_structure_dirty(&mut self.app) {
             self.rebuild();
         }
@@ -404,7 +402,7 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut h.doc,
+                state: ui::widget::Edits::lend(&mut h.doc),
                 path: &root(),
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -415,7 +413,7 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
         let immediate = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
         assert_eq!(immediate["local_search_text"], "");
         assert_eq!(immediate["synchronized_search_query"], "z");
-        h.app.sync(&mut h.doc, &root());
+        h.app.sync(&h.doc, &root());
         if h.app.take_structure_dirty() {
             h.rebuild();
         }
@@ -485,7 +483,7 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     let back = h.app.back_button_rect();
     assert!(back.width() > 0.0);
     h.click(back.center());
-    h.app.sync(&mut h.doc, &root());
+    h.app.sync(&h.doc, &root());
     if h.app.take_structure_dirty() {
         h.rebuild();
     }
@@ -508,7 +506,7 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut h.doc,
+            state: ui::widget::Edits::lend(&mut h.doc),
             path: &root(),
             handled: &mut false,
             focus_target: &mut None,
@@ -516,7 +514,7 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
             taffy: &h.taffy,
         },
     );
-    h.app.sync(&mut h.doc, &root());
+    h.app.sync(&h.doc, &root());
     if h.app.take_structure_dirty() {
         h.rebuild();
     }

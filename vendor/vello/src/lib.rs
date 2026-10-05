@@ -2544,19 +2544,17 @@ impl Renderer {
             *target.as_image().unwrap(),
             texture,
         )];
-        let submission = self
-            .engine
-            .run_recording_with_post_render_checked_indexed(
-                device,
-                queue,
-                &self.recording,
-                &external_resources,
-                "render_to_texture",
-                post_render,
-                before_submit,
-                #[cfg(feature = "wgpu-profiler")]
-                &mut self.profiler,
-            )?;
+        let submission = self.engine.run_recording_with_post_render_checked_indexed(
+            device,
+            queue,
+            &self.recording,
+            &external_resources,
+            "render_to_texture",
+            post_render,
+            before_submit,
+            #[cfg(feature = "wgpu-profiler")]
+            &mut self.profiler,
+        )?;
         if let Some(bump_buf) = bump_buf {
             self.budget.begin_readback(&self.engine, bump_buf);
         }
@@ -3973,6 +3971,63 @@ mod tests {
         assert_eq!(
             renderer.poll_bump_budget(&device),
             Ok(BumpBudgetPoll::Complete { overflowed: false })
+        );
+    }
+
+    /// One filled zigzag across a 512x512 target: 2000 nearly horizontal
+    /// edges, each crossing about 32 tiles, so about 64K segments from a
+    /// single path and very few lines.
+    fn zigzag_scene() -> Scene {
+        let mut path = BezPath::new();
+        path.move_to((8.0, 4.0));
+        for i in 0..2000_u32 {
+            let x = if i % 2 == 0 { 504.0 } else { 8.0 };
+            path.line_to((x, 4.0 + f64::from(i) * 0.25));
+        }
+        path.close_path();
+        let mut scene = Scene::new();
+        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &path);
+        scene
+    }
+
+    /// The segments buffer holds fewer elements per byte than the counts
+    /// buffer, so a binding limit can cap it below counts that fit. That
+    /// frame must report its overflow, so the caller repaints, instead of
+    /// drawing with segments written past the end of their buffer.
+    #[test]
+    fn segments_capped_by_the_binding_limit_report_their_overflow() {
+        let (device, queue) = checked_bump_device();
+        let params = RenderParams {
+            base_color: Color::BLACK,
+            width: 512,
+            height: 512,
+            antialiasing_method: AaConfig::Area,
+        };
+        let (_texture, view) = damage_target_with_size(&device, &queue, 512, 512);
+        let scene = zigzag_scene();
+        let overflows = |renderer: &mut Renderer| {
+            renderer
+                .render_to_texture(&device, &queue, &scene, &view, &params)
+                .unwrap();
+            renderer.settle_bump_budget(&device)
+        };
+
+        let mut roomy = Renderer::new(&device, RendererOptions::default()).unwrap();
+        assert!(!overflows(&mut roomy), "the scene fits a renderer's floors");
+
+        let mut capped = Renderer::new(&device, RendererOptions::default()).unwrap();
+        capped.budget.set_device_limits(&wgpu::Limits {
+            max_storage_buffer_binding_size: 1 << 20,
+            max_buffer_size: 1 << 20,
+            ..device.limits()
+        });
+        assert!(
+            overflows(&mut capped),
+            "an overflow past the cap is reported"
+        );
+        assert!(
+            overflows(&mut capped),
+            "a cap that cannot grow keeps reporting, frame after frame"
         );
     }
 
