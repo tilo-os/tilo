@@ -29,7 +29,7 @@ pub fn tilo_to_store_item(
         verified,
         registry_name,
         installed_index,
-        tilo_app_package::version::ReleaseChannel::Stable,
+        app_cli::ReleaseChannel::Stable,
     )
 }
 
@@ -42,7 +42,7 @@ pub fn tilo_to_store_item_on_channel(
     verified: &VerifiedEntry,
     registry_name: &str,
     installed_index: &[InstalledPackage],
-    channel: tilo_app_package::version::ReleaseChannel,
+    channel: app_cli::ReleaseChannel,
 ) -> StoreItem {
     let entry = &verified.entry;
     // A build that needs system interfaces this OS does not serve is never
@@ -50,8 +50,7 @@ pub fn tilo_to_store_item_on_channel(
     let mut versions: Vec<StoreItemVersion> = app_cli::installable_versions(entry, channel)
         .map(tilo_version_to_store)
         .collect();
-    versions
-        .sort_by(|left, right| tilo_app_package::version::compare(&right.version, &left.version));
+    versions.sort_by(|left, right| app_cli::compare_versions(&right.version, &left.version));
     let latest = versions
         .first()
         .map(|v| v.version.clone())
