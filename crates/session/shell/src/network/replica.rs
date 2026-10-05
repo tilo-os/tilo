@@ -449,8 +449,11 @@ mod tests {
                 .iter()
                 .find(|w| w.id == workspace)
                 .expect("workspace");
-            assert_eq!(workspace.name, "Renamed locally");
-            assert_eq!(workspace.owner.as_deref(), Some(ROOM_A_OWNER));
+            let name = workspace.name.clone();
+            let owner = workspace.owner.clone();
+            drop(tree);
+            assert_eq!(name, "Renamed locally");
+            assert_eq!(owner.as_deref(), Some(ROOM_A_OWNER));
         }
     }
 
