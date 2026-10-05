@@ -135,6 +135,10 @@ def inspect_app(app, plan):
     if plan['app']['icon_sha256']:
         allowed_files.add(app / 'Contents/Resources/AppIcon.icns')
     for path in app.rglob('*'):
+        if plan.get('font_catalog') and path == app / fonts.LOOKUP_LINK:
+            # The exact relative in-bundle target was checked above. Other
+            # symlinks remain forbidden by this private bundle adapter.
+            continue
         if path.is_symlink() or (path.is_file() and path not in allowed_files):
             raise ValueError(f'unexpected bundle content: {path.relative_to(app)}')
         if path.is_file() and os.access(path, os.X_OK) and path not in code:
@@ -146,7 +150,7 @@ def inspect_app(app, plan):
     if extended:
         macos_files.add(app / extended['main_real'])
     if plan.get('font_catalog'):
-        macos_files.add(app / fonts.DESTINATION)
+        macos_files.add(app / fonts.LOOKUP_LINK)
     if set((app / 'Contents/MacOS').iterdir()) != macos_files:
         raise ValueError('unexpected helper directory contents')
     result = {'runtime': facts, 'app': runtime.image_info(main, 'arm64', 15),

@@ -31,6 +31,8 @@ class FontCatalogTests(unittest.TestCase):
         self.stage()
         fonts.inspect(self.app, self.plan)
         catalog = self.app / fonts.DESTINATION
+        self.assertTrue((self.app / fonts.LOOKUP_LINK).is_symlink())
+        self.assertEqual((self.app / fonts.LOOKUP_LINK).readlink(), Path('../Resources/fonts'))
         self.assertEqual((catalog / 'manifest.toml').read_bytes(),
                          (ROOT / 'crates/sdk/font-catalog/manifest.toml').read_bytes())
         self.assertTrue((catalog / 'NotoSansCJK-VF.ttc').is_file())
@@ -78,10 +80,22 @@ class FontCatalogTests(unittest.TestCase):
 
     def test_escaping_destination_rejected_before_writes(self):
         plan = copy.deepcopy(self.plan)
-        plan['files']['Contents/MacOS/fonts/../../outside'] = next(iter(plan['files'].values()))
+        plan['files']['Contents/Resources/fonts/../../outside'] = next(iter(plan['files'].values()))
         with self.assertRaisesRegex(ValueError, 'escapes'):
             self.stage(plan)
         self.assertFalse((self.app / fonts.DESTINATION).exists())
+
+    def test_lookup_link_must_be_exact_and_stay_inside_bundle(self):
+        self.stage()
+        link = self.app / fonts.LOOKUP_LINK
+        link.unlink()
+        link.symlink_to(ROOT / 'crates/sdk/ui-core/assets/fonts')
+        with self.assertRaisesRegex(ValueError, 'lookup link'):
+            fonts.inspect(self.app, self.plan)
+        link.unlink()
+        link.mkdir()
+        with self.assertRaisesRegex(ValueError, 'lookup link'):
+            fonts.inspect(self.app, self.plan)
 
     def test_invalid_source_paths_reject_symlinks_and_traversal(self):
         source = self.root / 'font.ttf'
