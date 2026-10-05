@@ -18,3 +18,10 @@ store-device-version-unavailable = No version from this repository can run on th
 store-device-provided-version = Provided by this device · version { $version }
 store-device-repository-refresh = { $name } needs a repository refresh by this device’s administrator. Other repositories remain available.
 store-repository-read-error = Could not read { $name }: { $error }
+
+store-flathub-account = Use Flathub for my apps
+store-flatpak-unavailable = Flatpak unavailable
+store-flatpak-checking = Checking Flatpak availability on this device…
+store-flathub-account-missing = This repository is no longer configured.
+store-flathub-account-source = Only the enabled device Flathub repository can be used for this account.
+store-flathub-account-existing = Flathub is already configured for this account. Its configuration will not be replaced.
