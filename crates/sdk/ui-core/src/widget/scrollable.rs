@@ -479,6 +479,21 @@ impl Scrollable {
         )
     }
 
+    /// What the content is clipped to when it paints: the viewport, grown
+    /// sideways by `row_bleed` where the viewport does not scroll that way.
+    /// A row's hover and selection lift stands that far outside the content
+    /// edge by design, so a list flush with a vertical scroller's edges
+    /// keeps its rounded lift instead of a band cut square at the edge.
+    /// Hit-testing and culling stay on [`Self::content_viewport_rect`].
+    fn paint_clip_rect(&self, theme: &Theme) -> Rect {
+        let viewport = self.content_viewport_rect();
+        if matches!(self.axis, ScrollAxis::Vertical) {
+            viewport.inflate(crate::chrome::row_bleed(theme), 0.0)
+        } else {
+            viewport
+        }
+    }
+
     pub fn set_content_size(&mut self, w: f32, h: f32) {
         self.content_w = w;
         self.content_h = h;
@@ -1581,7 +1596,7 @@ impl Widget for Scrollable {
             BlendMode::default(),
             1.0,
             transform,
-            &self.content_viewport_rect(),
+            &self.paint_clip_rect(theme),
         );
         let previous_viewport = presence.push_viewport(self.content_viewport_rect());
         if let Some(c) = &mut self.child {
@@ -1614,7 +1629,7 @@ impl Widget for Scrollable {
             BlendMode::default(),
             1.0,
             transform,
-            &self.content_viewport_rect(),
+            &self.paint_clip_rect(theme),
         );
         let prev_vp = presence.push_viewport(self.content_viewport_rect());
         if let Some(c) = &mut self.child {
