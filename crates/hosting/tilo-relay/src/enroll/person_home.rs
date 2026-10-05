@@ -684,13 +684,67 @@ pub mod local {
         owner: libc::uid_t,
         mode: libc::mode_t,
     ) -> io::Result<()> {
+        replace_entry(dir, name, bytes, Some(owner), mode)
+    }
+
+    /// Atomically replace `name` inside a directory several accounts share,
+    /// whoever wrote the previous file: as [`replace_owned_file`], but an
+    /// existing regular file of any owner is replaced as a directory entry.
+    /// A link or anything else in its place is refused.
+    pub fn replace_shared_file(
+        dir: &OwnedFd,
+        name: &str,
+        bytes: &[u8],
+        mode: libc::mode_t,
+    ) -> io::Result<()> {
+        replace_entry(dir, name, bytes, None, mode)
+    }
+
+    /// Open `name` inside a shared directory `dir` as a directory without
+    /// following a link, whoever owns it, creating it with the parent's
+    /// permission bits (set-group-ID included) when missing. A directory
+    /// anyone may write is refused.
+    pub fn open_shared_subdir(dir: &OwnedFd, name: &str) -> io::Result<OwnedFd> {
+        let c = c_name(name)?;
+        let wanted = fstat(dir)?.st_mode & 0o7777;
+        // SAFETY: `dir` is open and `c` is NUL-terminated.
+        if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), wanted & 0o777) } == 0 {
+            // SAFETY: as above.
+            let fd = from_raw(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), DIR_FLAGS) })?;
+            // Whatever the umask, the new directory is reachable like its
+            // parent; through the descriptor just created, never a link.
+            // SAFETY: `fd` is open.
+            if unsafe { libc::fchmod(fd.as_raw_fd(), wanted) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        // SAFETY: `dir` is open and `c` is NUL-terminated.
+        let fd = from_raw(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), DIR_FLAGS) })?;
+        let stat = fstat(&fd)?;
+        if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return Err(invalid(format!("{name} is not a directory")));
+        }
+        if stat.st_mode & 0o002 != 0 {
+            return Err(invalid(format!("{name} is writable by every account")));
+        }
+        Ok(fd)
+    }
+
+    fn replace_entry(
+        dir: &OwnedFd,
+        name: &str,
+        bytes: &[u8],
+        owner: Option<libc::uid_t>,
+        mode: libc::mode_t,
+    ) -> io::Result<()> {
         let target = c_name(name)?;
         let existing = stat_at(dir, &target)?;
         if let Some(stat) = &existing
-            && (stat.st_mode & libc::S_IFMT != libc::S_IFREG || stat.st_uid != owner)
+            && (stat.st_mode & libc::S_IFMT != libc::S_IFREG
+                || owner.is_some_and(|owner| stat.st_uid != owner))
         {
             return Err(invalid(format!(
-                "{name} is not a regular file belonging to uid {owner}"
+                "{name} is not a regular file this account may replace"
             )));
         }
         let mode = mode & 0o777;

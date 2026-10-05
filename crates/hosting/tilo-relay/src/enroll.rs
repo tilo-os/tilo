@@ -412,41 +412,64 @@ fn fleet_revokes_device(
     Ok(revocations.is_revoked(&device))
 }
 
-/// Create `directory` if needed and give it its parent's permission bits
-/// (including set-group-ID), so a directory an enrollment adds to the shared
-/// device-trust layout is reachable the way its parent is, whatever the umask
-/// this ran under. A directory this process neither owns nor could change is
-/// left as it is.
-fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(directory)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-        let parent = directory
-            .parent()
-            .context("shared directory has no parent")?;
-        let wanted = std::fs::metadata(parent)?.mode() & 0o7777;
-        let current = std::fs::symlink_metadata(directory)?;
-        if !current.is_dir() {
-            bail!("{} is not a directory", directory.display());
+/// Publish a public identity file under `identity_root`, at `relative`
+/// (`user-identity/pubkey.bin`, `device/cert.bin` or
+/// `device/certs/<identity>.bin`).
+///
+/// The device-trust directories are writable by the device-trust group, so
+/// a member could swap a directory on the way for a link. Each component is
+/// opened from the one before without following a link, the identity root
+/// and the top-level directory must be root's (when this runs as root) and
+/// not writable by every account, a missing subdirectory is created like its
+/// parent, and the file is created exclusively and renamed into place inside
+/// the directory that was checked, with the public mode whatever the umask.
+fn publish_device_file(
+    identity_root: &std::path::Path,
+    relative: &std::path::Path,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    use person_home::local;
+    let components: Vec<&str> = relative
+        .iter()
+        .map(|part| part.to_str().context("identity file path is not UTF-8"))
+        .collect::<anyhow::Result<_>>()?;
+    let Some((name, dirs)) = components.split_last() else {
+        bail!("identity file path is empty");
+    };
+    let Some((top, below)) = dirs.split_first() else {
+        bail!("identity file {} has no directory", relative.display());
+    };
+    let euid = local::own_uid();
+    let trusted = |fd: &std::os::fd::OwnedFd, what: &str| -> anyhow::Result<()> {
+        let stat = local::fstat(fd)?;
+        if (euid == 0 && stat.st_uid != 0) || stat.st_mode & 0o002 != 0 {
+            bail!("{what} must be root's and not writable by every account");
         }
-        // SAFETY: geteuid has no preconditions.
-        let euid = unsafe { libc::geteuid() };
-        if current.mode() & 0o7777 != wanted && (euid == 0 || euid == current.uid()) {
-            // Through the directory opened without following a link, so a
-            // link swapped in after the check above is refused, not chmodded.
-            let opened = person_home::local::open_dir(directory)?;
-            let stat = person_home::local::fstat(&opened)?;
-            if stat.st_uid != current.uid() || stat.st_ino != current.ino() {
-                bail!("{} changed while it was being shared", directory.display());
-            }
-            std::fs::File::from(opened)
-                .set_permissions(std::fs::Permissions::from_mode(wanted))
-                .context("share the enrollment directory like its parent")?;
-        }
+        Ok(())
+    };
+    let root = local::open_dir(identity_root)?;
+    trusted(&root, &identity_root.display().to_string())?;
+    let mut dir = local::open_shared_subdir(&root, top)?;
+    trusted(&dir, top)?;
+    for part in below {
+        dir = local::open_shared_subdir(&dir, part)?;
     }
-    Ok(())
+    local::replace_shared_file(
+        &dir,
+        name,
+        bytes,
+        tilo_user_identity::persist::PUBLIC_FILE_MODE,
+    )
+    .with_context(|| format!("publish {}", relative.display()))
+}
+
+/// `path` relative to `identity_root`.
+fn under_root<'a>(
+    identity_root: &std::path::Path,
+    path: &'a std::path::Path,
+) -> anyhow::Result<&'a std::path::Path> {
+    path.strip_prefix(identity_root)
+        .with_context(|| format!("{} is outside the identity root", path.display()))
 }
 
 /// Whether this process runs as the owner of `directory`.
@@ -1184,29 +1207,28 @@ fn commit_staged_personal_enrollment(
     }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
     // The public key and certificates are public, whatever the umask this
-    // commit runs under: the session reads them to verify the device, and
-    // reaches the per-identity ones through a directory shared like its parent.
-    let public = tilo_user_identity::persist::PUBLIC_FILE_MODE;
-    tilo_files::native::atomic::write_with_mode(
-        &paths.user_pubkey,
+    // commit runs under: the session reads them to verify the device.
+    publish_device_file(
+        identity_root,
+        under_root(identity_root, &paths.user_pubkey)?,
         &marker.user_public_key,
-        public,
     )?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
-    let per_user_cert = paths.device_cert_for_user(&marker.user_public_key);
-    share_directory_like_parent(
-        per_user_cert
-            .parent()
-            .context("per-user certificate has no directory")?,
-    )?;
-    tilo_files::native::atomic::write_with_mode(
-        &per_user_cert,
+    publish_device_file(
+        identity_root,
+        under_root(
+            identity_root,
+            &paths.device_cert_for_user(&marker.user_public_key),
+        )?,
         &read_staged(&stage_dir, "per-user-cert.bin")?,
-        public,
     )?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
-    tilo_files::native::atomic::write_with_mode(&paths.device_cert, &cert_bytes, public)?;
+    publish_device_file(
+        identity_root,
+        under_root(identity_root, &paths.device_cert)?,
+        &cert_bytes,
+    )?;
     std::fs::remove_file(marker_path)?;
     if let Some(parent) = marker_path.parent()
         && let Ok(directory) = std::fs::File::open(parent)
@@ -2084,8 +2106,9 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         // projection, but still waits for
                                         // Finalized before changing its active
                                         // identity binding.
-                                        tilo_user_identity::persist::write_public_key(
-                                            &paths.user_pubkey,
+                                        publish_device_file(
+                                            identity_root,
+                                            under_root(identity_root, &paths.user_pubkey)?,
                                             &response.payload.cert.user_public_key,
                                         )?;
                                         None
@@ -2096,21 +2119,23 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                 // fully installed. A crash can therefore only leave a
                                 // retryable partial enrollment, never a bootable one.
                                 if kind == EnrollmentKind::HomePeer {
-                                    let per_user_cert = paths.device_cert_for_user(
-                                        &response.payload.cert.user_public_key,
-                                    );
-                                    share_directory_like_parent(
-                                        per_user_cert
-                                            .parent()
-                                            .context("per-user certificate has no directory")?,
-                                    )?;
-                                    tilo_user_identity::persist::write_device_cert(
-                                        &per_user_cert,
+                                    let cert = tilo_user_identity::canonical::canonical_bytes(
                                         &response.payload.cert,
                                     )?;
-                                    tilo_user_identity::persist::write_device_cert(
-                                        &paths.device_cert,
-                                        &response.payload.cert,
+                                    publish_device_file(
+                                        identity_root,
+                                        under_root(
+                                            identity_root,
+                                            &paths.device_cert_for_user(
+                                                &response.payload.cert.user_public_key,
+                                            ),
+                                        )?,
+                                        &cert,
+                                    )?;
+                                    publish_device_file(
+                                        identity_root,
+                                        under_root(identity_root, &paths.device_cert)?,
+                                        &cert,
                                     )?;
                                 }
                                 consume_nonce(
@@ -3524,6 +3549,72 @@ mod tests {
             assert!(paths.device_cert.exists());
             assert!(!marker_path.exists());
             assert!(!stage_dir_of(&identity_root, &marker).exists());
+        }
+    }
+
+    #[test]
+    fn device_trust_files_are_never_published_through_a_planted_link() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scope = tempfile::tempdir().unwrap();
+        let identity_root = scope.path().join("tilo");
+        let device = identity_root.join("device");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::set_permissions(&device, std::fs::Permissions::from_mode(0o2770)).unwrap();
+        let elsewhere = scope.path().join("etc");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let secret = scope.path().join("shadow");
+        std::fs::write(&secret, b"root:secret").unwrap();
+        let per_user = std::path::Path::new("device/certs/ab.bin");
+
+        // A member swaps the per-identity directory for a link.
+        std::os::unix::fs::symlink(&elsewhere, device.join("certs")).unwrap();
+        assert!(publish_device_file(&identity_root, per_user, b"cert").is_err());
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+        // The certificate itself planted as a link to a file root owns.
+        std::fs::remove_file(device.join("certs")).unwrap();
+        std::os::unix::fs::symlink(&secret, device.join("cert.bin")).unwrap();
+        assert!(
+            publish_device_file(
+                &identity_root,
+                std::path::Path::new("device/cert.bin"),
+                b"c"
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&secret).unwrap(), b"root:secret");
+
+        // Undisturbed, the per-identity directory is created like its parent
+        // and the certificate published with the public mode.
+        publish_device_file(&identity_root, per_user, b"cert").unwrap();
+        assert_eq!(
+            std::fs::metadata(device.join("certs"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o2770
+        );
+        let published = device.join("certs/ab.bin");
+        assert_eq!(std::fs::read(&published).unwrap(), b"cert");
+        assert_eq!(
+            std::fs::metadata(&published).unwrap().permissions().mode() & 0o777,
+            tilo_user_identity::persist::PUBLIC_FILE_MODE
+        );
+
+        // A directory every account may write is refused.
+        std::fs::set_permissions(&device, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(publish_device_file(&identity_root, per_user, b"cert").is_err());
+        std::fs::set_permissions(&device, std::fs::Permissions::from_mode(0o2770)).unwrap();
+
+        // As root, a top-level directory another account owns is refused.
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            // SAFETY: `path` is NUL-terminated.
+            let path = std::ffi::CString::new(device.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::chown(path.as_ptr(), 65_534, 65_534) }, 0);
+            assert!(publish_device_file(&identity_root, per_user, b"other").is_err());
+            assert_eq!(std::fs::read(&published).unwrap(), b"cert");
         }
     }
 
