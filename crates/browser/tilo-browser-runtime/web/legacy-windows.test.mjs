@@ -120,7 +120,7 @@ function fakeLive() {
     },
   };
 }
-function mount({control = false, refuse = false, dismissed = () => [], paintFrame = () => false, takePaintInput = () => [], focusWindow, focusDesktop} = {}) {
+function mount({control = false, refuse = false, dismissed = () => [], paintFrame = () => false, takePaintInput = () => [], focusWindow, focusDesktop, sendInput, onError} = {}) {
   const doc = fakeDocument();
   const surface = doc.createElement('div');
   const live = fakeLive();
@@ -135,13 +135,14 @@ function mount({control = false, refuse = false, dismissed = () => [], paintFram
     surface, document: doc, live: () => live, ...codecs, now: () => clock.t, mac: false,
     windows: () => rects,
     setWindows: list => shown.push(list),
-    dismissed, focusWindow, focusDesktop,
+    dismissed, focusWindow, focusDesktop, onError,
+    inputPause: async ms => { clock.t += ms; },
     paintFrame,
     takePaintInput,
-    sendInput: async (publisher, stream, events) => {
+    sendInput: sendInput ?? (async (publisher, stream, events) => {
       if (events.length) sent.push({publisher, stream, events});
       return events.length ? control && !refuse : control;
-    },
+    }),
     requestFrame: callback => { frames.push(callback); return frames.length; }, cancelFrame: () => {},
     setInterval: callback => { poll = callback; return 1; }, clearInterval: () => {},
   });
@@ -428,6 +429,8 @@ test('closing while input is in flight drops unsent events', async () => {
   await tick();
   const canvas = layer.layer.children[0];
   canvas.dispatch('keydown', {code: 'KeyA'});
+  await tick();
+  assert.equal(sent.length, 1, 'the first key is in flight before closing');
   canvas.dispatch('keydown', {code: 'KeyB'});
   layer.close();
   complete(true);
@@ -505,4 +508,123 @@ test('input on a painted page goes to its host only when this member drives it',
   assert.deepEqual(driver.sent.flatMap(request => request.events), events, 'in order');
   driver.layer.close();
   await tick();
+});
+
+
+test('a delayed HTTPS send preserves a mixed-case typing burst in wire order', async () => {
+  let release;
+  const sent = [], errors = [], delivered = [];
+  let clock;
+  const m = await controlled({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      if (sent.length === 1) await new Promise(resolve => { release = resolve; });
+      delivered.push({at: clock.t, count: events.length});
+      return true;
+    }});
+  clock = m.clock;
+  const physical = [
+    ['ShiftLeft', 42, true, true], ['KeyA', 30, true, true], ['KeyA', 30, false, true],
+    ['ShiftLeft', 42, false, false], ['KeyB', 48, true, false], ['KeyB', 48, false, false],
+    ['Digit1', 2, true, false], ['Digit1', 2, false, false],
+    ['ShiftLeft', 42, true, true], ['Slash', 53, true, true], ['Slash', 53, false, true],
+    ['ShiftLeft', 42, false, false],
+  ];
+  const expected = [];
+  for (let repeat = 0; repeat < 20; repeat++) {
+    for (const [code, keysym, pressed, shiftKey] of physical) {
+      m.canvas.dispatch(pressed ? 'keydown' : 'keyup', {code, shiftKey});
+      expected.push({Key: {keysym, pressed, modifiers: 0}});
+    }
+  }
+  await tick();
+  assert.equal(sent.length, 1, 'one send in flight while the remaining physical keys queue');
+  assert.equal(m.layer.streams()[0].control, true, 'typing retains the granted control');
+  assert.deepEqual(errors, []);
+  clock.t = 4000;
+  release();
+  for (let batch = 0; batch < 10; batch++) await tick();
+  assert.deepEqual(sent.flat(), expected, 'every physical key reaches the host exactly once in order');
+  assert.ok(sent.every(batch => batch.length <= 64), 'each request respects the host wire bound');
+  for (const sample of delivered) {
+    const count = delivered.filter(row => row.at >= sample.at && row.at < sample.at + 1000).reduce((sum, row) => sum + row.count, 0);
+    assert.ok(count <= 120, `catch-up offered ${count} events inside the native rate window`);
+  }
+  m.layer.close();
+});
+
+test('an unresponsive host still bounds the input queue and revokes control', async () => {
+  let release;
+  const errors = [], sent = [];
+  const m = await controlled({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      await new Promise(resolve => { release = resolve; });
+      return true;
+    }});
+  for (let i = 0; i < 600; i++) m.canvas.dispatch(i % 2 ? 'keyup' : 'keydown', {code: 'KeyA'});
+  assert.equal(m.layer.streams()[0].control, false);
+  assert.deepEqual(errors, ['Error: legacy window input backlog exceeded']);
+  await tick();
+  release();
+  await tick();
+  assert.equal(sent.length, 1, 'revocation drops the unsent queue');
+  m.layer.close();
+});
+
+
+test('two windows share the native input rate budget while draining queued keys', async () => {
+  const sent = [], errors = [];
+  let m;
+  m = mount({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, surface, events) => {
+      if (events.length) sent.push({surface, events, at: m.clock.t});
+      return true;
+    }});
+  const second = {...STREAM, surface: '0000000000000008', record: '@tilo:legacy-window:0000000000000008'};
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM, second]));
+  await tick();
+  const [first, other] = m.layer.layer.children;
+  for (let i = 0; i < 60; i++) {
+    for (const [canvas, code] of [[first, 'KeyA'], [other, 'KeyB']]) {
+      canvas.dispatch('keydown', {code});
+      canvas.dispatch('keyup', {code});
+    }
+  }
+  for (let batch = 0; batch < 10; batch++) await tick();
+  for (const [surface, keysym] of [[STREAM.surface, 30], [second.surface, 48]]) {
+    const expected = Array.from({length: 120}, (_, i) => ({Key: {keysym, pressed: i % 2 === 0, modifiers: 0}}));
+    assert.deepEqual(sent.filter(row => row.surface === surface).flatMap(row => row.events), expected);
+  }
+  for (const sample of sent) {
+    const count = sent.filter(row => row.at >= sample.at && row.at < sample.at + 1000).reduce((sum, row) => sum + row.events.length, 0);
+    assert.ok(count <= 120, `both windows offered ${count} events inside one native rate window`);
+  }
+  assert.deepEqual(errors, []);
+  assert.ok(m.layer.streams().every(stream => stream.control));
+  m.layer.close();
+});
+
+
+test('a dismissed window queues one close while its host acknowledges it', async () => {
+  let release;
+  const sent = [];
+  const m = await controlled({control: true, dismissed: () => [KEY],
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      await new Promise(resolve => { release = resolve; });
+      return true;
+    }});
+  await tick();
+  for (let frame = 0; frame < 100; frame++) m.run();
+  assert.deepEqual(sent, [['Close']], 'painting must not flood the shared sender with repeated closes');
+  release();
+  await tick();
+  m.run();
+  await tick();
+  assert.deepEqual(sent, [['Close']], 'the same dismissal is still one action after acknowledgement');
+  m.layer.close();
 });
