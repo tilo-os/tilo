@@ -4899,7 +4899,9 @@ impl Widget for BooksApp {
         doc: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (_, path) = ui::doc::document_ref(doc.doc(), path);
+        let Some(path) = path.downcast_ref::<ObjId>() else {
+            return false;
+        };
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {
@@ -5427,7 +5429,7 @@ impl BooksApp {
                 }
                 NumberField::LineSpacing => {
                     self.bump_setting(&mut ctx.state, |settings| {
-                        settings.line_spacing = value as f32
+                        settings.line_spacing = value as f32;
                     });
                 }
                 NumberField::FontMult(id) => {

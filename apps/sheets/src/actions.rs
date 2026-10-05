@@ -2444,7 +2444,7 @@ mod tests {
     /// declarations, building the same action the on-screen control does.
     #[test]
     fn selection_edits_are_declarations_beside_the_published_workbook() {
-        let mut doc = seeded();
+        let doc = seeded();
         let published = &resources_for(&doc)[0];
         assert_eq!(published.kind, "sheets.workbook");
         assert!(published.actions.iter().any(|a| a.id == "new-sheet"));
@@ -2456,7 +2456,7 @@ mod tests {
         );
 
         let mut app = crate::app::tests::attached_app();
-        ui::widget::Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        ui::widget::Widget::sync(&mut app, &doc, &automerge::ROOT);
         app.select_range_for_test((0, 0), (1, 1));
         let decls = app.selection_declarations();
         let percent = decls
