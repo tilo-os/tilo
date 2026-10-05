@@ -482,11 +482,16 @@ impl Writer {
             num(*width),
             num(*height)
         );
+        let sampling = if style.pixelated {
+            r#" image-rendering="pixelated""#
+        } else {
+            ""
+        };
         let _ = write!(self.body, "<g{attrs}>");
         if let Some(picture) = self.pictures.get(&mark.id) {
             let _ = write!(
                 self.body,
-                r#"<image{place} preserveAspectRatio="none" href="data:{};base64,{}"/>"#,
+                r#"<image{place}{sampling} preserveAspectRatio="none" href="data:{};base64,{}"/>"#,
                 picture.mime,
                 base64::engine::general_purpose::STANDARD.encode(&picture.bytes)
             );
