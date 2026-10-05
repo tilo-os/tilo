@@ -126,8 +126,12 @@ pub fn sudo_refusal(stderr: &str) -> Option<String> {
 
 pub struct Remote {
     child: Child,
-    client: Client<BufReader<ChildStdout>, ChildStdin>,
+    /// `None` only while dropping: closing its stdin ends the session.
+    client: Option<Client<BufReader<ChildStdout>, ChildStdin>>,
     pub hello: HelloResult,
+    /// Over the peer network: the dial helper closes the connection itself
+    /// once its stdin ends, so the device's session ends at once.
+    peer: bool,
 }
 
 impl Remote {
@@ -172,8 +176,9 @@ impl Remote {
         match client.hello(env!("CARGO_PKG_VERSION")) {
             Ok(hello) => Ok(Self {
                 child,
-                client,
+                client: Some(client),
                 hello,
+                peer: false,
             }),
             Err(ClientError::Io(_) | ClientError::Closed) => {
                 let _ = child.kill();
@@ -264,8 +269,9 @@ impl Remote {
             Ok(hello) => Ok((
                 Self {
                     child,
-                    client,
+                    client: Some(client),
                     hello,
+                    peer: true,
                 },
                 session,
             )),
@@ -284,13 +290,21 @@ impl Remote {
     /// # Errors
     /// Daemon-reported and transport errors.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, CliError> {
-        self.client.call(params).map_err(CliError::from)
+        self.client
+            .as_mut()
+            .ok_or_else(|| CliError::from(ClientError::Closed))?
+            .call(params)
+            .map_err(CliError::from)
     }
 
     /// # Errors
     /// Read or transport failures.
     pub fn upload(&mut self, bytes: impl std::io::Read) -> Result<String, CliError> {
-        self.client.upload(bytes).map_err(CliError::from)
+        self.client
+            .as_mut()
+            .ok_or_else(|| CliError::from(ClientError::Closed))?
+            .upload(bytes)
+            .map_err(CliError::from)
     }
 }
 
@@ -464,6 +478,18 @@ pub fn hold_vm_lock(endpoint: &SshEndpoint, key: Option<&str>) -> LockOutcome {
 impl Drop for Remote {
     fn drop(&mut self) {
         // Closing stdin ends the daemon's loop; reap ssh so no zombie remains.
+        drop(self.client.take());
+        if self.peer {
+            // The dial helper closes its connection on its way out; killed,
+            // it would leave the device's session to time out.
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_secs(3) {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
