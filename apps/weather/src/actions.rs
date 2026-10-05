@@ -1,51 +1,58 @@
-//! Stable resource/action addresses exported by Weather.
+//! What Weather does with its saved places.
 //!
-//! Saved locations, their order, and the selected saved location are
-//! collaborative document resources. Search, agents, accessibility and
-//! in-app navigation therefore address the same exported `open` [`View`]
-//! operation, while the `select` document action retains the durable choice.
-//! Network refresh remains a separate [`Effect`] operation.
-//!
-//! [`View`]: tilo_actions::OperationKind::View
-//! [`Effect`]: tilo_actions::OperationKind::Effect
+//! Saved places, their order and the default place are the document: each
+//! change is a [`WeatherAction`], published on each place with its arguments
+//! bound. Opening a forecast and fetching one change no document, so they are
+//! [`WeatherEffect`]s answered by the window, offered on each place as a live
+//! row joining that place's published child.
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use tilo_actions::{
-    Action, ActionAddress, ActionContract, ActionError, ActionRegistry, ActionSpec, Availability,
-    DiscoveryScope, ExecutionLocus, ExecutionMode, OperationKind, PermissionRequirement, Resource,
-    ResultSpec, RetryPolicy,
-};
+use tilo_actions::{Action, ActionError, ActionRegistry, ExecutionLocus};
+use ui::prelude::{ActionDecl, Effect, LiveRow, tilo_resource};
 
 use crate::doc::WeatherDoc;
 use crate::model::{LocationId, SavedLocation, WeatherModel};
+use crate::resource::Weather;
 
 pub const WEATHER_ACTION_TYPE: &str = "weather.action";
-
-/// Widget-local operation type used to reveal one saved forecast.
-pub const OPEN_LOCATION_OPERATION: &str = "weather.open-location";
-/// Widget-local effect type used to refresh forecasts from the network.
-pub const REFRESH_OPERATION: &str = "weather.refresh";
-/// Widget-local effect type used to refresh one saved location only.
-pub const REFRESH_LOCATION_OPERATION: &str = "weather.refresh-location";
 
 /// Stable resource id for one saved location.
 pub fn location_resource_id(id: LocationId) -> String {
     format!("weather.location:{id}")
 }
 
-/// Canonical view action that selects and reveals one saved forecast.
-pub fn open_location_address(id: LocationId) -> ActionAddress {
-    ActionAddress::new(location_resource_id(id), "open")
+/// What Weather fetches and shows, with no document delta.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "weather.effects")]
+pub enum WeatherEffect {
+    /// Refresh forecasts.
+    ///
+    /// Fetch the forecast and air quality of every saved place.
+    #[effect(job, permission = "read")]
+    Refresh,
+    /// Refresh this forecast.
+    ///
+    /// Fetch the forecast and air quality of one saved place.
+    #[effect(job, permission = "read")]
+    RefreshLocation {
+        #[param("Id of the saved place")]
+        location: String,
+    },
+    /// Open forecast.
+    ///
+    /// Show one saved place's forecast.
+    #[effect(permission = "read")]
+    OpenLocation {
+        #[param("Id of the saved place")]
+        location: String,
+    },
 }
 
 /// Durable saved-location mutations. Forecast and air-quality responses are
 /// external cache effects and intentionally do not appear here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WeatherAction {
-    /// Explicitly create the keyed schema. Adding the first saved place also
-    /// creates it; ordinary live synchronisation leaves blank records intact.
-    Initialize,
     AddLocation {
         location: SavedLocation,
     },
@@ -68,7 +75,6 @@ pub enum WeatherAction {
 impl Action for WeatherAction {
     fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError> {
         match self {
-            Self::Initialize => WeatherDoc::ensure_schema(doc),
             Self::AddLocation { location } => {
                 WeatherDoc::upsert_location(doc, location);
             }
@@ -104,8 +110,7 @@ pub fn register(registry: &mut ActionRegistry) {
     registry.register::<WeatherAction>(WEATHER_ACTION_TYPE);
 }
 
-/// Serialize a Weather mutation for direct replay tests and integrations that
-/// do not own a widget `ActionHost`.
+/// Serialize a Weather mutation for direct replay.
 pub fn encode(action: &WeatherAction) -> tilo_actions::EncodedAction {
     tilo_actions::EncodedAction::encode(WEATHER_ACTION_TYPE, action).unwrap_or_else(|_| {
         tilo_actions::EncodedAction {
@@ -136,18 +141,9 @@ pub fn location_rank_action(id: LocationId, rank: f64) -> WeatherAction {
     }
 }
 
-/// Root Effect: refresh every saved forecast. Availability for offline /
-/// empty libraries is applied by [`provide_resources`] for standalone hosts;
-/// the live widget still refuses when network work is disabled.
-pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
-    refresh_all_spec(Availability::Available)
-        .into_iter()
-        .collect()
-}
-
-/// Saved-location children for [`tilo_resource::publish`]: open View, network
-/// refresh Effect, and the durable select / reorder / remove actions.
-pub(crate) fn document_children(state: &WeatherModel) -> Vec<Resource> {
+/// Each saved place, with the document actions bound to it: use it as the
+/// default place, move it to the top, remove it.
+pub(crate) fn document_children(state: &WeatherModel) -> Vec<tilo_actions::Resource> {
     let top_rank = state
         .locations
         .first()
@@ -156,152 +152,67 @@ pub(crate) fn document_children(state: &WeatherModel) -> Vec<Resource> {
         .locations
         .iter()
         .enumerate()
-        .map(|(index, location)| {
-            location_document_resource(location, index > 0, top_rank, Availability::Available)
-        })
+        .map(|(index, location)| location_resource(location, index > 0, top_rank))
         .collect()
 }
 
-/// Standalone / `--shots` / unit-test tree: [`tilo_resource::publish`] owns the
-/// saved-places door; refresh contracts reflect whether this host can fetch.
-pub fn provide_resources(state: &WeatherModel, live: bool) -> Vec<Resource> {
-    let mut root = ui::tilo_resource::publish::<crate::resource::Weather>(
-        "weather.locations",
-        "Weather",
-        state,
-    );
-    let refresh_availability = if !live {
-        Availability::Unavailable {
-            code: "network_disabled".into(),
-            reason: "Network refresh is disabled for this weather view".into(),
-        }
-    } else if state.locations.is_empty() {
-        Availability::Unavailable {
-            code: "no_locations".into(),
-            reason: "Save a weather location before refreshing".into(),
-        }
-    } else {
-        Availability::Available
-    };
-    let location_refresh = if live {
-        Availability::Available
-    } else {
-        Availability::Unavailable {
-            code: "network_disabled".into(),
-            reason: "Network refresh is disabled for this weather view".into(),
-        }
-    };
-    replace_action_contract(&mut root, "refresh", refresh_availability);
-    for child in &mut root.children {
-        replace_action_contract(child, "refresh", location_refresh.clone());
-    }
-    vec![root]
+fn bound(id: &'static str, label: &str, action: WeatherAction) -> ActionDecl<Weather> {
+    ActionDecl::new(id, label, Vec::new(), move |_, _| Ok(action.clone()))
 }
 
-fn replace_action_contract(resource: &mut Resource, action_id: &str, availability: Availability) {
-    if let Some(action) = resource
-        .actions
-        .iter_mut()
-        .find(|action| action.id == action_id)
-    {
-        action.contract.availability = availability;
-    }
-}
-
-fn refresh_all_spec(availability: Availability) -> Option<ActionSpec> {
-    ActionSpec::operation(
-        "refresh",
-        "Refresh forecasts",
-        OperationKind::Effect,
-        REFRESH_OPERATION,
-        &"",
-    )
-    .ok()
-    .map(|spec| {
-        spec.with_contract(ActionContract {
-            availability,
-            permission: PermissionRequirement::Read,
-            retry: RetryPolicy::Idempotent,
-            execution: ExecutionMode::Background { cancellable: false },
-            discovery: DiscoveryScope::Launchable,
-            result: ResultSpec::Job,
-            ..ActionContract::default()
-        })
-    })
-}
-
-fn refresh_location_spec(id: LocationId, availability: Availability) -> Option<ActionSpec> {
-    ActionSpec::operation(
-        "refresh",
-        "Refresh this forecast",
-        OperationKind::Effect,
-        REFRESH_LOCATION_OPERATION,
-        &id.to_string(),
-    )
-    .ok()
-    .map(|spec| {
-        spec.with_contract(ActionContract {
-            availability,
-            permission: PermissionRequirement::Read,
-            retry: RetryPolicy::Idempotent,
-            execution: ExecutionMode::Background { cancellable: false },
-            discovery: DiscoveryScope::Launchable,
-            result: ResultSpec::Job,
-            ..ActionContract::default()
-        })
-    })
-}
-
-fn location_document_resource(
+fn location_resource(
     location: &SavedLocation,
     can_move_to_top: bool,
     top_rank: f64,
-    refresh_availability: Availability,
-) -> Resource {
-    let mut resource = Resource::new(
+) -> tilo_actions::Resource {
+    let mut decls = vec![bound(
+        "use-as-default",
+        "Use as default location",
+        select_location_action(location.id),
+    )];
+    if can_move_to_top {
+        decls.push(bound(
+            "move-to-top",
+            "Move to top",
+            location_rank_action(location.id, top_rank),
+        ));
+    }
+    decls.push(
+        bound(
+            "remove",
+            "Remove location",
+            remove_location_action(location.id),
+        )
+        .destructive(),
+    );
+    decls.into_iter().fold(
+        tilo_actions::Resource::new(
+            location_resource_id(location.id),
+            "weather.location",
+            location.name.clone(),
+        ),
+        |resource, decl| resource.with_action(ui::tilo_resource::declaration_spec(&decl)),
+    )
+}
+
+/// A saved place as the window offers it: open its forecast, refresh it.
+/// Joins the place's published child of the same id.
+pub(crate) fn location_row(location: &SavedLocation) -> LiveRow {
+    let id = location.id.to_string();
+    let mut open = WeatherEffect::OpenLocation {
+        location: id.clone(),
+    }
+    .bound();
+    open.id = "open".into();
+    let mut refresh = WeatherEffect::RefreshLocation { location: id }.bound();
+    refresh.id = "refresh".into();
+    LiveRow::new(
         location_resource_id(location.id),
         "weather.location",
         location.name.clone(),
-    );
-    if let Ok(spec) = ActionSpec::operation(
-        "open",
-        "Open forecast",
-        OperationKind::View,
-        OPEN_LOCATION_OPERATION,
-        &location.id.to_string(),
-    ) {
-        resource = resource.with_action(spec.with_contract(ActionContract::view()));
-    }
-    if let Some(spec) = refresh_location_spec(location.id, refresh_availability) {
-        resource = resource.with_action(spec);
-    }
-    if let Ok(spec) = ActionSpec::immediate(
-        "use-as-default",
-        "Use as default location",
-        WEATHER_ACTION_TYPE,
-        &select_location_action(location.id),
-    ) {
-        resource = resource.with_action(spec.reversible());
-    }
-    if can_move_to_top
-        && let Ok(spec) = ActionSpec::immediate(
-            "move-to-top",
-            "Move to top",
-            WEATHER_ACTION_TYPE,
-            &location_rank_action(location.id, top_rank),
-        )
-    {
-        resource = resource.with_action(spec.reversible());
-    }
-    if let Ok(spec) = ActionSpec::immediate(
-        "remove",
-        "Remove location",
-        WEATHER_ACTION_TYPE,
-        &remove_location_action(location.id),
-    ) {
-        resource = resource.with_action(spec.destructive().reversible());
-    }
-    resource
+    )
+    .operation(open)
+    .operation(refresh)
 }
 
 #[cfg(test)]
@@ -334,98 +245,70 @@ mod tests {
         doc
     }
 
-    /// The app's published tree for `doc`: an offline app adopts the
-    /// document's saved places the way the host's `sync` does.
+    /// The resource's publication for `doc`.
     fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut app = crate::app::WeatherApp::new();
-        let mut doc = doc.clone();
-        ui::widget::Widget::sync(&mut app, &mut doc, &automerge::ROOT);
-        ui::resources::resources(&app, &doc)
+        vec![ui::tilo_resource::publish::<Weather>(
+            "weather.locations",
+            "Weather",
+            &WeatherDoc::read_model(doc),
+        )]
     }
 
     #[test]
-    fn resource_publish_owns_the_locations_door_and_hosted_adds_no_second_tree() {
-        let model = WeatherDoc::read_model(&seeded_doc());
-        let published = ui::tilo_resource::publish::<crate::resource::Weather>(
-            "weather.locations",
-            "Weather",
-            &model,
-        );
+    fn each_place_publishes_its_edits_and_its_row_offers_its_effects() {
+        let published = resources(&seeded_doc()).remove(0);
         let root_actions: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(
             root_actions.contains(&"add-saved-location"),
             "{root_actions:?}"
         );
-        assert!(root_actions.contains(&"refresh"), "{root_actions:?}");
-        assert!(
-            published.children.iter().all(|child| {
-                child.kind == "weather.location"
-                    && child.actions.iter().any(|action| action.id == "open")
-                    && child
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "use-as-default")
-                    && child.actions.iter().any(|action| action.id == "remove")
-            }),
-            "location document + view actions ride Resource::children"
-        );
-        assert!(
-            published.children.iter().any(|child| {
-                child
+        assert!(published.children.iter().all(|child| {
+            child.kind == "weather.location"
+                && child
                     .actions
                     .iter()
-                    .any(|action| action.id == "move-to-top")
-            }),
-            "non-first locations expose move-to-top from shared state"
-        );
-
-        let mut app = crate::app::WeatherApp::new();
-        let mut doc = seeded_doc();
-        ui::widget::Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+                    .any(|action| action.id == "use-as-default")
+                && child.actions.iter().any(|action| action.id == "remove")
+        }));
         assert!(
-            !app.actions_are_hosted(),
-            "standalone tests stay on the local host"
-        );
-        let standalone = app.publish_resources(&doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "weather.locations");
-        assert!(
-            standalone[0]
+            published.children[0]
                 .actions
                 .iter()
-                .any(|action| action.id == "add-saved-location")
+                .all(|action| action.id != "move-to-top"),
+            "the first place is already on top"
         );
-        // Offline standalone overlays network_disabled on refresh.
-        let refresh = standalone[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "refresh")
-            .expect("root refresh");
-        assert!(matches!(
-            refresh.contract.availability,
-            Availability::Unavailable { ref code, .. } if code == "network_disabled"
-        ));
+        assert!(published.children[1..].iter().all(|child| {
+            child
+                .actions
+                .iter()
+                .any(|action| action.id == "move-to-top")
+        }));
 
-        // Hosted surfaces must not republish the saved-places door beside
-        // ResourceRoot's tilo_resource::publish.
-        app.mark_actions_hosted_for_test();
-        assert!(app.actions_are_hosted());
-        assert!(ui::resources::resource(&app, &doc, "weather.locations").is_none());
-        if let Some(place_id) = standalone[0]
-            .children
-            .first()
-            .map(|child| child.id.as_str().to_owned())
-        {
-            assert!(
-                ui::resources::resource(&app, &doc, &place_id).is_some(),
-                "a hosted place stays the published row"
+        let place = WeatherDoc::read_model(&seeded_doc()).locations.remove(1);
+        let row = location_row(&place).into_resource();
+        assert_eq!(row.id.as_str(), location_resource_id(place.id));
+        for (id, effect) in [
+            (
+                "open",
+                WeatherEffect::OpenLocation {
+                    location: place.id.to_string(),
+                },
+            ),
+            (
+                "refresh",
+                WeatherEffect::RefreshLocation {
+                    location: place.id.to_string(),
+                },
+            ),
+        ] {
+            let spec = row.actions.iter().find(|action| action.id == id).unwrap();
+            assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);
+            let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+            assert_eq!(
+                WeatherEffect::from_payload(&encoded.payload).unwrap(),
+                effect
             );
         }
-        let extras = ui::resources::PublishesResources::resources(&app, &doc);
-        assert!(
-            extras.is_empty(),
-            "hosted weather publishes only through the framework resource"
-        );
     }
 
     fn auckland() -> SavedLocation {
@@ -450,7 +333,6 @@ mod tests {
         resources: |doc| resources(doc),
         palette: [
             "Save location",
-            "Open forecast",
             "Use as default location",
             "Move to top",
             "Remove location",
@@ -487,13 +369,8 @@ mod tests {
             let locations = crate::sample::sample_model().locations;
             let first = locations[0].id;
             let second = locations[1].id;
-
-            assert_eq!(open_location_address(first), open_location_address(first));
-            assert_ne!(open_location_address(first), open_location_address(second));
-            assert_eq!(
-                open_location_address(first),
-                ActionAddress::new(location_resource_id(first), "open")
-            );
+            assert_eq!(location_resource_id(first), location_resource_id(first));
+            assert_ne!(location_resource_id(first), location_resource_id(second));
         }
         // Case `independently_added_keyed_locations_survive_document_merge`.
         {

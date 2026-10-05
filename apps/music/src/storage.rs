@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tilo_clock::unix_now_ms;
 
-use crate::model::{CacheState, Playback};
+use crate::model::Playback;
 
 /// Device-private durable state. It deliberately excludes `playing`: a launch
 /// may offer a paused resume point, but must never start audio without a local
@@ -22,11 +22,6 @@ pub struct DeviceProfile {
     /// The last explicitly opened file belongs only to this device.
     #[serde(default)]
     pub local_file: Option<crate::local_file::LocalFile>,
-    /// Legacy field accepted on read so older profiles migrate safely. Actual
-    /// cache availability comes only from [`MediaCache`] objects, never this
-    /// profile metadata.
-    #[serde(default)]
-    pub cache: BTreeMap<String, CacheState>,
     #[serde(default)]
     pub playback: Playback,
 }
@@ -339,16 +334,15 @@ pub fn load_device_profile() -> DeviceProfile {
     load_device_profile_from(&device_profile_path())
 }
 
-/// Atomically store paused device-local resume state. Cache metadata remains
-/// deliberately absent: the media manifest is the sole authority for bytes.
+/// Atomically store paused device-local resume state. Cache availability is
+/// not in it: the media manifest is the sole authority for bytes.
 ///
 /// # Errors
 ///
 /// Returns an I/O error when the profile directory cannot be created or the
 /// atomic write cannot be completed.
 pub fn save_device_profile_to(path: &Path, profile: &DeviceProfile) -> std::io::Result<()> {
-    let mut persisted = profile.clone().paused();
-    persisted.cache.clear();
+    let persisted = profile.clone().paused();
     let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
     crate::files::write(path, &bytes)
 }
@@ -382,7 +376,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tilo-music-profile-{}", std::process::id()));
         let path = dir.join("device-profile.json");
         let mut profile = DeviceProfile::default();
-        profile.cache.insert("tk_g1".into(), CacheState::Cached);
         profile.playback.current = Some("tk_g1".into());
         profile.playback.queue = vec!["tk_g1".into()];
         profile.playback.playing = true;
@@ -391,10 +384,6 @@ mod tests {
         save_device_profile_to(&path, &profile).expect("save local profile");
 
         let loaded = load_device_profile_from(&path);
-        assert!(
-            loaded.cache.is_empty(),
-            "metadata never pretends bytes are cached"
-        );
         assert_eq!(loaded.playback.current, profile.playback.current);
         assert_eq!(loaded.playback.position_ms, 12_345);
         assert_eq!(loaded.playback.volume, 37);

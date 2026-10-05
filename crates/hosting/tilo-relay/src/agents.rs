@@ -125,11 +125,8 @@ pub struct AgentOptions {
     pub state_dir: PathBuf,
     /// The model natural-language tasks are planned with.
     pub model: ModelChoice,
-    /// Agents' apps use the host user's files and secret store instead of
-    /// a profile of their own (`--agent-host-profile`).
-    pub host_profile: bool,
     /// The apps agents may open, and whose records pages may act on through
-    /// the host; this machine's registry, theme and fonts when `None`.
+    /// the host; this machine's registry when `None`.
     pub catalogue: Option<CatalogueFactory>,
 }
 
@@ -185,9 +182,6 @@ pub async fn start(
         options.model,
         Arc::clone(&catalogue),
     );
-    if options.host_profile {
-        agents.share_host_profile();
-    }
     cfg.services.app_serving = true;
     let plane = Arc::new(HostActionsPlane(HostActions {
         supervisor: SupervisorHost(agents.supervisor().clone()),

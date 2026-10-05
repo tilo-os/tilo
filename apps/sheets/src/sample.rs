@@ -181,7 +181,7 @@ fn sales() -> ImportedSheet {
 }
 
 /// Two charts over the budget and a resolved comment thread on its rent row.
-pub fn charts_and_comments() -> Vec<SheetsAction> {
+pub fn charts() -> Vec<SheetsAction> {
     let chart = |chart_id: &str, title: &str, kind: ChartKind, c1: u32| SheetsAction::PutChart {
         sheet: 0,
         sheet_id: BUDGET_SHEET_ID.into(),
@@ -196,32 +196,47 @@ pub fn charts_and_comments() -> Vec<SheetsAction> {
     vec![
         chart(COLUMN_CHART_ID, "Quarterly spend", ChartKind::Column, 4),
         chart(LINE_CHART_ID, "Monthly trend", ChartKind::Line, 3),
-        SheetsAction::PutComment {
-            sheet: 0,
-            sheet_id: BUDGET_SHEET_ID.into(),
-            comment_id: COMMENT_ID.into(),
-            c0: 1,
-            r0: 1,
-            c1: 4,
-            r1: 1,
-            author: "Alex".into(),
-            body: "Check the rent increase before sending this budget.".into(),
-        },
-        SheetsAction::ReplyComment {
-            sheet: 0,
-            sheet_id: BUDGET_SHEET_ID.into(),
-            comment_id: COMMENT_ID.into(),
-            reply_id: REPLY_ID.into(),
-            author: "Sam".into(),
-            body: "I will verify the change.".into(),
-        },
-        SheetsAction::SetCommentResolved {
-            sheet: 0,
-            sheet_id: BUDGET_SHEET_ID.into(),
-            comment_id: COMMENT_ID.into(),
-            resolved: true,
-        },
     ]
+}
+
+/// A comment thread on the budget, each edit by the person who wrote it:
+/// Alex asks, Sam replies.
+pub fn comments() -> Vec<(&'static str, SheetsAction)> {
+    vec![
+        (
+            "Alex",
+            SheetsAction::PutComment {
+                sheet: 0,
+                sheet_id: BUDGET_SHEET_ID.into(),
+                comment_id: COMMENT_ID.into(),
+                c0: 1,
+                r0: 1,
+                c1: 4,
+                r1: 1,
+                body: "Check the rent increase before sending this budget.".into(),
+            },
+        ),
+        (
+            "Sam",
+            SheetsAction::ReplyComment {
+                sheet: 0,
+                sheet_id: BUDGET_SHEET_ID.into(),
+                comment_id: COMMENT_ID.into(),
+                reply_id: REPLY_ID.into(),
+                body: "I will verify the change.".into(),
+            },
+        ),
+    ]
+}
+
+/// Resolve the sample comment thread.
+pub fn resolve_comment() -> SheetsAction {
+    SheetsAction::SetCommentResolved {
+        sheet: 0,
+        sheet_id: BUDGET_SHEET_ID.into(),
+        comment_id: COMMENT_ID.into(),
+        resolved: true,
+    }
 }
 
 /// The seeds of the fill-series scenario: three patterns under the budget,

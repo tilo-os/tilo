@@ -97,12 +97,14 @@ pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
 }
 
 thread_local! {
-    static COMMIT_REQUEST: Cell<bool> = const { Cell::new(false) };
+    static COMMITTED_ACTION: RefCell<Option<Vec<automerge::ChangeHash>>> = const { RefCell::new(None) };
     static COMMIT_DRAINS: Cell<usize> = const { Cell::new(0) };
 }
-pub fn request_probe_commit() {
-    COMMIT_REQUEST.set(true);
+/// The probe's next committed action: the heads captured before its writes.
+pub fn report_probe_action(before: Vec<automerge::ChangeHash>) {
+    COMMITTED_ACTION.set(Some(before));
 }
+/// How many committed actions the host has taken from the probe.
 pub fn probe_commit_drains() -> usize {
     COMMIT_DRAINS.get()
 }
@@ -239,6 +241,7 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         required: vec![],
         optional: vec![],
         opens: &[],
+        room_record: false,
         create,
     }
 }
@@ -281,7 +284,7 @@ impl ProbeHost {
     pub fn new() -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
-        COMMIT_REQUEST.set(false);
+        COMMITTED_ACTION.set(None);
         COMMIT_DRAINS.set(0);
         INITIALIZATIONS.set(0);
         HANDLES.with_borrow_mut(Vec::clear);
@@ -526,7 +529,8 @@ impl Widget for ProbeRoot {
         dyn tilo_ui::resources::PublishesResources,
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
-        dyn tilo_ui::undo::UndoPoints
+        dyn tilo_ui::undo::UndoPoints,
+        dyn tilo_ui::undo::CommittedActions
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -542,11 +546,12 @@ impl Widget for ProbeRoot {
     }
     fn start_operation(
         &mut self,
-        op: &tilo_ui::widget::ResourceOperation<'_>,
-        _: &mut AutoCommit,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _: &mut tilo_ui::widget::Edits<'_>,
         _: &ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
-        let Some(tilo_ui::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
+        else {
             return Ok(None);
         };
         if !self.local_resource_operation_handlers().contains(&type_id) {
@@ -554,12 +559,16 @@ impl Widget for ProbeRoot {
         }
         if type_id == "probe.pending" {
             self.operations.borrow_mut().push("pending".into());
-            return Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted));
+            return Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Accepted,
+            ));
         }
         self.operations.borrow_mut().push(format!("{kind:?}"));
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
     fn poll_resource_operation(
         &mut self,
@@ -578,7 +587,7 @@ impl Widget for ProbeRoot {
             message: None,
         })
     }
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         assert!(self.operational, "construction must project read-only");
         self.local_snapshot = self.local.with(Clone::clone);
     }
@@ -653,22 +662,15 @@ impl Widget for ProbeRoot {
     }
 }
 
-impl tilo_ui::undo::UndoPoints for ProbeRoot {
-    fn needs_commit(&self) -> bool {
-        COMMIT_REQUEST.get()
-    }
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        Some(tilo_actions::ActionContext::for_resource(
-            &self.caret,
-            "probe:shared",
-            "probe",
-            &self.caret,
-        ))
-    }
-    fn on_commit(&mut self) {
-        COMMIT_REQUEST.set(false);
+impl tilo_ui::undo::CommittedActions for ProbeRoot {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        let before = COMMITTED_ACTION.take()?;
         COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
+        Some(before)
     }
+}
+
+impl tilo_ui::undo::UndoPoints for ProbeRoot {
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }
@@ -981,4 +983,53 @@ pub fn initializer_failure(
     Err(LaunchError::Operation(
         "initializer unexpectedly succeeded".into(),
     ))
+}
+
+/// A fixture owner publishes a string through the same typed action loan as an app.
+pub fn write_fixture_string(edits: &mut tilo_ui::widget::Edits<'_>, key: &str, value: &str) {
+    #[derive(Debug, serde::Serialize)]
+    struct Write {
+        key: String,
+        value: String,
+    }
+    impl tilo_actions::Action for Write {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, self.key.as_str(), self.value.as_str())?;
+            Ok(())
+        }
+    }
+    edits
+        .apply(
+            &mut tilo_ui::action_host::ActionHost::new(),
+            "test.fixture.write",
+            &Write {
+                key: key.into(),
+                value: value.into(),
+            },
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
+}
+
+pub fn write_fixture_flag(edits: &mut tilo_ui::widget::Edits<'_>, key: &str) {
+    #[derive(Debug, serde::Serialize)]
+    struct Flag {
+        key: String,
+    }
+    impl tilo_actions::Action for Flag {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, self.key.as_str(), true)?;
+            Ok(())
+        }
+    }
+    edits
+        .apply(
+            &mut tilo_ui::action_host::ActionHost::new(),
+            "test.fixture.flag",
+            &Flag { key: key.into() },
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
 }

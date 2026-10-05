@@ -508,24 +508,9 @@ mod tests {
     }
 
     #[test]
-    fn durable_voice_rows_never_project_as_current_streams() {
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
-        crate::doc::ChatDoc::voice_join(&mut doc, "c_standup", "u_remote");
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        assert!(app.voice_in("c_standup").is_empty());
-        assert!(!app.call.active);
-        assert!(
-            !crate::doc::ChatDoc::list_voice_members(&doc, "c_standup").is_empty(),
-            "legacy history remains intact"
-        );
-    }
-
-    #[test]
     fn reader_pointer_and_resource_join_use_the_same_service_without_document_mutation() {
         use ui::permissions::{Actor, PermissionContext, Role};
-        use ui::{Widget, widget::Collaborative};
+        use ui::widget::Collaborative;
         let mut doc = automerge::AutoCommit::new();
         crate::doc::ChatDoc::seed_if_empty(&mut doc);
         let before = doc.save();
@@ -537,32 +522,19 @@ mod tests {
                 vec![],
             ),
         );
-        pointer.on_hit(crate::app::Hit::VoiceChannel("c_standup".into()), &mut doc);
+        pointer.on_hit(
+            crate::app::Hit::VoiceChannel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         let pointer_requests = pointer.take_collab_requests();
         let mut resource = crate::app::ChatApp::new_ephemeral();
         resource.reload(&doc);
         resource.perms = pointer.perms.clone();
-        let operation = crate::actions::ChatOperation::NativeVoice {
-            channel: "c_standup".into(),
-            request: Request::new(Command::Join {
-                channel_id: "c_standup".into(),
-            }),
-        };
-        assert!(
-            resource
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::CHAT_OPERATION_TYPE,
-                        &serde_json::to_vec(&operation).unwrap()
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .map(|started| started.is_some())
-                .unwrap()
-        );
+        resource
+            .answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
         let resource_requests = resource.take_collab_requests();
         let command = |requests: Vec<CollabRequest>| match requests.into_iter().next().unwrap() {
             CollabRequest::NativeMediaCommand { command, .. } => command,

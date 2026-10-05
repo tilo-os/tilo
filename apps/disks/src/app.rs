@@ -3232,7 +3232,7 @@ impl Widget for DisksApp {
         }
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Advance the eased slide every frame so the flap opens/collapses
         // smoothly. Mirrors the shared `NavSplit`'s fixed-step tick.
         let animating = self.flap.tick(self.split_layout(), 1.0 / 60.0);
@@ -3599,7 +3599,7 @@ impl Widget for DisksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, A11yAction::Activate) {
@@ -3964,7 +3964,7 @@ mod tests {
                 app,
                 "disks.tab:smart",
                 &A11yAction::Activate,
-                doc,
+                &mut ui::widget::Edits::lend(doc),
                 &ui::automerge::ROOT,
             ));
             assert_eq!(app.tab, Tab::Smart);

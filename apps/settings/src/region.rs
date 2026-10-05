@@ -1,54 +1,33 @@
-//! The shared **region & formats store** — Tilo's global per-user locale
-//! preferences.
-//!
-//! # Why Settings owns this
+//! The person's **region & formats** — Tilo's per-user locale, the `locale`
+//! section of their settings.
 //!
 //! Many apps need the same answer to "how should I show money / dates /
 //! times / units for this user?". Rather than each app inventing its own
-//! preference file, they all read and write **one** JSON document that the
-//! Settings app's "Region & Formats" panel edits:
-//!
-//! ```text
-//! $XDG_CONFIG_HOME/tilo/settings.json   (falls back to ~/.config/tilo/settings.json)
-//! ```
-//!
-//! The file is a plain JSON object, namespaced by domain so unrelated apps
-//! can grow their own sections without colliding. The section this store
-//! owns is `locale`:
+//! preference file, they all read **one** section of the person's settings,
+//! which the Settings app's "Region & Formats" panel edits:
 //!
 //! ```json
-//! {
-//!   "version": 1,
-//!   "locale": {
-//!     "currency": "USD",
-//!     "date_format": "Iso",
-//!     "time_format": "H24",
-//!     "measurement": "Metric"
-//!   }
+//! "locale": {
+//!   "currency": "USD",
+//!   "date_format": "ISO",
+//!   "time_format": "H24",
+//!   "measurement": "Metric"
 //! }
 //! ```
 //!
 //! The string values are the serde-derived variant names of the enums
-//! below (`"Iso" | "Us" | "Eu" | "Long"`, `"H24" | "H12"`,
+//! below (`"ISO" | "US" | "EU" | "Long"`, `"H24" | "H12"`,
 //! `"Metric" | "Imperial"`, ISO-4217 currency codes). This is the same
 //! shape the Sheets app's `settings::Locale` and the Weather app's unit
 //! toggle read — Settings is the canonical editor, the others are
-//! consumers.
+//! consumers. Reads are forgiving: a missing section or an unknown value
+//! falls back to the built-in default, key by key, and a write keeps every
+//! key of the section it does not name.
 //!
-//! # Non-destructive writes
-//!
-//! Reads are forgiving: a missing file, missing section, or unknown enum
-//! string falls back to the built-in default. Writes are **merge** writes:
-//! [`RegionSettings::to_json_merged`] preserves every key an app doesn't
-//! understand, so two apps with different schemas never clobber each
-//! other.
-//!
-//! This is a file/format contract, not a crate dependency — Settings,
-//! Sheets, and Weather read the *same* file with the *same* keys. The
-//! structs here are the reference implementation; the enum reprs are
-//! pinned by the tests so they can never silently drift from Sheets.
-
-use std::path::PathBuf;
+//! This is a format contract, not a crate dependency — Settings, Sheets, and
+//! Weather read the *same* section with the *same* keys. The structs here
+//! are the reference implementation; the enum reprs are pinned by the tests
+//! so they can never silently drift from Sheets.
 
 use serde::{Deserialize, Serialize};
 
@@ -290,159 +269,62 @@ impl Default for Locale {
 }
 
 /// The shared global-settings document, locale section.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RegionSettings {
-    pub locale: Locale,
-}
-
-impl RegionSettings {
-    /// Resolve the shared store path:
-    /// `$XDG_CONFIG_HOME/tilo/settings.json`, falling back to
-    /// `~/.config/tilo/settings.json`. `None` only if no home dir exists.
-    pub fn store_path() -> Option<PathBuf> {
-        settings_store::settings_path()
-    }
-
-    /// Parse from a JSON string, falling back to defaults for anything
-    /// missing or malformed. Never fails.
-    pub fn from_json(text: &str) -> Self {
-        let root: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
-        let locale = root
-            .get("locale")
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Locale>(v).ok())
-            .unwrap_or_default();
-        Self { locale }
-    }
-
-    /// Serialize to pretty JSON, **merging** into any existing on-disk
-    /// document so foreign keys survive. `existing` is the current file
-    /// contents (or empty).
-    pub fn to_json_merged(&self, existing: &str) -> String {
-        let mut obj = match serde_json::from_str::<serde_json::Value>(existing) {
-            Ok(serde_json::Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
-        };
-        obj.insert("version".into(), serde_json::json!(1));
-        obj.insert(
-            "locale".into(),
-            serde_json::to_value(self.locale).unwrap_or(serde_json::Value::Null),
-        );
-        serde_json::to_string_pretty(&obj).unwrap_or_else(|_| "{}".into())
-    }
-
-    /// Load from the shared path. Returns defaults if the file is absent.
-    pub fn load() -> Self {
-        let Some(path) = Self::store_path() else {
-            return Self::default();
-        };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::from_json(&text),
-            Err(_) => Self::default(),
-        }
-    }
-
-    /// Persist to the shared path, preserving foreign keys. Creates the
-    /// `tilo` config directory if needed. Returns the path written.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no config directory can be resolved (`no config
-    /// dir`), or if creating the parent directory or writing the JSON file
-    /// fails (permissions, missing/read-only filesystem, etc).
-    pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = Self::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        settings_store::update_document_at(&path, |doc| {
-            let existing = serde_json::Value::Object(std::mem::take(doc)).to_string();
-            *doc = settings_store::parse(&self.to_json_merged(&existing));
-        })?;
-        Ok(path)
-    }
+/// The person's locale, which every app's toolkit follows.
+impl ui::storage::SettingsSchema for Locale {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("locale");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The region section's defaults, its cross-app JSON contract, and its
-    /// round-trip through the shared settings file.
+    /// The section's exact strings are the cross-app contract Sheets reads;
+    /// if serde ever renamed a variant this test would catch the drift.
     #[test]
-    fn region_settings_default_and_round_trip_the_cross_app_contract() {
-        let r = RegionSettings::default();
-        assert_eq!(r.locale.currency, Currency::USD);
-        assert_eq!(r.locale.date_format, DateStyle::Iso);
-        assert_eq!(r.locale.time_format, TimeStyle::H24);
-        assert_eq!(r.locale.measurement, Measurement::Metric);
+    fn the_locale_section_keeps_the_cross_app_shape() {
+        let locale = Locale::default();
+        assert_eq!(locale.currency, Currency::USD);
+        assert_eq!(locale.date_format, DateStyle::Iso);
+        assert_eq!(locale.time_format, TimeStyle::H24);
+        assert_eq!(locale.measurement, Measurement::Metric);
 
-        let region = |currency, date_format, time_format, measurement| RegionSettings {
-            locale: Locale {
-                currency,
-                date_format,
-                time_format,
-                measurement,
-                ..Default::default()
-            },
+        let locale = Locale {
+            currency: Currency::EUR,
+            date_format: DateStyle::Eu,
+            time_format: TimeStyle::H12,
+            measurement: Measurement::Imperial,
+            ..Locale::default()
         };
-        let json = region(
-            Currency::EUR,
-            DateStyle::Eu,
-            TimeStyle::H12,
-            Measurement::Imperial,
-        )
-        .to_json_merged("");
-        // These exact strings are the cross-app contract Sheets reads. If serde
-        // ever renamed a variant this test would catch the drift.
-        for want in [
-            "\"currency\": \"EUR\"",
-            "\"date_format\": \"EU\"",
-            "\"time_format\": \"H12\"",
-            "\"measurement\": \"Imperial\"",
-            "\"version\": 1",
-        ] {
-            assert!(json.contains(want), "{want} missing from {json}");
-        }
-
-        let r = region(
-            Currency::JPY,
-            DateStyle::Long,
-            TimeStyle::H24,
-            Measurement::Metric,
+        let section = serde_json::to_value(locale).unwrap();
+        assert_eq!(
+            section,
+            serde_json::json!({
+                "currency": "EUR",
+                "date_format": "EU",
+                "time_format": "H12",
+                "measurement": "Imperial",
+                "number_style": "DecimalPoint",
+                "first_day_of_week": "Monday",
+            })
         );
-        assert_eq!(RegionSettings::from_json(&r.to_json_merged("")), r);
-
-        let existing = r#"{"version":1,"theme":{"name":"dracula"},"locale":{"currency":"USD","date_format":"Iso","time_format":"H24","measurement":"Metric"}}"#;
-        let r = RegionSettings {
-            locale: Locale {
-                currency: Currency::GBP,
-                ..Default::default()
-            },
-        };
-        let out = r.to_json_merged(existing);
-        assert!(
-            out.contains("\"currency\": \"GBP\""),
-            "our edit landed: {out}"
-        );
-        assert!(
-            out.contains("dracula"),
-            "the unrelated `theme` section survived: {out}"
-        );
+        assert_eq!(serde_json::from_value::<Locale>(section).unwrap(), locale);
     }
 
-    /// Missing, unparsable or partially invalid documents degrade to defaults
-    /// rather than erroring.
+    /// A key that does not read keeps its default while the others keep
+    /// their stored values.
     #[test]
-    fn region_settings_degrade_to_defaults() {
-        for input in ["", "not json at all {"] {
-            assert_eq!(
-                RegionSettings::from_json(input),
-                RegionSettings::default(),
-                "{input:?}"
-            );
-        }
-        // The whole locale section fails to parse (XXX isn't a Currency).
-        let r = RegionSettings::from_json(
-            r#"{"locale":{"currency":"XXX","date_format":"Iso","time_format":"H24","measurement":"Metric"}}"#,
-        );
-        assert_eq!(r.locale, Locale::default());
+    fn an_unreadable_key_reads_as_its_default() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"locale":{"currency":"XXX","date_format":"US","time_format":"H24","measurement":"Metric"}}"#,
+        )
+        .unwrap();
+        let locale = ui::storage::Settings::<Locale>::shared()
+            .in_file(path)
+            .get();
+        assert_eq!(locale.currency, Currency::USD);
+        assert_eq!(locale.date_format, DateStyle::Us);
     }
 }

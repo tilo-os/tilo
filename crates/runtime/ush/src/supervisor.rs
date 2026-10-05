@@ -74,13 +74,11 @@ impl Default for SessionOptions {
     }
 }
 
-/// Printed under `bwrap`'s own one-line reason, which names a mount option
-/// rather than a cause. Short lines: it lands in a terminal of any width.
+/// Printed beneath the actual setup error, including loader failures.
+/// No mount-specific advice is given for unrelated startup failures.
 const SANDBOX_SETUP_FAILED: &str = "\
 ush: the shell's sandbox could not be set up, so no shell started;
-ush: bwrap's reason is above. An overlay mount refused with \"Invalid
-ush: argument\" usually means the images sit on a filesystem overlayfs
-ush: cannot stack on (another overlay): `dmesg` shows why.";
+ush: the setup error is above.";
 
 /// The first line of every reason a session's sandbox was not built.
 const NOT_STARTED: &str = "ush: the shell's sandbox could not be set up, so no shell started";
@@ -289,6 +287,8 @@ impl Session {
         // the real path, and a grant of the home must still find the store
         // under it.
         let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let runtime_bin = runtime_binary()?;
+        let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
         Ok(GuestPlan {
             shell: guest_shell(&images),
             images,
@@ -305,7 +305,8 @@ impl Session {
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
             grant_root: self.store.grant_root().map(Path::to_path_buf),
-            runtime_bin: runtime_binary()?,
+            runtime_bin,
+            helper_runtime,
             legacy_commands: crate::legacy_commands(),
             broker_socket,
             seccomp_blob,
@@ -422,11 +423,11 @@ impl Session {
         // inside the namespace — using the paths the guest itself will use.
         let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
-        let mut command = vec![
-            format!("{}/tilo-ush", crate::GUEST_BIN_DIR),
-            "guest-init".into(),
-            "--".into(),
-        ];
+        let mut command = plan.helper_runtime.as_ref().map_or_else(
+            || vec![format!("{}/tilo-ush", crate::GUEST_BIN_DIR)],
+            crate::helper_runtime::HelperRuntime::entry,
+        );
+        command.extend(["guest-init".into(), "--".into()]);
         if user_command.is_empty() {
             command.push(shell.to_string_lossy().into_owned());
             command.push("-i".into());
@@ -602,6 +603,13 @@ pub enum ServeResponse {
     HostNotAllowed {
         reason: String,
     },
+    /// The environment cannot be built here: no `env-runtime` image is
+    /// installed to make the default environment from. The connection stays
+    /// open for another request, so the app can offer the device's own shell
+    /// instead.
+    NoRuntime {
+        reason: String,
+    },
     /// Every environment, by key.
     Environments {
         environments: Vec<EnvironmentEntry>,
@@ -735,24 +743,57 @@ fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
     Ok(Some(listener))
 }
 
+/// Requests one connection may make. A refused open spends nothing — the
+/// connection is the app's one way to ask — so the app may ask again on it
+/// (the device's own shell after an environment could not be built), but not
+/// without end.
+const MAX_REQUESTS_PER_CONNECTION: usize = 8;
+
+/// Whether a request ended the connection's use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Served {
+    /// Answered for good: a session ran, or the request was not one to retry.
+    Done,
+    /// An open was refused; the app may ask again on this connection.
+    Refused,
+}
+
 fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut raw = stream.try_clone()?;
     let (caller, carried) = crate::host::read_caller(&mut raw)?;
     let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
+    for _ in 0..MAX_REQUESTS_PER_CONNECTION {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(());
+        }
+        if serve_request(stream, &mut writer, store, host_root, &caller, &line)? == Served::Done {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
 
-    let req: ServeRequest = match serde_json::from_str(&line) {
+fn serve_request(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    caller: &crate::host::Caller,
+    line: &str,
+) -> anyhow::Result<Served> {
+    let req: ServeRequest = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
-            return reply(
-                &mut writer,
+            reply(
+                writer,
                 &ServeResponse::Denied {
                     reason: format!("malformed request: {e}"),
                 },
                 None,
-            );
+            )?;
+            return Ok(Served::Done);
         }
     };
     match &req {
@@ -763,18 +804,23 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
                 Ok(environments) => ServeResponse::Environments { environments },
                 Err(reason) => ServeResponse::Denied { reason },
             };
-            return reply(&mut writer, &response, None);
+            reply(writer, &response, None)?;
+            return Ok(Served::Done);
         }
         ServeRequest::OpenSession {
             target: Target::Host,
             ..
-        } => return serve_host(stream, &mut writer, store, &caller, &req),
+        } => return serve_host(stream, writer, store, caller, &req),
         ServeRequest::OpenSession { target, .. } if is_relay(target) => {
-            return serve_relay(stream, &mut writer, store, &req);
+            return serve_relay(stream, writer, store, &req);
         }
-        ServeRequest::ListRelays => return reply(&mut writer, &list_relays(), None),
+        ServeRequest::ListRelays => {
+            reply(writer, &list_relays(), None)?;
+            return Ok(Served::Done);
+        }
         ServeRequest::AllowHost { expiry } => {
-            return reply(&mut writer, &allow_host(&caller, store, *expiry), None);
+            reply(writer, &allow_host(caller, store, *expiry), None)?;
+            return Ok(Served::Done);
         }
         ServeRequest::OpenSession { .. } => {}
     }
@@ -785,9 +831,20 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
                 &crate::audit::AuditRecord::new("serve", "-", "open-session", false)
                     .because(&reason),
             );
-            return reply(&mut writer, &ServeResponse::Denied { reason }, None);
+            reply(writer, &ServeResponse::Denied { reason }, None)?;
+            return Ok(Served::Refused);
         }
     };
+    let record = environment
+        .clone()
+        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
+
+    // The record must resolve before a terminal is handed out: a guest that
+    // cannot be built would print why on its pty and exit, leaving the app a
+    // dead pane and no chance to offer anything else.
+    if refused_unbuildable(writer, store, environment.as_deref(), &record)? {
+        return Ok(Served::Refused);
+    }
 
     let ServeRequest::OpenSession {
         cols,
@@ -797,14 +854,11 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
         ..
     } = req
     else {
-        return Ok(());
+        return Ok(Served::Done);
     };
     let (master, slave) = open_pty(cols, rows)?;
 
     let id = uuid::Uuid::new_v4().simple().to_string();
-    let record = environment
-        .clone()
-        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
     AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
         &id,
         &record,
@@ -828,7 +882,7 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     // close as soon as the spawn is done.
     drop(slave);
     reply(
-        &mut writer,
+        writer,
         &ServeResponse::Session {
             session: id.clone(),
             environment: record.clone(),
@@ -850,7 +904,60 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     AuditLog::at(store.audit_dir()).append(
         &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
     );
-    Ok(())
+    Ok(Served::Done)
+}
+
+/// Refuse an open whose environment cannot be built, saying why, logging
+/// and auditing it. Returns whether it was refused.
+fn refused_unbuildable(
+    writer: &mut UnixStream,
+    store: &Store,
+    environment: Option<&str>,
+    record: &str,
+) -> anyhow::Result<bool> {
+    let Some((refusal, reason)) =
+        unbuildable(store, environment, &*crate::images::on_this_device())
+    else {
+        return Ok(false);
+    };
+    tracing::warn!(record = %record, %reason, "ush: the environment cannot be built");
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new("serve", record, "open-session", false).because(&reason),
+    );
+    reply(writer, &refusal, None)?;
+    Ok(true)
+}
+
+/// Why the environment `record` (`None`: the default) cannot be built on
+/// this device: the answer for the app and the reason in words. `None` when
+/// it resolves — the default environment is made here on first use, as the
+/// guest would make it.
+pub fn unbuildable(
+    store: &Store,
+    record: Option<&str>,
+    images: &dyn Images,
+) -> Option<(ServeResponse, String)> {
+    match Records::at(store.records_root()).resolve(record, images) {
+        Ok(_) => None,
+        Err(crate::records::RecordError::NoRuntime(why)) => {
+            let reason = format!("no environment can be built on this device: {why}");
+            Some((
+                ServeResponse::NoRuntime {
+                    reason: reason.clone(),
+                },
+                reason,
+            ))
+        }
+        Err(error) => {
+            let reason = error.to_string();
+            Some((
+                ServeResponse::Denied {
+                    reason: reason.clone(),
+                },
+                reason,
+            ))
+        }
+    }
 }
 
 /// Record the person's allow for Terminal's Host target. Only a caller
@@ -954,7 +1061,7 @@ fn serve_host(
     store: &Store,
     caller: &crate::host::Caller,
     req: &ServeRequest,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Served> {
     let ServeRequest::OpenSession {
         cols,
         rows,
@@ -964,7 +1071,7 @@ fn serve_host(
         ..
     } = req
     else {
-        return Ok(());
+        return Ok(Served::Done);
     };
     let policy = crate::host::HostPolicy::in_force(store);
     let ownership = crate::host::SessionOwnership::discover();
@@ -981,19 +1088,21 @@ fn serve_host(
         } else {
             ServeResponse::Denied { reason }
         };
-        return reply(writer, &response, None);
+        reply(writer, &response, None)?;
+        return Ok(Served::Refused);
     }
     crate::host::HostPolicy::spend_one_time(crate::host::TERMINAL_APP_ID);
     let term = term.as_deref().unwrap_or("xterm-256color");
     let (cols, rows) = (*cols, *rows);
     let Some(account) = crate::host::login_account() else {
-        return reply(
+        reply(
             writer,
             &ServeResponse::Denied {
                 reason: "this account has no passwd entry to take a login shell from".into(),
             },
             None,
-        );
+        )?;
+        return Ok(Served::Done);
     };
     let (master, slave) = open_pty(cols, rows)?;
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -1019,7 +1128,7 @@ fn serve_host(
     AuditLog::at(store.audit_dir()).append(
         &crate::audit::AuditRecord::new(&id, "host", "close-session", true).because(termination),
     );
-    Ok(())
+    Ok(Served::Done)
 }
 
 /// Carry the terminal to an environment session on one of the person's
@@ -1031,7 +1140,7 @@ fn serve_relay(
     writer: &mut UnixStream,
     store: &Store,
     req: &ServeRequest,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Served> {
     let ServeRequest::OpenSession {
         target:
             Target::Environment {
@@ -1045,10 +1154,11 @@ fn serve_relay(
         ..
     } = req
     else {
-        return Ok(());
+        return Ok(Served::Done);
     };
     let denied = |writer: &mut UnixStream, reason: String| {
-        reply(writer, &ServeResponse::Denied { reason }, None)
+        reply(writer, &ServeResponse::Denied { reason }, None)?;
+        Ok(Served::Refused)
     };
     let identity = crate::relay::identity_paths();
     let Some(peer) = crate::relay::relays(&identity)
@@ -1125,7 +1235,7 @@ fn serve_relay(
         &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
             .because(termination),
     );
-    Ok(())
+    Ok(Served::Done)
 }
 
 fn is_relay(target: &Target) -> bool {

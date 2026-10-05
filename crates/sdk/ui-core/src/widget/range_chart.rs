@@ -5,7 +5,7 @@
     reason = "bounded floating-point chart geometry"
 )]
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -582,7 +582,7 @@ impl Widget for RangeChart {
         &mut self,
         action: &crate::a11y::Action,
         keys: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {

@@ -98,7 +98,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -122,7 +122,7 @@ mod tests {
         app.open_container_palette();
         let expected = app.engine.containers[0].id.clone();
         send(&mut app, &mut doc, &named_event(NamedKey::Enter));
-        app.dispatch_palette_invocation_for_test(&mut doc);
+        app.dispatch_palette_invocation_for_test(&doc);
         assert_eq!(app.view.selected.as_deref(), Some(expected.as_str()));
 
         // An offline lifecycle verb changes the sample engine.
@@ -140,7 +140,7 @@ mod tests {
             Some(ContainerStatus::Exited)
         );
 
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        Widget::sync(&mut app, &doc, &ROOT);
         assert_eq!(doc.get_heads(), heads, "nothing was written");
         let keys: Vec<String> = doc.keys(ROOT).collect();
         assert_eq!(keys, ["create"], "the document is the draft");
@@ -159,7 +159,10 @@ mod tests {
         let effects: Vec<_> = rows
             .iter()
             .flat_map(|row| row.actions.iter())
-            .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+            .filter(|action| {
+                action.kind == ui::tilo_actions::OperationKind::Effect
+                    && action.contract.permission == ui::tilo_actions::PermissionRequirement::Admin
+            })
             .collect();
         assert!(
             effects

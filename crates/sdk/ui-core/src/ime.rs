@@ -93,7 +93,7 @@ mod tests {
                 anchor: 6,
                 focus: 11
             },
-            &mut automerge::AutoCommit::new(),
+            &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(

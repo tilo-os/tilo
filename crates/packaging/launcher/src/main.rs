@@ -445,6 +445,14 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
     }
     match run(&args.manifest, &args.payload_root, &opts) {
         Ok(status) => {
+            // How the app ended, said where its output goes: a signal leaves
+            // no exit code of its own, and is folded into 1 below.
+            if !status.success() {
+                eprintln!(
+                    "tilo-launcher: {} ended: {status}",
+                    opts.app_id.as_deref().unwrap_or("the app")
+                );
+            }
             if let Some(code) = status.code() {
                 exit_code(code)
             } else {

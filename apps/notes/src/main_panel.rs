@@ -30,7 +30,8 @@
 //! ```
 
 use std::collections::HashMap;
-use std::rc::Rc;
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -107,8 +108,6 @@ pub type NotesEditor = RichTextSurface<PageBody>;
 pub struct PageBody {
     field: RichTextField,
     page: Option<PageId>,
-    /// Notes' own action host, for hosts that mount notes without the framework.
-    local: Option<crate::resource::LocalSink>,
 }
 
 impl PageBody {
@@ -117,16 +116,15 @@ impl PageBody {
             self.field
                 .attach(crate::actions::page_body_dispatcher(notebook, page));
         }
-        self.local = None;
     }
 }
 
 impl RichTextSource for PageBody {
     fn read_only(&self) -> bool {
-        self.local.is_none() && self.field.read_only()
+        self.field.read_only()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit) {
+    fn sync(&mut self, doc: &AutoCommit) {
         self.field.sync(doc);
     }
 
@@ -144,13 +142,10 @@ impl RichTextSource for PageBody {
 
     fn apply(
         &mut self,
-        doc: &mut AutoCommit,
+        edits: &mut ui::widget::Edits<'_>,
         edit: &tilo_document::RichTextAction,
     ) -> Result<(), ui::tilo_actions::ActionError> {
-        match (&self.local, self.page) {
-            (Some(local), Some(page)) => local.borrow_mut().apply_body_edit(doc, page, edit),
-            _ => self.field.apply(doc, edit),
-        }
+        self.field.apply(edits, edit)
     }
 
     fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {
@@ -162,19 +157,17 @@ impl RichTextSource for PageBody {
 /// column width. Keeping construction behind one helper prevents a page bind,
 /// remote rebind, or empty-state reset from silently returning to the shared
 /// editor's single-line (code/editor) default. `page` is the page whose body
-/// it edits, through the notebook's dispatcher or else notes' local action
-/// host; without a page it shows what it is given and writes nothing.
+/// it edits, through the notebook's dispatcher; without a page or a
+/// dispatcher it shows what it is given and writes nothing.
 fn notes_editor(
     page: Option<PageId>,
     notebook: Option<&Dispatcher<crate::resource::Notebook>>,
-    local: Option<&crate::resource::LocalSink>,
 ) -> NotesEditor {
     let mut body = PageBody {
         field: RichTextField::view_only(move |doc| {
             page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page))
         }),
         page,
-        local: local.cloned(),
     };
     if let Some(notebook) = notebook {
         body.attach(notebook);
@@ -271,9 +264,9 @@ pub struct MainPanel {
     /// width, text scale, or membership changes, so large text and long tag
     /// names never collide with the first document block.
     tag_area_height: f64,
-    /// A tag chip is a local navigation control. The app drains this retained
-    /// id into `NotesOperation::OpenTag`, which validates the real canonical
-    /// tag resource before changing the local browse view.
+    /// A tag chip is a local navigation control. The app opens the tag it
+    /// names, checking the tag still exists, before changing the local browse
+    /// view.
     pending_tag_open: Option<crate::model::TagId>,
     focused_tag: Option<crate::model::TagId>,
     hovered_tag: Option<crate::model::TagId>,
@@ -295,9 +288,6 @@ pub struct MainPanel {
     /// The notebook's dispatcher, once the app is hosted: page bodies are
     /// edited through it.
     notebook: Option<Dispatcher<crate::resource::Notebook>>,
-    /// Notes' own action host until the app is hosted by the framework:
-    /// the app's, shared, or this panel's own when it stands alone.
-    local: Option<crate::resource::LocalSink>,
     image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
@@ -381,9 +371,8 @@ impl MainPanel {
             pending_backlink_open: None,
             focused_backlink: None,
             hovered_backlink: None,
-            editor: notes_editor(None, None, None),
+            editor: notes_editor(None, None),
             notebook: None,
-            local: Some(crate::resource::LocalSink::default()),
             image_store: None,
             body: String::new(),
             rect: Rect::ZERO,
@@ -559,7 +548,6 @@ impl MainPanel {
     ) -> Result<Self, String> {
         let mut panel = Self::new();
         panel.notebook.clone_from(&self.notebook);
-        panel.local.clone_from(&self.local);
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -725,6 +713,11 @@ impl MainPanel {
         self.editor.editor_mut().set_transclusion_previews(previews);
     }
 
+    /// The store the editor draws images from.
+    pub(crate) fn image_store(&self) -> Option<&ui::ImageStore> {
+        self.image_store.as_ref()
+    }
+
     pub fn set_image_store(&mut self, store: Option<ui::ImageStore>) {
         self.image_store.clone_from(&store);
         self.editor.editor_mut().set_image_store(store);
@@ -735,20 +728,10 @@ impl MainPanel {
     pub(crate) fn attach_notebook(&mut self, notebook: Dispatcher<crate::resource::Notebook>) {
         self.editor.source_mut().attach(&notebook);
         self.notebook = Some(notebook);
-        self.local = None;
-    }
-
-    /// Edit page bodies through notes' own action host until the app is
-    /// hosted by the framework.
-    pub(crate) fn use_local_actions(&mut self, local: crate::resource::LocalSink) {
-        if self.notebook.is_none() {
-            self.editor.source_mut().local = Some(Rc::clone(&local));
-            self.local = Some(local);
-        }
     }
 
     fn fresh_editor(&self, page: Option<PageId>) -> NotesEditor {
-        let mut editor = notes_editor(page, self.notebook.as_ref(), self.local.as_ref());
+        let mut editor = notes_editor(page, self.notebook.as_ref());
         editor
             .editor_mut()
             .set_image_store(self.image_store.clone());
@@ -1130,13 +1113,6 @@ impl MainPanel {
         md
     }
 
-    /// Compare content rather than paint dirtiness, which also changes on load
-    /// and focus. Used only when recovering a failed legacy disk read.
-    pub(crate) fn has_unsaved_body(&self) -> bool {
-        let specs = crate::markdown::blocks_to_specs(self.editor.editor().blocks());
-        crate::markdown::serialize(&specs) != self.body
-    }
-
     /// Currently displayed title, if any. `None` when no page is open.
     pub fn title(&self) -> Option<&str> {
         if self.page_id.is_some() {
@@ -1243,21 +1219,7 @@ impl Default for MainPanel {
     }
 }
 
-/// The undo boundaries of body edits applied through the local action host.
-impl ui::undo::CommittedActions for MainPanel {
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.as_ref()?.borrow_mut().take_committed()
-    }
-    fn keeps_undo_step_open(&self) -> bool {
-        self.local
-            .as_ref()
-            .is_some_and(|local| local.borrow().keeps_step_open())
-    }
-}
-
 impl Widget for MainPanel {
-    ui::provides!(dyn ui::undo::CommittedActions);
-
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",
@@ -1306,8 +1268,8 @@ impl Widget for MainPanel {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         self.date_index.sync(state);
         let dates = self
             .page_id
@@ -2263,7 +2225,7 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if self.page_id.is_none() && matches!(action, ui::a11y::Action::Activate) {
@@ -2280,7 +2242,7 @@ impl Widget for MainPanel {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if target == "notes.scroll-position" {
@@ -2425,7 +2387,7 @@ mod tests {
             assert!(panel.perform_semantic_action(
                 target,
                 &ui::a11y::Action::SetValue("Launch plan".into()),
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -2447,7 +2409,11 @@ mod tests {
             assert!(node.state.focused);
 
             let mut doc = AutoCommit::new();
-            assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
+            assert!(p.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut Edits::lend(&mut doc),
+                &ObjId::Root
+            ));
             assert!(p.take_empty_action());
         }
 
@@ -2672,7 +2638,7 @@ mod tests {
                 &mut panel,
                 &format!("notes.tag-chip:{tag}"),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root,
             ));
             assert_eq!(panel.take_tag_open(), Some(tag));
@@ -2701,7 +2667,7 @@ mod tests {
                 &mut panel,
                 &format!("notes.backlink-chip:{source}"),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root,
             ));
             assert_eq!(panel.take_backlink_open(), Some(source));

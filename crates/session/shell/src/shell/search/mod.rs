@@ -71,9 +71,6 @@ fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
     }
 }
 
-/// Top of every shell provider's ranker-derived score.
-pub(crate) const MAX_PROVIDER_SCORE: i32 = 100;
-
 /// Map a field rank onto the provider scale; see
 /// [`ui::search::system::provider_score`].
 pub(crate) use ui::search::system::provider_score;
@@ -163,9 +160,14 @@ impl ResourceKindText for ResourceKind {
 /// directly. Returns a [`Result`] because an action can be addressed
 /// correctly and still have nothing to act on — "it ran" and "there was
 /// nothing here" are different answers a headless caller must tell apart.
-pub type OpenFn = dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
-pub type InvokeFn =
-    dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<ActionReceipt, ActionError>;
+pub type OpenFn =
+    dyn Fn(&mut ui::widget::Edits<'_>, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
+pub type InvokeFn = dyn Fn(
+    &mut ui::widget::Edits<'_>,
+    &ObjId,
+    &Chrome,
+    &ActionArgs,
+) -> Result<ActionReceipt, ActionError>;
 /// The longest an exact-address resolve waits for a provider's retained
 /// index to finish its first build. An address is valid whether or not a
 /// search ran before it; the wait only happens while a build is in flight.
@@ -188,7 +190,7 @@ impl std::fmt::Debug for InvocationDisposition {
     }
 }
 pub type BeginInvokeFn = dyn Fn(
-    &mut AutoCommit,
+    &mut ui::widget::Edits<'_>,
     &ObjId,
     &Chrome,
     &ActionArgs,
@@ -272,7 +274,7 @@ impl SearchResult {
         title: impl Into<String>,
         subtitle: Option<String>,
         score: i32,
-        on_open: impl Fn(&mut AutoCommit, &ObjId, &Chrome) + 'static,
+        on_open: impl Fn(&mut ui::widget::Edits<'_>, &ObjId, &Chrome) + 'static,
     ) -> Self {
         Self {
             kind,
@@ -304,7 +306,8 @@ impl SearchResult {
         title: impl Into<String>,
         subtitle: Option<String>,
         score: i32,
-        on_open: impl Fn(&mut AutoCommit, &ObjId, &Chrome) -> Result<(), ActionError> + 'static,
+        on_open: impl Fn(&mut ui::widget::Edits<'_>, &ObjId, &Chrome) -> Result<(), ActionError>
+        + 'static,
     ) -> Self {
         Self {
             kind,
@@ -1702,12 +1705,10 @@ mod tests {
         {
             use crate::shell::search::providers::{
                 actions::ActionsProvider, applications::ApplicationsProvider, files::FilesProvider,
-                notes::NotesProvider,
             };
             let providers: Vec<Rc<dyn SearchProvider>> = vec![
                 Rc::new(ActionsProvider::new()),
                 Rc::new(ApplicationsProvider::new()),
-                Rc::new(NotesProvider::new()),
                 Rc::new(FilesProvider::new()),
             ];
             for p in providers {

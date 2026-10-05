@@ -424,7 +424,7 @@ mod tests {
             catalog
                 .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:200:3"))
                 .expect("exact live tab action")
-                .invoke(&mut doc, &ROOT, &chrome, [])
+                .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
                 .expect("close accepted");
 
             let mut state = chrome.borrow_mut();
@@ -521,7 +521,13 @@ mod tests {
         assert_eq!(ids, ["tab.focus:100:1", "tab.focus:200:3"]);
 
         // Enter on the unfocused row brings that window forward, as a click would.
-        (go.on_open)(&mut doc, &ROOT, &chrome, &ActionArgs::none()).expect("focused");
+        (go.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("focused");
         let (active_group, active_tab) = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -634,7 +640,11 @@ mod tests {
         // An agent asking with nobody at the desktop to agree gets a refusal,
         // and nothing moves.
         chrome.borrow_mut().window_transfers.set_attended(|| false);
-        assert!(action.invoke(&mut doc, &ROOT, &chrome, []).is_err());
+        assert!(
+            action
+                .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
+                .is_err()
+        );
         assert_eq!(tabs_in(&chrome, 1), []);
 
         // With someone there, the sheet asks first. This window keeps its
@@ -651,7 +661,7 @@ mod tests {
                 .set_data_home(profiles.path().to_path_buf());
         }
         action
-            .invoke(&mut doc, &ROOT, &chrome, [])
+            .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
             .expect("the sheet is up");
         assert_eq!(tabs_in(&chrome, 1), [], "nothing changes before the answer");
         let mut sheet = crate::shell::portal_dialog::PortalDialogController::new(queue);

@@ -4,8 +4,8 @@
 //! root path directly — there is no message layer.
 
 use crate::search::ListIndex;
-use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use crate::widget::ModelPath;
+use automerge::ObjId;
 use std::collections::HashSet;
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -96,7 +96,7 @@ impl SearchFilter {
     }
 }
 
-type SelectFn = dyn Fn(&mut AutoCommit, &ObjId) + Send + Sync;
+type SelectFn = dyn Fn(&mut crate::widget::Edits<'_>, &ObjId) + Send + Sync;
 
 /// When set on an entry, choosing it first collects a free-text argument
 /// before it completes: the palette switches into an argument-entry step
@@ -313,7 +313,7 @@ impl CommandEntry {
     #[must_use]
     pub fn on_select<F>(mut self, f: F) -> Self
     where
-        F: Fn(&mut AutoCommit, &ObjId) + Send + Sync + 'static,
+        F: Fn(&mut crate::widget::Edits<'_>, &ObjId) + Send + Sync + 'static,
     {
         self.on_select = Some(Arc::new(f));
         self
@@ -321,7 +321,9 @@ impl CommandEntry {
 
     /// The row `id` is the flattened composite key, so the host resolves the
     /// selection back to a replayable `tilo_actions::Action`; a
-    /// [`ActionInput::Prompted`] action becomes an argument-collecting row.
+    /// [`ActionInput::Prompted`] action becomes an argument-collecting row
+    /// whose text is the action's primary parameter (its first required one,
+    /// else its first), as the action's own prompt reads it.
     pub fn from_flat_action(fa: &FlatAction<'_>) -> Self {
         let mut entry = CommandEntry::new(
             fa.key.clone(),
@@ -336,8 +338,14 @@ impl CommandEntry {
             ..
         } = &fa.action.input
         {
+            let params = fa.action.params();
+            let primary = params
+                .iter()
+                .find(|param| param.required)
+                .or_else(|| params.first())
+                .map_or(PROMPTED_PARAM, |param| param.name.as_ref());
             entry = entry.with_argument(prompt.clone(), placeholder.clone());
-            entry.action_argument = Some(PROMPTED_PARAM.to_string());
+            entry.action_argument = Some(primary.to_string());
         }
         entry.action_address = Some(ActionAddress::new(&fa.resource_id.0, &fa.action.id));
         entry
@@ -786,7 +794,7 @@ impl CommandPalette {
 
     /// Exactly what Enter does; hosts also wire pointer clicks here, so
     /// click and Enter share one path.
-    pub fn activate_selected(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    pub fn activate_selected(&mut self, state: &mut crate::widget::Edits<'_>, path: &ObjId) {
         if self.arg_state.is_some() {
             return;
         }
@@ -822,7 +830,7 @@ impl CommandPalette {
     /// palette in Commands mode only (Search mode stays open).
     fn run_entry(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         id: String,
         argument: Option<String>,
@@ -869,7 +877,7 @@ impl CommandPalette {
         key: &winit::keyboard::Key,
         shift: bool,
         ctrl: bool,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -1117,7 +1125,7 @@ impl CommandPalette {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -2165,7 +2173,13 @@ impl Widget for CommandPalette {
         if !self.is_focused {
             return;
         }
-        if self.handle_pointer_event(event, ctx.scale_factor, ctx.state, ctx.path, ctx.handled) {
+        if self.handle_pointer_event(
+            event,
+            ctx.scale_factor,
+            &mut ctx.state,
+            ctx.path,
+            ctx.handled,
+        ) {
             return;
         }
         if matches!(event, WindowEvent::Ime(_)) {
@@ -2214,7 +2228,7 @@ impl Widget for CommandPalette {
                     logical_key,
                     shift,
                     ctrl,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.handled,
                 );
@@ -2236,7 +2250,7 @@ impl Widget for CommandPalette {
                     *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    self.activate_selected(ctx.state, ctx.path);
+                    self.activate_selected(&mut ctx.state, ctx.path);
                     *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Escape) => {
@@ -2460,7 +2474,7 @@ impl Widget for CommandPalette {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -2476,7 +2490,7 @@ impl Widget for CommandPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -2553,7 +2567,7 @@ impl CommandPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         let mut handled = false;
@@ -2566,7 +2580,7 @@ impl CommandPalette {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2770,7 +2784,7 @@ mod tests {
             assert_eq!(p.visible_entries().len(), total);
 
             let event = key_press(Key::Character(SmolStr::new("h")));
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let doc_root = automerge::ROOT.clone();
             let modifiers = Modifiers::default();
             let mut handled = false;
@@ -2783,7 +2797,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -2852,7 +2866,7 @@ mod tests {
             p.set_rect(Rect::new(0.0, 0.0, 360.0, 280.0));
             let row = p.row_rect(1).expect("second result is painted");
             let modifiers = Modifiers::default();
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
 
             assert!(p.handle_overlay_key(
                 &WindowEvent::CursorMoved {
@@ -2860,7 +2874,7 @@ mod tests {
                     position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
                 },
                 &modifiers,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.cursor(), 1, "hover highlights the hit-tested row");
@@ -2875,7 +2889,7 @@ mod tests {
                     button: MouseButton::Left,
                 },
                 &modifiers,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -2897,13 +2911,13 @@ mod tests {
                 .action_target
                 .clone()
                 .expect("result has a stable semantic target");
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
 
             assert!(Widget::perform_semantic_action(
                 &mut p,
                 &target,
                 &crate::a11y::Action::Focus,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.selected_id(), Some("bravo"));
@@ -2911,7 +2925,7 @@ mod tests {
                 &mut p,
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -2949,7 +2963,10 @@ mod tests {
             let mut palette = CommandPalette::commands();
             palette.set_entries(vec![CommandEntry::from_flat_action(&flat[0])]);
             palette.open();
-            palette.activate_selected(&mut AutoCommit::new(), &automerge::ROOT);
+            palette.activate_selected(
+                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+                &automerge::ROOT,
+            );
 
             assert!(palette.take_outcome().is_none());
             let invocation =
@@ -2996,6 +3013,52 @@ mod tests {
             assert_eq!(encoded.type_id, "test.rename");
         }
 
+        fn typed_resource_action_binds_its_primary_parameter() {
+            let spec = tilo_actions::ActionSpec::typed_operation(
+                "go-to-cell",
+                "Go to cell",
+                "Cell reference",
+                tilo_actions::OperationKind::View,
+                "test.go",
+                vec![tilo_actions::ActionParam::required_owned(
+                    "reference",
+                    tilo_actions::ParamType::Text,
+                    "Cell reference",
+                )],
+                |args| {
+                    tilo_actions::EncodedAction::encode_operation(
+                        "test.go",
+                        &args.text("reference").unwrap_or_default(),
+                    )
+                    .unwrap()
+                },
+            );
+            let resources = vec![
+                tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            ];
+            let flat = tilo_actions::flatten(&resources);
+            let entry = CommandEntry::from_flat_action(&flat[0]);
+            let mut palette = CommandPalette::commands();
+            palette.open_action_argument(entry, Some("B12".into()));
+
+            let mut handled = false;
+            dispatch_h(
+                &mut palette,
+                &key_press(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                &mut handled,
+            );
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
+            assert_eq!(invocation.arguments["reference"], "B12");
+            let encoded = flat[0].action.build_json(&invocation.arguments).unwrap();
+            assert_eq!(
+                encoded.payload,
+                serde_json::to_vec("B12").unwrap(),
+                "the typed builder reads the text"
+            );
+        }
+
         fn semantic_shortcut_labels_follow_the_palette_platform() {
             use crate::platform::{Platform, PlatformConventions};
 
@@ -3012,6 +3075,7 @@ mod tests {
 
         immediate_resource_action_enqueues_an_address_not_a_private_outcome();
         prompted_resource_action_binds_its_declared_argument();
+        typed_resource_action_binds_its_primary_parameter();
         semantic_shortcut_labels_follow_the_palette_platform();
     }
 
@@ -3147,7 +3211,7 @@ mod tests {
             palette.push(CommandEntry::new("en", "London"));
             palette.set_focus(true);
             palette.rect = Rect::new(0.0, 0.0, 420.0, 260.0);
-            let mut document = AutoCommit::new();
+            let mut document = automerge::AutoCommit::new();
             let modifiers = Modifiers::default();
 
             assert!(palette.handle_overlay_key(
@@ -3156,7 +3220,7 @@ mod tests {
                     Some(("東".len(), "東".len())),
                 )),
                 &modifiers,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(palette.query(), "", "preedit is not committed query state");
@@ -3182,7 +3246,7 @@ mod tests {
             assert!(palette.handle_overlay_key(
                 &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
                 &modifiers,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(palette.query(), "東京");
@@ -3280,7 +3344,7 @@ mod tests {
     }
 
     fn dispatch(p: &mut CommandPalette, event: &WindowEvent, modifiers: Modifiers) {
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let doc_root = automerge::ROOT.clone();
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
@@ -3291,7 +3355,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &doc_root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3439,7 +3503,7 @@ mod tests {
             let mut p = seeded_command_palette();
             assert_eq!(p.selected_id(), Some("goto"));
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT.clone();
             for _ in 0..2 {
                 let mut handled = false;
@@ -3451,7 +3515,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -3804,7 +3868,7 @@ mod tests {
         modifiers: Modifiers,
         handled: &mut bool,
     ) {
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT.clone();
         let mut focus: Option<NodeId> = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -3814,7 +3878,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled,
                 focus_target: &mut focus,

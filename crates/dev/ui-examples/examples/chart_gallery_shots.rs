@@ -22,8 +22,8 @@ fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
     } else {
         chart_gallery_scene::build(theme)
     };
-    let mut state = State::new();
-    root.sync(&mut state.doc, &state.root);
+    let state = State::new();
+    root.sync(&state.doc, &state.root);
 
     let mut text = TextRenderer::new();
     let mut taffy = TaffyTree::<()>::new();

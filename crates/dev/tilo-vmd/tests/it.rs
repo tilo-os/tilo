@@ -7,5 +7,7 @@
 pub mod device_account;
 #[path = "jobs.rs"]
 pub mod jobs;
+#[path = "peer_route.rs"]
+pub mod peer_route;
 #[path = "rpc.rs"]
 pub mod rpc;

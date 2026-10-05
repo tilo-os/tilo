@@ -462,7 +462,7 @@ impl TimePicker {
 impl Widget for TimePicker {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(value) = self
             .local_state
             .as_mut()
@@ -679,7 +679,7 @@ impl Widget for TimePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         let crate::a11y::Action::SetValue(value) = action else {
@@ -957,7 +957,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1137,11 +1137,11 @@ mod tests {
             let mut left = TimePicker::from_state(&state);
             let mut right = TimePicker::from_state(&state);
             let expected = TimeValue::new(16, 45).with_seconds(12);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
             left.set_value(expected);
             assert_eq!(state.with(|value| *value), expected);
-            Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut right, &doc, &automerge::ROOT);
             assert_eq!(right.value(), expected);
         }
 
@@ -1166,7 +1166,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("21:07:09".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|value| *value), expected);
@@ -1175,7 +1175,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("24:00".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|value| *value), expected);
