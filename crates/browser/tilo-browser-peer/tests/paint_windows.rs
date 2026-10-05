@@ -118,14 +118,17 @@ async fn a_streamed_page_is_rebuilt_by_the_member_and_its_input_returns() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let (http, relay, web) = (host.https(), host.relay, host.web);
+    let (http, relay, web) = {
+        let host = start_host(
+            &root,
+            &host_device,
+            state.path(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await;
+        let http = host.https();
+        (http, host.relay, host.web)
+    };
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&laptop.key.to_bytes()))
         .relay_mode(iroh::RelayMode::Disabled)
@@ -281,12 +284,12 @@ async fn a_streamed_page_is_rebuilt_by_the_member_and_its_input_returns() {
 
     // The page scrolls: one small patch, applied to what the member holds.
     let second = page(2, 300.0, hash);
-    let patch = Payload::Patches(vec![first.diff(&second)]);
+    let scrolled = Payload::Patches(vec![first.diff(&second)]);
     assert!(
-        patch.encode().unwrap().len() < 256,
+        scrolled.encode().unwrap().len() < 256,
         "a scroll is a few bytes"
     );
-    publish(&native, author, &frame(&patch, 4));
+    publish(&native, author, &frame(&scrolled, 4));
     assert!(remote.push(&next_payload!(group)));
     assert_eq!(remote.frame().as_deref(), Some(&second));
 
