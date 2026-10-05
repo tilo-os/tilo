@@ -9,17 +9,16 @@
 //!   `tilo_relay_protocol::agents::AgentDelegation` naming its label, cursor
 //!   colour, rooms and apps. The host confines the device to those rooms and
 //!   treats it as its own principal ([`control::AgentIdentity`]).
-//! - **Apps.** Any app with an `ApplicationDefinition` component is mounted
-//!   headless and used only through its resource/action door — declared
-//!   actions plus the semantic projection of every operable control — so an
-//!   agent can do whatever a person can do in that app, with no per-app
-//!   code ([`apps`]).
+//! - **Apps.** Each record the agent works in is a replica of the app's
+//!   resource, looked up by the kind the record names and used only through
+//!   the operations the resource publishes — the same door a person's window
+//!   uses — with no per-app code and nothing rendered ([`apps`]).
 //! - **Edits.** Each action's Automerge change is committed through the
 //!   agent's relay session and ordered by the host with everyone else's;
 //!   browsers receive it live, attributed to the agent ([`participant`]).
-//! - **Presence.** The agent publishes focus, pointer and a participant of
-//!   kind agent on the live plane; browsers draw its cursor, and it sees
-//!   theirs.
+//! - **Presence.** The agent publishes the record it focuses and a
+//!   participant of kind agent on the live plane; browsers show it there,
+//!   and it sees theirs.
 //! - **Steering.** Spawn, message, pause, resume, stop and status are
 //!   remote actions the host answers for the delegating user's devices
 //!   ([`control`]); a grant is requested from the page and approved with
@@ -52,7 +51,7 @@ pub mod planner;
 pub mod room_actions;
 mod web_apps;
 
-pub use apps::{AppCatalogue, AppError, HostedApp, Seed, component_apps};
+pub use apps::{AppCatalogue, AppError, Replica, Seed, component_apps};
 pub use control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone, GrantRecord,
     Spawner, SupervisorHost, SupervisorSnapshot,
@@ -66,4 +65,3 @@ pub use participant::actions::{RECORD_PROVIDER, record_provider};
 pub use participant::{AgentParticipant, ParticipantConfig};
 pub use planner::{DirectPlanner, PlanContext, Planner, Step, StepAction};
 pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};
-pub use ui::headless::{Control, ControlInput};

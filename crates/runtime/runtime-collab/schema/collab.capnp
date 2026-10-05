@@ -386,6 +386,11 @@ interface ChannelHandle {
   # name another.
   settings @54 () -> (settings :AppSettings);
 
+  # This application's live activity: what it keeps showing outside its
+  # windows (a running timer), which the shell presents and whose controls
+  # it hands back. The app is the certified route's.
+  liveActivity @55 () -> (activity :LiveActivity);
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.
@@ -862,6 +867,15 @@ interface EnrolledTaskStream {
 
 # One application's view of the session's settings, from `settings`.
 # Documents are JSON objects of sections, at most 1 MiB.
+interface LiveActivity {
+  # Show `activityJson`, a JSON object, as the app's live activity in place
+  # of the one shown; empty bytes end it.
+  show @0 (activityJson :Data) -> ();
+  # The controls pressed on the app's live activity after `after`, once
+  # there is one: a JSON array of the controls, and the serial of the last.
+  controls @1 (after :UInt64) -> (serial :UInt64, controlsJson :Data);
+}
+
 interface AppSettings {
   # The view once its revision differs from `after`; at once for 0. A
   # caller follows changes by passing back the revision it was given.

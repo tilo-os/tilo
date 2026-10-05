@@ -123,8 +123,8 @@ fn lay_out(case: Case) -> Laid {
     }
     .with_text_scale(case.text_scale);
     let mut widget = gallery_scene::build_typography_showcase(&theme);
-    let mut state = State::new();
-    widget.sync(&mut state.doc, &state.root);
+    let state = State::new();
+    widget.sync(&state.doc, &state.root);
 
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),

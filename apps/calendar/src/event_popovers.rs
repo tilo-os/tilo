@@ -213,7 +213,7 @@ impl EventPopovers {
                     &mut ui::widget::EventCtx {
                         scale_factor: input.scale_factor,
                         modifiers: &input.modifiers,
-                        state: input.state,
+                        state: input.state.reborrow(),
                         path: input.path,
                         handled: input.handled,
                         focus_target: input.focus_target,
@@ -242,7 +242,7 @@ impl EventPopovers {
                     &mut ui::widget::EventCtx {
                         scale_factor: input.scale_factor,
                         modifiers: &input.modifiers,
-                        state: input.state,
+                        state: input.state.reborrow(),
                         path: input.path,
                         handled: input.handled,
                         focus_target: input.focus_target,

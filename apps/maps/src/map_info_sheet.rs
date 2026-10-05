@@ -6,6 +6,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -84,7 +85,7 @@ impl MapInfoSheet {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if self.current.is_none() {
             return false;
@@ -171,7 +172,7 @@ mod tests {
                 &escape(),
                 1.0,
                 Modifiers::default(),
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
             ));
             assert!(!sheet.is_open());
         }
@@ -184,9 +185,12 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            assert!(
-                !sheet.handle_event(&press, 1.0, Modifiers::default(), &mut AutoCommit::new(),)
-            );
+            assert!(!sheet.handle_event(
+                &press,
+                1.0,
+                Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+            ));
         }
 
         // Phase `open_sheet_exposes_shared_modal_semantics`.

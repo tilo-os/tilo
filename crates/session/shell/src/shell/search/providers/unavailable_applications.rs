@@ -128,8 +128,13 @@ mod tests {
         );
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
         let mut doc = automerge::AutoCommit::new();
-        let error = (row.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none())
-            .expect_err("an unavailable app does not open");
+        let error = (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect_err("an unavailable app does not open");
         assert!(error.to_string().contains("Tilo OS only"), "{error}");
     }
 

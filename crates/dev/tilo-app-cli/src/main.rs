@@ -1457,7 +1457,7 @@ fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> R
     };
     println!("{verb} {}", outcome.path.display());
     println!(
-        "Next: add the TILO_PUBLISHER_KEY secret (the file `tilo-app keys new` wrote), then push a v* tag to publish"
+        "Next: add the TILO_PUBLISHER_KEY secret (what `tilo-app keys export` prints), then push a v* tag to publish"
     );
     Ok(outcome.to_json())
 }

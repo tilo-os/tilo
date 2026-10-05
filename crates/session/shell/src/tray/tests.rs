@@ -370,7 +370,11 @@ async fn transcript() {
         catalog
             .select(&ResourceRef::new(tray_items::PROVIDER_ID, lock.clone()))
             .expect("lock action")
-            .invoke_nullary(&mut AutoCommit::new(), &ROOT, &chrome)
+            .invoke_nullary(
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                &ROOT,
+                &chrome,
+            )
             .expect("invoked");
     }
     eventually("the menu event to reach the app", || {

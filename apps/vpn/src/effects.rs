@@ -18,7 +18,7 @@ use crate::model::{ConnId, ConnStatus, Connection};
 
 /// The VPN client's effects.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "vpn.effects")]
+#[effect(operation = "vpn.effects", device_only)]
 pub enum VpnEffect {
     /// Import `WireGuard` profile.
     ///

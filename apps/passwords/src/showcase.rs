@@ -3416,10 +3416,47 @@ impl PasswordsSurface {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "declarative drawing of the health report that reads top-to-bottom"
-    )]
+    /// The review's findings, as its cards show them: title, count and what
+    /// the count means. A narrow window shows the shorter wording.
+    fn health_cards(
+        health: &crate::VaultHealth,
+        compact: bool,
+    ) -> [(&'static str, usize, &'static str); 3] {
+        if compact {
+            [
+                (
+                    "Reused passwords",
+                    health.reused,
+                    "Used by more than one login",
+                ),
+                ("Weak passwords", health.weak, "Too short or easy to guess"),
+                (
+                    "Older passwords",
+                    health.older_than_year,
+                    "Unchanged for at least a year",
+                ),
+            ]
+        } else {
+            [
+                (
+                    "Repeated passwords",
+                    health.reused,
+                    "Logins sharing the same password",
+                ),
+                (
+                    "Short or simple passwords",
+                    health.weak,
+                    "Under 12 characters or missing basic variety",
+                ),
+                (
+                    "Not changed in a year",
+                    health.older_than_year,
+                    "Based only on the saved update date",
+                ),
+            ]
+        }
+    }
+
     fn draw_health(
         &self,
         scene: &mut Scene,
@@ -3442,9 +3479,6 @@ impl PasswordsSurface {
             x
         };
         let total = self.health.total.to_string();
-        let reused = self.health.reused.to_string();
-        let weak = self.health.weak.to_string();
-        let old = self.health.older_than_year.to_string();
         ctx.text(
             "Password review",
             &TextStyle::new(25.0).with_weight(TextWeight::Bold),
@@ -3484,44 +3518,9 @@ impl PasswordsSurface {
             Point::new(x + 76.0, rect.y0 + 145.0),
             None,
         );
-        let cards = if compact {
-            [
-                (
-                    "Reused passwords",
-                    reused.as_str(),
-                    "Used by more than one login",
-                ),
-                (
-                    "Weak passwords",
-                    weak.as_str(),
-                    "Too short or easy to guess",
-                ),
-                (
-                    "Older passwords",
-                    old.as_str(),
-                    "Unchanged for at least a year",
-                ),
-            ]
-        } else {
-            [
-                (
-                    "Repeated passwords",
-                    reused.as_str(),
-                    "Logins sharing the same password",
-                ),
-                (
-                    "Short or simple passwords",
-                    weak.as_str(),
-                    "Under 12 characters or missing basic variety",
-                ),
-                (
-                    "Not changed in a year",
-                    old.as_str(),
-                    "Based only on the saved update date",
-                ),
-            ]
-        };
-        for (i, (title, count, detail)) in cards.iter().enumerate() {
+        let cards = Self::health_cards(&self.health, compact);
+        for (i, (title, count, detail)) in cards.into_iter().enumerate() {
+            let count = count.to_string();
             let y = rect.y0 + 218.0 + ui::num::f64_of_usize(i) * 96.0;
             Self::card(
                 ctx.scene,
@@ -3531,7 +3530,7 @@ impl PasswordsSurface {
                 12.0,
             );
             ctx.text(
-                count,
+                &count,
                 &TextStyle::new(22.0).with_weight(TextWeight::Bold),
                 c.text_primary,
                 Point::new(x + 18.0, y + 18.0),
@@ -3742,7 +3741,7 @@ impl PasswordsSurface {
 }
 
 impl Widget for PasswordsSurface {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.transfer_poll_deadline.set(None);
         self.poll_transfers();
         if self
@@ -4956,6 +4955,26 @@ impl Widget for PasswordsSurface {
                     .with_name("Apps with ongoing access")
                     .with_children(grants),
             );
+        } else if self.mode == Pane::Health {
+            let mut findings = vec![
+                AccessNode::new(Role::StaticText)
+                    .with_name("Logins checked")
+                    .with_value(self.health.total.to_string()),
+            ];
+            findings.extend(Self::health_cards(&self.health, false).into_iter().map(
+                |(title, count, meaning)| {
+                    AccessNode::new(Role::StaticText)
+                        .with_name(title)
+                        .with_value(count.to_string())
+                        .with_description(meaning)
+                },
+            ));
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Password review")
+                    .with_description("Facts derived from the passwords stored here")
+                    .with_children(findings),
+            );
         } else if let Some(detail) = detail {
             children.push(detail);
         }
@@ -5055,7 +5074,7 @@ impl Widget for PasswordsSurface {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -5415,6 +5434,59 @@ mod tests {
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
+    #[test]
+    fn the_password_review_reads_out_its_findings() {
+        let mut app = demo("vault");
+        let mut doc = AutoCommit::new();
+        assert!(app.perform_semantic_action(
+            "passwords.review",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.mode, Pane::Health);
+        let tree = app.accessibility().unwrap();
+        let review = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Password review"))
+            .expect("the review is in the accessibility tree");
+        let findings: Vec<(&str, &str)> = review
+            .children
+            .iter()
+            .map(|node| {
+                (
+                    node.name.as_deref().unwrap(),
+                    node.value.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        let health = app.health;
+        assert_eq!(
+            findings,
+            [
+                ("Logins checked", health.total.to_string().as_str()),
+                ("Repeated passwords", health.reused.to_string().as_str()),
+                (
+                    "Short or simple passwords",
+                    health.weak.to_string().as_str()
+                ),
+                (
+                    "Not changed in a year",
+                    health.older_than_year.to_string().as_str()
+                ),
+            ]
+        );
+        assert!(health.total > 0, "the demo vault has logins to review");
+        assert!(
+            tree.children.iter().all(|node| !node
+                .name
+                .as_deref()
+                .is_some_and(|name| name.ends_with(" details"))),
+            "the review replaces the selected item's details"
+        );
+    }
+
     #[expect(
         clippy::float_cmp,
         reason = "layout offsets are sums of exactly representable constants"
@@ -5729,14 +5801,14 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "passwords.add",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.mode, Pane::Editor);
             assert!(app.perform_semantic_action(
                 "passwords.field.name",
                 &ui::a11y::Action::SetValue("New name".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.draft_title, "New name");
@@ -5751,7 +5823,7 @@ mod tests {
                 assert!(app.perform_semantic_action(
                     target,
                     &ui::a11y::Action::Activate,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(app.draft_kind, expected);
@@ -5782,7 +5854,7 @@ mod tests {
                 assert!(app.perform_semantic_action(
                     "passwords.backup.password",
                     &Action::SetValue("Owned fixture password 52!".into()),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(app.backup_password.value(), "Owned fixture password 52!");
@@ -5790,7 +5862,7 @@ mod tests {
                     assert!(app.perform_semantic_action(
                         "passwords.backup.confirmation",
                         &Action::SetValue("Owned fixture password 52!".into()),
-                        &mut doc,
+                        &mut ui::widget::Edits::lend(&mut doc),
                         &automerge::ROOT,
                     ));
                     assert!(app.backup_form_error(true).is_none());
@@ -5808,7 +5880,7 @@ mod tests {
             assert!(!app.perform_semantic_action(
                 "passwords.backup.password",
                 &Action::SetValue("outside dialog".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
         }
@@ -5954,7 +6026,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "passwords.delete",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(matches!(
@@ -5979,7 +6051,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "passwords.delete.confirm",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.model.items().is_empty());
@@ -6043,7 +6115,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -6063,7 +6135,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
             assert_eq!(app.next_wake_deadline(), Some(first));
             tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
-            app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            app.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(app.next_wake_deadline().is_none());
             let deadline = ui::time::now();
             app.revealed = Some((
@@ -6072,7 +6144,7 @@ mod tests {
                 deadline,
             ));
             assert_eq!(app.next_wake_deadline(), Some(deadline));
-            app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            app.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(app.revealed.is_none());
             assert!(app.next_wake_deadline().is_none());
         }

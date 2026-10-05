@@ -206,7 +206,7 @@ fn browse_and_secondary_pages_share_one_composition() {
         safety.stage_scene(Some("moderation"));
         let safety = lay_out(safety, (1200.0, 800.0));
 
-        let remotes_title = first_named(&*remotes, "Flatpak remotes");
+        let remotes_title = first_named(&*remotes, "Flatpak repositories");
         let safety_title = first_named(&*safety, "Trust & moderation");
         close(
             remotes_title.height(),
@@ -232,7 +232,7 @@ fn browse_and_secondary_pages_share_one_composition() {
         );
         let remotes_subtitle = first_named(
             &*remotes,
-            "Repositories are machine-scoped and every change runs through the package worker.",
+            "Browse software from your configured repositories. Repositories supplied by this device stay available; repositories you add belong to your account.",
         );
         close(
             remotes_subtitle.y0 - remotes_title.y1,

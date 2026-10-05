@@ -442,7 +442,7 @@ impl ResourceRequest<'_> {
                         &encoded.payload,
                     ),
                 };
-                tile.start_operation(&op, outer, &ROOT)
+                tile.start_operation(&op, &mut crate::widget::Edits::lend(outer), &ROOT)
                     .map_err(DoorError::Failed)
                     .and_then(|value| {
                         value.ok_or_else(|| {
@@ -757,7 +757,6 @@ fn execute_owned(
                 }
                 if state.pending.is_some()
                     || doc.pending_ops() != 0
-                    || crate::undo::needs_commit(root)
                     || !history.matches_recorded_frontier(doc)
                 {
                     return Err(refused(

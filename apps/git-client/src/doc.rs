@@ -1,7 +1,7 @@
 //! Automerge document layer for the git client.
 //!
-//! Durable view preferences live under `root.settings` (see [`crate::settings`]).
-//! The shared repository projection — branches, commits, remotes, tags, stashes,
+//! The diff preferences are the person's, not the document's (see
+//! [`crate::settings`]). The shared repository projection — branches, commits, remotes, tags, stashes,
 //! identity — is a JSON scalar at `root.shared_repo`, the same shape Disks uses
 //! for topology: machine-derived, replaced wholesale, never character-edited.
 //! Working-tree status is intentionally omitted from the projection; it stays
@@ -13,24 +13,28 @@ use ui::automerge::{AutoCommit, ROOT};
 use ui::doc::read_str;
 
 use crate::model::{Branch, Commit, Remote, RepoModel, Stash, Tag};
-use crate::settings::Settings;
 
-/// Document keys beside [`crate::settings::keys`].
+/// Document keys.
 pub mod keys {
     pub const SHARED_REPO: &str = "shared_repo";
+    /// The path of the repository the record opens.
+    pub const REPOSITORY: &str = "repository";
 }
 
-/// Framework resource state: preferences plus the shared repository projection.
+/// Framework resource state: the repository the record opens and the shared
+/// repository projection.
 #[derive(Clone, Debug, Default)]
 pub struct GitClientState {
-    pub settings: Settings,
+    /// The path of the repository the record opens; `None` until one was
+    /// opened, when the client looks around its working directory.
+    pub repository: Option<String>,
     pub repo: RepoModel,
 }
 
 impl GitClientState {
     pub fn from_doc(doc: &AutoCommit) -> Self {
         Self {
-            settings: Settings::read_only(doc),
+            repository: read_str(doc, &ROOT, keys::REPOSITORY).filter(|path| !path.is_empty()),
             repo: SharedRepo::read(doc)
                 .map(SharedRepo::into_model)
                 .unwrap_or_default(),
@@ -93,7 +97,7 @@ impl SharedRepo {
         }
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
+    #[cfg(test)]
     pub fn write(doc: &mut AutoCommit, shared: &Self) {
         let json = serde_json::to_string(shared).unwrap_or_else(|_| "{}".into());
         Self::write_json(doc, &json);

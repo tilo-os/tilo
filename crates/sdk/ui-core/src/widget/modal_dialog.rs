@@ -6,7 +6,7 @@
 //! exposes its result via `pending_choice`.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -422,7 +422,7 @@ impl<C: Widget> ModalDialog<C> {
             &mut crate::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut inner_handled,
                 focus_target: &mut inner_focus,
@@ -503,7 +503,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.open {
@@ -520,7 +520,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -539,7 +539,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.recompute_layout();
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The dialog holds no CRDT-backed state itself; forward so embedded
         // content widgets still get their sync pass.
         self.content.sync(state, path);
@@ -856,7 +856,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut AppModel,
+        _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
@@ -1050,14 +1050,14 @@ mod tests {
         let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         d.handle_event(
             event,
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1129,11 +1129,11 @@ mod tests {
                 .action_target
                 .clone()
                 .unwrap();
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             assert!(dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(fired.get(), 1);
@@ -1142,7 +1142,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             dialog.set_open(true);
@@ -1150,7 +1150,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let callback = fired.clone();
@@ -1160,7 +1160,7 @@ mod tests {
             assert!(!replacement.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let fresh = replacement.accessibility().unwrap().children[0]
@@ -1170,7 +1170,7 @@ mod tests {
             assert!(replacement.perform_semantic_action(
                 &fresh,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(fired.get(), 2);
@@ -1192,11 +1192,11 @@ mod tests {
                     .any(|child| child.name.as_deref() == Some("Apply")),
                 "the painted primary action must be accessible"
             );
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             assert!(dialog.perform_semantic_action(
                 "modal.primary",
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(clicked.get(), 1);
@@ -1204,7 +1204,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 "modal.primary",
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(
@@ -1244,11 +1244,8 @@ mod tests {
             use crate::widget::Button;
             use accesskit::Role as AccessKitRole;
 
-            let mut d = ModalDialog::new(
-                "Confirm",
-                Button::new("modal-child", "Confirm action", None),
-            )
-            .open(true);
+            let mut d = ModalDialog::new("Confirm", Button::new("modal-child", "Confirm action"))
+                .open(true);
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             d.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -1346,7 +1343,7 @@ mod tests {
                 &key_press_event(NamedKey::Escape),
                 1.0,
                 Modifiers::default(),
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(dismissed.get());

@@ -33,10 +33,10 @@ fn seeding_and_scenarios_start_only_where_asked() {
     {
         // The live constructor must not fabricate a project: synced against a
         // fresh (empty) document it opens blank — no media, no clips.
-        let mut app = VideoEditorApp::new();
+        let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(
             app.project.clips.is_empty(),
             "no fabricated clips on the live path"
@@ -50,32 +50,106 @@ fn seeding_and_scenarios_start_only_where_asked() {
             "nothing selected in a blank project"
         );
     }
-    // Case `demo_build_seeds_a_project`.
-    {
-        // The demo builder is the sole source of the sample project.
-        let mut app = VideoEditorApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            !app.project.clips.is_empty(),
-            "demo build seeds sample clips"
-        );
-        assert!(
-            !app.project.media.is_empty(),
-            "demo build seeds sample media"
-        );
-    }
 }
 
 use super::*;
+use crate::doc::VideoDoc;
+
+// The edits the test host applied, one entry per undo step, for a test that
+// asks what an affordance submitted and in how many steps.
+thread_local! {
+    static APPLIED: std::cell::RefCell<Vec<Vec<VideoEditorAction>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// How many undo steps the host applied since this was last asked.
+fn take_steps() -> usize {
+    APPLIED.with(|all| std::mem::take(&mut *all.borrow_mut()).len())
+}
+
+/// A blank editor whose edits go through a test dispatcher, as a hosted
+/// editor's go through the host's.
+fn editor() -> VideoEditorApp {
+    let mut app = VideoEditorApp::new();
+    app.actions = Some(ui::framework::testing::dispatcher::<
+        crate::resource::VideoProject,
+    >(<crate::VideoEditor as ui::framework::ResourceApp>::ID));
+    app
+}
+
+/// What the host does after an event: apply the edits the editor submitted
+/// to `doc`, and present the project they leave.
+fn settle(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
+    let Some(dispatcher) = app.actions.clone() else {
+        return;
+    };
+    let applied = ui::framework::testing::resolve(&dispatcher, doc).expect("the edits apply");
+    if applied.is_empty() {
+        return;
+    }
+    APPLIED.with(|all| all.borrow_mut().extend(applied));
+    present(app, doc);
+}
+
+/// Present the project `doc` holds, as the host does when it changes.
+fn present(app: &mut VideoEditorApp, doc: &AutoCommit) {
+    ui::framework::ResourceSurface::<
+        crate::resource::VideoProject,
+        crate::actions::VideoEditorEffect,
+    >::present(app, &std::rc::Rc::new(VideoDoc::load_project(doc)));
+}
+
+/// One host frame's sync: the submitted edits applied, a changed document
+/// presented, then the editor's own sync.
+fn sync(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
+    settle(app, doc);
+    if doc.get_heads() != app.doc_heads {
+        present(app, doc);
+    }
+    Widget::sync(app, doc, &automerge::ROOT);
+}
+
+/// The last edit the editor submitted, once the host has applied it.
+fn last_dispatched(
+    app: &mut VideoEditorApp,
+    doc: &mut AutoCommit,
+) -> Option<tilo_actions::EncodedAction> {
+    settle(app, doc);
+    APPLIED.with(|all| {
+        all.borrow()
+            .iter()
+            .flatten()
+            .last()
+            .map(crate::actions::encode)
+    })
+}
+
+/// A blank editor that imports `paths` on its first sync, as a launch naming
+/// them does; `placed` also puts the first on the timeline.
+fn importing(paths: Vec<PathBuf>, placed: bool) -> VideoEditorApp {
+    let mut app = editor();
+    app.pending_imports = paths;
+    app.media_pipeline.auto_place_imports = placed;
+    app
+}
+
+/// An editor arranged for `scenario` as a capture arranges it: hermetic,
+/// applying the scenario once its project has loaded.
+fn staged(scenario: ShotScenario) -> VideoEditorApp {
+    let mut app = editor();
+    app.seed.hermetic = true;
+    app.seed.capture = true;
+    app.render_pipeline.warm_waveforms_sync = true;
+    app.shot_scenario = scenario;
+    app
+}
 
 fn app_with_sample() -> VideoEditorApp {
     let mut doc = AutoCommit::new();
     VideoDoc::seed_sample(&mut doc);
-    let mut app = VideoEditorApp::new();
+    let mut app = editor();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    app.sync(&mut doc, &automerge::ROOT);
+    sync(&mut app, &mut doc);
     app
 }
 
@@ -92,9 +166,10 @@ fn a11y_driver() -> ui::headless::Driver {
     VideoDoc::seed_sample(&mut doc);
     let mut state = ui::State::new();
     state.doc = doc;
-    let mut app = VideoEditorApp::new();
+    let mut app = editor();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    ui::headless::Driver::new(state, Box::new(app), (1280, 800))
+    present(&mut app, &state.doc);
+    ui::headless::Driver::for_root(state, app, (1280, 800), Theme::dark())
 }
 
 /// Every exported node's `(role, label)`, so a test can state what a reader
@@ -452,7 +527,7 @@ fn folded_sections_hide_controls_but_report_their_state() {
     // Case `a_folded_section_still_reports_what_is_inside_it`:
     // A folded section may hide controls; it must never hide state.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
         let clip = app.project.clip(id).unwrap().clone();
@@ -460,7 +535,7 @@ fn folded_sections_hide_controls_but_report_their_state() {
         assert_eq!(app.section_summary(Section::Speed, &clip, None), None);
         assert_eq!(app.section_summary(Section::Transform, &clip, None), None);
         // Re-time and inset it, and the folded headers say so.
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.set_speed(2.0, true);
             c.transform = crate::model::Transform::pip(0.3, (1.0, -1.0), 0.04);
             c.transform.crop_left = 0.1;
@@ -501,7 +576,7 @@ fn folded_sections_hide_controls_but_report_their_state() {
     // user who folded the key away still has to be able to see that this
     // clip is keyed.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
         let clip = app.project.clip(id).unwrap().clone();
@@ -512,7 +587,7 @@ fn folded_sections_hide_controls_but_report_their_state() {
         );
         assert_eq!(app.section_summary(Section::Mask, &clip, None), None);
 
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.key.enabled = true;
             c.key.tolerance = 0.4;
             c.mask.shape = crate::model::MaskShape::Ellipse;
@@ -536,7 +611,7 @@ fn folded_sections_hide_controls_but_report_their_state() {
 
         // A key switched on but keying nothing is a distinct state from off,
         // and a fold that reported neither would hide both.
-        app.edit_selected(&mut doc, |c| c.key.tolerance = 0.0);
+        app.edit_selected(|c| c.key.tolerance = 0.0);
         let clip = app.project.clip(id).unwrap().clone();
         let key = app
             .section_summary(Section::Key, &clip, None)
@@ -763,9 +838,15 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
         let path = vec![Pane::Inspector.key(), NumField::Opacity.a11y_key()];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(&ui::a11y::Action::Decrement, &path, &mut doc, &root),
+            app.perform_action_at(
+                &ui::a11y::Action::Decrement,
+                &path,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root
+            ),
             "the opacity slider answers a reader's decrement",
         );
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc)
             .clip(cid)
             .expect("the clip survives")
@@ -803,8 +884,12 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
 
         app.focus.pane = Pane::Inspector;
         app.focus.inspector = switch;
-        assert!(app.activate_focused(&mut doc), "Enter switches it on");
+        assert!(
+            app.activate_focused(&mut ui::widget::Edits::lend(&mut doc)),
+            "Enter switches it on"
+        );
 
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc)
                 .clip(cid)
@@ -836,7 +921,11 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
             .expect("the shape buttons are focus stops");
         app.focus.pane = Pane::Inspector;
         app.focus.inspector = at;
-        assert!(app.activate_focused(&mut doc), "Enter chooses the shape");
+        assert!(
+            app.activate_focused(&mut ui::widget::Edits::lend(&mut doc)),
+            "Enter chooses the shape"
+        );
+        settle(&mut app, &mut doc);
         assert_eq!(
             VideoDoc::load_project(&doc)
                 .clip(cid)
@@ -866,7 +955,16 @@ fn nav_key(app: &mut VideoEditorApp, doc: &mut AutoCommit, key: Key, shift: bool
     }
     let mods = winit::event::Modifiers::from(st);
     let r = app.regions();
-    app.handle_key(&key, mods, doc, &r)
+    let handled = {
+        // One key press is one gesture, as `handle_event` makes it.
+        let _gesture = app
+            .actions
+            .as_ref()
+            .map(ui::framework::Dispatcher::begin_group);
+        app.handle_key(&key, mods, &mut ui::widget::Edits::lend(doc), &r)
+    };
+    settle(app, doc);
+    handled
 }
 
 fn ch(c: &str) -> Key {
@@ -1457,10 +1555,10 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         let src = write_real_png(640, 360);
         let f = std::env::temp_dir().join(format!("tilo-ve-absent-{}.png", std::process::id()));
         std::fs::copy(&src, &f).unwrap();
-        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        let mut app = importing(vec![f.clone()], false);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let mid = app.project.media.first().expect("import landed").id;
         assert!(
             !app.media_is_projected(mid),
@@ -1471,7 +1569,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         // Take the bytes away — the CRDT reference survives, the content does
         // not. This is the ordinary state of a project opened on a second peer.
         std::fs::remove_file(&f).unwrap();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(
             app.media_is_projected(mid),
             "a reference with no local bytes must be reported as absent",
@@ -1529,9 +1627,9 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         VideoDoc::write_project_meta(&mut doc, &Project::new("Loaded"));
         VideoDoc::upsert_media(&mut doc, &poisoned);
 
-        let mut app = VideoEditorApp::new();
+        let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let m = app
             .project
             .media
@@ -1577,7 +1675,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
             .iter()
             .position(|i| i.label() == Some("Delete"))
             .expect("the menu offers Delete");
-        app.bin_menu_choose(&mut doc, delete);
+        app.bin_menu_choose(delete);
         assert!(
             !app.project.media.iter().any(|x| x.id == m.id),
             "Delete must remove an unusable source from the document",
@@ -1587,7 +1685,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
     }
     // Case `a_refused_import_tells_the_user_what_the_file_actually_is`.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let dir = std::env::temp_dir().join(format!("tilo-ve-import-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("not-a-video.mp4");
@@ -1595,7 +1693,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         let before = app.project.media.len();
         // The path a dropped file takes: a batch of one through `import_files`.
         app.pending_imports.push(path);
-        app.drain_import(&mut doc);
+        app.drain_import();
         let notice = app
             .import_notice
             .clone()
@@ -1625,11 +1723,10 @@ fn bin_discloses_missing_unknown_and_refused_media() {
     {
         // A still image has no frame rate. Substituting 30 would put a number
         // in the bin that the file never stated.
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let png = write_real_png(24, 16);
         let want = png.file_name().unwrap().to_string_lossy().into_owned();
-        app.try_import_one(&mut doc, &png)
-            .expect("a real PNG imports");
+        app.try_import_one(&png).expect("a real PNG imports");
         let added = app
             .project
             .media
@@ -1652,7 +1749,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
     // away, and — containing none of the English the tint was matched
     // against — the line was painted in the *success* colour on top of that.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let dir = scratch("partial-import");
         let mut batch: Vec<PathBuf> = Vec::new();
         let mut refused: Vec<String> = Vec::new();
@@ -1667,7 +1764,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         let before = app.project.media.len();
 
         app.pending_imports = batch.clone();
-        app.drain_import(&mut doc);
+        app.drain_import();
 
         let notice = app.import_notice.clone().expect("the batch reports itself");
         assert_eq!(
@@ -1721,7 +1818,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         let _host = ui::host::enter(&services);
         recorder.respond_to_pick_multiple(ImportOutcome::Failed(REFUSAL.to_string()));
         app.trigger_import();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let notice = app.import_notice.clone().expect("the refusal is on screen");
         assert_eq!(notice.text, REFUSAL, "in the picker's own words");
         assert_eq!(
@@ -1747,7 +1844,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         let (mut app, mut doc) = app_and_doc();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Failed(REFUSAL.to_string()));
         app.request_open_project();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let notice = app
             .project_notice
             .clone()
@@ -1768,10 +1865,10 @@ fn imports_add_real_clips_through_the_document() {
         // A real file on disk (not a mock) becomes a real MediaItem with real,
         // probed metadata, replicated into the CRDT.
         let f = write_real_png(320, 240);
-        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        let mut app = importing(vec![f.clone()], false);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
 
         assert_eq!(
             app.project.media.len(),
@@ -1791,6 +1888,7 @@ fn imports_add_real_clips_through_the_document() {
             "the imported bytes are local/decodable"
         );
         // It replicated through the document (a peer would load it).
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.media.len(), 1);
         assert_eq!(reloaded.media[0].width, 320);
@@ -1805,7 +1903,7 @@ fn imports_add_real_clips_through_the_document() {
         // the clip through the `UpsertMedia` action on `ui::ActionHost`, so it
         // lands in the shared document a peer replicates.
         let f = write_real_png(480, 270);
-        let mut app = VideoEditorApp::new();
+        let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
@@ -1818,7 +1916,7 @@ fn imports_add_real_clips_through_the_document() {
             app.project.media.is_empty(),
             "blank project starts with no media"
         );
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
 
         // The in-memory projection gained the clip with real, probed metadata…
         assert_eq!(
@@ -1837,6 +1935,7 @@ fn imports_add_real_clips_through_the_document() {
         // …and, crucially, so did the CRDT the action wrote to: the import is a
         // document mutation dispatched through the action model, not a local-only
         // edit, so a second replica loading these bytes sees the same clip.
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.media.len(),
@@ -1854,10 +1953,10 @@ fn imports_add_real_clips_through_the_document() {
         // The `--shots`/preload placed import also lands the clip on a freshly
         // created track with the playhead inside it, so the preview has content.
         let f = write_real_png(640, 360);
-        let mut app = VideoEditorApp::new_import_placed(vec![f.clone()]);
+        let mut app = importing(vec![f.clone()], true);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
 
         assert_eq!(app.project.media.len(), 1);
         assert_eq!(
@@ -1888,10 +1987,10 @@ fn imports_add_real_clips_through_the_document() {
     {
         // An OS file drop onto the window imports, exactly like the portal pick.
         let f = write_real_png(200, 120);
-        let mut app = VideoEditorApp::new();
+        let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(app.project.media.is_empty(), "blank project starts empty");
         dispatch(&mut app, &mut doc, WindowEvent::DroppedFile(f.clone()));
         assert_eq!(
@@ -1899,6 +1998,7 @@ fn imports_add_real_clips_through_the_document() {
             1,
             "the dropped file landed in the bin"
         );
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.media.len(),
@@ -1925,18 +2025,18 @@ fn timeline_geometry_maps_time_lanes_and_canvas() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         VideoDoc::seed_sample(&mut doc);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         // Select a clip we know spans the playhead and split there.
         let target = app.project.top_video_clip_at(10.0).unwrap().id;
         app.selection.select_only(target);
         app.playhead = 12.0;
         let before = app.project.clips.len();
-        app.split_selected(&mut doc);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.split_selected();
+        sync(&mut app, &mut doc);
         assert_eq!(app.project.clips.len(), before + 1, "split adds one clip");
         // Delete the new right half (now selected).
-        app.delete_selected(&mut doc);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.delete_selected();
+        sync(&mut app, &mut doc);
         assert_eq!(app.project.clips.len(), before);
     }
     // Case `lane_rects_cover_all_tracks`.
@@ -2043,7 +2143,7 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
         // flap and restores the invoking pane, just like Escape.
         let regions = app.regions();
         app.last_mouse = regions.export_btn.center();
-        app.handle_press(&mut doc, &regions, false);
+        app.handle_press(&doc, &regions, false);
         assert!(!app.bin_overlay_is_open());
         assert!(
             !app.presentation.export_open,
@@ -2104,7 +2204,7 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             ("go-to field", |a| a.goto_entry = Some(String::new())),
         ];
         for (name, open) in cases {
-            let (mut app, mut doc) = app_and_doc();
+            let (mut app, doc) = app_and_doc();
             let r = app.regions();
             let before = app.project.clips.len();
             let target = app.project.clips.first().map(|c| c.id);
@@ -2119,7 +2219,7 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             // Aim at a clip on the timeline — something a stray click would
             // otherwise select or move.
             app.last_mouse = r.lanes.center();
-            app.handle_press(&mut doc, &r, false);
+            app.handle_press(&doc, &r, false);
 
             assert!(
                 app.selected().is_none(),
@@ -2228,7 +2328,7 @@ fn range_marks_scope_renders_without_stealing_trim_keys() {
 
         // Through the document, which is what a peer and a reopened project
         // read — a range held only in memory would not survive either.
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let (from, to) = app.project.export_range();
         assert!(
             (from - 4.0).abs() < 1e-9 && (to - 14.0).abs() < 1e-9,
@@ -2273,7 +2373,7 @@ fn range_marks_scope_renders_without_stealing_trim_keys() {
             "X",
             ModifiersState::SHIFT
         ));
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(!app.project.has_marks(), "both marks are gone");
         let (from, to) = app.project.export_range();
         assert!((from).abs() < 1e-9 && (to - app.project.duration()).abs() < 1e-9);
@@ -2294,6 +2394,7 @@ fn range_marks_scope_renders_without_stealing_trim_keys() {
         let clip = app.project.clip(cid).cloned().expect("selected clip");
         app.playhead = clip.start + 1.0;
         assert!(key_press(&mut app, &mut doc, "i", false), "plain I answers");
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc)
             .clip(cid)
             .cloned()
@@ -2317,9 +2418,9 @@ fn range_marks_scope_renders_without_stealing_trim_keys() {
 fn blank_app_and_doc() -> (VideoEditorApp, AutoCommit) {
     ui::host::install_default(ui::host::HostServices::recording().0);
     let mut doc = AutoCommit::new();
-    let mut app = VideoEditorApp::new();
+    let mut app = editor();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    app.sync(&mut doc, &automerge::ROOT);
+    sync(&mut app, &mut doc);
     (app, doc)
 }
 
@@ -2356,8 +2457,7 @@ fn project_format_follows_the_first_clip_unless_chosen() {
         assert_eq!((app.project.width, app.project.height), (1920, 1080));
         let mid = seed_media(&mut app, &mut doc, 1080, 1920, 24.0);
 
-        app.add_media_to_timeline(&mut doc, mid)
-            .expect("the source places");
+        app.add_media_to_timeline(mid).expect("the source places");
 
         assert_eq!(
             (app.project.width, app.project.height),
@@ -2368,7 +2468,7 @@ fn project_format_follows_the_first_clip_unless_chosen() {
         // Through the document, which is what replicates and what a reopened
         // project reads back — a shape held only in memory would be gone on
         // the next reload.
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!((app.project.width, app.project.height), (1080, 1920));
         assert!(app.project.format_explicit, "and it is now a chosen format");
 
@@ -2383,12 +2483,11 @@ fn project_format_follows_the_first_clip_unless_chosen() {
         // that has must keep it, or the picker would be undone by the next
         // import.
         let (mut app, mut doc) = blank_app_and_doc();
-        app.set_project_frame_size(&mut doc, 3840, 2160);
-        app.set_project_fps(&mut doc, 25.0);
+        app.set_project_frame_size(3840, 2160);
+        app.set_project_fps(25.0);
         let mid = seed_media(&mut app, &mut doc, 1080, 1920, 60.0);
 
-        app.add_media_to_timeline(&mut doc, mid)
-            .expect("the source places");
+        app.add_media_to_timeline(mid).expect("the source places");
 
         assert_eq!((app.project.width, app.project.height), (3840, 2160));
         assert!((app.project.fps - 25.0).abs() < 1e-9);
@@ -2397,10 +2496,9 @@ fn project_format_follows_the_first_clip_unless_chosen() {
     {
         let (mut app, mut doc) = blank_app_and_doc();
         let first = seed_media(&mut app, &mut doc, 1080, 1920, 30.0);
-        app.add_media_to_timeline(&mut doc, first)
-            .expect("the first places");
+        app.add_media_to_timeline(first).expect("the first places");
         let second = seed_media(&mut app, &mut doc, 3840, 2160, 60.0);
-        app.add_media_to_timeline(&mut doc, second)
+        app.add_media_to_timeline(second)
             .expect("the second places");
         assert_eq!(
             (app.project.width, app.project.height),
@@ -2453,6 +2551,8 @@ fn project_format_follows_the_first_clip_unless_chosen() {
             .expect("the project's frame presets reach the tree once it is open");
         d.perform_a11y_action(node, &ui::a11y::Action::Activate)
             .unwrap();
+        let (app, state) = d.root_and_state_mut::<VideoEditorApp>();
+        settle(app, &mut state.doc);
         let p = VideoDoc::load_project(&d.state_mut().doc);
         assert_eq!(
             (p.width, p.height),
@@ -2557,6 +2657,7 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
                 .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let clip = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
         assert!(
             clip.anim.is_animated(Param::Opacity),
@@ -2595,7 +2696,8 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         app.selection.select_only(id);
         app.playhead = 23.0;
         // Key it once at the head.
-        app.key_here(&mut doc, Param::Opacity);
+        app.key_here(Param::Opacity);
+        settle(&mut app, &mut doc);
         let keys_before = VideoDoc::load_project(&doc)
             .clip(id)
             .unwrap()
@@ -2613,6 +2715,7 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         let x = track.x0 + track.width() * 0.3;
         click(&mut app, &mut doc, x, track.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let clip = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
         let keys = &clip.anim.track(Param::Opacity).unwrap().keys;
         assert_eq!(
@@ -2639,8 +2742,8 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
         app.playhead = 23.0;
-        app.key_here(&mut doc, Param::Opacity);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.key_here(Param::Opacity);
+        sync(&mut app, &mut doc);
         assert_eq!(
             app.project
                 .clip(id)
@@ -2650,8 +2753,8 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         );
         // Row 3 is Hold: 0 remove, 1 separator, 2 Linear, 3 Hold, 4 Ease.
         app.open_key_menu(Param::Opacity, Point::new(400.0, 400.0));
-        app.key_menu_choose(&mut doc, Param::Opacity, 3);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.key_menu_choose(Param::Opacity, 3);
+        sync(&mut app, &mut doc);
         assert_eq!(
             app.project
                 .clip(id)
@@ -2662,8 +2765,8 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         );
         // Row 0 removes it, and the last key going takes the curve with it.
         app.open_key_menu(Param::Opacity, Point::new(400.0, 400.0));
-        app.key_menu_choose(&mut doc, Param::Opacity, 0);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.key_menu_choose(Param::Opacity, 0);
+        sync(&mut app, &mut doc);
         assert!(
             !app.project
                 .clip(id)
@@ -2674,7 +2777,7 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
     }
     // Case `the_curve_amount_is_keyframable_from_its_own_diamond`.
     {
-        let (mut app, mut doc, _canvas) = app_with_curve_editor();
+        let (mut app, _doc, _canvas) = app_with_curve_editor();
         let cid = app.selected().unwrap();
         let r = app.regions();
         let diamond = app
@@ -2685,7 +2788,7 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
             .map(|(_, rect)| *rect)
             .expect("the amount row carries a key control");
         assert_eq!(app.key_state(Param::CurveMix), KeyState::Off);
-        app.press_inspector(&mut doc, &r, diamond.center());
+        app.press_inspector(&r, diamond.center());
         assert_eq!(
             app.key_state(Param::CurveMix),
             KeyState::OnKey,
@@ -2705,11 +2808,11 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         // was the one that did not, so an intensity could only be keyed from
         // the command palette — not somewhere a user looking at the slider
         // would think to go.
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let cid = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(cid);
         app.playhead = 23.0;
-        app.edit_selected(&mut doc, |c| c.add_effect(EffectKind::Sepia));
+        app.edit_selected(|c| c.add_effect(EffectKind::Sepia));
         app.collapsed.remove(&Section::Effects);
 
         let r = app.regions();
@@ -2739,14 +2842,14 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
             .first()
             .expect("the effect row stays reachable after scrolling");
         let (key, ..) = VideoEditorApp::effect_row_parts(row);
-        app.press_inspector(&mut doc, &r, key.center());
+        app.press_inspector(&r, key.center());
         assert_eq!(
             app.key_state(Param::EffectAmount(0)),
             KeyState::OnKey,
             "one click plants a key on the intensity",
         );
         // And the curve really drives the effect the compositor is handed.
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.set_key_at(Param::EffectAmount(0), 23.0, 0.1, Interp::Linear);
             c.set_key_at(Param::EffectAmount(0), 25.0, 0.9, Interp::Linear);
         });
@@ -2773,9 +2876,9 @@ fn app_and_doc() -> (VideoEditorApp, AutoCommit) {
     ui::host::install_default(ui::host::HostServices::recording().0);
     let mut doc = AutoCommit::new();
     VideoDoc::seed_sample(&mut doc);
-    let mut app = VideoEditorApp::new();
+    let mut app = editor();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    app.sync(&mut doc, &automerge::ROOT);
+    sync(&mut app, &mut doc);
     (app, doc)
 }
 
@@ -2793,65 +2896,12 @@ fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: R
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-#[expect(
-    clippy::float_cmp,
-    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
-)]
 fn resource_and_view_actions_target_exact_entities() {
-    // Case `resource_operations_reject_wrong_kinds_without_changing_state`.
-    {
-        let (mut app, mut doc) = app_and_doc();
-        let selected_before = app.selected();
-        let playhead_before = app.playhead;
-        let clip = app.project.clips[0].id;
-        let reveal = serde_json::to_vec(&crate::actions::VideoEditorOperation::RevealClip {
-            clip: clip.to_string(),
-        })
-        .unwrap();
-        assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                    &reveal
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
-        );
-        assert_eq!(app.selected(), selected_before);
-        assert_eq!(app.playhead, playhead_before);
-
-        let import = serde_json::to_vec(&crate::actions::VideoEditorOperation::ImportMedia {
-            path: Some("/tmp/wrong-kind.mp4".into()),
-        })
-        .unwrap();
-        assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                    &import
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
-        );
-        assert!(app.resource_operation.is_none());
-        assert!(app.resource_pending_operation.is_none());
-        assert!(app.resource_invocation.is_none());
-    }
     // Case `a_chosen_search_hit_brokers_the_exact_timeline_selection`:
     // A chosen search row resolves through the exported resource tree and the
     // operation broker, then opens the exact clip and timeline instant.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _doc) = app_and_doc();
         let clip = app.project.clips[0].clone();
         let media = app
             .project
@@ -2860,34 +2910,22 @@ fn resource_and_view_actions_target_exact_entities() {
             .name
             .clone();
 
-        let providers = ui::search::capability::search_providers(&app);
-        let provider = providers.first().expect("the editor publishes a provider");
-        let hit = provider
-            .search(&media)
+        let provider = ui::framework::testing::search_source::<crate::resource::VideoProject>(
+            crate::search::project_entries(&app.project),
+        );
+        let hit = ui::search::SearchProvider::search(&provider, &media)
             .into_iter()
             .find(|h| h.action_address() == Some(crate::actions::reveal_clip_address(clip.id)))
             .expect("the exact clip is findable by source name");
         let address = hit.action_address().expect("canonical search address");
-        let encoded =
-            tilo_actions::door::encode(&ui::resources::resources(&app, &doc), &address, None)
-                .expect("the address resolves through the live resource tree");
+        let resources = crate::actions::provide_resources(&app.video_resource_ctx());
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
+            .expect("the address resolves through the published resource tree");
 
         app.playback.playing = true;
         app.playhead = 0.0;
-        assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("view operation succeeds"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
+        app.perform_resource_operation(decode_effect(&encoded))
+            .expect("view operation succeeds");
         assert!(
             (app.playhead - clip.start).abs() < 1e-3,
             "the hit put the playhead on the clip: {}",
@@ -2901,7 +2939,7 @@ fn resource_and_view_actions_target_exact_entities() {
     // Clip markers resolve their current collaborative position at execution
     // time and select their owner, rather than replaying a stale timestamp.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _doc) = app_and_doc();
         let cid = app.project.clips[0].id;
         let marker = crate::model::Marker::new(1.25, "Exact beat", 1);
         let marker_id = marker.id;
@@ -2915,48 +2953,26 @@ fn resource_and_view_actions_target_exact_entities() {
         let address = crate::actions::reveal_marker_address(marker_id);
         let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("marker action is exported");
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .expect("view marker");
+        app.perform_resource_operation(decode_effect(&encoded))
+            .expect("view marker");
         assert_eq!(app.selected(), Some(cid));
         assert!((app.playhead - (clip.start + 1.25)).abs() < 1e-9);
     }
     // Case `effect_view_action_targets_its_instance_and_refuses_a_stale_id`.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _doc) = app_and_doc();
         let clip_id = app.project.clips[0].id;
         let clip = app.project.clip_mut(clip_id).expect("fixture clip");
         clip.add_effect(crate::model::EffectKind::Sepia);
         clip.add_effect(crate::model::EffectKind::Sepia);
         let effect_id = clip.effects[1].id;
-        let payload = serde_json::to_vec(&crate::actions::VideoEditorOperation::RevealEffect {
+        let reveal = crate::actions::VideoEditorEffect::RevealEffect {
             clip: clip_id.to_string(),
             effect: effect_id.to_string(),
-        })
-        .expect("operation serializes");
+        };
 
-        assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("live effect resolves"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
+        app.perform_resource_operation(reveal.clone())
+            .expect("live effect resolves");
         assert_eq!(app.selected(), Some(clip_id));
 
         app.project
@@ -2964,20 +2980,21 @@ fn resource_and_view_actions_target_exact_entities() {
             .expect("fixture clip")
             .remove_effect_id(effect_id);
         assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err(),
+            app.perform_resource_operation(reveal).is_err(),
             "a stale effect operation cannot resolve a duplicate by position",
         );
     }
+}
+
+/// The effect a published action encodes, as the framework decodes it.
+fn decode_effect(encoded: &tilo_actions::EncodedAction) -> crate::actions::VideoEditorEffect {
+    use ui::tilo_resource::Effect;
+    assert_eq!(
+        encoded.type_id,
+        crate::actions::VideoEditorEffect::OPERATION
+    );
+    crate::actions::VideoEditorEffect::from_payload(&encoded.payload)
+        .expect("a video editor effect")
 }
 
 fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: bool) -> bool {
@@ -2987,7 +3004,21 @@ fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: boo
     } else {
         winit::event::Modifiers::default()
     };
-    app.handle_key(&WKey::Character(ch.into()), mods, doc, &r)
+    let handled = {
+        // One key press is one gesture, as `handle_event` makes it.
+        let _gesture = app
+            .actions
+            .as_ref()
+            .map(ui::framework::Dispatcher::begin_group);
+        app.handle_key(
+            &WKey::Character(ch.into()),
+            mods,
+            &mut ui::widget::Edits::lend(doc),
+            &r,
+        )
+    };
+    settle(app, doc);
+    handled
 }
 
 // ---- project files ---------------------------------------------------
@@ -3007,12 +3038,20 @@ fn key_press_mods(
     mods: ModifiersState,
 ) -> bool {
     let r = app.regions();
-    app.handle_key(
-        &WKey::Character(ch.into()),
-        winit::event::Modifiers::from(mods),
-        doc,
-        &r,
-    )
+    let handled = {
+        let _gesture = app
+            .actions
+            .as_ref()
+            .map(ui::framework::Dispatcher::begin_group);
+        app.handle_key(
+            &WKey::Character(ch.into()),
+            winit::event::Modifiers::from(mods),
+            &mut ui::widget::Edits::lend(doc),
+            &r,
+        )
+    };
+    settle(app, doc);
+    handled
 }
 
 #[test]
@@ -3024,23 +3063,24 @@ fn project_save_and_open_round_trip_and_replace() {
         // edit back — not "a file appeared".
         let dir = scratch("roundtrip");
         let path = dir.join("Coastline.qvp");
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let clips = app.project.clips.len();
         let media = app.project.media.len();
         assert!(clips > 1 && media > 1, "the fixture is a real edit");
 
-        app.write_project_to(&mut doc, path.clone());
+        app.write_project_to(&doc, path.clone());
         assert_eq!(app.project_path.as_ref(), Some(&path));
         assert!(path.is_file(), "the file is really on disk");
 
         // A completely separate editor on a blank document opens it.
         let mut fresh_doc = AutoCommit::new();
-        let mut fresh = VideoEditorApp::new();
+        let mut fresh = editor();
         fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        fresh.sync(&mut fresh_doc, &automerge::ROOT);
+        sync(&mut fresh, &mut fresh_doc);
         assert!(fresh.project.clips.is_empty(), "it starts blank");
 
-        fresh.load_project_file(&mut fresh_doc, path);
+        fresh.load_project_file(path);
+        settle(&mut fresh, &mut fresh_doc);
         assert_eq!(fresh.project.clips.len(), clips, "every clip came back");
         assert_eq!(fresh.project.media.len(), media, "the whole bin came back");
         // And it landed in the *document*, not only the in-memory mirror, so
@@ -3083,7 +3123,7 @@ fn project_save_and_open_round_trip_and_replace() {
         let (mut app, mut doc) = app_and_doc();
         // Give it a file first, so the open does not stop to ask.
         app.project_path = Some(dir.join("Current.qvp"));
-        app.load_project_file(&mut doc, small);
+        app.load_project_file(small);
 
         assert_eq!(app.project.clips.len(), 1, "only the opened project's clip");
         assert_eq!(
@@ -3092,6 +3132,7 @@ fn project_save_and_open_round_trip_and_replace() {
             "only the opened project's source"
         );
         assert_eq!(app.project.name, "Small");
+        settle(&mut app, &mut doc);
         assert_eq!(
             VideoDoc::load_project(&doc).clips.len(),
             1,
@@ -3109,13 +3150,9 @@ fn project_save_and_open_round_trip_and_replace() {
         let (mut app, mut doc) = app_and_doc();
         app.project_path = Some(dir.join("Prev.qvp"));
 
-        app.load_project_file(&mut doc, path);
-        let dispatched = app
-            .actions
-            .last_dispatched()
-            .expect("opening dispatched an action")
-            .clone();
-        assert_eq!(dispatched.type_id, VIDEO_EDITOR_ACTION_TYPE);
+        app.load_project_file(path);
+        let dispatched = last_dispatched(&mut app, &mut doc).expect("opening dispatched an action");
+        assert_eq!(dispatched.type_id, crate::actions::VIDEO_EDITOR_ACTION_TYPE);
         let decoded: crate::actions::VideoEditorAction =
             serde_json::from_slice(&dispatched.payload).expect("it decodes");
         assert!(
@@ -3138,7 +3175,7 @@ fn unsaved_badge_follows_the_document() {
             "a project with clips and no file is unsaved"
         );
 
-        app.write_project_to(&mut doc, path);
+        app.write_project_to(&doc, path);
         assert!(!app.project_is_dirty(), "saving settles it");
         assert!(!app.project_status_line().contains("unsaved"));
 
@@ -3150,7 +3187,7 @@ fn unsaved_badge_follows_the_document() {
         app.selection.select_only(target);
         app.playhead = 12.0;
         key_press(&mut app, &mut doc, "s", false);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(
             app.project_is_dirty(),
             "the document moved on, so the badge is back"
@@ -3168,7 +3205,7 @@ fn unsaved_badge_follows_the_document() {
         let dir = scratch("sameframe");
         let path = dir.join("S.qvp");
         let (mut app, mut doc) = app_and_doc();
-        app.write_project_to(&mut doc, path.clone());
+        app.write_project_to(&doc, path.clone());
         assert!(!app.project_is_dirty());
 
         // Edit and save with no `sync` in between — the frame boundary the
@@ -3177,12 +3214,12 @@ fn unsaved_badge_follows_the_document() {
         app.selection.select_only(target);
         app.playhead = 12.0;
         key_press(&mut app, &mut doc, "s", false);
-        app.save_project(&mut doc);
+        app.save_project(&doc);
         assert!(!app.project_is_dirty(), "the save settled it");
 
         // And the file really holds the edit, not the state before it.
         assert_eq!(crate::project_file::load(&path).unwrap().clips.len(), 8);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(
             !app.project_is_dirty(),
             "and it stays settled across the frame"
@@ -3194,9 +3231,9 @@ fn unsaved_badge_follows_the_document() {
         // Otherwise a fresh window would wear a badge and interrogate the user
         // about discarding a project they never made.
         let mut doc = AutoCommit::new();
-        let mut app = VideoEditorApp::new();
+        let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(!app.project_is_dirty());
         assert!(app.project_status_line().contains("empty project"));
     }
@@ -3205,7 +3242,7 @@ fn unsaved_badge_follows_the_document() {
         // A screen-reader user must not get the tidier story. The dot means
         // "unsaved"; so must the node.
         let dir = scratch("a11yproj");
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         assert!(app.project_is_dirty());
         let node = app.a11y_project();
         assert_eq!(node.description.as_deref(), Some(PROJECT_UNSAVED));
@@ -3215,7 +3252,7 @@ fn unsaved_badge_follows_the_document() {
                 .is_some_and(|v| v.contains("not saved to a file yet"))
         );
 
-        app.write_project_to(&mut doc, dir.join("A.qvp"));
+        app.write_project_to(&doc, dir.join("A.qvp"));
         let node = app.a11y_project();
         assert_eq!(node.description, None, "saved: no unsaved claim");
         assert!(
@@ -3238,23 +3275,23 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let dir = scratch("ask");
         let path = dir.join("Other.qvp");
         crate::project_file::save(&path, &Project::new("Other")).unwrap();
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let before = app.project.clips.len();
         assert!(app.project_path.is_none() && app.project_is_dirty());
 
-        app.begin_open(&mut doc, path.clone());
+        app.begin_open(path.clone());
         assert!(app.pending_open.is_some(), "it stopped to ask");
         assert_eq!(app.project.clips.len(), before, "and changed nothing yet");
 
         // Cancel leaves everything exactly where it was.
-        app.resolve_pending_open(&mut doc, DiscardChoice::Cancel);
+        app.resolve_pending_open(&doc, DiscardChoice::Cancel);
         assert!(app.pending_open.is_none());
         assert_eq!(app.project.clips.len(), before);
         assert!(app.project_path.is_none());
 
         // Open anyway goes through.
-        app.begin_open(&mut doc, path.clone());
-        app.resolve_pending_open(&mut doc, DiscardChoice::Discard);
+        app.begin_open(path.clone());
+        app.resolve_pending_open(&doc, DiscardChoice::Discard);
         assert_eq!(app.project.name, "Other");
         assert_eq!(app.project_path.as_ref(), Some(&path));
         std::fs::remove_dir_all(&dir).ok();
@@ -3267,10 +3304,10 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let dir = scratch("noask");
         let path = dir.join("Next.qvp");
         crate::project_file::save(&path, &Project::new("Next")).unwrap();
-        let (mut app, mut doc) = app_and_doc();
-        app.write_project_to(&mut doc, dir.join("Current.qvp"));
+        let (mut app, doc) = app_and_doc();
+        app.write_project_to(&doc, dir.join("Current.qvp"));
 
-        app.begin_open(&mut doc, path);
+        app.begin_open(path);
         assert!(app.pending_open.is_none(), "no question was asked");
         assert_eq!(app.project.name, "Next", "it just opened");
         std::fs::remove_dir_all(&dir).ok();
@@ -3283,19 +3320,19 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let dir = scratch("savethen");
         let target = dir.join("Target.qvp");
         crate::project_file::save(&target, &Project::new("Target")).unwrap();
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let kept = dir.join("Kept.qvp");
 
-        app.begin_open(&mut doc, target.clone());
+        app.begin_open(target.clone());
         assert!(app.pending_open.is_some());
-        app.resolve_pending_open(&mut doc, DiscardChoice::Save);
+        app.resolve_pending_open(&doc, DiscardChoice::Save);
         // Save on a never-saved project opens the chooser; the destination
         // arriving is what completes both halves.
         assert!(
             app.save_then_open.is_some(),
             "the open is remembered across the save"
         );
-        app.write_project_to(&mut doc, kept.clone());
+        app.write_project_to(&doc, kept.clone());
 
         assert!(
             kept.is_file(),
@@ -3314,9 +3351,9 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
     {
         // The one outcome that could really cost someone their work is being
         // told a save happened when it did not.
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let impossible = PathBuf::from("/definitely/not/a/directory/x.qvp");
-        app.write_project_to(&mut doc, impossible);
+        app.write_project_to(&doc, impossible);
         assert_eq!(
             app.project_path, None,
             "the project did not adopt a path it has not got"
@@ -3338,11 +3375,11 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let dir = scratch("wrongfile");
         let junk = dir.join("holiday.mp4");
         std::fs::write(&junk, b"not a project at all, just some bytes").unwrap();
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let before = app.project.clips.len();
         app.project_path = Some(dir.join("Cur.qvp"));
 
-        app.load_project_file(&mut doc, junk);
+        app.load_project_file(junk);
         assert_eq!(
             app.project.clips.len(),
             before,
@@ -3375,9 +3412,9 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         });
         crate::project_file::save(&path, &p).unwrap();
 
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         app.project_path = Some(dir.join("Cur.qvp"));
-        app.load_project_file(&mut doc, path);
+        app.load_project_file(path);
         let notice = app
             .project_notice
             .clone()
@@ -3440,12 +3477,12 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         let dir = scratch("keys");
         let path = dir.join("K.qvp");
         let (mut app, mut doc) = app_and_doc();
-        app.write_project_to(&mut doc, path.clone());
+        app.write_project_to(&doc, path.clone());
         let target = app.project.top_video_clip_at(10.0).unwrap().id;
         app.selection.select_only(target);
         app.playhead = 12.0;
         key_press(&mut app, &mut doc, "s", false);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(app.project_is_dirty());
 
         // Ctrl+S on a project that has a file writes straight back to it: no
@@ -3456,7 +3493,7 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
             "s",
             ModifiersState::CONTROL
         ));
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(app.project_rx.is_none(), "Ctrl+S did not open a chooser");
         assert!(!app.project_is_dirty(), "it saved");
         assert_eq!(crate::project_file::load(&path).unwrap().clips.len(), 8);
@@ -3755,9 +3792,9 @@ fn inspector_state_is_the_same_for_eye_and_reader() {
     {
         // These were two different sentences for one state.
         let mut doc = AutoCommit::new();
-        let mut app = VideoEditorApp::new();
+        let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let node = app.a11y_inspector();
         let spoken = node
             .children
@@ -3775,7 +3812,7 @@ fn inspector_state_is_the_same_for_eye_and_reader() {
     // list of sections and controls is exactly what the layout put on
     // screen, never a tidier or a fuller story.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let video = app.project.top_video_clip_at(23.0).unwrap().id;
         let audio = app
             .project
@@ -3846,7 +3883,7 @@ fn inspector_state_is_the_same_for_eye_and_reader() {
 
         app.selection.select_only(video);
         check(&app, "an untouched video clip");
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.key.enabled = true;
             c.mask.shape = crate::model::MaskShape::Rect;
         });
@@ -3973,7 +4010,7 @@ fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
         let _host = ui::host::enter(&services);
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
         app.request_save_as();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(
             app.project_path.as_ref(),
             Some(&path),
@@ -3983,12 +4020,12 @@ fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
 
         // And an Open arriving the same way loads it back.
         let mut fresh_doc = AutoCommit::new();
-        let mut fresh = VideoEditorApp::new();
+        let mut fresh = editor();
         fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        fresh.sync(&mut fresh_doc, &automerge::ROOT);
+        sync(&mut fresh, &mut fresh_doc);
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         fresh.request_open_project();
-        fresh.sync(&mut fresh_doc, &automerge::ROOT);
+        sync(&mut fresh, &mut fresh_doc);
         let titles: Vec<String> = recorder
             .pick_requests()
             .iter()
@@ -4009,7 +4046,7 @@ fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
             app.project_notice.as_ref().map(|n| n.text.as_str()),
             Some("Choose where to save…"),
         );
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(
             app.project_notice.is_none(),
             "no stale 'choosing…' line left behind"
@@ -4037,9 +4074,11 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         let target = app.project.top_video_clip_at(10.0).unwrap().id;
         app.selection.select_only(target);
         app.playhead = 12.0;
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clips.len();
         assert!(key_press(&mut app, &mut doc, "s", false), "S handled");
         // The new clip is in the *document*, not just the in-memory mirror.
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clips.len(),
@@ -4047,7 +4086,7 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
             "split wrote a clip to the CRDT"
         );
         assert!(
-            app.actions.take_committed().is_some(),
+            take_steps() > 0,
             "split dispatched an action, arming one undo boundary",
         );
     }
@@ -4056,10 +4095,12 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(5.0).unwrap().id;
         app.selection.select_only(id);
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clips.len();
         assert!(key_press(&mut app, &mut doc, "c", true), "Ctrl+C handled");
         app.playhead = 30.0;
         assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V handled");
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clips.len(),
@@ -4080,13 +4121,14 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         // Move playhead into the clip and set the out-point there.
         app.playhead = 15.0;
         assert!(key_press(&mut app, &mut doc, "o", false), "O handled");
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert!(
             (reloaded.clip(id).unwrap().end() - 15.0).abs() < 1e-6,
             "O trims the tail to the playhead"
         );
         assert!(
-            app.actions.take_committed().is_some(),
+            take_steps() > 0,
             "setting the out-point dispatched an action, arming one undo boundary",
         );
     }
@@ -4121,7 +4163,13 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
         let r = app.regions();
         // Shift+Delete ripples.
-        app.handle_key(&WKey::Named(NamedKey::Delete), mods, &mut doc, &r);
+        app.handle_key(
+            &WKey::Named(NamedKey::Delete),
+            mods,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &r,
+        );
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert!(
             reloaded.clip(first).is_none(),
@@ -4139,11 +4187,18 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(12.0).unwrap().id;
         app.selection.select_only(id);
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clip(id).unwrap().start;
         let r = app.regions();
         // Shift = one-second nudge right.
         let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
-        app.handle_key(&WKey::Named(NamedKey::ArrowRight), shift, &mut doc, &r);
+        app.handle_key(
+            &WKey::Named(NamedKey::ArrowRight),
+            shift,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &r,
+        );
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().start;
         assert!(
             (after - before - 1.0).abs() < 1e-6,
@@ -4200,6 +4255,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
             (previewed - want).abs() < 1e-9,
             "the live drag previews the value under the pointer, got {previewed}",
         );
+        settle(&mut app, &mut doc);
         assert!(
             (VideoDoc::load_project(&doc)
                 .clip(id)
@@ -4214,6 +4270,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         );
 
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let written = VideoDoc::load_project(&doc)
             .clip(id)
             .expect("the clip survives its own edit")
@@ -4224,7 +4281,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
             "the release wrote the grade to the CRDT, got {written}",
         );
         assert!(
-            app.actions.take_committed().is_some(),
+            take_steps() > 0,
             "the grade dispatched an action, arming one undo boundary",
         );
     }
@@ -4236,6 +4293,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc)
                 .clip(id)
@@ -4249,6 +4307,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         let x = track.x0 + track.width() * 0.25;
         click(&mut app, &mut doc, x, track.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().transform;
         let want = NumField::ScaleX.at_frac(0.25);
         assert!(
@@ -4266,6 +4325,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
             track.center().y,
         );
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().transform;
         assert!(
             after.crop_top > 0.3 && after.crop_top < 0.6,
@@ -4293,6 +4353,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clip(id).unwrap().duration();
         // Click the "2x" preset.
         let rect = reveal(&mut app, |l| {
@@ -4302,6 +4363,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
                 .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
         assert_eq!(after.speed.rate(), 2.0);
         assert!(
@@ -4315,7 +4377,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         );
         // A rate that is not on a preset highlights none of them. A segmented
         // control that always lit something would claim 1.37x was 1x.
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.set_speed(1.37, false);
         });
         let clip = app.project.clip(id).unwrap().clone();
@@ -4325,12 +4387,13 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
                 .any(|p| (p - clip.speed.rate()).abs() < 1e-6),
             "1.37x is deliberately off every preset",
         );
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.set_speed(2.0, false);
         });
         // Reverse is a separate decision from the rate.
         let rect = reveal(&mut app, |l| l.reverse);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
         assert!(after.speed.reverse, "the toggle reversed it");
         assert_eq!(after.speed.rate(), 2.0, "without disturbing the rate");
@@ -4346,6 +4409,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         // bottom-left, bottom-right.
         let rect = reveal(&mut app, |l| l.pip.get(3).map(|(_, _, r)| *r));
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let t = VideoDoc::load_project(&doc).clip(id).unwrap().transform;
         assert!(
             t.scale_x < 0.5 && t.scale_y < 0.5,
@@ -4356,6 +4420,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         // And the way back.
         let rect = reveal(&mut app, |l| l.reset_transform);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc)
                 .clip(id)
@@ -4379,10 +4444,10 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
             CompositedFrame::Empty => panic!("expected clip"),
         };
         app.set_num(NumField::Brightness, 0.95);
-        app.dispatch_clip(&mut doc, id);
+        app.dispatch_clip(id);
         // Reload from the CRDT so we're reading the persisted grade, not the
         // in-memory mirror.
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let after = match preview::composite(&app.project, 23.0) {
             CompositedFrame::Clip { base, .. } => base.luma(),
             CompositedFrame::Empty => panic!("expected clip"),
@@ -4419,12 +4484,13 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
             .find(|(a, _)| *a == (0.0, 0.0))
             .map(|(_, rect)| *rect)
             .expect("top-left stays reachable after scrolling");
-        app.press_inspector(&mut doc, &r, top_left.center());
+        app.press_inspector(&r, top_left.center());
         let t = app.project.clip(cid).unwrap().transform;
         assert_eq!((t.anchor_x, t.anchor_y), (0.0, 0.0));
 
         // And it survives the document, which is what makes it a real edit
         // rather than a widget field.
+        settle(&mut app, &mut doc);
         let back = VideoDoc::load_project(&doc);
         let t = back.clip(cid).unwrap().transform;
         assert_eq!((t.anchor_x, t.anchor_y), (0.0, 0.0));
@@ -4456,7 +4522,7 @@ fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: doc,
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -4464,6 +4530,7 @@ fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
             taffy: &taffy,
         },
     );
+    settle(app, doc);
 }
 
 fn move_to(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
@@ -4597,7 +4664,7 @@ fn dispatch_mods(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::from(mods),
-            state: doc,
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -4605,6 +4672,7 @@ fn dispatch_mods(
             taffy: &taffy,
         },
     );
+    settle(app, doc);
 }
 
 /// Press with Shift held — the multi-select gesture.
@@ -4729,6 +4797,7 @@ fn name_band_drags_place_and_slow_clicks_rename() {
         );
         release(&mut app, &mut doc);
         assert!(app.bin_rename.is_none(), "no rename field opened");
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clips_on(tid).len(),
@@ -4799,6 +4868,7 @@ fn name_band_drags_place_and_slow_clicks_rename() {
         press(&mut app, &mut doc);
         move_to(&mut app, &mut doc, gutter_x, lane.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clips_on(tid).len(),
@@ -4830,6 +4900,7 @@ fn name_band_drags_place_and_slow_clicks_rename() {
         // Enter commits → dispatches an UpsertMedia carrying the new name.
         dispatch(&mut app, &mut doc, named_ev(NamedKey::Enter));
         assert!(app.bin_rename.is_none(), "Enter ends the rename");
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.media(mid).unwrap().name,
@@ -4837,7 +4908,7 @@ fn name_band_drags_place_and_slow_clicks_rename() {
             "rename wrote through to the CRDT"
         );
         assert!(
-            app.actions.take_committed().is_some(),
+            take_steps() > 0,
             "the rename dispatched an action, arming one undo boundary",
         );
     }
@@ -5065,6 +5136,7 @@ fn lane_drags_respect_kind_and_track_locks() {
         );
         move_to(&mut app, &mut doc, cr.center().x + 40.0, lane0.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clip(cid).map(|c| c.track),
@@ -5089,6 +5161,7 @@ fn lane_drags_respect_kind_and_track_locks() {
         press(&mut app, &mut doc);
         move_to(&mut app, &mut doc, cr.center().x + 30.0, alane.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clip(cid).map(|c| c.track),
@@ -5113,6 +5186,7 @@ fn lane_drags_respect_kind_and_track_locks() {
         );
         // Click the pill through the real press path.
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc)
                 .track(tid)
@@ -5141,6 +5215,7 @@ fn lane_drags_respect_kind_and_track_locks() {
         );
         move_to(&mut app, &mut doc, cr.center().x + 90.0, cr.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         assert_eq!(
             VideoDoc::load_project(&doc).clip(cid).map(|c| c.start),
             Some(start_before),
@@ -5148,11 +5223,13 @@ fn lane_drags_respect_kind_and_track_locks() {
         );
         // Nor do the keyboard edits.
         dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc).clip(cid).is_some(),
             "Delete does not remove a clip on a locked track",
         );
         dispatch(&mut app, &mut doc, char_ev("s"));
+        settle(&mut app, &mut doc);
         let after_split = VideoDoc::load_project(&doc);
         assert_eq!(
             after_split.clips_on(tid).len(),
@@ -5183,6 +5260,7 @@ fn lane_drags_respect_kind_and_track_locks() {
         press(&mut app, &mut doc);
         move_to(&mut app, &mut doc, lane.x0 + 200.0, lane.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clips_on(tid).len(),
@@ -5222,6 +5300,7 @@ fn lane_drags_respect_kind_and_track_locks() {
             key_press(&mut app, &mut doc, "v", true),
             "Ctrl+V is handled"
         );
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         let new_id = app.selected().expect("something was pasted");
         let pasted = reloaded
@@ -5244,6 +5323,7 @@ fn lane_drags_respect_kind_and_track_locks() {
         right_press(&mut app, &mut doc);
         assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
         click_menu_item(&mut app, &mut doc, "Lock track");
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc)
                 .track(tid)
@@ -5290,20 +5370,18 @@ fn multi_selection_extends_sweeps_and_moves_together() {
             "the shift-clicked clip is the new anchor"
         );
         // Delete both, and prove it was one undo boundary.
-        let _ = app.actions.take_committed();
+        let _ = take_steps();
         dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert!(
             reloaded.clip(ids[0]).is_none() && reloaded.clip(ids[1]).is_none(),
             "both selected clips were deleted from the CRDT"
         );
-        assert!(
-            app.actions.take_committed().is_some(),
-            "the multi-clip delete armed an undo boundary",
-        );
-        assert!(
-            app.actions.take_committed().is_none(),
-            "exactly one boundary for the whole selection, not one per clip",
+        assert_eq!(
+            take_steps(),
+            1,
+            "exactly one undo step for the whole selection, not one per clip",
         );
     }
     // Case `shift_click_a_selected_clip_removes_it_from_the_selection`.
@@ -5418,6 +5496,7 @@ fn multi_selection_extends_sweeps_and_moves_together() {
         );
         move_to(&mut app, &mut doc, a.center().x + 60.0, a.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         let after: Vec<f64> = ids
             .iter()
@@ -5456,11 +5535,13 @@ fn clipboard_and_duplicate_keep_the_selection_whole() {
         let cr = clip_screen_rect(&app, &r, cid);
         click(&mut app, &mut doc, cr.center().x, cr.center().y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clips.len();
         assert!(
             key_press(&mut app, &mut doc, "x", true),
             "Ctrl+X is handled"
         );
+        settle(&mut app, &mut doc);
         let cut = VideoDoc::load_project(&doc);
         assert!(
             cut.clip(cid).is_none(),
@@ -5473,6 +5554,7 @@ fn clipboard_and_duplicate_keep_the_selection_whole() {
             key_press(&mut app, &mut doc, "v", true),
             "Ctrl+V is handled"
         );
+        settle(&mut app, &mut doc);
         let pasted = VideoDoc::load_project(&doc);
         assert_eq!(pasted.clips.len(), before, "the cut clip pasted back");
         let new_id = app.selected().expect("the pasted clip is selected");
@@ -5495,12 +5577,14 @@ fn clipboard_and_duplicate_keep_the_selection_whole() {
         release(&mut app, &mut doc);
         let b = clip_screen_rect(&app, &r, ids[1]);
         shift_click(&mut app, &mut doc, b.center().x, b.center().y);
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clips_on(tid).len();
-        let _ = app.actions.take_committed();
+        let _ = take_steps();
         assert!(
             key_press(&mut app, &mut doc, "d", true),
             "Ctrl+D is handled"
         );
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clips_on(tid).len(),
@@ -5511,11 +5595,11 @@ fn clipboard_and_duplicate_keep_the_selection_whole() {
         for id in app.selection.ids() {
             assert!(!ids.contains(id), "the selection moved to the new clips");
         }
-        assert!(
-            app.actions.take_committed().is_some(),
-            "one undo boundary for the duplicate"
+        assert_eq!(
+            take_steps(),
+            1,
+            "one undo step for the duplicate, and only one"
         );
-        assert!(app.actions.take_committed().is_none(), "and only one");
     }
     // Case `right_clicking_a_clip_opens_a_menu_whose_duplicate_adds_a_clip`.
     {
@@ -5541,8 +5625,10 @@ fn clipboard_and_duplicate_keep_the_selection_whole() {
             Some(cid),
             "and re-targets the selection at it"
         );
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clips_on(tid).len();
         click_menu_item(&mut app, &mut doc, "Duplicate");
+        settle(&mut app, &mut doc);
         assert_eq!(
             VideoDoc::load_project(&doc).clips_on(tid).len(),
             before + 1,
@@ -5665,9 +5751,9 @@ fn timeline_chrome_regions_stay_ordered_at_every_size() {
 fn app_sized(w: f64, h: f64) -> (VideoEditorApp, AutoCommit) {
     let mut doc = AutoCommit::new();
     VideoDoc::seed_sample(&mut doc);
-    let mut app = VideoEditorApp::new();
+    let mut app = editor();
     app.rect = Rect::new(0.0, 0.0, w, h);
-    app.sync(&mut doc, &automerge::ROOT);
+    sync(&mut app, &mut doc);
     (app, doc)
 }
 
@@ -5901,7 +5987,7 @@ fn render_status_is_painted_cached_and_announced() {
             VideoDoc::seed_sample(&mut doc);
             let mut state = ui::State::new();
             state.doc = doc;
-            let mut app = VideoEditorApp::new();
+            let mut app = editor();
             app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             // A render in flight, with the dialog that started it up.
             app.presentation.export_open = true;
@@ -6251,7 +6337,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         for w in [
             420.0_f64, 500.0, 640.0, 760.0, 900.0, 1100.0, 1280.0, 1920.0,
         ] {
-            let mut app = VideoEditorApp::new_demo();
+            let mut app = editor();
             app.rect = Rect::new(0.0, 0.0, w, 800.0);
             let r = app.regions();
             let hist = app.history_buttons(&r);
@@ -6343,7 +6429,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         assert!(!app.inspector_is_visible(&r));
         // Press the toggle: it opens.
         app.last_mouse = r.inspector_btn.center();
-        app.handle_press(&mut doc, &r, false);
+        app.handle_press(&doc, &r, false);
         app.inspector_flap.snap(true);
         let r = app.regions();
         assert!(app.inspector_is_visible(&r));
@@ -6352,7 +6438,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         app.handle_key(
             &Key::Named(NamedKey::Escape),
             winit::event::Modifiers::default(),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &r,
         );
         app.inspector_flap.snap(false);
@@ -6414,7 +6500,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_BIN_KEY),
             ],
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(app.bin_flap.is_open(app.bin_layout()));
@@ -6425,7 +6511,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                     ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                     ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
                 ],
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ),
             "the open bin scrim makes other topbar actions unavailable"
@@ -6436,7 +6522,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_BIN_KEY),
             ],
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(!app.bin_flap.is_open(app.bin_layout()));
@@ -6446,7 +6532,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
             ],
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(app.inspector_flap.is_open(app.inspector_split()));
@@ -6531,7 +6617,7 @@ fn scrolled_clips_and_hud_keep_their_labels_visible() {
     {
         // Same defect at the other end: the badge was pinned to `cr.x1`, so a
         // clip running off the right of the lane wore it outside the clip.
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let cid = app
             .project
             .clips
@@ -6540,7 +6626,7 @@ fn scrolled_clips_and_hud_keep_their_labels_visible() {
             .map(|c| c.id)
             .expect("the fixture places clips");
         app.selection.select_only(cid);
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.set_speed(2.0, false);
         });
         let clip = app.project.clip(cid).cloned().expect("clip exists");
@@ -6560,7 +6646,7 @@ fn scrolled_clips_and_hud_keep_their_labels_visible() {
 
         let fast = render_pixels(&mut app, 1280, 800, &Theme::dark());
         app.selection.select_only(cid);
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.set_speed(1.0, false);
         });
         app.selection.clear();
@@ -6579,12 +6665,12 @@ fn scrolled_clips_and_hud_keep_their_labels_visible() {
     // is exactly where `Transform::pip()` places a corner inset — so every
     // top-right picture-in-picture had "1920x1080" burned across it.
     {
-        let mut app = VideoEditorApp::new_for_shot(ShotScenario::Composed);
+        let mut app = staged(ShotScenario::Composed);
         let (w, h) = (900.0_f64, 700.0_f64);
         let mut doc = AutoCommit::new();
-        VideoDoc::seed_sample(&mut doc);
+        VideoDoc::write_project(&mut doc, &super::composed_project());
         app.rect = Rect::new(0.0, 0.0, w, h);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let px = render_pixels(&mut app, w as u32, h as u32, &Theme::dark());
         let r = app.regions();
         // The top-right quarter of the canvas: where the scenario's inset is.
@@ -6692,7 +6778,7 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
             .expect("a clip");
         app.selection.select_only(cid);
         for k in EffectKind::ALL {
-            app.add_effect_to_selected(&mut doc, k);
+            app.add_effect_to_selected(k);
         }
         render(&mut app);
         let r = app.regions();
@@ -6753,7 +6839,7 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
             .expect("a clip");
         app.selection.select_only(cid);
         for k in EffectKind::ALL {
-            app.add_effect_to_selected(&mut doc, k);
+            app.add_effect_to_selected(k);
         }
         render(&mut app);
         let r = app.regions();
@@ -6777,8 +6863,7 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
         // Import enough stills to overflow the bin.
         for i in 0..14 {
             let png = write_real_png(16 + i, 16);
-            app.try_import_one(&mut doc, &png)
-                .expect("a real PNG imports");
+            app.try_import_one(&png).expect("a real PNG imports");
             std::fs::remove_file(&png).ok();
         }
         render(&mut app);
@@ -6832,8 +6917,7 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
         let (mut app, mut doc) = app_and_doc();
         for i in 0..14 {
             let png = write_real_png(16 + i, 16);
-            app.try_import_one(&mut doc, &png)
-                .expect("a real PNG imports");
+            app.try_import_one(&png).expect("a real PNG imports");
             std::fs::remove_file(&png).ok();
         }
         render(&mut app);
@@ -6947,8 +7031,10 @@ fn bin_menus_and_gestures_edit_the_crdt() {
         );
         assert!(matches!(app.menu_target, Some(MenuTarget::Media(m)) if m == mid));
 
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).media.len();
         click_menu_item(&mut app, &mut doc, "Delete");
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc);
         assert_eq!(
             after.media.len(),
@@ -6976,6 +7062,7 @@ fn bin_menus_and_gestures_edit_the_crdt() {
             .into_iter()
             .find(|(_, k, _)| *k == TrackKind::Video)
             .expect("a video lane");
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clips_on(tid).len();
         // Press on the bin item, drag past the threshold onto the lane, release.
         move_to(&mut app, &mut doc, row.center().x, row.center().y);
@@ -6988,6 +7075,7 @@ fn bin_menus_and_gestures_edit_the_crdt() {
             "moving past the threshold promotes the bin drag",
         );
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clips_on(tid).len(),
@@ -7015,10 +7103,10 @@ fn bin_menus_and_gestures_edit_the_crdt() {
         // A blank live project with one imported media and no tracks: double-
         // clicking a bin item must create a matching track and place the clip.
         let f = write_real_png(320, 240);
-        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        let mut app = importing(vec![f.clone()], false);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(app.project.media.len(), 1);
         assert!(
             app.project.tracks.is_empty(),
@@ -7028,6 +7116,7 @@ fn bin_menus_and_gestures_edit_the_crdt() {
         let (_mid, rect) = app.bin_item_rects(&r)[0];
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.tracks.len(), 1, "a matching track was created");
         assert_eq!(
@@ -7043,10 +7132,12 @@ fn bin_menus_and_gestures_edit_the_crdt() {
         let r = app.regions();
         // Target the first bin row's rect (computed by the app).
         let (_mid, rect) = app.bin_item_rects(&r)[0];
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clips.len();
         // Two presses inside the double-click window at the same spot.
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clips.len();
         assert_eq!(
             after,
@@ -7095,7 +7186,7 @@ fn waveforms_are_warmed_for_sources_that_carry_sound() {
         // An audio source pointing at a real WAV file gets real peaks cached by
         // the sync wiring (synchronous warm, as a --shots capture uses).
         let f = write_real_wav();
-        let mut app = VideoEditorApp::new();
+        let mut app = editor();
         app.render_pipeline.warm_waveforms_sync = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
@@ -7114,7 +7205,7 @@ fn waveforms_are_warmed_for_sources_that_carry_sound() {
         };
         let mid = m.id;
         VideoDoc::upsert_media(&mut doc, &m);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(
             app.waveforms.peaks(mid).is_some(),
             "the app warmed real peaks for the audio source",
@@ -7150,8 +7241,8 @@ fn waveforms_are_warmed_for_sources_that_carry_sound() {
         if let Some(m) = app.project.media.iter_mut().find(|m| m.id == mid) {
             m.has_audio = true;
         }
-        app.dispatch_media(&mut doc, mid);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.dispatch_media(mid);
+        sync(&mut app, &mut doc);
         assert_ne!(
             app.waveforms.state(mid),
             WaveformState::Unrequested,
@@ -7202,9 +7293,9 @@ fn waveforms_are_warmed_for_sources_that_carry_sound() {
             }
         }
         for m in mid {
-            app.dispatch_media(&mut doc, m);
+            app.dispatch_media(m);
         }
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         let heard = render_pixels(&mut app, w, h, &theme);
         let lit = frame_diff(&crop(&silent, w, strip), &crop(&heard, w, strip), w);
         assert!(
@@ -7222,6 +7313,7 @@ fn track_header_controls_add_and_delete_tracks() {
     {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc)
             .tracks
             .iter()
@@ -7233,6 +7325,7 @@ fn track_header_controls_add_and_delete_tracks() {
             .find(|(k, _)| *k == TrackKind::Audio)
             .expect("an add-audio-track button");
         click(&mut app, &mut doc, abtn.center().x, abtn.center().y);
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc);
         assert_eq!(
             after
@@ -7260,8 +7353,10 @@ fn track_header_controls_add_and_delete_tracks() {
         right_press(&mut app, &mut doc);
         assert!(app.bin_menu.is_open(), "right-click opens the track menu");
         assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).tracks.len();
         click_menu_item(&mut app, &mut doc, "Delete track");
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc);
         assert_eq!(
             after.tracks.len(),
@@ -7329,6 +7424,7 @@ fn titles_are_added_written_and_styled() {
         let r = app.regions();
         let btn = app.add_title_rect(&r);
         click(&mut app, &mut doc, btn.center().x, btn.center().y);
+        settle(&mut app, &mut doc);
         let p = VideoDoc::load_project(&doc);
         assert_eq!(p.media.len(), media_before + 1, "a source was made");
         assert_eq!(
@@ -7359,7 +7455,8 @@ fn titles_are_added_written_and_styled() {
         assert_eq!(app.selection.primary(), Some(clip.id), "and selected");
         assert!(app.title_edit.is_some(), "with the caret in its words");
         // Typing and committing writes the words and renames the source.
-        app.commit_title_text(&mut doc, item.id, "SUNSET");
+        app.commit_title_text(item.id, "SUNSET");
+        settle(&mut app, &mut doc);
         let p = VideoDoc::load_project(&doc);
         let item = p.media.iter().find(|m| m.id == item.id).unwrap();
         assert_eq!(item.text.as_ref().unwrap().content, "SUNSET");
@@ -7371,7 +7468,7 @@ fn titles_are_added_written_and_styled() {
     {
         let (mut app, mut doc) = app_and_doc();
         app.playhead = 12.0;
-        app.add_title(&mut doc);
+        app.add_title();
         app.title_edit = None;
         let mid = app.selected_media_item().unwrap().id;
         // Alignment.
@@ -7382,6 +7479,7 @@ fn titles_are_added_written_and_styled() {
                 .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let t = VideoDoc::load_project(&doc)
             .media(mid)
             .unwrap()
@@ -7393,6 +7491,7 @@ fn titles_are_added_written_and_styled() {
         // theme change.
         let rect = reveal(&mut app, |l| l.title_colors.get(2).map(|(_, r)| *r));
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let t = VideoDoc::load_project(&doc)
             .media(mid)
             .unwrap()
@@ -7410,6 +7509,7 @@ fn titles_are_added_written_and_styled() {
             track.center().y,
         );
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let t = VideoDoc::load_project(&doc)
             .media(mid)
             .unwrap()
@@ -7446,7 +7546,8 @@ fn titles_are_added_written_and_styled() {
             app.project.media.push(item);
             id
         });
-        app.commit_title_text(&mut doc, mid, "COASTLINE\nepisode two");
+        app.commit_title_text(mid, "COASTLINE\nepisode two");
+        settle(&mut app, &mut doc);
         let words = VideoDoc::load_project(&doc)
             .media
             .iter()
@@ -7460,6 +7561,7 @@ fn titles_are_added_written_and_styled() {
         );
         // The bin row takes the first line, which is what a one-line list can
         // honestly show of a two-line title.
+        settle(&mut app, &mut doc);
         let name = VideoDoc::load_project(&doc)
             .media
             .iter()
@@ -7537,7 +7639,7 @@ fn titles_are_added_written_and_styled() {
 
         app.system_fonts = vec!["Alpha Sans".into(), "Beta Serif".into()];
         app.open_font_picker();
-        let (_, dd, _) = app.font_picker.as_ref().expect("the picker opened");
+        let (_, dd) = app.font_picker.as_ref().expect("the picker opened");
         assert!(dd.is_open());
         assert_eq!(
             dd.selected(),
@@ -7548,7 +7650,8 @@ fn titles_are_added_written_and_styled() {
         // Choosing a family writes it to the media item through the ordinary
         // title action, so every clip placing this title follows.
         app.font_picker = None;
-        app.edit_title(&mut doc, |t| t.font = "Beta Serif".into());
+        app.edit_title(|t| t.font = "Beta Serif".into());
+        settle(&mut app, &mut doc);
         let font = VideoDoc::load_project(&doc)
             .media
             .iter()
@@ -7579,9 +7682,10 @@ fn marker_list_names_navigates_and_deletes() {
             "an unnamed tick is a marker you cannot find"
         );
         let target = app.marker_rename.as_ref().unwrap().0;
-        app.commit_marker_rename(&mut doc, target, "act two");
+        app.commit_marker_rename(target, "act two");
         app.marker_rename = None;
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let p = VideoDoc::load_project(&doc);
         assert_eq!(p.markers.len(), 1);
         assert_eq!(p.markers[0].name, "act two");
@@ -7590,9 +7694,9 @@ fn marker_list_names_navigates_and_deletes() {
         app.playhead = 20.0;
         key_press(&mut app, &mut doc, "m", false);
         let second = app.marker_rename.as_ref().unwrap().0;
-        app.commit_marker_rename(&mut doc, second, "sunset");
+        app.commit_marker_rename(second, "sunset");
         app.marker_rename = None;
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         // , and . step between them and stop at the ends.
         app.playhead = 14.0;
         key_press(&mut app, &mut doc, ",", false);
@@ -7617,6 +7721,7 @@ fn marker_list_names_navigates_and_deletes() {
         let row = reveal(&mut app, |l| l.marker_rows.first().map(|(_, r)| *r));
         let (_, _, _, del) = marker_row_parts(row);
         click(&mut app, &mut doc, del.center().x, del.center().y);
+        settle(&mut app, &mut doc);
         let p = VideoDoc::load_project(&doc);
         assert_eq!(p.markers.len(), 1, "the cross deleted one");
         assert_eq!(p.markers[0].name, "sunset", "and left the other");
@@ -7634,12 +7739,12 @@ fn marker_list_names_navigates_and_deletes() {
             .clip_mut(id)
             .unwrap()
             .add_marker(start + 1.0, "beat", 2);
-        app.dispatch_clip(&mut doc, id);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.dispatch_clip(id);
+        sync(&mut app, &mut doc);
         app.playhead = 4.0;
         key_press(&mut app, &mut doc, "m", false);
         app.marker_rename = None;
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         // One list, both kinds, sorted by where they actually land.
         let r = app.regions();
         app.inspector_scroll = app.inspector_max_scroll(&r);
@@ -7655,7 +7760,8 @@ fn marker_list_names_navigates_and_deletes() {
         let clip_row = rows.iter().find(|(m, _)| m.clip == Some(id)).unwrap().0;
         assert!((clip_row.at - (start + 1.0)).abs() < 1e-6);
         // Deleting it writes the clip, not the project.
-        app.delete_marker(&mut doc, clip_row);
+        app.delete_marker(clip_row);
+        settle(&mut app, &mut doc);
         let p = VideoDoc::load_project(&doc);
         assert!(p.clip(id).unwrap().markers.is_empty(), "gone from the clip");
         assert_eq!(p.markers.len(), 1, "and the timeline marker is untouched");
@@ -7682,18 +7788,20 @@ fn marker_list_names_navigates_and_deletes() {
         assert!(r.inspector.contains(add.center()));
         // The button works from this state, not just the keyboard.
         click(&mut app, &mut doc, add.center().x, add.center().y);
+        settle(&mut app, &mut doc);
         assert_eq!(
             VideoDoc::load_project(&doc).markers.len(),
             1,
             "a marker was added"
         );
         app.marker_rename = None;
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         // And the row it produced can be deleted from the same state.
         let l = app.inspector_layout(&app.regions());
         let row = l.marker_rows.first().expect("the marker is listed").1;
         let (_, _, _, del) = marker_row_parts(row);
         click(&mut app, &mut doc, del.center().x, del.center().y);
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc).markers.is_empty(),
             "and removed"
@@ -7707,9 +7815,9 @@ fn marker_list_names_navigates_and_deletes() {
     {
         ui::host::install_default(ui::host::HostServices::recording().0);
         let mut doc = AutoCommit::new();
-        let mut app = VideoEditorApp::new();
+        let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert!(
             app.project.clips.is_empty(),
             "the fixture is a blank project"
@@ -7927,6 +8035,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         // Switch the key on through the button, as a user would.
         let rect = reveal(&mut app, |l| l.key_enable);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc).clip(id).unwrap().key.enabled,
             "the toggle reaches the document, not just the preview",
@@ -7949,6 +8058,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
                 .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let stored = VideoDoc::load_project(&doc).clip(id).unwrap().mask;
         assert_eq!(stored.shape, crate::model::MaskShape::Ellipse);
         let l = app.inspector_layout(&app.regions());
@@ -7974,9 +8084,10 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
-        app.edit_selected(&mut doc, |c| c.key.tolerance = 0.0);
+        app.edit_selected(|c| c.key.tolerance = 0.0);
         let rect = reveal(&mut app, |l| l.key_enable);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let key = VideoDoc::load_project(&doc).clip(id).unwrap().key;
         assert!(key.enabled);
         assert!(
@@ -7992,7 +8103,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.transform = crate::model::Transform::pip(0.3, (1.0, -1.0), 0.04);
         });
         let placed = app.project.clip(id).unwrap().transform;
@@ -8003,6 +8114,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
                 .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let m = VideoDoc::load_project(&doc).clip(id).unwrap().mask;
         assert!(
             (m.x - placed.pos_x).abs() < 1e-9,
@@ -8016,7 +8128,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
 
         // Changing the shape afterwards keeps the geometry the user has by
         // then adjusted — only the first choice seeds it.
-        app.edit_selected(&mut doc, |c| c.mask.w = 0.123);
+        app.edit_selected(|c| c.mask.w = 0.123);
         let rect = reveal(&mut app, |l| {
             l.mask_shapes
                 .iter()
@@ -8024,6 +8136,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
                 .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        settle(&mut app, &mut doc);
         let m = VideoDoc::load_project(&doc).clip(id).unwrap().mask;
         assert_eq!(m.shape, crate::model::MaskShape::Rect);
         assert!(
@@ -8036,7 +8149,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.key.enabled = true;
             c.mask.shape = crate::model::MaskShape::Rect;
         });
@@ -8061,6 +8174,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
             );
             release(&mut app, &mut doc);
             let want = f.at_frac(frac);
+            settle(&mut app, &mut doc);
             let got = read(VideoDoc::load_project(&doc).clip(id).unwrap());
             let span = f.range().1 - f.range().0;
             assert!(
@@ -8077,7 +8191,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
         app.playhead = 23.0;
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.key.enabled = true;
             c.mask.shape = crate::model::MaskShape::Ellipse;
         });
@@ -8086,6 +8200,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
                 l.keys.iter().find(|(p, _)| *p == param).map(|(_, r)| *r)
             });
             click(&mut app, &mut doc, rect.center().x, rect.center().y);
+            settle(&mut app, &mut doc);
             let c = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
             assert!(c.anim.is_animated(param), "{param:?} has a curve now");
             assert!(c.has_key_at(param, 23.0), "with a key on the playhead");
@@ -8102,8 +8217,8 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         let cid = app.selected().expect("a clip is selected");
         // A mask has to exist for its geometry rows to be laid out at all.
         app.collapsed.remove(&Section::Mask);
-        app.set_mask_shape(&mut doc, crate::model::MaskShape::Ellipse);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.set_mask_shape(crate::model::MaskShape::Ellipse);
+        sync(&mut app, &mut doc);
         let before = app.project.clip(cid).expect("clip").clone();
 
         let rows = app.a11y_inspector_rows();
@@ -8120,9 +8235,15 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         ];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(&ui::a11y::Action::Increment, &path, &mut doc, &root),
+            app.perform_action_at(
+                &ui::a11y::Action::Increment,
+                &path,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root
+            ),
             "the mask's rotation answers a reader's increment",
         );
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc)
             .clip(cid)
             .expect("the clip survives")
@@ -8163,6 +8284,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
             l.add_effect.width() > 0.0 && r.inspector.contains(l.add_effect.center()),
             "the add-effect button is visible when scrolled",
         );
+        settle(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
         click(
             &mut app,
@@ -8181,6 +8303,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
             .unwrap();
         move_to(&mut app, &mut doc, cx, ry);
         press(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc)
             .clip(id)
             .unwrap()
@@ -8193,8 +8316,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
         );
         assert_eq!(after.last().unwrap().kind, EffectKind::Grayscale);
         let added: crate::actions::VideoEditorAction = serde_json::from_slice(
-            &app.actions
-                .last_dispatched()
+            &last_dispatched(&mut app, &mut doc)
                 .expect("the add dispatched an action")
                 .payload,
         )
@@ -8210,6 +8332,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
         // The drone clip carries two seeded effects.
         let id = app.project.top_video_clip_at(6.0).unwrap().id;
         app.selection.select_only(id);
+        settle(&mut app, &mut doc);
         let kinds0: Vec<_> = VideoDoc::load_project(&doc)
             .clip(id)
             .unwrap()
@@ -8228,6 +8351,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
             "the reorder control is visible"
         );
         click(&mut app, &mut doc, up.center().x, up.center().y);
+        settle(&mut app, &mut doc);
         let kinds1: Vec<_> = VideoDoc::load_project(&doc)
             .clip(id)
             .unwrap()
@@ -8238,8 +8362,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
         assert_eq!(kinds1[0], kinds0[1], "the second effect moved to the front");
         assert_eq!(kinds1[1], kinds0[0]);
         let moved: crate::actions::VideoEditorAction = serde_json::from_slice(
-            &app.actions
-                .last_dispatched()
+            &last_dispatched(&mut app, &mut doc)
                 .expect("the reorder dispatched an action")
                 .payload,
         )
@@ -8252,6 +8375,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
         let l = app.inspector_layout(&r);
         let (_k, _u, _dn, _sl, remove) = VideoEditorApp::effect_row_parts(l.effect_rows[0]);
         click(&mut app, &mut doc, remove.center().x, remove.center().y);
+        settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
         assert_eq!(
             after,
@@ -8259,8 +8383,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
             "the ✕ removed one effect from the CRDT"
         );
         let removed: crate::actions::VideoEditorAction = serde_json::from_slice(
-            &app.actions
-                .last_dispatched()
+            &last_dispatched(&mut app, &mut doc)
                 .expect("the remove dispatched an action")
                 .payload,
         )
@@ -8291,8 +8414,7 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
         release(&mut app, &mut doc);
 
         let action: crate::actions::VideoEditorAction = serde_json::from_slice(
-            &app.actions
-                .last_dispatched()
+            &last_dispatched(&mut app, &mut doc)
                 .expect("the intensity drag dispatched an action")
                 .payload,
         )
@@ -8337,6 +8459,7 @@ fn pointer_edits_on_the_timeline_write_the_crdt() {
             .find(|(tid, _, _)| *tid == clip.track)
             .unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
+        settle(&mut app, &mut doc);
         let start_before = VideoDoc::load_project(&doc).clip(clip.id).unwrap().start;
         // Grab the body (avoid the ±8px trim edges), drag right ~2 seconds.
         let grab_x = cr.center().x;
@@ -8346,6 +8469,7 @@ fn pointer_edits_on_the_timeline_write_the_crdt() {
         press(&mut app, &mut doc);
         move_to(&mut app, &mut doc, drop_x, grab_y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let start_after = VideoDoc::load_project(&doc).clip(clip.id).unwrap().start;
         assert!(
             start_after > start_before + 1.0,
@@ -8363,6 +8487,7 @@ fn pointer_edits_on_the_timeline_write_the_crdt() {
             .find(|(tid, _, _)| *tid == clip.track)
             .unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
+        settle(&mut app, &mut doc);
         let out_before = VideoDoc::load_project(&doc)
             .clip(clip.id)
             .unwrap()
@@ -8379,6 +8504,7 @@ fn pointer_edits_on_the_timeline_write_the_crdt() {
         );
         move_to(&mut app, &mut doc, drop_x, grab_y);
         release(&mut app, &mut doc);
+        settle(&mut app, &mut doc);
         let out_after = VideoDoc::load_project(&doc)
             .clip(clip.id)
             .unwrap()
@@ -8449,7 +8575,7 @@ fn app_with_curve_editor() -> (VideoEditorApp, AutoCommit, Rect) {
 fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
     // Case `clicking_the_curve_box_puts_a_point_where_the_pointer_landed`.
     {
-        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let (mut app, _doc, canvas) = app_with_curve_editor();
         let cid = app.selected().unwrap();
         assert!(
             app.project.clip(cid).unwrap().curves.master.is_identity(),
@@ -8458,7 +8584,7 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
 
         // A quarter in, three quarters up.
         let at = curve_point(canvas, 0.25, 0.75);
-        app.press_curve(&mut doc, canvas, at);
+        app.press_curve(canvas, at);
         let s = &app.project.clip(cid).unwrap().curves.master;
         assert_eq!(
             s.points.len(),
@@ -8480,14 +8606,14 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
     }
     // Case `a_press_on_an_existing_point_grabs_it_rather_than_stacking_another`.
     {
-        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let (mut app, _doc, canvas) = app_with_curve_editor();
         let cid = app.selected().unwrap();
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.curves.master.set_point(0.5, 0.5);
         });
         // A press a couple of pixels off the point.
         let near = curve_point(canvas, 0.51, 0.52);
-        app.press_curve(&mut doc, canvas, near);
+        app.press_curve(canvas, near);
         assert_eq!(
             app.project.clip(cid).unwrap().curves.master.points.len(),
             3,
@@ -8500,7 +8626,7 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
         let (mut app, mut doc, canvas) = app_with_curve_editor();
         let cid = app.selected().unwrap();
         let r = app.regions();
-        app.press_curve(&mut doc, canvas, curve_point(canvas, 0.5, 0.5));
+        app.press_curve(canvas, curve_point(canvas, 0.5, 0.5));
         // Drag it up.
         app.last_mouse = curve_point(canvas, 0.5, 0.9);
         app.apply_drag(&r);
@@ -8508,8 +8634,9 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
         assert!((mid - 0.9).abs() < 0.02, "the drag moved the point: {mid}");
 
         // Releasing inside the box keeps it, and writes it to the document.
-        app.commit_drag(&mut doc);
+        app.commit_drag();
         app.drag = None;
+        settle(&mut app, &mut doc);
         let stored = VideoDoc::load_project(&doc);
         let back = stored.clip(cid).expect("the clip survived");
         assert!(
@@ -8520,14 +8647,14 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
     }
     // Case `a_point_dragged_out_of_the_box_comes_off_the_curve`.
     {
-        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let (mut app, _doc, canvas) = app_with_curve_editor();
         let cid = app.selected().unwrap();
-        app.press_curve(&mut doc, canvas, curve_point(canvas, 0.4, 0.7));
+        app.press_curve(canvas, curve_point(canvas, 0.4, 0.7));
         assert_eq!(app.project.clip(cid).unwrap().curves.master.points.len(), 3);
 
         // Release well past the left edge.
         app.last_mouse = Point::new(canvas.x0 - POINT_DROP_MARGIN - 10.0, canvas.center().y);
-        app.commit_drag(&mut doc);
+        app.commit_drag();
         app.drag = None;
         assert!(
             app.project.clip(cid).unwrap().curves.master.is_identity(),
@@ -8538,13 +8665,13 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
     {
         // Pinning a point hard against 0 or 1 means dragging to the very edge
         // and a little past it. That must not delete what the user is placing.
-        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let (mut app, _doc, canvas) = app_with_curve_editor();
         let cid = app.selected().unwrap();
-        app.press_curve(&mut doc, canvas, curve_point(canvas, 0.4, 0.7));
+        app.press_curve(canvas, curve_point(canvas, 0.4, 0.7));
         let r = app.regions();
         app.last_mouse = Point::new(canvas.center().x, canvas.y0 - POINT_DROP_MARGIN + 6.0);
         app.apply_drag(&r);
-        app.commit_drag(&mut doc);
+        app.commit_drag();
         app.drag = None;
         let s = &app.project.clip(cid).unwrap().curves.master;
         assert_eq!(s.points.len(), 3, "still there: {:?}", s.points);
@@ -8556,7 +8683,7 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
     }
     // Case `the_channel_chooser_switches_which_curve_is_edited`.
     {
-        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let (mut app, _doc, canvas) = app_with_curve_editor();
         let cid = app.selected().unwrap();
         let r = app.regions();
         let blue = app
@@ -8575,7 +8702,7 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
             .find(|(c, _)| *c == crate::curve::Channel::Blue)
             .map(|(_, rect)| *rect)
             .expect("blue stays reachable after scrolling");
-        app.press_inspector(&mut doc, &r, blue.center());
+        app.press_inspector(&r, blue.center());
         assert_eq!(app.curve_channel, crate::curve::Channel::Blue);
 
         // The canvas moves with the layout, so re-read it before clicking in.
@@ -8583,7 +8710,7 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
             .inspector_layout(&app.regions())
             .curve_canvas
             .unwrap_or(canvas);
-        app.press_curve(&mut doc, canvas, curve_point(canvas, 0.5, 0.8));
+        app.press_curve(canvas, curve_point(canvas, 0.5, 0.8));
         let c = app.project.clip(cid).unwrap();
         assert!(!c.curves.blue.is_identity(), "blue was shaped");
         assert!(
@@ -8594,9 +8721,9 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
     }
     // Case `reset_returns_only_the_shown_channel_to_the_straight_line`.
     {
-        let (mut app, mut doc, _canvas) = app_with_curve_editor();
+        let (mut app, _doc, _canvas) = app_with_curve_editor();
         let cid = app.selected().unwrap();
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.curves.master.set_point(0.5, 0.8);
             c.curves.red.set_point(0.5, 0.2);
         });
@@ -8605,7 +8732,7 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
             .inspector_layout(&r)
             .curve_reset
             .expect("a reset button");
-        app.press_inspector(&mut doc, &r, reset.center());
+        app.press_inspector(&r, reset.center());
         let c = app.project.clip(cid).unwrap();
         assert!(c.curves.master.is_identity(), "the shown channel was reset");
         assert!(!c.curves.red.is_identity(), "and the others were not");
@@ -8673,7 +8800,7 @@ fn curve_summaries_and_availability_match_for_eye_and_reader() {
     }
     // Case `the_curve_summary_is_the_same_story_for_the_eye_and_for_a_reader`.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let cid = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(cid);
 
@@ -8689,7 +8816,7 @@ fn curve_summaries_and_availability_match_for_eye_and_reader() {
             "and the reader hears the same",
         );
 
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.curves.master.set_point(0.5, 0.8);
             c.curves.blue.set_point(0.4, 0.2);
             c.curves.mix = 0.5;
@@ -8707,7 +8834,7 @@ fn curve_summaries_and_availability_match_for_eye_and_reader() {
 
         // A curve that is shaped but mixed all the way out is a different
         // state from one at full strength, and both have to be reported.
-        app.edit_selected(&mut doc, |c| c.curves.mix = 0.0);
+        app.edit_selected(|c| c.curves.mix = 0.0);
         let clip = app.project.clip(cid).unwrap().clone();
         let off = app
             .section_summary(Section::Curves, &clip, None)
@@ -8754,7 +8881,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         let (mut app, mut doc) = app_and_doc();
         app.collapsed.remove(&Section::Markers);
         app.playhead = 12.0;
-        app.add_marker_here(&mut doc);
+        app.add_marker_here();
         // `add_marker_here` opens the rename; take that off so the row is at
         // rest before the note is asked for.
         app.marker_rename = None;
@@ -8780,7 +8907,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             .map(|(_, row)| *row)
             .expect("marker stays reachable after scrolling");
         let (_, note_btn, _, _) = marker_row_parts(row);
-        app.press_inspector(&mut doc, &r, note_btn.center());
+        app.press_inspector(&r, note_btn.center());
         assert_eq!(
             app.marker_field,
             MarkerField::Note,
@@ -8796,7 +8923,8 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             .expect("still there");
         assert!(grown > plain_h, "{plain_h} -> {grown}");
 
-        app.commit_marker_rename(&mut doc, m, "check the horizon line");
+        app.commit_marker_rename(m, "check the horizon line");
+        settle(&mut app, &mut doc);
         let back = VideoDoc::load_project(&doc);
         let note = back
             .markers
@@ -8819,9 +8947,9 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
     }
     // Case `clearing_a_note_is_allowed_but_clearing_a_name_is_not`.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         app.playhead = 12.0;
-        app.add_marker_here(&mut doc);
+        app.add_marker_here();
         app.marker_rename = None;
         let m = app
             .project
@@ -8834,8 +8962,8 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             })
             .expect("a marker");
 
-        app.commit_marker_text(&mut doc, m, MarkerField::Note, "a note");
-        app.commit_marker_text(&mut doc, m, MarkerField::Note, "");
+        app.commit_marker_text(m, MarkerField::Note, "a note");
+        app.commit_marker_text(m, MarkerField::Note, "");
         assert_eq!(
             app.project
                 .markers
@@ -8845,7 +8973,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             Some(""),
             "an empty note is how a note is taken back off",
         );
-        app.commit_marker_text(&mut doc, m, MarkerField::Name, "   ");
+        app.commit_marker_text(m, MarkerField::Name, "   ");
         assert_eq!(
             app.project
                 .markers
@@ -8966,7 +9094,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             app.perform_action_at(
                 &ui::a11y::Action::Activate,
                 &path,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ),
             "the marker node is addressable",
@@ -9002,9 +9130,10 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         assert!(app.perform_action_at(
             &ui::a11y::Action::SetValue("mind the skyline".into()),
             &verb(0),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &root,
         ));
+        settle(&mut app, &mut doc);
         assert_eq!(
             VideoDoc::load_project(&doc)
                 .marker(m.id)
@@ -9017,9 +9146,10 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         assert!(app.perform_action_at(
             &ui::a11y::Action::SetValue("act three".into()),
             &verb(1),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &root,
         ));
+        settle(&mut app, &mut doc);
         assert_eq!(
             VideoDoc::load_project(&doc)
                 .marker(m.id)
@@ -9032,14 +9162,20 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             !app.perform_action_at(
                 &ui::a11y::Action::SetValue("   ".into()),
                 &verb(1),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ),
             "a nameless marker is a dot nobody can find, and the verb says so",
         );
 
         // Activating the delete control removes it, exactly as the X does.
-        assert!(app.perform_action_at(&ui::a11y::Action::Activate, &verb(2), &mut doc, &root));
+        assert!(app.perform_action_at(
+            &ui::a11y::Action::Activate,
+            &verb(2),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root
+        ));
+        settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc).marker(m.id).is_none(),
             "the marker is gone from the document",
@@ -9080,7 +9216,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         assert!(app.perform_action_at(
             &ui::a11y::Action::Activate,
             &held,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -9137,7 +9273,8 @@ fn marker_at(
     note: &str,
 ) -> MarkerRef {
     app.playhead = t;
-    app.add_marker_here(doc);
+    app.add_marker_here();
+    settle(app, doc);
     app.marker_rename = None;
     let m = *app
         .a11y_marker_rows()
@@ -9145,9 +9282,9 @@ fn marker_at(
         .find(|(m, _, _)| (m.at - t).abs() < 1e-6)
         .map(|(m, _, _)| m)
         .expect("the marker was added");
-    app.commit_marker_text(doc, m, MarkerField::Name, name);
+    app.commit_marker_text(m, MarkerField::Name, name);
     if !note.is_empty() {
-        app.commit_marker_text(doc, m, MarkerField::Note, note);
+        app.commit_marker_text(m, MarkerField::Note, note);
     }
     m
 }
@@ -9478,7 +9615,10 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
 
         // And Enter on it runs the row's own verb.
         app.playhead = 0.0;
-        assert!(app.activate_focused(&mut doc), "Enter is answered");
+        assert!(
+            app.activate_focused(&mut ui::widget::Edits::lend(&mut doc)),
+            "Enter is answered"
+        );
         assert!(
             (app.playhead - 12.0).abs() < 1e-6,
             "playhead at {}",
@@ -9591,7 +9731,7 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_EXPORT_KEY),
             ],
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -9954,7 +10094,7 @@ fn app_with_linked_shot() -> (VideoEditorApp, AutoCommit) {
         // What a probe reads off a real container.
         m.has_audio = true;
     }
-    app.dispatch_media(&mut doc, mid);
+    app.dispatch_media(mid);
     let vid = app
         .project
         .clips
@@ -9962,8 +10102,8 @@ fn app_with_linked_shot() -> (VideoEditorApp, AutoCommit) {
         .find(|c| c.media == mid)
         .map(|c| c.id)
         .expect("the market clip is on V1");
-    app.attach_linked_audio(&mut doc, vid)
-        .expect("the sound splits off");
+    app.attach_linked_audio(vid).expect("the sound splits off");
+    settle(&mut app, &mut doc);
     app.selection.select_only(vid);
     (app, doc)
 }
@@ -10004,11 +10144,9 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
         if let Some(m) = app.project.media.iter_mut().find(|m| m.id == mid) {
             m.has_audio = true;
         }
-        app.dispatch_media(&mut doc, mid);
+        app.dispatch_media(mid);
         let before = app.project.clips.len();
-        let vid = app
-            .add_media_to_timeline(&mut doc, mid)
-            .expect("the picture lands");
+        let vid = app.add_media_to_timeline(mid).expect("the picture lands");
         assert_eq!(
             app.project.clips.len(),
             before + 2,
@@ -10025,6 +10163,7 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
         );
 
         // Straight out of the CRDT, which is what a peer will read.
+        settle(&mut app, &mut doc);
         let shared = VideoDoc::load_project(&doc);
         let v = shared.clip(vid).expect("the picture replicated");
         let a = shared.clip(aid).expect("the sound replicated");
@@ -10041,9 +10180,7 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
             .map(|m| m.id)
             .expect("the sunset source");
         let n = app.project.clips.len();
-        let only = app
-            .add_media_to_timeline(&mut doc, silent)
-            .expect("it lands");
+        let only = app.add_media_to_timeline(silent).expect("it lands");
         assert_eq!(app.project.clips.len(), n + 1);
         assert!(!app.project.is_linked(only));
     }
@@ -10093,6 +10230,7 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
             "and it stayed on its own lane",
         );
         // Committed, not only previewed: the drag has to reach the document.
+        settle(&mut app, &mut doc);
         let shared = VideoDoc::load_project(&doc);
         assert!((shared.clip(aid).expect("sound").start - a_after).abs() < 1e-9);
     }
@@ -10102,26 +10240,27 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
         // Delete.
         let (mut app, mut doc) = app_with_linked_shot();
         let aid = app.project.link_partners(app.selected().expect("picture"))[0];
-        app.delete_selected(&mut doc);
+        app.delete_selected();
         assert!(
             app.project.clip(aid).is_none(),
             "half a shot left behind is the surprise",
         );
+        settle(&mut app, &mut doc);
         assert!(VideoDoc::load_project(&doc).clip(aid).is_none());
 
         // Ripple delete.
-        let (mut app, mut doc) = app_with_linked_shot();
+        let (mut app, _) = app_with_linked_shot();
         let aid = app.project.link_partners(app.selected().expect("picture"))[0];
-        app.ripple_delete_selected(&mut doc);
+        app.ripple_delete_selected();
         assert!(app.project.clip(aid).is_none());
 
         // Split at the playhead.
-        let (mut app, mut doc) = app_with_linked_shot();
+        let (mut app, _) = app_with_linked_shot();
         let vid = app.selected().expect("picture");
         let aid = app.project.link_partners(vid)[0];
         let n = app.project.clips.len();
         app.playhead = app.project.clip(vid).expect("picture").start + 2.0;
-        app.split_selected(&mut doc);
+        app.split_selected();
         assert_eq!(app.project.clips.len(), n + 2, "both lanes were cut");
         let heads_link = app.project.clip(vid).expect("head").link;
         assert_eq!(app.project.clip(aid).expect("head").link, heads_link);
@@ -10135,11 +10274,11 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
         assert_eq!(tails[0].link, tails[1].link);
 
         // Trim to the playhead (`I`).
-        let (mut app, mut doc) = app_with_linked_shot();
+        let (mut app, _) = app_with_linked_shot();
         let vid = app.selected().expect("picture");
         let aid = app.project.link_partners(vid)[0];
         app.playhead = app.project.clip(vid).expect("picture").start + 1.5;
-        app.set_in_at_playhead(&mut doc);
+        app.set_in_at_playhead();
         let (v, a) = (
             app.project.clip(vid).expect("picture"),
             app.project.clip(aid).expect("sound"),
@@ -10154,12 +10293,13 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
         let (mut app, mut doc) = app_with_linked_shot();
         let vid = app.selected().expect("picture");
         let aid = app.project.link_partners(vid)[0];
-        app.set_speed_selected(&mut doc, 2.0, false);
+        app.set_speed_selected(2.0, false);
         assert!((app.project.clip(vid).expect("picture").speed.rate() - 2.0).abs() < 1e-9);
         assert!(
             (app.project.clip(aid).expect("sound").speed.rate() - 2.0).abs() < 1e-9,
             "re-timing one half and not the other desyncs them permanently",
         );
+        settle(&mut app, &mut doc);
         assert!(
             (VideoDoc::load_project(&doc)
                 .clip(aid)
@@ -10176,11 +10316,11 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
     // A grade, a level and a fade stay per-clip: sliding the sound and
     // levelling it on its own is the entire point of it being a clip.
     {
-        let (mut app, mut doc) = app_with_linked_shot();
+        let (mut app, _) = app_with_linked_shot();
         let vid = app.selected().expect("picture");
         let aid = app.project.link_partners(vid)[0];
         app.selection.select_only(aid);
-        app.edit_selected(&mut doc, |c| {
+        app.edit_selected(|c| {
             c.volume = 0.25;
             c.fade_in = 0.8;
         });
@@ -10198,7 +10338,7 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
     // shot, and the pasted copies are linked to each other and to nothing
     // else.
     {
-        let (mut app, mut doc) = app_with_linked_shot();
+        let (mut app, _) = app_with_linked_shot();
         let vid = app.selected().expect("picture");
         let aid = app.project.link_partners(vid)[0];
         assert_eq!(app.selection.ids(), &[vid], "only the picture is selected");
@@ -10212,7 +10352,7 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
         );
 
         let was = app.project.clip(vid).expect("picture").link;
-        app.duplicate_selected(&mut doc);
+        app.duplicate_selected();
         let copies = app.selection.ids().to_vec();
         assert_eq!(copies.len(), 2, "a duplicated shot is still a shot");
         let copy_link = app.project.clip(copies[0]).expect("a copy").link;
@@ -10244,14 +10384,14 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
         // because it is still rendering the drag preview.
         app.remember_clip_before(id);
         app.project.move_clip(id, old_start + 2.0);
+        settle(&mut app, &mut doc);
         let mut remote = VideoDoc::load_project(&doc);
         remote.clip_mut(id).expect("clip").filters.brightness = 0.91;
         VideoDoc::upsert_clip(&mut doc, remote.clip(id).expect("remote clip"));
 
-        app.dispatch_existing_clips(&mut doc, &[id]);
+        app.dispatch_existing_clips(&[id]);
         let action: crate::actions::VideoEditorAction = serde_json::from_slice(
-            &app.actions
-                .last_dispatched()
+            &last_dispatched(&mut app, &mut doc)
                 .expect("move dispatched a patch")
                 .payload,
         )
@@ -10268,6 +10408,7 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
             }
         )));
 
+        settle(&mut app, &mut doc);
         let shared = VideoDoc::load_project(&doc);
         let clip = shared.clip(id).expect("clip remains");
         assert!((clip.start - (old_start + 2.0)).abs() < 1e-9);
@@ -10310,12 +10451,12 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
             "a stop with no rect is a stop the cursor cannot be drawn on",
         );
 
-        assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
+        assert!(app.a11y_activate_pick(PickField::LinkToggle));
         assert!(!app.project.is_linked(vid), "the pair came apart");
+        settle(&mut app, &mut doc);
         assert!(!VideoDoc::load_project(&doc).is_linked(aid));
         let unlinked: crate::actions::VideoEditorAction = serde_json::from_slice(
-            &app.actions
-                .last_dispatched()
+            &last_dispatched(&mut app, &mut doc)
                 .expect("unlink dispatched an action")
                 .payload,
         )
@@ -10331,11 +10472,10 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
         // …and the same control ties them back together.
         app.selection.set(vec![vid, aid]);
         assert_eq!(app.link_affordance(), Some(LinkAffordance::Link));
-        assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
+        assert!(app.a11y_activate_pick(PickField::LinkToggle));
         assert!(app.project.is_linked(vid));
         let linked: crate::actions::VideoEditorAction = serde_json::from_slice(
-            &app.actions
-                .last_dispatched()
+            &last_dispatched(&mut app, &mut doc)
                 .expect("link dispatched an action")
                 .payload,
         )
@@ -10352,7 +10492,7 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
     // A project made before linked audio existed has to be able to get one,
     // and the inspector is where a person will look for it.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _) = app_and_doc();
         let mid = app
             .project
             .media
@@ -10372,7 +10512,7 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
             .expect("the market clip");
         app.selection.select_only(vid);
         assert_eq!(app.link_affordance(), Some(LinkAffordance::SplitAudio));
-        assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
+        assert!(app.a11y_activate_pick(PickField::LinkToggle));
         let partners = app.project.link_partners(vid);
         assert_eq!(partners.len(), 1, "the sound came off onto its own clip");
         assert_eq!(app.project.clip_kind(partners[0]), TrackKind::Audio);
@@ -10401,8 +10541,9 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
             .iter()
             .position(|l| l == "Unlink audio and video")
             .unwrap_or_else(|| panic!("the clip menu offers the unlink: {labels:?}"));
-        app.bin_menu_choose(&mut doc, idx);
+        app.bin_menu_choose(idx);
         assert!(!app.project.is_linked(vid));
+        settle(&mut app, &mut doc);
         assert!(!VideoDoc::load_project(&doc).is_linked(aid));
 
         // An unlinked single clip with no sound to split has nothing to offer,
@@ -10600,7 +10741,7 @@ fn mix_clipping_walk_and_measurement_reports() {
     // The master strip's accessibility node is a *button* once the mix has
     // clipped, and pressing it is the same walk the chip and the key do.
     {
-        let (mut app, mut doc) = app_with_clipped_mix();
+        let (mut app, _) = app_with_clipped_mix();
         let words = app.mix_words().expect("the timeline has audio");
         assert!(
             words.contains("clipped") && words.contains("dB"),
@@ -10614,7 +10755,7 @@ fn mix_clipping_walk_and_measurement_reports() {
         // a copy of it.
         app.playhead = 0.0;
         let key = ui::a11y::hash_key(&MIX_METER_KEY);
-        assert!(app.a11y_timeline_action(&ui::a11y::Action::Activate, &[key], &mut doc));
+        assert!(app.a11y_timeline_action(&ui::a11y::Action::Activate, &[key]));
         assert!(
             (app.playhead - 4.0).abs() < 1e-6,
             "activating the node walks the playhead: {}",
@@ -10670,7 +10811,7 @@ fn mixer_lane_reset_and_capture_are_stable() {
             "a stop on a control the panel is not drawing is a stop onto nothing",
         );
         assert!(
-            !app.a11y_activate_pick(PickField::MixReset, &mut doc),
+            !app.a11y_activate_pick(PickField::MixReset),
             "and it refuses to act through the back door either",
         );
 
@@ -10680,7 +10821,7 @@ fn mixer_lane_reset_and_capture_are_stable() {
             t.gain_db = 5.5;
             t.pan = -0.4;
         });
-        app.dispatch_selected_track(&mut doc);
+        app.dispatch_selected_track();
         assert!(app.project.track(tid).expect("the lane").mix_is_set());
 
         let rows = app.a11y_inspector_rows();
@@ -10714,7 +10855,7 @@ fn mixer_lane_reset_and_capture_are_stable() {
             Some(winit::window::CursorIcon::Pointer),
         );
 
-        assert!(app.a11y_activate_pick(PickField::MixReset, &mut doc));
+        assert!(app.a11y_activate_pick(PickField::MixReset));
         let back = app.project.track(tid).expect("the lane");
         assert!(
             !back.mix_is_set(),
@@ -10722,6 +10863,7 @@ fn mixer_lane_reset_and_capture_are_stable() {
             back.gain_words()
         );
         // …and it reached the document, not only the in-memory model.
+        settle(&mut app, &mut doc);
         assert!(
             !VideoDoc::load_project(&doc)
                 .track(tid)
@@ -10743,12 +10885,13 @@ fn mixer_lane_reset_and_capture_are_stable() {
         let theme = Theme::dark();
         let (w, h) = (960u32, 640u32);
         let mut doc = AutoCommit::new();
-        let mut app = VideoEditorApp::new_for_shot(ShotScenario::Mix);
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = staged(ShotScenario::Mix);
         app.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         // Two syncs to settle the scenario, so the comparison below is of a
         // staged state rather than of one still arriving.
-        app.sync(&mut doc, &automerge::ROOT);
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
+        sync(&mut app, &mut doc);
         let _ = render_pixels(&mut app, w, h, &theme);
         let staged = app.mix.clone();
         assert!(
@@ -10774,7 +10917,7 @@ fn mixer_lane_reset_and_capture_are_stable() {
         // Now the claim: time passes, the app is pumped exactly as the capture
         // loop pumps it, and nothing about the mix has moved.
         std::thread::sleep(Duration::from_millis(150));
-        app.sync(&mut doc, &automerge::ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(
             app.mix, staged,
             "150ms of wall clock moved the meter the capture is of; at \

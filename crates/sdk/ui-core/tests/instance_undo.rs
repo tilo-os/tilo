@@ -197,7 +197,7 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
 
     // Case `foreign_noop_commit_notification_preserves_pending_owner`.
     {
-        use crate::support::application::{probe_commit_drains, request_probe_commit};
+        use crate::support::application::{probe_commit_drains, report_probe_action};
         let host = ProbeHost::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = first.record().clone();
@@ -219,14 +219,21 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
             .unwrap();
         let mut outer = AutoCommit::new();
         let outer_before = outer.get_heads();
+        // A's burst opens before its first write; its owner reports that boundary
+        // once the burst ends.
+        let a_burst = host
+            .records
+            .with(&checkout.id, AutoCommit::get_heads)
+            .unwrap();
         a.invoke(&mut outer, |widget, doc, _| {
             tilo_ui::undo::set_state(widget, "A metadata");
             doc.put(ROOT, "a", "first").unwrap();
         })
         .unwrap();
-        b.invoke(&mut outer, |widget, _, _| {
+        // B reports an action that wrote nothing while A's burst is pending.
+        b.invoke(&mut outer, |widget, doc, _| {
             tilo_ui::undo::set_state(widget, "B metadata");
-            request_probe_commit();
+            report_probe_action(doc.get_heads());
         })
         .unwrap();
         assert_eq!(probe_commit_drains(), 1);
@@ -239,7 +246,7 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
             .unwrap();
         a.invoke(&mut outer, |_, doc, _| {
             doc.put(ROOT, "a", "continued").unwrap();
-            request_probe_commit();
+            report_probe_action(a_burst);
         })
         .unwrap();
         assert_eq!(probe_commit_drains(), 2);
@@ -249,14 +256,6 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
                 assert_eq!(entry.widget_metadata.as_deref(), Some("A metadata"));
                 assert_eq!(entry.author.as_ref(), Some(&author()));
                 assert!(history.next_redo_in(&author(), 12).is_some());
-                let changes = doc.get_changes(&entry.before);
-                let context = changes
-                    .last()
-                    .unwrap()
-                    .message()
-                    .and_then(tilo_actions::ActionContext::from_change_message)
-                    .unwrap();
-                assert_eq!(context.action_label.as_str(), "A metadata");
                 history.undo_in(doc, &author(), 11, None, None).unwrap();
                 assert!(history.next_undo_in(&author(), 11).is_none());
                 assert!(doc.get(ROOT, "a").unwrap().is_none());

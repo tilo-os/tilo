@@ -342,6 +342,24 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
+    /// Send a piece of a record's content to one device of this workspace
+    /// through the host, which hands it to that device's live connection
+    /// only and drops it when it cannot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn publish_record_content(&self, to: [u8; 32], frame: Vec<u8>) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::RecordContent {
+                workspace_id: self.workspace_id,
+                to_device_public_key: to,
+                from_device_public_key: [0; 32],
+                frame,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
     /// Send a remote-action frame to one device of this workspace through
     /// the host. The host routes it to that device's live connection only;
     /// it is never stored or fanned out.
@@ -473,26 +491,12 @@ impl RelayCoeditSession {
                         });
                     }
                 }
-                Envelope::RemoteAction {
-                    workspace_id,
-                    from_device_public_key,
-                    frame,
-                    ..
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::RemoteAction {
-                        from: from_device_public_key,
-                        frame,
-                    });
-                }
-                Envelope::Live {
-                    workspace_id,
-                    from_device_public_key,
-                    frame,
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::Live {
-                        from: from_device_public_key,
-                        frame,
-                    });
+                envelope @ (Envelope::RemoteAction { .. }
+                | Envelope::RecordContent { .. }
+                | Envelope::Live { .. }) => {
+                    if let Some(inbound) = self.device_frame(envelope) {
+                        return Some(inbound);
+                    }
                 }
                 Envelope::Ready { pending_deltas, .. } => {
                     return Some(Inbound::Ready {
@@ -524,6 +528,31 @@ impl RelayCoeditSession {
                 // payload — keep waiting.
                 _ => {}
             }
+        }
+    }
+
+    /// A frame another device of this workspace sent this one, with the
+    /// sender the host stamped; `None` for another workspace's.
+    fn device_frame(&self, envelope: Envelope) -> Option<Inbound> {
+        match envelope {
+            Envelope::RemoteAction {
+                workspace_id,
+                from_device_public_key: from,
+                frame,
+                ..
+            } if workspace_id == self.workspace_id => Some(Inbound::RemoteAction { from, frame }),
+            Envelope::RecordContent {
+                workspace_id,
+                from_device_public_key: from,
+                frame,
+                ..
+            } if workspace_id == self.workspace_id => Some(Inbound::RecordContent { from, frame }),
+            Envelope::Live {
+                workspace_id,
+                from_device_public_key: from,
+                frame,
+            } if workspace_id == self.workspace_id => Some(Inbound::Live { from, frame }),
+            _ => None,
         }
     }
 

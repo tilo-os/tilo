@@ -1,20 +1,18 @@
 //! Toolkit-owned host for a small app's typed resource/action surface.
 //!
 //! Apps provide their retained root, one discoverable resource, and an
-//! immediate or background operation closure. The host supplies the widget
+//! immediate operation closure. The host supplies the widget
 //! forwarding and invocation lifecycle; scaffolds do not need to copy that
 //! infrastructure into every new project.
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crate::automerge::{AutoCommit, ObjId};
 use crate::kurbo::{Affine, Point, Rect};
 use crate::taffy::{NodeId, TaffyTree};
 use crate::tilo_actions::{
-    ActionBinding, ActionBindingError, ActionContract, ActionFailure, ActionOutput, ActionParam,
-    ActionSpec, DiscoveryScope, EncodedAction, ExecutionMode, InvocationId, InvocationUpdate,
-    OperationKind, ParamType, Resource, ResultSpec,
+    ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
+    DiscoveryScope, EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
 use crate::vello::Scene;
 use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
@@ -32,13 +30,7 @@ pub const OPERATION_TYPE: &str = "tilo.app.operation";
     clippy::expect_used,
     reason = "serializing the unit operation payload is infallible"
 )]
-pub fn resource(
-    kind: &str,
-    label: &str,
-    action_id: &str,
-    action_label: &str,
-    background: bool,
-) -> Resource {
+pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) -> Resource {
     let mut action = ActionSpec::operation(
         action_id,
         action_label,
@@ -49,16 +41,8 @@ pub fn resource(
     .expect("the unit operation is serializable");
     action.contract = ActionContract {
         discovery: DiscoveryScope::Launchable,
-        execution: if background {
-            ExecutionMode::Background { cancellable: false }
-        } else {
-            ExecutionMode::Immediate
-        },
-        result: if background {
-            ResultSpec::Job
-        } else {
-            ResultSpec::None
-        },
+        execution: ExecutionMode::Immediate,
+        result: ResultSpec::None,
         ..ActionContract::default()
     };
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
@@ -334,19 +318,12 @@ pub fn form(root: Box<dyn Widget>, form: ActionForm) -> Box<dyn Widget> {
 }
 
 type Immediate = Box<dyn FnMut(&[u8]) -> Result<ActionOutput, String>>;
-type Background = Box<dyn FnMut(&[u8]) -> Result<Receiver<Result<ActionOutput, String>>, String>>;
-
-enum Runner {
-    Immediate(Immediate),
-    Background(Background),
-}
 
 /// Transparent retained root that publishes and executes one app resource.
 pub struct ResourceActionHost {
     root: Box<dyn Widget>,
     resource: Resource,
-    runner: Runner,
-    pending: HashMap<InvocationId, Receiver<Result<ActionOutput, String>>>,
+    run: Immediate,
     rect: Rect,
 }
 
@@ -359,47 +336,15 @@ pub fn immediate(
     Box::new(ResourceActionHost {
         root,
         resource,
-        runner: Runner::Immediate(Box::new(run)),
-        pending: HashMap::new(),
+        run: Box::new(run),
         rect: Rect::ZERO,
     })
-}
-
-/// Wrap a root with an accepted job whose receiver supplies terminal output.
-pub fn background(
-    root: Box<dyn Widget>,
-    resource: Resource,
-    run: impl FnMut(&[u8]) -> Result<Receiver<Result<ActionOutput, String>>, String> + 'static,
-) -> Box<dyn Widget> {
-    Box::new(ResourceActionHost {
-        root,
-        resource,
-        runner: Runner::Background(Box::new(run)),
-        pending: HashMap::new(),
-        rect: Rect::ZERO,
-    })
-}
-
-impl ResourceActionHost {
-    fn run_operation(
-        &mut self,
-        invocation: InvocationId,
-        payload: &[u8],
-    ) -> Result<ResourceOperationStart, String> {
-        match &mut self.runner {
-            Runner::Immediate(run) => run(payload).map(ResourceOperationStart::Completed),
-            Runner::Background(run) => {
-                self.pending.insert(invocation, run(payload)?);
-                Ok(ResourceOperationStart::Accepted)
-            }
-        }
-    }
 }
 
 impl Widget for ResourceActionHost {
     crate::provides!(dyn crate::resources::PublishesResources);
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
     }
 
@@ -519,7 +464,7 @@ impl Widget for ResourceActionHost {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.root.perform_action(action, state, path)
@@ -529,7 +474,7 @@ impl Widget for ResourceActionHost {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.root.perform_action_at(action, key_path, state, path)
@@ -539,7 +484,7 @@ impl Widget for ResourceActionHost {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.root
@@ -553,7 +498,7 @@ impl Widget for ResourceActionHost {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
@@ -566,35 +511,9 @@ impl Widget for ResourceActionHost {
         else {
             return Ok(None);
         };
-        self.run_operation(request.invocation, request.payload)
+        (self.run)(request.payload)
+            .map(ResourceOperationStart::Completed)
             .map(Some)
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<InvocationUpdate> {
-        let result = match self.pending.get(&invocation)?.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => Err("background worker disconnected".into()),
-        };
-        self.pending.remove(&invocation);
-        Some(match result {
-            Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-            Err(message) => InvocationUpdate::Failed {
-                invocation,
-                error: ActionFailure {
-                    code: "app_operation_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        })
     }
 
     fn wants_pointer_capture(&self) -> bool {

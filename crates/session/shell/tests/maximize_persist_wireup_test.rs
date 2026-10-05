@@ -87,7 +87,7 @@ fn pump_no_op_event(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: &mut state,
+            state: ui::widget::Edits::lend(&mut state),
             path: &root_id,
             handled: &mut handled,
             focus_target: &mut focus_target,

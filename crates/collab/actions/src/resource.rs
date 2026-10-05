@@ -684,6 +684,9 @@ pub struct ActionSpec {
     /// Classifies one invocation's bound arguments when the action's risk
     /// depends on them. See [`ActionSpec::with_risk`].
     risk_of: Option<RiskClassifier>,
+    /// Classifies what one invocation's bound arguments need the invoker to
+    /// be allowed. See [`ActionSpec::with_permission_of`].
+    permission_of: Option<PermissionClassifier>,
     /// Names one invocation in history from the action it built. See
     /// [`ActionSpec::with_history_label`].
     history_label_of: Option<HistoryLabeler>,
@@ -692,6 +695,9 @@ pub struct ActionSpec {
 
 /// Classifies the risk of one invocation from its bound arguments.
 pub type RiskClassifier = Arc<dyn Fn(&ActionArgs) -> RiskLevel + Send + Sync>;
+
+/// Classifies what one invocation needs the invoker to be allowed.
+pub type PermissionClassifier = Arc<dyn Fn(&ActionArgs) -> PermissionRequirement + Send + Sync>;
 
 /// Names one invocation in history from the encoded action it built, or
 /// declines with `None`.
@@ -757,8 +763,11 @@ impl ActionSpec {
     }
 
     fn validate_built(&self, encoded: EncodedAction) -> Result<EncodedAction, ArgError> {
+        // A refusal carries the builder's reason to the caller, as a typed
+        // action's does.
         if let Some(expected) = self.deferred_invocation_type()
             && encoded.type_id != expected
+            && encoded.type_id != INVALID_ARGUMENTS_TYPE
         {
             return Err(ArgError::Constraint {
                 name: "deferred".into(),
@@ -854,6 +863,7 @@ impl ActionSpec {
                 deferred_type: Some(type_id),
             },
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -892,6 +902,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         })
@@ -924,6 +935,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -973,6 +985,7 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -1013,6 +1026,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         })
@@ -1063,6 +1077,7 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -1167,6 +1182,7 @@ impl ActionSpec {
                 deferred_type: None,
             },
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -1294,6 +1310,68 @@ impl ActionSpec {
         push_tag(&mut self.contract, crate::contract::ARGUMENT_RISK_TAG);
         self.risk_of = Some(Arc::new(classify));
         self
+    }
+
+    /// Classify what each invocation needs the invoker to be allowed from
+    /// its bound arguments, for an action whose consequence depends on them
+    /// (a generic edit: a reply needs commenting, a deletion writing). The
+    /// declared [`ActionContract::permission`] stays the least any
+    /// invocation needs, which is what a host offers the action under;
+    /// every gate that admits an invocation asks
+    /// [`permission_for_json`](Self::permission_for_json) or
+    /// [`permission_for_argument`](Self::permission_for_argument) too.
+    #[must_use]
+    pub fn with_permission_of(
+        mut self,
+        classify: impl Fn(&ActionArgs) -> PermissionRequirement + Send + Sync + 'static,
+    ) -> Self {
+        self.permission_of = Some(Arc::new(classify));
+        self
+    }
+
+    /// What one invocation with these bound arguments needs: the
+    /// classifier's verdict, else the declared permission.
+    pub fn permission_for_args(&self, args: &ActionArgs) -> PermissionRequirement {
+        self.permission_of
+            .as_ref()
+            .map_or(self.contract.permission, |classify| classify(args))
+    }
+
+    /// [`permission_for_args`](Self::permission_for_args) for arguments that
+    /// arrived as JSON. Arguments that do not bind build no action, so they
+    /// need what the declaration says.
+    pub fn permission_for_json(
+        &self,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+    ) -> PermissionRequirement {
+        if self.permission_of.is_none() {
+            return self.contract.permission;
+        }
+        ActionArgs::bind_json(&self.params, supplied).map_or(self.contract.permission, |args| {
+            self.permission_for_args(&args)
+        })
+    }
+
+    /// [`permission_for_args`](Self::permission_for_args) for the palette
+    /// and legacy text door: typed JSON behind
+    /// [`ARGUMENTS_JSON_PREFIX`](crate::ARGUMENTS_JSON_PREFIX), one line of
+    /// text for the primary parameter, or nothing.
+    pub fn permission_for_argument(&self, argument: Option<&str>) -> PermissionRequirement {
+        if self.permission_of.is_none() {
+            return self.contract.permission;
+        }
+        if let Some(json) =
+            argument.and_then(|text| text.strip_prefix(crate::ARGUMENTS_JSON_PREFIX))
+        {
+            return serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                .map_or(self.contract.permission, |arguments| {
+                    self.permission_for_json(&arguments)
+                });
+        }
+        let supplied = argument.map_or_else(Vec::new, |text| primary_argument(&self.params, text));
+        ActionArgs::bind(&self.params, supplied).map_or(self.contract.permission, |args| {
+            self.permission_for_args(&args)
+        })
     }
 
     /// The risk of one invocation: the classifier's verdict for these

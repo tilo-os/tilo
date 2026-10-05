@@ -1680,6 +1680,69 @@ impl RetainedGpuTarget {
     }
 }
 
+/// Opt-in diagnostic coverage, independent of input or presentation causality.
+#[derive(Default)]
+struct DispatchStageObserver {
+    attempts: u64,
+    matched_current: u64,
+    stale_samples: u64,
+    missing_current: u64,
+    last_record: Option<serde_json::Value>,
+}
+
+impl DispatchStageObserver {
+    #[expect(
+        clippy::print_stderr,
+        reason = "explicit GPU diagnostics must reach the native compositor process log"
+    )]
+    fn record(
+        &mut self,
+        target: &mut RetainedGpuTarget,
+        revision: u64,
+        rendered: bool,
+        previous_submission: Option<u64>,
+        renderer_generation: Option<u64>,
+    ) {
+        self.attempts = self.attempts.saturating_add(1);
+        let latest = target
+            .renderer
+            .gpu_dispatch_timestamp_latest_submission_id();
+        let sample = target.renderer.take_gpu_dispatch_timestamp_sample();
+        let sample_id = sample.as_ref().map(|sample| sample.submission_id);
+        let expected = latest.filter(|_| latest != previous_submission && rendered);
+        let matched = sample_id.is_some() && sample_id == expected;
+        self.matched_current = self.matched_current.saturating_add(u64::from(matched));
+        self.stale_samples = self
+            .stale_samples
+            .saturating_add(u64::from(sample_id.is_some() && !matched));
+        self.missing_current = self.missing_current.saturating_add(u64::from(!matched));
+        let stages: Vec<_> = sample.as_ref().map(|sample| {
+            sample.stages.iter().take(usize::try_from(sample.stage_count).unwrap_or(0).min(sample.stages.len()))
+                .map(|stage| serde_json::json!({
+                    "stage_id": stage.stage_id,
+                    "stage": vello::gpu_dispatch_timestamp_stage_name(stage.stage_id).unwrap_or("unknown"),
+                    "dispatch_count": stage.dispatch_count,
+                    "duration_ns": stage.duration_ns.to_string(),
+                })).collect()
+        }).unwrap_or_default();
+        let row = serde_json::json!({
+            "process_id": std::process::id(), "renderer_generation": renderer_generation,
+            "revision": revision, "render_succeeded": rendered,
+            "latest_attempted_submission_id": latest, "expected_current_submission_id": expected,
+            "sample_submission_id": sample_id,
+            "matched_current": matched, "missing_current": !matched,
+            "stale_sample": sample_id.is_some() && !matched,
+            "status": format!("{:?}", target.renderer.gpu_dispatch_timestamp_status()),
+            "timestamp_buffer_bytes": target.renderer.gpu_dispatch_timestamp_buffer_bytes(),
+            "coverage": {"attempts": self.attempts, "matched_current": self.matched_current,
+                "stale_samples": self.stale_samples, "missing_current": self.missing_current},
+            "stages": stages,
+        });
+        eprintln!("VELLO-STAGES {row}");
+        self.last_record = Some(row);
+    }
+}
+
 /// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
 /// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
 #[cfg_attr(
@@ -1694,6 +1757,7 @@ pub struct VelloDrmBridge {
     target: RetainedGpuTarget,
     device_errors: DeviceErrorLatch,
     bgra_blitter: TextureBlitter,
+    dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
     hdr_encoders: Vec<HdrEncodePipeline>,
     /// Composites HDR layers; built with the first frame that has any.
@@ -1796,6 +1860,9 @@ impl VelloDrmBridge {
             target,
             device_errors,
             bgra_blitter,
+            dispatch_stage_observer: std::env::var_os("TILO_PROFILE_GPU_STAGES")
+                .is_some_and(|value| value == "1")
+                .then(DispatchStageObserver::default),
             hdr_encoders: Vec::new(),
             hdr_compositor: None,
             dev_id,
@@ -2284,6 +2351,11 @@ impl VelloDrmBridge {
         let view = &target.view;
         let format = target.format;
         let compositor = self.hdr_compositor.as_ref().filter(|_| composite);
+        let previous_dispatch_submission = self.dispatch_stage_observer.as_ref().and_then(|_| {
+            self.target
+                .renderer
+                .gpu_dispatch_timestamp_latest_submission_id()
+        });
         let rendered = self.target.render(
             scene,
             Some(damage),
@@ -2302,10 +2374,17 @@ impl VelloDrmBridge {
             // repair it sparsely, whether or not it composites.
             self.target.last_successful_revision = None;
         }
-        let (_, admitted) = rendered?;
-        if let Some(error) = self.take_device_error() {
-            return Err(error);
+        let rendered = rendered.and_then(|output| self.take_device_error().map_or(Ok(output), Err));
+        if let Some(observer) = &mut self.dispatch_stage_observer {
+            observer.record(
+                &mut self.target,
+                damage.revision,
+                rendered.is_ok(),
+                previous_dispatch_submission,
+                self.xrgb_history_generation,
+            );
         }
+        let (_, admitted) = rendered?;
         Ok(GpuFrameStats {
             revision: damage.revision,
             damage_admitted: admitted,
@@ -6358,9 +6437,27 @@ mod tests {
             state: ElementState::Released,
             button: MouseButton::Left,
         };
-        let _ = frame.dispatch_event(&cursor, &modifiers, document, &ROOT, focus);
-        let pressed = frame.dispatch_event(&press, &modifiers, document, &ROOT, focus);
-        let released = frame.dispatch_event(&release, &modifiers, document, &ROOT, focus);
+        let _ = frame.dispatch_event(
+            &cursor,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
+        let pressed = frame.dispatch_event(
+            &press,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
+        let released = frame.dispatch_event(
+            &release,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
         assert!(
             pressed || released,
             "native benchmark target {target:?} must handle click"
@@ -8242,6 +8339,162 @@ mod tests {
             height,
             stride: width.saturating_mul(4),
         }
+    }
+
+    /// Runs the ordinary direct paint, not a diagnostic helper or a fake GPU sample.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_gpu_stage_records_keep_actual_submission_identity_and_coverage() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PROFILE_GPU_STAGES", "0");
+        let ordinary = required_bridge(128, 96);
+        assert!(ordinary.dispatch_stage_observer.is_none());
+        drop(ordinary);
+        env.set("TILO_PROFILE_GPU_STAGES", "1");
+        env.set("VELLO_GPU_TIMESTAMPS", "1");
+        env.set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
+        let mut bridge = required_bridge(128, 96);
+        let target = direct_target(&bridge, 128, 96);
+        let mut samples = 0;
+        for revision in 1..=12 {
+            bridge
+                .paint_imported_until(
+                    &rect_scene(128, 96, Color::WHITE),
+                    version(revision, None, None),
+                    &target,
+                    tilo_test_env::hang_deadline(),
+                    crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                    &[],
+                )
+                .expect("production direct GPU paint");
+            let row = bridge
+                .dispatch_stage_observer
+                .as_ref()
+                .unwrap()
+                .last_record
+                .as_ref()
+                .unwrap();
+            assert_eq!(row["process_id"], std::process::id());
+            assert_eq!(
+                row["renderer_generation"],
+                bridge.xrgb_history_generation.unwrap()
+            );
+            assert_eq!(row["revision"], revision);
+            assert_eq!(row["coverage"]["attempts"], revision);
+            assert_eq!(row["render_succeeded"], true);
+            assert_eq!(
+                row["coverage"]["matched_current"].as_u64().unwrap()
+                    + row["coverage"]["missing_current"].as_u64().unwrap(),
+                revision
+            );
+            if let Some(sample_id) = row["sample_submission_id"].as_u64() {
+                samples += 1;
+                let latest = row["latest_attempted_submission_id"].as_u64().unwrap();
+                assert!(sample_id <= latest);
+                assert_eq!(row["matched_current"], sample_id == latest);
+                assert_eq!(row["stale_sample"], sample_id != latest);
+                assert!(!row["stages"].as_array().unwrap().is_empty());
+            } else {
+                assert_eq!(row["missing_current"], true);
+                assert!(row["stages"].as_array().unwrap().is_empty());
+            }
+            bridge.wait_for_gpu_completion_for_test();
+        }
+        assert!(
+            samples > 0,
+            "the diagnostic must observe an actual GPU stage sample"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_gpu_stage_failed_paints_and_recovery_keep_renderer_identity() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PROFILE_GPU_STAGES", "1");
+        env.set("VELLO_GPU_TIMESTAMPS", "1");
+        env.set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
+        let mut bridge = required_bridge(128, 96);
+        let target = direct_target(&bridge, 128, 96);
+        let scene = rect_scene(128, 96, Color::WHITE);
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+        bridge
+            .paint_imported_until(
+                &scene,
+                version(1, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("initial ordinary direct paint");
+        let old_generation = bridge.xrgb_history_generation;
+        let expired = bridge.paint_imported_until(
+            &scene,
+            version(2, None, None),
+            &target,
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("monotonic clock permits an expired deadline"),
+            white,
+            &[],
+        );
+        assert!(expired.is_err(), "an expired ordinary paint must fail");
+        let row = bridge
+            .dispatch_stage_observer
+            .as_ref()
+            .unwrap()
+            .last_record
+            .as_ref()
+            .unwrap();
+        assert_eq!(row["revision"], 2);
+        assert_eq!(row["render_succeeded"], false);
+        assert!(row["expected_current_submission_id"].is_null());
+        assert_eq!(row["matched_current"], false);
+        assert_eq!(row["missing_current"], true);
+        // An actual wgpu validation error enters the ordinary recovery path.
+        let (device, _) = bridge.gpu();
+        let refused = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stage-observer-recovery-test"),
+            size: device.limits().max_buffer_size.saturating_add(4),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        drop(refused);
+        assert!(
+            bridge
+                .paint_imported_until(
+                    &scene,
+                    version(3, None, None),
+                    &target,
+                    tilo_test_env::hang_deadline(),
+                    white,
+                    &[],
+                )
+                .is_err()
+        );
+        bridge
+            .paint_imported_until(
+                &scene,
+                version(4, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("ordinary paint reconstructs after the reported GPU error");
+        let row = bridge
+            .dispatch_stage_observer
+            .as_ref()
+            .unwrap()
+            .last_record
+            .as_ref()
+            .unwrap();
+        assert_eq!(row["revision"], 4);
+        assert_ne!(bridge.xrgb_history_generation, old_generation);
+        assert_eq!(
+            row["renderer_generation"],
+            bridge.xrgb_history_generation.unwrap()
+        );
     }
 
     /// The direct swapchain alternates between two scanout images, so the image a frame lands in

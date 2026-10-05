@@ -14,7 +14,7 @@
 use notes::Workspace;
 
 #[test]
-fn tree_operations_keep_shape_order_and_no_orphans() {
+fn tree_operations_keep_shape_and_order() {
     eprintln!("phase create_child_of_selected_appends_under_parent");
     {
         let mut ws = Workspace::new();

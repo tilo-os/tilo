@@ -172,7 +172,7 @@ pub fn report_note_dispatcher(
 /// talking to a registry about a report. A package job runs on the Store's
 /// worker and answers when it finished.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "store.effect")]
+#[effect(operation = "store.effect", device_only)]
 pub enum StoreEffect {
     /// Refresh catalog.
     #[effect(job)]
@@ -429,6 +429,13 @@ const SCENARIOS: &[&str] = &[
 /// The app the moderation screenshots report.
 const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
+pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
+    "en-US",
+    &[("en-US", include_str!("../locales/en-US.ftl"))],
+    "store-remotes-title",
+)
+.with_system_locale();
+
 /// Framework app.
 pub struct StoreShell;
 
@@ -440,6 +447,10 @@ impl ResourceApp for StoreShell {
     const OPENS: &'static [&'static str] = &["application/vnd.flatpak.ref"];
     /// A `.flatpakref` to show, or a `tilo-store:app/<id>` link.
     const ARGUMENTS: usize = 1;
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&STORE_CATALOG)
+    }
 
     fn view(cx: &mut ViewCx<Store>) -> Element {
         cx.surface(StoreApp::new())
@@ -574,6 +585,12 @@ impl ResourceSurface<Store, StoreEffect> for StoreApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_row(id)
+    }
+
+    /// Every app of the complete catalogue, not only the rows the current
+    /// filter shows, each opening its details.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.catalogue_search_entries()
     }
 }
 

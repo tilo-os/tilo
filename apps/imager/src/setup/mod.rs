@@ -39,8 +39,6 @@ mod strings;
 mod test_support;
 pub mod view;
 
-pub use view::app_root;
-
 use ui::widget::Column;
 
 /// A padding-free, content-sized column: one section of a page.

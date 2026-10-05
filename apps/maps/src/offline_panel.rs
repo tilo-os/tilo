@@ -6,7 +6,6 @@
 
 use ui::time::{Duration, Instant};
 
-use automerge::AutoCommit;
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -174,7 +173,7 @@ impl OfflinePanel {
         scale: f64,
         modifiers: winit::event::Modifiers,
         mouse: Point,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if let (
             WindowEvent::MouseInput {
