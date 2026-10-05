@@ -627,6 +627,21 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
     # input without publishing it, and a Cancel that answers polkit.
     session=$(loginctl show-user "$(id -un)" -p Display --value)
     [[ -n "$session" ]] || { echo "no graphical login session" >&2; exit 1; }
+    # pkexec names the process asking, never the session: polkit's rules
+    # engine reads a subject as a process or a bus name only, and polkitd
+    # aborts on a unix-session subject. The asker here is one of this
+    # user's processes in the graphical session, which polkit maps to that
+    # session and so to the agent the compositor registered for it.
+    scope="/sys/fs/cgroup/user.slice/user-$(id -u).slice/session-$session.scope/cgroup.procs"
+    asker=""
+    while read -r pid; do
+      [[ $(stat -c %u "/proc/$pid" 2>/dev/null) == "$(id -u)" ]] && { asker=$pid; break; }
+    done <"$scope"
+    [[ -n "$asker" ]] || { echo "no process of $(id -un) in session $session ($scope)" >&2; exit 1; }
+    stat_line=$(<"/proc/$asker/stat")
+    read -r -a stat_fields <<<"${stat_line##*) }"
+    # Field 22 of stat(5), counted after the command name's closing paren.
+    started=${stat_fields[19]}
     answer=$(mktemp)
     checker=""
     trap 'rm -f "$answer"; [[ -z "$checker" ]] || kill "$checker" 2>/dev/null || true' EXIT
@@ -634,10 +649,14 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       --dest org.freedesktop.PolicyKit1 \
       --object-path /org/freedesktop/PolicyKit1/Authority \
       --method org.freedesktop.PolicyKit1.Authority.CheckAuthorization \
-      "('unix-session', {'session-id': <'$session'>})" \
+      "('unix-process', {'pid': <uint32 $asker>, 'start-time': <uint64 $started>, 'uid': <int32 $(id -u)>})" \
       org.freedesktop.policykit.exec '{}' 1 '' >"$answer" 2>&1 &
     checker=$!
-    wait_for_names "Administrator access" "Password" "Authenticate" "Cancel"
+    wait_for_names "Administrator access" "Password" "Authenticate" "Cancel" || {
+      echo "polkit answered the request with:" >&2
+      cat "$answer" >&2
+      exit 1
+    }
     assert_password_role "Password"
     focus_named "Password"
     path=$(editable_node_named "Password")

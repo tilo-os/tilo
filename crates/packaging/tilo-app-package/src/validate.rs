@@ -85,6 +85,8 @@ pub enum ManifestError {
     BadProviderScheme(String),
     #[error("invalid resource kind {0:?}")]
     BadResourceKind(String),
+    #[error("sandbox.services: {0}")]
+    BadService(String),
     #[error("publisher.identity: {0}")]
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
@@ -351,6 +353,10 @@ fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
             return Err(ManifestError::BadResourceKind(kind.clone()));
         }
     }
+    for (name, req) in &m.sandbox.services {
+        registry_types::InterfaceRequirement::new(name, req.version)
+            .map_err(|error| ManifestError::BadService(error.to_string()))?;
+    }
     Ok(())
 }
 
@@ -363,6 +369,7 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: Some(target.runtime.clone()),
+        interfaces: Vec::new(),
     };
     registry_target
         .validate()
@@ -877,6 +884,47 @@ mode = "off"
             validate_manifest(&m),
             Err(ManifestError::TooManyOptionalRuntimes)
         );
+    }
+
+    #[test]
+    fn required_services_are_the_interfaces_a_package_needs() {
+        use crate::manifest::{Requirement, ServiceReq};
+        let service = |requirement, version| ServiceReq {
+            protocol: String::new(),
+            requirement,
+            version,
+        };
+        let mut m = minimal_runtime_manifest();
+        m.sandbox.services = [
+            ("system".to_owned(), service(Requirement::Required, 2)),
+            ("collab".to_owned(), service(Requirement::Optional, 1)),
+            (
+                "model-gateway".to_owned(),
+                service(Requirement::Required, 1),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(validate_manifest(&m), Ok(()));
+        assert_eq!(
+            m.required_interface_wire(),
+            vec!["model-gateway@1".to_owned(), "system@2".to_owned()]
+        );
+        m.sandbox
+            .services
+            .insert("Bad Name".to_owned(), service(Requirement::Optional, 1));
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(ManifestError::BadService(_))
+        ));
+        m.sandbox.services.remove("Bad Name");
+        m.sandbox
+            .services
+            .insert("system".to_owned(), service(Requirement::Required, 0));
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(ManifestError::BadService(_))
+        ));
     }
 
     #[test]

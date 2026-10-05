@@ -13,6 +13,11 @@
 //! `app rollback` and `tilo-install` verify every signature they would for
 //! it. Only the registry's location and keys are a fixture.
 //!
+//! `--incompatible <v>` offers version `v` too, built against a version of
+//! the system interface this device does not serve (`system@N+1`, where `N`
+//! is the newest it declares): the build a device must neither be offered
+//! nor install, and must not run over its image's copy.
+//!
 //! It prints one JSON line — `{"url", "owner_key", "publisher_key",
 //! "versions"}` — once it is serving, then serves until killed. Dev images
 //! ship it for the booted-image check that the system image's apps update
@@ -30,18 +35,20 @@ use registry_types::{
 };
 use tilo_app_package::{Manifest, SigningIdentity};
 
-const USAGE: &str =
-    "usage: tilo-test-registry --app <package-id> --version <v> [--version <v>...] [--port <n>]";
+const USAGE: &str = "usage: tilo-test-registry --app <package-id> --version <v> [--version <v>...] \
+     [--incompatible <v>...] [--port <n>]";
 
 struct Args {
     app: String,
     versions: Vec<String>,
+    incompatible: Vec<String>,
     port: u16,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut app = None;
     let mut versions = Vec::new();
+    let mut incompatible = Vec::new();
     let mut port = 0;
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -51,6 +58,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
         match arg.as_str() {
             "--app" => app = Some(value()?),
             "--version" => versions.push(value()?),
+            "--incompatible" => incompatible.push(value()?),
             "--port" => port = value()?.parse().map_err(|e| format!("--port: {e}"))?,
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
@@ -63,6 +71,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     Ok(Args {
         app,
         versions,
+        incompatible,
         port,
     })
 }
@@ -89,6 +98,22 @@ struct Packed {
     file: String,
     root_hex: String,
     bytes: Vec<u8>,
+    /// The system interfaces its manifest requires, in wire form.
+    interfaces: Vec<String>,
+}
+
+/// A system interface version this device does not serve: one past the
+/// newest it declares.
+fn unserved_system_version() -> u32 {
+    package_store::interfaces::system_interfaces()
+        .and_then(|provided| {
+            provided
+                .versions(tilo_app_package::interfaces::SYSTEM_INTERFACE)
+                .last()
+                .copied()
+        })
+        .unwrap_or(1)
+        .saturating_add(1)
 }
 
 /// The installed copy's manifest and payload packed again as `version`,
@@ -97,6 +122,7 @@ fn repack(
     manifest_path: &Path,
     payload_root: &Path,
     version: &str,
+    requires_system: Option<u32>,
     publisher: &SigningKey,
 ) -> Result<(Manifest, Packed), String> {
     let source = std::fs::read_to_string(manifest_path)
@@ -104,11 +130,23 @@ fn repack(
     let mut manifest = Manifest::from_toml_str(&source)
         .map_err(|e| format!("parse {}: {e}", manifest_path.display()))?;
     version.clone_into(&mut manifest.package.version);
+    if let Some(system) = requires_system {
+        let name = tilo_app_package::interfaces::SYSTEM_INTERFACE.to_owned();
+        manifest.sandbox.services.insert(
+            name.clone(),
+            tilo_app_package::manifest::ServiceReq {
+                protocol: name,
+                requirement: tilo_app_package::manifest::Requirement::Required,
+                version: system,
+            },
+        );
+    }
     manifest.publisher.identity = format!(
         "ed25519:{}",
         hex::encode(publisher.verifying_key().to_bytes())
     );
     manifest.publisher.signature.clear();
+    let interfaces = manifest.required_interface_wire();
     let identity = SigningIdentity::from_signing_key(publisher.clone());
     let packed = tilo_app_package::pack(payload_root, &manifest, &identity)
         .map_err(|e| format!("pack {version}: {e}"))?;
@@ -121,6 +159,7 @@ fn repack(
             file: format!("/{}-{version}.tapp", packed.meta.manifest.package.id),
             root_hex: packed.id().to_hex(),
             bytes,
+            interfaces,
         },
     ))
 }
@@ -142,14 +181,23 @@ fn run(args: &Args) -> Result<(), String> {
 
     let mut packed = Vec::new();
     let mut manifest = None;
-    for version in &args.versions {
+    let unserved = unserved_system_version();
+    let builds = args.versions.iter().map(|version| (version, None)).chain(
+        args.incompatible
+            .iter()
+            .map(|version| (version, Some(unserved))),
+    );
+    for (version, requires_system) in builds {
         let (m, p) = repack(
             &installed.manifest_path,
             &installed.payload_root,
             version,
+            requires_system,
             &publisher,
         )?;
-        manifest.get_or_insert(m);
+        if requires_system.is_none() {
+            manifest.get_or_insert(m);
+        }
         packed.push(p);
     }
     let manifest = manifest.ok_or("no version was packed")?;
@@ -164,6 +212,11 @@ fn run(args: &Args) -> Result<(), String> {
         "owner_key": hex::encode(owner.verifying_key().to_bytes()),
         "publisher_key": hex::encode(publisher.verifying_key().to_bytes()),
         "versions": packed.iter().map(|p| p.version.clone()).collect::<Vec<_>>(),
+        "incompatible": args.incompatible,
+        "interfaces": packed
+            .iter()
+            .map(|p| (p.version.clone(), p.interfaces.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>(),
         "packed_from": installed.payload_root,
     });
     let mut stdout = std::io::stdout();
@@ -196,10 +249,9 @@ fn signed_entry(
         name: name.as_str().into(),
         description: format!("{name}, offered by a test registry").into(),
         tagline: name.as_str().into(),
-        images: registry_types::LocalizedImages::english_icon(
-            format!("{base_url}/icon.svg"),
-            format!("{name} icon"),
-        ),
+        // Store artwork must be served over https, which a loopback registry
+        // is not; the Store draws its own mark for an entry without any.
+        images: registry_types::LocalizedImages::default(),
         supported_languages: vec!["en".into()],
         categories: manifest.package.category.clone().into_iter().collect(),
         source_url: None,
@@ -219,6 +271,7 @@ fn signed_entry(
                     architecture: std::env::consts::ARCH.into(),
                     isa: std::env::consts::ARCH.into(),
                     runtime: manifest.package.runtime.clone(),
+                    interfaces: p.interfaces.clone(),
                 },
             })
             .collect(),
@@ -324,6 +377,8 @@ mod tests {
                 "2.0.0",
                 "--version",
                 "1.0.0",
+                "--incompatible",
+                "3.0.0",
             ]
             .map(String::from)
             .into_iter(),
@@ -331,8 +386,59 @@ mod tests {
         .unwrap();
         assert_eq!(args.app, "so.tilo.settings");
         assert_eq!(args.versions, ["2.0.0", "1.0.0"]);
+        assert_eq!(args.incompatible, ["3.0.0"]);
         assert_eq!(args.port, 0);
         assert!(parse_args(["--app", "x"].map(String::from).into_iter()).is_err());
         assert!(parse_args(["--version", "1"].map(String::from).into_iter()).is_err());
+    }
+
+    /// What a device's client checks of every entry before it believes a
+    /// snapshot, so an entry it would refuse never leaves this registry.
+    #[test]
+    fn the_signed_entry_passes_the_clients_entry_checks() {
+        let manifest = Manifest::from_toml_str(
+            r#"
+[package]
+id = "so.tilo.settings"
+name = "Personal Settings"
+category = "System"
+version = "1.0.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+system = "required@1"
+"#,
+        )
+        .unwrap();
+        let packed = [Packed {
+            version: "9999.0.0".into(),
+            file: "/so.tilo.settings-9999.0.0.tapp".into(),
+            root_hex: "ab".repeat(32),
+            bytes: vec![1, 2, 3],
+            interfaces: manifest.required_interface_wire(),
+        }];
+        let publisher = SigningKey::from_bytes(&[7; 32]);
+        let entry = signed_entry(
+            "so.tilo.settings",
+            &manifest,
+            &packed,
+            "http://127.0.0.1:4000",
+            &publisher,
+        );
+        assert_eq!(entry.validate(), Ok(()));
+        assert_eq!(entry.versions[0].target.interfaces, ["system@1"]);
     }
 }

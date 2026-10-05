@@ -152,6 +152,7 @@ suites = [
   "os/tests/test_supervised_disk.py",
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
+  "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
@@ -350,7 +351,9 @@ inputs = ["scripts/vm-acceptance/"]
 suites = [
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
+  "scripts/vm-acceptance/test_ci_select.py",
   "scripts/vm-acceptance/test_frames.py",
+  "scripts/vm-acceptance/test_provenance.py",
 ]
 
 [[group]]
@@ -539,8 +542,8 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs"]
+inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
+readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
 
 [[cargo]]
 package = "tilo-vm"

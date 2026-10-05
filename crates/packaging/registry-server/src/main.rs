@@ -1929,6 +1929,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: architecture.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let shared_bytes = b"same verified tapp".to_vec();
             let digest = blake3::hash(&shared_bytes).to_hex().to_string();
@@ -2110,6 +2111,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let mut entry = publisher_entry(&key);
@@ -2201,6 +2203,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 1,
