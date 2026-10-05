@@ -13,21 +13,52 @@ pub(crate) struct HostClockBracket {
 
 pub(crate) const CLOCK_NAME: &str = if cfg!(target_os = "macos") {
     "mach_absolute_seconds"
+} else if cfg!(target_os = "linux") {
+    "clock_monotonic_seconds"
 } else {
     "unavailable"
 };
 
-/// Called only for native scenario packets, never ordinary platform input.
+/// Called only under an explicit native diagnostic observer, not normal unprofiled input.
 pub(crate) fn sample() -> (Instant, Option<HostClockBracket>) {
     #[cfg(target_os = "macos")]
     {
         let (instant, bracket) = sample_with(host_seconds, crate::time::now);
         (instant, Some(bracket))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        let lo_s = monotonic_seconds();
+        let instant = crate::time::now();
+        let hi_s = monotonic_seconds();
+        (
+            instant,
+            lo_s.zip(hi_s)
+                .map(|(lo_s, hi_s)| HostClockBracket { lo_s, hi_s }),
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         (crate::time::now(), None)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn monotonic_seconds() -> Option<f64> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the writable timespec outlives this parameterless clock read.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut time) } != 0 {
+        return None;
+    }
+    let secs = u64::try_from(time.tv_sec).ok()?;
+    let nanos = u32::try_from(time.tv_nsec).ok()?;
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
+    Some(std::time::Duration::new(secs, nanos).as_secs_f64())
 }
 
 #[cfg(target_os = "macos")]
@@ -110,7 +141,14 @@ mod tests {
                 assert!(bracket.lo_s.is_finite() && bracket.lo_s > 0.0);
                 assert!(bracket.hi_s.is_finite() && bracket.hi_s >= bracket.lo_s);
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
+            {
+                assert_eq!(CLOCK_NAME, "clock_monotonic_seconds");
+                let bracket = bracket.expect("Linux CLOCK_MONOTONIC must be available");
+                assert!(bracket.lo_s.is_finite() && bracket.lo_s > 0.0);
+                assert!(bracket.hi_s.is_finite() && bracket.hi_s >= bracket.lo_s);
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             {
                 assert_eq!(CLOCK_NAME, "unavailable");
                 assert!(bracket.is_none());
