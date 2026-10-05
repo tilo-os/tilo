@@ -34,14 +34,20 @@ use vello::kurbo::{Affine, Point};
 const WIDTH: u32 = 1000;
 const HEIGHT: u32 = 720;
 
-fn shoot(theme: &Theme, out: &Path, steps: &[&str], width: u32, height: u32) -> Result<(), String> {
+fn shoot(
+    theme: &Theme,
+    out: &Path,
+    steps: &[&'static str],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
     shoot_in_context(theme, out, steps, width, height, false, false)
 }
 
 fn shoot_host(
     theme: &Theme,
     out: &Path,
-    steps: &[&str],
+    steps: &[&'static str],
     width: u32,
     height: u32,
 ) -> Result<(), String> {
@@ -51,7 +57,7 @@ fn shoot_host(
 fn shoot_host_mint_error(
     theme: &Theme,
     out: &Path,
-    steps: &[&str],
+    steps: &[&'static str],
     width: u32,
     height: u32,
 ) -> Result<(), String> {
@@ -65,7 +71,7 @@ fn shoot_host_mint_error(
 fn shoot_in_context(
     theme: &Theme,
     out: &Path,
-    steps: &[&str],
+    steps: &[&'static str],
     width: u32,
     height: u32,
     host_desktop: bool,
@@ -90,9 +96,14 @@ fn shoot_in_context(
         OnboardingView::with_minter(minter)
     };
 
-    // Drive the widget through one sync per key press, as a click would.
-    for key in steps {
-        let _ = state.doc.put(&state.root, *key, ScalarValue::Boolean(true));
+    // Drive the widget through one sync per step, as a click would. The
+    // acknowledgement checkboxes are document-bound; the rest are buttons.
+    for &key in steps {
+        if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            let _ = state.doc.put(&state.root, key, ScalarValue::Boolean(true));
+        } else {
+            view.press(key);
+        }
         view.sync(&mut state.doc, &state.root);
     }
     view.sync(&mut state.doc, &state.root);
@@ -301,7 +312,7 @@ fn main() -> Result<(), String> {
         720,
     )?;
 
-    let accessibility_states: &[(&str, &[&str])] = &[
+    let accessibility_states: &[(&str, &[&'static str])] = &[
         ("choose", &[]),
         ("connect", &[KEY_EXISTING, KEY_CHOOSE_RESTORE]),
         ("protect", &[KEY_BEGIN]),

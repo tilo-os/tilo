@@ -3,7 +3,7 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
-use automerge::{ReadDoc as _, ScalarValue, Value};
+use automerge::{ReadDoc as _, ScalarValue};
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -825,11 +825,23 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             );
             assert!(handled, "the visible tour must own {event:?}");
         }
-        assert!(matches!(
-            document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), ScalarValue::Boolean(true))
-        ));
+        assert!(
+            matches!(
+                document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
+                Ok(None)
+            ),
+            "a click is a view action, never a document write"
+        );
+        h.host.sync(&mut document, &automerge::ROOT);
+        assert_eq!(
+            h.host
+                .onboarding
+                .as_ref()
+                .expect("the tour stays open")
+                .tour_step(),
+            Some(2),
+            "Continue advances the tour"
+        );
     }
 
     onboarding_release_keeps_focus_reset_after_relayout_edge_is_consumed();
@@ -2828,12 +2840,21 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         KEY_BACKUP_CONTINUE,
         KEY_FINISH,
     ] {
-        let _ = automerge::transaction::Transactable::put(
-            &mut doc,
-            &automerge::ROOT,
-            key,
-            ScalarValue::Boolean(true),
-        );
+        // The acknowledgement checkboxes are document-bound; the rest are
+        // the setup's buttons.
+        if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            let _ = automerge::transaction::Transactable::put(
+                &mut doc,
+                &automerge::ROOT,
+                key,
+                ScalarValue::Boolean(true),
+            );
+        } else {
+            host.onboarding
+                .as_ref()
+                .expect("setup is running")
+                .press(key);
+        }
         host.sync(&mut doc, &automerge::ROOT);
     }
     assert!(!host.onboarding_active(), "setup released the desktop");
