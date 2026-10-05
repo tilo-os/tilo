@@ -71,6 +71,25 @@ impl Remote {
     }
 }
 
+/// Explain a device repository's known permission refusal in human terms.
+pub fn remote_error(remote: &Remote, error: &str) -> String {
+    tracing::warn!(repository = %remote.name, %error, "could not read Flatpak repository");
+    if !remote.user_managed && error.contains("GenerateOciSummary") {
+        ui::i18n::I18nManager::format(
+            "store-device-repository-refresh",
+            &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
+        )
+    } else {
+        ui::i18n::I18nManager::format(
+            "store-repository-read-error",
+            &[
+                ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
+                ("error", ui::i18n::ArgValue::Text(error.to_string())),
+            ],
+        )
+    }
+}
+
 /// Trimmed `AppStream` record — only the fields the store surfaces.
 ///
 /// The real response has ~30 fields; declaring only the ones we
@@ -353,15 +372,56 @@ pub fn decode_popular(text: &str) -> Result<Vec<PopularEntry>, FlathubError> {
 
 /// Decode the host service's machine-readable installed-app rows.
 pub fn installed_flatpaks(output: &str) -> Vec<(String, String)> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let mut cols = line.split('\t');
-            let id = cols.next()?.trim();
-            let version = cols.next().unwrap_or("").trim();
-            (!id.is_empty()).then(|| (id.to_string(), version.to_string()))
-        })
+    let mut installed = std::collections::BTreeMap::<String, (String, bool)>::new();
+    for line in output.lines() {
+        let columns: Vec<_> = line.split('\t').collect();
+        let Some(id) = columns
+            .first()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let version = columns.get(1).copied().unwrap_or("").trim().to_string();
+        let user = columns.get(3).is_some_and(|scope| scope.trim() == "user");
+        let entry = installed
+            .entry(id.to_string())
+            .or_insert_with(|| (version.clone(), user));
+        if user {
+            *entry = (version, true);
+        }
+    }
+    installed
+        .into_iter()
+        .map(|(id, (version, _))| (id, version))
         .collect()
+}
+
+/// Preserve the repository and scope, preferring this account's installation
+/// when the same app is also supplied by the device.
+pub fn installed_origins(output: &str) -> std::collections::HashMap<String, (String, bool)> {
+    let mut installed = std::collections::HashMap::<String, (String, bool)>::new();
+    for line in output.lines() {
+        let columns: Vec<_> = line.split('\t').collect();
+        let Some(id) = columns
+            .first()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let Some(origin) = columns.get(2).map(|origin| origin.trim()) else {
+            continue;
+        };
+        let user = columns.get(3).is_some_and(|scope| scope.trim() == "user");
+        let entry = installed
+            .entry(id.to_string())
+            .or_insert_with(|| (origin.to_string(), user));
+        if user {
+            *entry = (origin.to_string(), true);
+        }
+    }
+    installed
 }
 
 /// Decode remote rows read outside the app sandbox by app-host.
@@ -391,6 +451,23 @@ pub fn list_remotes(output: &str) -> Vec<Remote> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_account_copy_wins_over_device_copy_in_either_row_order() {
+        for rows in [
+            "org.example.Editor\t1.0\tdevice-tools\tsystem\norg.example.Editor\t2.0\ttools\tuser\n",
+            "org.example.Editor\t2.0\ttools\tuser\norg.example.Editor\t1.0\tdevice-tools\tsystem\n",
+        ] {
+            assert_eq!(
+                installed_flatpaks(rows),
+                vec![("org.example.Editor".into(), "2.0".into())]
+            );
+            assert_eq!(
+                installed_origins(rows).get("org.example.Editor"),
+                Some(&("tools".into(), true))
+            );
+        }
+    }
 
     #[test]
     fn popular_request_uses_current_collection_and_canonical_app_ids() {

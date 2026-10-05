@@ -246,7 +246,7 @@ fn resource_id(item: &StoreItem) -> String {
 fn searchable_text(item: &StoreItem) -> String {
     let source = match &item.source {
         StoreSource::Tilo { registry_name } => registry_name.as_str(),
-        StoreSource::Flathub => "Flathub",
+        StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => item.source.distribution_name(),
     };
     format!(
         "{} {} {} {} {} {} {}",

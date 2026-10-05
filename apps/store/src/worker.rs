@@ -38,6 +38,7 @@ const CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(128) {
 pub enum Request {
     Refresh,
     Search(String),
+    BrowseRemote(String),
     Detail(String),
     /// Show the app a `.flatpakref` describes, ready to install: the file at
     /// `path`, or the reference's `contents` handed over without one.
@@ -218,6 +219,7 @@ struct State {
     opened_ref: Option<FlatpakRef>,
     base_items: Vec<StoreItem>,
     installed: Vec<(String, String)>,
+    installed_origins: std::collections::HashMap<String, (String, bool)>,
     remotes: Vec<Remote>,
     flatpak_available: bool,
     flatpak_error: Option<String>,
@@ -251,6 +253,7 @@ fn run(
         opened_ref: None,
         base_items: Vec::new(),
         installed: Vec::new(),
+        installed_origins: std::collections::HashMap::new(),
         remotes: Vec::new(),
         flatpak_available: false,
         flatpak_error: None,
@@ -325,6 +328,7 @@ fn handle(
             );
             (alive, Some(Ok(Finished::status("Store refreshed."))))
         }
+        Request::BrowseRemote(id) => browse_remote(&id, state, snapshots),
         Request::Search(query) => (search(&query, state, snapshots), None),
         Request::Detail(id) => (detail(&id, state, snapshots), None),
         Request::OpenReference { path, contents } => {
@@ -590,6 +594,75 @@ fn moderation_snapshot(snapshots: &Snapshots, state: &State, outcome: &Outcome) 
     )
 }
 
+fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, Option<Outcome>) {
+    let result = state
+        .remotes
+        .iter()
+        .find(|remote| remote.resource_id() == id && !remote.disabled)
+        .ok_or_else(|| {
+            "The configured repository is no longer available. Refresh and try again.".to_string()
+        })
+        .and_then(|remote| {
+            let host = state
+                .host
+                .as_ref()
+                .ok_or_else(|| "App service unavailable.".to_string())?;
+            let rows = host
+                .flatpak_catalogue(&remote.name, remote.user_managed)
+                .map_err(|error| crate::flathub_client::remote_error(remote, &error))?;
+            let mut items = crate::sources::remote_catalogue_items(&rows, remote, &state.installed);
+            for item in &mut items {
+                crate::sources::apply_flatpak_origin(item, &state.installed_origins);
+            }
+            Ok((items, remote.title.clone()))
+        });
+    match result {
+        Ok((items, title)) => {
+            // Browsing may discover more apps than the first catalogue page.
+            // Retain them on the same authoritative action/search surface.
+            for item in &items {
+                if let Some(existing) = state
+                    .base_items
+                    .iter_mut()
+                    .find(|existing| existing.id == item.id)
+                {
+                    *existing = item.clone();
+                } else {
+                    state.base_items.push(item.clone());
+                }
+            }
+            state.searches.clear();
+            state.details.clear();
+            sync_authoritative_catalogue(state);
+            let label = ui::i18n::I18nManager::format(
+                "store-remote-results",
+                &[
+                    ("name", ui::i18n::ArgValue::Text(title)),
+                    ("count", ui::i18n::ArgValue::Text(items.len().to_string())),
+                ],
+            );
+            let alive = send(snapshots, state, items, &label, Some(String::new()), None);
+            (alive, Some(Ok(Finished::status(label))))
+        }
+        Err(error) => {
+            let label = ui::i18n::I18nManager::format(
+                "store-remote-error",
+                &[("error", ui::i18n::ArgValue::Text(error))],
+            );
+            let alive = send_tracked(
+                snapshots,
+                state,
+                state.base_items.clone(),
+                &label,
+                None,
+                None,
+                Some(label.clone()),
+            );
+            (alive, Some(Err(label)))
+        }
+    }
+}
+
 fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
     let query = query.trim().to_string();
     if query.is_empty() {
@@ -606,13 +679,9 @@ fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
     let items = if let Some(cached) = state.searches.get(&query).cloned() {
         cached
     } else {
-        let candidates: Vec<&StoreItem> = state
-            .base_items
-            .iter()
-            .filter(|item| matches!(item.source, StoreSource::Tilo { .. }))
-            .collect();
+        let candidates: Vec<&StoreItem> = state.base_items.iter().collect();
         let ranks = crate::model::relevance(&state.item_index, &query, &candidates);
-        let tilo = candidates
+        let tilo: Vec<StoreItem> = candidates
             .into_iter()
             .zip(ranks)
             .filter_map(|(item, rank)| rank.map(|_| item.clone()))
@@ -624,11 +693,24 @@ fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
                 Vec::new()
             }
         };
-        let flatpak = records
+        let flatpak: Vec<StoreItem> = records
             .iter()
             .map(|record| flathub_record_to_item(record, &state.installed))
             .collect();
-        let items = merge(tilo, flatpak);
+        let native_names: std::collections::HashSet<_> = tilo
+            .iter()
+            .filter(|item| matches!(item.source, StoreSource::Tilo { .. }))
+            .map(|item| item.name.trim().to_ascii_lowercase())
+            .collect();
+        let mut items = tilo;
+        for mut item in flatpak {
+            crate::sources::apply_flatpak_origin(&mut item, &state.installed_origins);
+            if !items.iter().any(|existing| existing.id == item.id)
+                && !native_names.contains(&item.name.trim().to_ascii_lowercase())
+            {
+                items.push(item);
+            }
+        }
         if operation_error.is_none() {
             state.searches.put(query.clone(), items.clone());
         }
@@ -653,14 +735,24 @@ fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
     } else if let Some(item) = state
         .base_items
         .iter()
-        .find(|item| item.id == id && matches!(item.source, StoreSource::Tilo { .. }))
+        .find(|item| {
+            item.id == id
+                && matches!(
+                    item.source,
+                    StoreSource::Tilo { .. } | StoreSource::FlatpakRemote { .. }
+                )
+        })
         .cloned()
     {
         state.details.put(id.to_string(), item.clone());
         Some(item)
     } else {
         let loaded = match crate::flathub_client::fetch_appstream(id) {
-            Ok(record) => Some(flathub_record_to_item(&record, &state.installed)),
+            Ok(record) => {
+                let mut item = flathub_record_to_item(&record, &state.installed);
+                crate::sources::apply_flatpak_origin(&mut item, &state.installed_origins);
+                Some(item)
+            }
             Err(error) => {
                 operation_error = Some(format!("Could not load app details: {error}"));
                 state.base_items.iter().find(|item| item.id == id).cloned()
@@ -727,7 +819,7 @@ fn update_all(
             return (false, None);
         }
         let action = match item.source {
-            StoreSource::Flathub => ActionKind::FlatpakUpdate,
+            StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => ActionKind::FlatpakUpdate,
             StoreSource::Tilo { .. } => ActionKind::Update,
         };
         let outcome = crate::actions::execute_with_host(state.host.as_ref(), item, action, staging);
@@ -855,6 +947,7 @@ fn refresh_flatpak(state: &mut State) {
             state.flatpak_error = None;
             state.flatpak_available = status.available;
             state.installed = installed_flatpaks(&status.installed);
+            state.installed_origins = crate::flathub_client::installed_origins(&status.installed);
             state.remotes = crate::flathub_client::list_remotes(&status.remotes);
         }
         Err(error) => {
@@ -871,6 +964,8 @@ fn refresh(state: &mut State) {
         state.opened_ref.as_ref(),
         &state.installed,
         state.host.as_ref(),
+        &state.remotes,
+        &state.installed_origins,
     );
     state.searches.clear();
     state.details.clear();
@@ -890,6 +985,8 @@ fn collect_items(
     opened_ref: Option<&FlatpakRef>,
     installed: &[(String, String)],
     host: Option<&app_host::client::BlockingClient>,
+    remotes: &[Remote],
+    origins: &std::collections::HashMap<String, (String, bool)>,
 ) -> (Vec<StoreItem>, Option<String>) {
     let mut errors = Vec::new();
     let registries = match crate::config::repositories(host) {
@@ -945,6 +1042,21 @@ fn collect_items(
         .iter()
         .map(|entry| flathub_record_to_item(entry, installed))
         .collect::<Vec<_>>();
+    // One repository failing must never hide another repository's catalogue.
+    if let Some(host) = host {
+        for remote in remotes.iter().filter(|remote| !remote.disabled) {
+            match host.flatpak_catalogue(&remote.name, remote.user_managed) {
+                Ok(rows) => {
+                    for item in crate::sources::remote_catalogue_items(&rows, remote, installed) {
+                        if !flatpak_items.iter().any(|existing| existing.id == item.id) {
+                            flatpak_items.push(item);
+                        }
+                    }
+                }
+                Err(error) => errors.push(crate::flathub_client::remote_error(remote, &error)),
+            }
+        }
+    }
     // Popular is a discovery feed, not an installed-app inventory. Preserve
     // every locally reported Flatpak so launch/remove remain possible during
     // an API outage and for apps that were never popular.
@@ -960,6 +1072,9 @@ fn collect_items(
             .iter()
             .find_map(|(id, version)| (id == &reference.app_id).then(|| version.clone()));
         flatpak_items.insert(0, reference.clone().into_store_item(version));
+    }
+    for item in &mut flatpak_items {
+        crate::sources::apply_flatpak_origin(item, origins);
     }
     tracing::debug!("{}", registries_summary(&registries));
     (
@@ -1036,6 +1151,7 @@ mod tests {
             opened_ref: None,
             base_items: items,
             installed: Vec::new(),
+            installed_origins: std::collections::HashMap::new(),
             remotes: Vec::new(),
             flatpak_available: false,
             flatpak_error: None,
