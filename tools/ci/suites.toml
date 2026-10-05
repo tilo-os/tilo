@@ -1268,6 +1268,7 @@ inputs = [
   "tools/apps/browser_runtime_release.py",
   "tools/apps/pack-runtime-package.sh",
   "scripts/browser/",
+  "apps/browser/chromium/",
   "os/dev/assert-native-arch.sh",
   "os/scripts/verify-elf-hardening.sh",
   "apps/browser/tilo-app.toml",

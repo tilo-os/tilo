@@ -193,7 +193,7 @@ admits only a clean local commit and passes its actual commit object. The builde
 recomputes the Git tree from mirrored bytes, executable modes and symlink targets
 before compiling and sealing. The snapshot proof refuses CI events, publication
 and signing identity variables; production release jobs retain their Git guards.
-Its output is `target/browser-runtime-release-proof`; archive/blob verification uses
+Its output is `target/browser-runtime-release-proof-<source-commit>`; archive/blob verification uses
 the same canonical tools as publication. The source must be clean and committed.
 
 The app registry is publicly reachable at `https://apps.tilo.so`. Main-branch
