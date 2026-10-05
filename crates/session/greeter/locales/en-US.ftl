@@ -45,3 +45,5 @@ greeter-auth-respond = Respond to authentication challenge
 greeter-auth-cancel = Cancel sign-in
 greeter-auth-cancelling = Cancelling sign-in…
 greeter-auth-cancelled = Sign-in cancelled
+
+greeter-session-diagnostics = Configure timing diagnostics for this sign-in
