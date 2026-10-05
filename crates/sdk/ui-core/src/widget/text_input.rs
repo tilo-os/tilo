@@ -2071,6 +2071,10 @@ impl TextInput {
             .with_family(family);
         style.scaling = TextScaling::Resolved;
         style.kind = self.kind.text_kind();
+        if self.kind == TextInputKind::Code {
+            // Source wraps under its own indentation.
+            style.wrap_mode = crate::text_render::TextWrapMode::Indented;
+        }
         style
     }
 

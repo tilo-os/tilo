@@ -641,6 +641,9 @@ pub enum TextWrapMode {
     /// Choose a narrower measure that keeps the same number of lines while
     /// minimizing raggedness, like CSS `text-wrap: balance`.
     Balance,
+    /// Source code's soft wrap: a wrapped row hangs under its line's own
+    /// indentation, so a continuation never reads as a new, outdented line.
+    Indented,
 }
 
 /// Optical punctuation protrusion at paragraph edges.
@@ -2757,7 +2760,7 @@ impl TextRenderer {
         buffer.set_size(layout_width, None);
         buffer.set_wrap(match style.wrap_mode {
             TextWrapMode::WordOrGlyph => Wrap::WordOrGlyph,
-            TextWrapMode::Wrap | TextWrapMode::Balance => Wrap::Word,
+            TextWrapMode::Wrap | TextWrapMode::Balance | TextWrapMode::Indented => Wrap::Word,
         });
         buffer.shape_until_scroll(&mut self.font_system, false);
         if style.wrap_mode == TextWrapMode::Balance && max_width.is_some() {
