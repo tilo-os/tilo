@@ -4022,9 +4022,9 @@ mod tests {
 
                 // Idle is the scroll wheel's version of lifting a finger.
                 std::thread::sleep(Duration::from_millis(WHEEL_SCROLL_TIMEOUT_MS + 60));
-                let mut st = AutoCommit::new();
+                let st = AutoCommit::new();
                 let obj = automerge::ROOT.clone();
-                d.update(&mut st, &obj);
+                d.update(&st, &obj);
                 assert_eq!(
                     d.rotation_deg, 0.0,
                     "the pull never let go once the gesture ended"
