@@ -285,7 +285,7 @@ pub mod tests {
                 .as_ref()
                 .expect("directory result starts through an atomic broker ticket");
             let InvocationDisposition::Pending(ticket) = begin(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -311,7 +311,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -337,7 +337,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
@@ -356,7 +356,7 @@ pub mod tests {
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),

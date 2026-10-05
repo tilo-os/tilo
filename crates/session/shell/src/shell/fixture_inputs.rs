@@ -210,7 +210,7 @@ mod tests {
         let _ = frame.dispatch_event(
             &cursor,
             &Modifiers::default(),
-            document,
+            &mut ui::widget::Edits::lend(document),
             &automerge::ROOT,
             &mut focus,
         );
@@ -227,14 +227,14 @@ mod tests {
         let pressed = frame.dispatch_event(
             &press,
             &Modifiers::default(),
-            document,
+            &mut ui::widget::Edits::lend(document),
             &automerge::ROOT,
             &mut focus,
         );
         let released = frame.dispatch_event(
             &release,
             &Modifiers::default(),
-            document,
+            &mut ui::widget::Edits::lend(document),
             &automerge::ROOT,
             &mut focus,
         );

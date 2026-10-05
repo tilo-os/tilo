@@ -364,7 +364,7 @@ fn pressed(event: &WindowEvent, key: NamedKey) -> bool {
 
 impl Widget for PairingPromptView {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
+        let (state, root) = ui::doc::document_ref(state, root);
         // Reject wins over a simultaneous accept: the safe reading of an
         // ambiguous answer is "no".
         let accepted = self.clicked.accept.take();
@@ -582,7 +582,7 @@ impl PairingOverlay {
     /// The view is only ever dropped here, between frames, and a dropped
     /// view raises a focus reset: the frame rebuilds its tree before the
     /// next event reaches a widget pointer that no longer exists.
-    pub fn pump(&mut self, _state: &mut AutoCommit, _root: &ObjId) -> bool {
+    pub fn pump(&mut self, _state: &AutoCommit, _root: &ObjId) -> bool {
         let mut changed = false;
         if let Some(answer) = self.view.as_mut().and_then(PairingPromptView::take_answer) {
             match answer {
@@ -713,7 +713,7 @@ impl PairingOverlay {
         // A button writes its key into `state`; read it now so the answer
         // is the one given in this event, whatever document the next frame
         // pumps.
-        view.sync(ctx.state, ctx.path);
+        view.sync(ctx.state.doc(), ctx.path);
         let modifiers = ctx.modifiers.state();
         let unmodified = !modifiers.control_key() && !modifiers.alt_key() && !modifiers.super_key();
         let frame_owned = unmodified
@@ -747,9 +747,9 @@ mod tests {
     fn accept_with(prompt: PairingPrompt, entry: &str) -> Option<PairingReply> {
         let mut v = view(prompt);
         type_entry(&v, entry);
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         v.press_accept();
-        v.sync(&mut doc, &automerge::ROOT);
+        v.sync(&doc, &automerge::ROOT);
         v.take_answer()
     }
 
@@ -833,27 +833,27 @@ mod tests {
         // Phase `accepting_a_comparison_answers_accept`.
         {
             let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             v.press_accept();
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.take_answer(), Some(PairingReply::Accept));
         }
         // Phase `declining_answers_reject`.
         {
             let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             v.press_reject();
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.take_answer(), Some(PairingReply::Reject));
         }
         // Phase `reject_wins_over_a_simultaneous_accept`.
         // Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
         {
             let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             v.press_accept();
             v.press_reject();
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.take_answer(), Some(PairingReply::Reject));
         }
         // Phase `a_typed_passkey_is_parsed_and_returned`.
@@ -904,9 +904,9 @@ mod tests {
         {
             let mut v = view(PairingPrompt::RequestPinCode);
             type_entry(&v, "1234");
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             v.press_accept();
-            v.sync(&mut doc, &automerge::ROOT);
+            v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.take_answer(), Some(PairingReply::PinCode("1234".into())));
             assert_eq!(
                 doc.keys(&automerge::ROOT).count(),
@@ -922,8 +922,8 @@ mod tests {
 
         let handle = PairingPromptHandle::new();
         let mut overlay = PairingOverlay::new(handle.clone());
-        let mut doc = AutoCommit::new();
-        assert!(!overlay.pump(&mut doc, &automerge::ROOT));
+        let doc = AutoCommit::new();
+        assert!(!overlay.pump(&doc, &automerge::ROOT));
 
         let (reply, _displayed) = PairingReplySender::channel();
         let request = PairingRequest {
@@ -935,9 +935,9 @@ mod tests {
             },
         };
         handle.post(request.clone(), reply);
-        assert!(overlay.pump(&mut doc, &automerge::ROOT));
+        assert!(overlay.pump(&doc, &automerge::ROOT));
         assert!(overlay.is_open() && overlay.take_focus_reset());
-        overlay.view_mut().unwrap().sync(&mut doc, &automerge::ROOT);
+        overlay.view_mut().unwrap().sync(&doc, &automerge::ROOT);
         assert_eq!(overlay.view_mut().unwrap().take_answer(), None);
 
         // A typed digit updates the dialog in place.
@@ -952,7 +952,7 @@ mod tests {
             },
             reply,
         );
-        assert!(overlay.pump(&mut doc, &automerge::ROOT));
+        assert!(overlay.pump(&doc, &automerge::ROOT));
         assert!(!overlay.take_focus_reset(), "same dialog, same focus");
         assert!(overlay.take_structure_dirty());
 
@@ -967,10 +967,10 @@ mod tests {
             },
             reply,
         );
-        assert!(overlay.pump(&mut doc, &automerge::ROOT));
+        assert!(overlay.pump(&doc, &automerge::ROOT));
         overlay.view().unwrap().press_reject();
-        overlay.view_mut().unwrap().sync(&mut doc, &automerge::ROOT);
-        assert!(overlay.pump(&mut doc, &automerge::ROOT));
+        overlay.view_mut().unwrap().sync(&doc, &automerge::ROOT);
+        assert!(overlay.pump(&doc, &automerge::ROOT));
         assert!(!overlay.is_open() && !handle.is_prompting());
         assert!(overlay.take_focus_reset(), "a closed dialog rebuilds focus");
         assert_eq!(rx.blocking_recv().unwrap(), PairingReply::Reject);

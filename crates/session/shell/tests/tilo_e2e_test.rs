@@ -532,7 +532,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -550,7 +550,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -574,7 +574,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled2,
                 focus_target: &mut focus,
@@ -612,7 +612,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -629,7 +629,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -935,7 +935,7 @@ fn click_full_root(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state,
+            state: ui::widget::Edits::lend(state),
             path: root_path,
             handled: &mut handled,
             focus_target: focus,
@@ -955,7 +955,7 @@ fn click_full_root(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state,
+            state: ui::widget::Edits::lend(state),
             path: root_path,
             handled: &mut handled,
             focus_target: focus,
