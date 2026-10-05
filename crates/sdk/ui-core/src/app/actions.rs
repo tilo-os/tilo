@@ -2696,10 +2696,12 @@ impl App {
                 .local_invocations
                 .insert(operation_invocation, (address.clone(), kind));
         }
-        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
-            // Queued widget work advances from `sync`; admission must
-            // therefore schedule a model pass even if no document
-            // mutation or input event accompanied the invocation.
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted)
+            || kind == tilo_actions::OperationKind::View
+        {
+            // Queued work and completed navigation apply their private
+            // presentation state in `sync`, even when the invocation
+            // changed no document and no input event follows it.
             self.needs_sync = true;
         }
         if let crate::widget::ResourceOperationStart::Completed(output) = &started
