@@ -83,7 +83,7 @@ vm_c() {
     TILO_VM_HOSTFWD="hostfwd=tcp:127.0.0.1:$relay_port-:3340" "$vm" "$@"
 }
 # Root on a guest for test setup only. The account is in wheel; sudo takes
-# the password's line from stdin and the shell it starts reads the script.
+# the password's line from stdin; the script is a shell argument.
 as_root() {
   local each=$1 script=$2
   # The password must never become the first script statement when sudo
@@ -272,7 +272,9 @@ jq -e '.next | any(test("enrol-admin --via"))' <<<"$unenrolled" >/dev/null \
 # The owner certifies the machine's key, as on the device that holds the identity.
 vm_b ssh "tilo-enroll certify --root-key ~/reach/root.key --device $admin_device \
   --label 'laptop (tilo-vm)' --capability admin --out ~/reach/admin.cert"
-enrolled="$(tilo_vm admin vm enrol-admin --cert ~/reach/admin.cert --json)"
+# Keep the tilde literal until the guest shell receives the certificate path.
+enrolled="$(tilo_vm admin vm enrol-admin --cert '~/reach/admin.cert' --json)" \
+  || die "VM B could not install its administrator certificate: $enrolled"
 printf '%s\n' "$enrolled" > "$out/b-enrol-after.json"
 [ "$(jq -r .enrolled <<<"$enrolled")" = true ] && [ "$(jq -r .identity <<<"$enrolled")" = "$identity" ] \
   || die "vm enrol-admin --cert did not enrol the machine: $enrolled"
@@ -304,7 +306,7 @@ setup_config stranger
 stranger_device="$(tilo_vm stranger vm enrol-admin --json | jq -r .device)"
 vm_b ssh "tilo-enroll certify --root-key ~/reach/stranger.key --device $stranger_device \
   --label stranger --capability admin --out ~/reach/stranger.cert"
-tilo_vm stranger vm enrol-admin --cert ~/reach/stranger.cert --json >/dev/null
+tilo_vm stranger vm enrol-admin --cert '~/reach/stranger.cert' --json >/dev/null
 # A certificate that claims the owner's identity but that the owner never
 # signed: the stranger's, with the owner's public key written over its own.
 setup_config forged
@@ -383,10 +385,11 @@ vm_b ssh 'test "$(wc -l < ~/reach/session.out)" -ge 3' \
   || die "the session before the cut did not answer hello and status: $(vm_b ssh 'cat ~/reach/session.out ~/reach/session.err')"
 vm_a cmd "set_link $nic_a off" >/dev/null
 note "A's link ($nic_a) is cut"
-set +e
-cut="$(vm_b ssh "printf '%s\n' '$hello' | timeout 60 tilo-device-admin dial --identity-root ~/reach/admin/admin-identity --endpoint $endpoint_a --device $device_a --relay $relay_url --wait 10" 2>&1)"
-cut_status=$?
-set -e
+if cut="$(vm_b ssh "printf '%s\n' '$hello' | timeout 60 tilo-device-admin dial --identity-root ~/reach/admin/admin-identity --endpoint $endpoint_a --device $device_a --relay $relay_url --wait 10" 2>&1)"; then
+  cut_status=0
+else
+  cut_status=$?
+fi
 printf 'exit %s\n%s\n' "$cut_status" "$cut" > "$out/b-dial-while-cut.txt"
 [ "$cut_status" = 2 ] || die "A answered with its link cut (exit $cut_status): $cut"
 # Long enough for the open connection to time out, so the session has to
