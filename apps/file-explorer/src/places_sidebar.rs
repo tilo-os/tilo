@@ -1492,7 +1492,11 @@ mod tests {
             assert_eq!(node.children[1].set_size, Some(sidebar.place_count()));
 
             let mut doc = AutoCommit::new();
-            assert!(sidebar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(sidebar.perform_action(
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
             assert!(matches!(
                 sink.borrow().last(),
                 Some(FileCommand::Navigate(path)) if path.ends_with("Documents")

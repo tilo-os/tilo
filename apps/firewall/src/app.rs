@@ -4001,7 +4001,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "firewall.zone:home",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.selected_zone, ZoneKind::Home);
@@ -4044,7 +4044,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.selected_rule, Some(id));
@@ -4052,7 +4052,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &delete_target,
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.pending_delete, Some(id));
@@ -4387,7 +4387,7 @@ mod tests {
                 assert!(app.perform_semantic_action(
                     "firewall.service.toggle:public:ssh",
                     &A11yAction::ToggleCheck,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
             }

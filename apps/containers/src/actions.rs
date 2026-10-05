@@ -98,7 +98,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -122,7 +122,7 @@ mod tests {
         app.open_container_palette();
         let expected = app.engine.containers[0].id.clone();
         send(&mut app, &mut doc, &named_event(NamedKey::Enter));
-        app.dispatch_palette_invocation_for_test(&mut doc);
+        app.dispatch_palette_invocation_for_test(&doc);
         assert_eq!(app.view.selected.as_deref(), Some(expected.as_str()));
 
         // An offline lifecycle verb changes the sample engine.

@@ -4394,10 +4394,11 @@ mod honesty_tests {
             let mut doc = AutoCommit::new();
 
             assert!(!app.modal.is_open());
-            assert!(
-                app.empty_state
-                    .perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT)
-            );
+            assert!(app.empty_state.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert!(
                 !app.modal.is_open(),
                 "the child publishes its action before the parent sync drains it"
@@ -4580,26 +4581,26 @@ mod behavior_tests {
 
             assert!(!send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &cursor_event(before.center().x, before.center().y),
                 Modifiers::default(),
             ));
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &left_button(ElementState::Pressed),
                 Modifiers::default(),
             ));
             assert!(app.wants_pointer_capture());
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &cursor_event(before.center().x, before.center().y + 300.0),
                 Modifiers::default(),
             ));
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &left_button(ElementState::Released),
                 Modifiers::default(),
             ));
@@ -4618,7 +4619,12 @@ mod behavior_tests {
             assert_eq!(app.query_layout.divider.height(), manual.height());
 
             let ctrl = Modifiers::from(ModifiersState::CONTROL);
-            assert!(send(&mut app, &mut doc, &enter_event(), ctrl));
+            assert!(send(
+                &mut app,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &enter_event(),
+                ctrl
+            ));
             app.session.block_until_idle();
             app.sync(&mut doc, &ROOT);
             app.relayout();
@@ -4657,7 +4663,7 @@ mod behavior_tests {
             divider.set_focus(true);
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::ArrowDown),
                 Modifiers::default(),
             ));
@@ -4669,7 +4675,11 @@ mod behavior_tests {
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-divider"))
                 .unwrap();
-            assert!(divider.perform_action(&ui::a11y::Action::Increment, &mut doc, &ROOT));
+            assert!(divider.perform_action(
+                &ui::a11y::Action::Increment,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             app.sync(&mut doc, &ROOT);
             lay_out(&mut app, 1200.0, 800.0);
             assert_eq!(app.query_layout.divider.y0, automatic.y0 + 48.0);
@@ -4677,13 +4687,13 @@ mod behavior_tests {
             let divider_rect = app.query_layout.divider;
             send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &cursor_event(divider_rect.center().x, divider_rect.center().y),
                 Modifiers::default(),
             );
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &right_button(),
                 Modifiers::default(),
             ));
@@ -4708,13 +4718,13 @@ mod behavior_tests {
                 .1;
             send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &cursor_event(reset.center().x, reset.center().y),
                 Modifiers::default(),
             );
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &left_button(ElementState::Pressed),
                 Modifiers::default(),
             ));
@@ -4730,7 +4740,7 @@ mod behavior_tests {
             divider.set_focus(true);
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::ArrowDown),
                 Modifiers::default(),
             ));
@@ -4739,14 +4749,23 @@ mod behavior_tests {
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-divider"))
                 .unwrap();
-            assert!(divider.perform_action(&ui::a11y::Action::ShowContextMenu, &mut doc, &ROOT,));
+            assert!(divider.perform_action(
+                &ui::a11y::Action::ShowContextMenu,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT,
+            ));
             app.sync(&mut doc, &ROOT);
             let menu = app
                 .children_mut()
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-resize-menu"))
                 .expect("semantic context action opens the retained resize menu");
-            assert!(menu.perform_action_at(&ui::a11y::Action::Activate, &[2], &mut doc, &ROOT,));
+            assert!(menu.perform_action_at(
+                &ui::a11y::Action::Activate,
+                &[2],
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT,
+            ));
             app.sync(&mut doc, &ROOT);
             lay_out(&mut app, 1200.0, 800.0);
             assert_eq!(app.query_layout.divider, automatic);
@@ -4759,13 +4778,13 @@ mod behavior_tests {
             divider.set_focus(true);
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::ArrowDown),
                 Modifiers::default(),
             ));
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::Home),
                 Modifiers::default(),
             ));
@@ -4773,14 +4792,14 @@ mod behavior_tests {
             assert_eq!(app.query_layout.divider, automatic);
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::Enter),
                 Modifiers::default(),
             ));
             assert!(app.query_resize_menu.is_open());
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::Escape),
                 Modifiers::default(),
             ));
@@ -5114,7 +5133,7 @@ mod behavior_tests {
             assert!(app.perform_semantic_action(
                 "db.new-connection",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             ));
             let dialog = app.accessibility().expect("open modal is accessible");
@@ -5157,7 +5176,12 @@ mod behavior_tests {
             let (mut app, mut doc) = synced();
             doc.commit();
             let before = doc.get_heads();
-            send(&mut app, &mut doc, &char_event("Z"), Modifiers::default());
+            send(
+                &mut app,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &char_event("Z"),
+                Modifiers::default(),
+            );
             app.sync(&mut doc, &ROOT);
             assert_eq!(doc.get_heads(), before, "the document is unchanged");
             assert_eq!(app.editor.value(), crate::doc::EditorDoc::read_sql(&doc));
@@ -5198,7 +5222,7 @@ mod behavior_tests {
             assert!(app.perform_semantic_action(
                 "db.tab:data",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             ));
             assert_eq!(app.session.tab, MainTab::Data);
@@ -5218,7 +5242,12 @@ mod behavior_tests {
 
             let ctrl = Modifiers::from(ModifiersState::CONTROL);
             assert!(
-                send(&mut app, &mut doc, &enter_event(), ctrl),
+                send(
+                    &mut app,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &enter_event(),
+                    ctrl
+                ),
                 "Ctrl+Enter runs the query"
             );
             assert_eq!(
@@ -5258,7 +5287,12 @@ mod behavior_tests {
             ("db.modal.save", A11yAction::Activate),
         ] {
             assert!(
-                app.perform_semantic_action(target, &action, &mut doc, &ROOT),
+                app.perform_semantic_action(
+                    target,
+                    &action,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &ROOT
+                ),
                 "{target}"
             );
         }

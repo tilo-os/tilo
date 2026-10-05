@@ -1907,7 +1907,7 @@ mod tests {
             app,
             &format!("context-menu:item:{index}"),
             &ui::a11y::Action::Activate,
-            doc,
+            &mut ui::widget::Edits::lend(doc),
             &automerge::ROOT,
         ));
         assert!(app.menu.is_none(), "selection closes the modal menu");
@@ -2015,7 +2015,7 @@ mod tests {
                 &key_named(NamedKey::Enter),
                 1.0,
                 Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &mut handled,
             );
             assert!(handled);
@@ -2091,7 +2091,7 @@ mod tests {
             app.thread_open = None;
             ChatDoc::set_draft(&mut doc, "c_general", "hi from the composer");
             app.reload(&doc);
-            app.on_hit(Hit::Send, &mut doc);
+            app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
             let action = app
                 .dispatched
                 .borrow()
@@ -2203,12 +2203,18 @@ mod tests {
             let (mut app, mut doc) = app_with_doc();
             app.focus = Focus::Main;
             assert!(app.draft_main.is_empty());
-            app.on_hit(Hit::ComposerEmoji(Point::ZERO), &mut doc);
+            app.on_hit(
+                Hit::ComposerEmoji(Point::ZERO),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert!(
                 app.emoji_open && app.emoji_target.is_none(),
                 "the composer picker has no reaction target"
             );
-            app.on_hit(Hit::EmojiChoice("🎉".into()), &mut doc);
+            app.on_hit(
+                Hit::EmojiChoice("🎉".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert_eq!(
                 app.draft_main, "🎉",
                 "the emoji was typed into the composer draft"
@@ -2221,8 +2227,8 @@ mod tests {
             let (mut app, mut doc) = app_with_doc();
             app.thread_open = Some("m_concept".into());
             app.focus = Focus::Thread;
-            app.insert_text(&mut doc, "nice");
-            app.send_focused(&mut doc);
+            app.insert_text(&mut ui::widget::Edits::lend(&mut doc), "nice");
+            app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
             let replies = model::reply_count(&ChatDoc::list_messages(&doc, "c_crit"), "m_concept");
             assert_eq!(
                 replies, 4,
@@ -2248,7 +2254,7 @@ mod tests {
             &mut app,
             &target,
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         let before = ChatDoc::top_level_count(&doc, "c_general");
@@ -2259,7 +2265,7 @@ mod tests {
             &mut app,
             &target,
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(ChatDoc::top_level_count(&doc, "c_general"), before + 1);
@@ -2327,13 +2333,16 @@ mod tests {
                 .expect("demo data has a cross-workspace conversation")
                 .clone();
 
-            app.on_hit(Hit::Inbox, &mut doc);
-            app.on_hit(Hit::Channel(cross_workspace.id), &mut doc);
+            app.on_hit(Hit::Inbox, &mut ui::widget::Edits::lend(&mut doc));
+            app.on_hit(
+                Hit::Channel(cross_workspace.id),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert!(app.inbox_open);
             assert_eq!(app.active_ws, cross_workspace.workspace);
             assert_eq!(app.context_ws, context, "Inbox never rewrites OS context");
 
-            app.on_hit(Hit::CurrentContext, &mut doc);
+            app.on_hit(Hit::CurrentContext, &mut ui::widget::Edits::lend(&mut doc));
             assert!(!app.inbox_open);
             assert_eq!(app.active_ws, context);
         }
@@ -2398,7 +2407,7 @@ mod tests {
             let before = ChatDoc::list_messages(&doc, "c_crit").len();
             app.on_hit(
                 Hit::AttachPick(png.to_string_lossy().into_owned()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
             );
             assert_eq!(
                 ChatDoc::list_messages(&doc, "c_crit").len(),
@@ -2433,7 +2442,7 @@ mod tests {
             // event path (the composer "+").
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_CHAT_ATTACH_DIR", dir.path());
-            app.on_hit(Hit::Attach, &mut doc);
+            app.on_hit(Hit::Attach, &mut ui::widget::Edits::lend(&mut doc));
             drop(env);
             assert!(app.attach_open, "the picker opens");
             assert!(
@@ -2497,7 +2506,7 @@ mod tests {
             let before = ChatDoc::list_messages(&doc, "c_crit").len();
             app.on_hit(
                 Hit::AttachPick(mp4.to_string_lossy().into_owned()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
             );
             settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
             let msgs = ChatDoc::list_messages(&doc, "c_crit");
@@ -2525,7 +2534,7 @@ mod tests {
 
             app.on_hit(
                 Hit::AttachPick(note.to_string_lossy().into_owned()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
             );
             settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
             match &ChatDoc::list_messages(&doc, "c_crit")
@@ -2574,7 +2583,10 @@ mod tests {
     fn switching_to_voice_channel_starts_a_muted_service_join_without_membership_write() {
         let (mut app, mut doc) = app_with_doc();
         let before = doc.save();
-        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        app.on_hit(
+            Hit::Channel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.land(&mut doc);
         app.reload(&doc);
         assert!(app.call.active && app.call.muted && app.call.audio_only);
@@ -2589,12 +2601,15 @@ mod tests {
     #[test]
     fn expanding_a_call_preserves_verified_streams_without_rewriting_legacy_history() {
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(
+            Hit::Channel("c_huddle".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.land(&mut doc);
         app.reload(&doc);
         service_streams(&mut app, "c_huddle", 3);
         let before = doc.save();
-        app.on_hit(Hit::CallExpand, &mut doc);
+        app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
         assert!(app.call.expanded);
         assert_eq!(app.voice_in("c_huddle").len(), 3);
         assert_eq!(doc.save(), before);
@@ -2610,11 +2625,14 @@ mod tests {
             // region beneath or beside the host.
             use vello::kurbo::Rect;
             let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+            app.on_hit(
+                Hit::Channel("c_huddle".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             app.land(&mut doc);
             app.reload(&doc);
             service_streams(&mut app, "c_huddle", 3);
-            app.on_hit(Hit::CallExpand, &mut doc);
+            app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
             assert!(app.call.active && app.call.expanded);
 
             for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
@@ -2700,13 +2718,16 @@ mod tests {
     #[test]
     fn leaving_a_call_clears_local_service_state_without_rewriting_history() {
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        app.on_hit(
+            Hit::Channel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.land(&mut doc);
         app.reload(&doc);
         service_streams(&mut app, "c_standup", 2);
         let before = doc.save();
         assert_eq!(app.voice_in("c_standup").len(), 2);
-        app.on_hit(Hit::CallLeave, &mut doc);
+        app.on_hit(Hit::CallLeave, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.call.active && app.call.muted);
         assert!(app.voice_in("c_standup").is_empty());
         assert_eq!(doc.save(), before);
@@ -2723,7 +2744,7 @@ mod tests {
                     workspace: "ws_acme".into(),
                     category: "cat_acme_main".into(),
                 },
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
             );
             assert_eq!(app.channels.len(), before + 1);
             assert!(
@@ -2784,7 +2805,10 @@ mod tests {
                     .count()
             };
             let before = acme_cats(&app);
-            app.on_hit(Hit::AddCategory("ws_acme".into()), &mut doc);
+            app.on_hit(
+                Hit::AddCategory("ws_acme".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert_eq!(acme_cats(&app), before + 1, "a category was created");
             assert!(
                 app.rename.is_some(),
@@ -2792,7 +2816,10 @@ mod tests {
             );
             app.cancel_rename();
             let collapsed_before = app.category("cat_acme_main").unwrap().collapsed;
-            app.on_hit(Hit::CategoryToggle("cat_acme_main".into()), &mut doc);
+            app.on_hit(
+                Hit::CategoryToggle("cat_acme_main".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert_ne!(
                 app.category("cat_acme_main").unwrap().collapsed,
                 collapsed_before,
@@ -2829,7 +2856,7 @@ mod tests {
         {
             let (mut app, mut doc) = app_with_doc();
             let open = app.left_flap_open();
-            app.on_hit(Hit::ToggleLeftFlap, &mut doc);
+            app.on_hit(Hit::ToggleLeftFlap, &mut ui::widget::Edits::lend(&mut doc));
             assert_ne!(
                 app.left_flap_open(),
                 open,
@@ -2869,7 +2896,7 @@ mod tests {
         {
             let (mut app, mut doc) = app_with_doc();
             app.thread_open = None; // no thread → the flap's other half is members
-            app.on_hit(Hit::ToggleRightFlap, &mut doc);
+            app.on_hit(Hit::ToggleRightFlap, &mut ui::widget::Edits::lend(&mut doc));
             render_frame(&mut app, 1280.0, 720.0);
             assert!(
                 app.right_flap_open(),
@@ -2921,7 +2948,10 @@ mod tests {
             let (mut app, mut doc) = app_with_doc();
             app.thread_open = None;
             app.right_flap.close();
-            app.on_hit(Hit::OpenThread("m_concept".into()), &mut doc);
+            app.on_hit(
+                Hit::OpenThread("m_concept".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert_eq!(app.thread_open.as_deref(), Some("m_concept"));
             assert_eq!(app.focus, Focus::Thread);
             assert!(
@@ -2929,7 +2959,10 @@ mod tests {
                 "opening a thread reveals the right flap"
             );
             // Re-hitting the same affordance toggles the thread closed.
-            app.on_hit(Hit::OpenThread("m_concept".into()), &mut doc);
+            app.on_hit(
+                Hit::OpenThread("m_concept".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert!(
                 app.thread_open.is_none(),
                 "re-hitting the affordance closes the thread"
@@ -2944,14 +2977,22 @@ mod tests {
             app.thread_open = Some("m_concept".into());
             let mods = Modifiers::default();
             // Top layer first: the emoji picker.
-            assert!(app.on_key(&Key::Named(NamedKey::Escape), mods, &mut doc));
+            assert!(app.on_key(
+                &Key::Named(NamedKey::Escape),
+                mods,
+                &mut ui::widget::Edits::lend(&mut doc)
+            ));
             assert!(!app.emoji_open, "Escape closes the emoji picker first");
             assert!(
                 app.thread_open.is_some(),
                 "the thread underneath stays open"
             );
             // Next Escape peels the thread.
-            assert!(app.on_key(&Key::Named(NamedKey::Escape), mods, &mut doc));
+            assert!(app.on_key(
+                &Key::Named(NamedKey::Escape),
+                mods,
+                &mut ui::widget::Edits::lend(&mut doc)
+            ));
             assert!(
                 app.thread_open.is_none(),
                 "a second Escape closes the thread"
@@ -3184,14 +3225,14 @@ mod tests {
                     msg: "m_sora".into(),
                     anchor: Point::ZERO,
                 },
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
             );
             assert_eq!(
                 app.history_open.as_deref(),
                 Some("m_sora"),
                 "the history popover opened"
             );
-            app.on_hit(Hit::Dismiss, &mut doc);
+            app.on_hit(Hit::Dismiss, &mut ui::widget::Edits::lend(&mut doc));
             assert!(app.history_open.is_none(), "the dismiss scrim closes it");
         }
     }
@@ -3459,7 +3500,13 @@ mod tests {
     fn feed(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent) {
         let mods = Modifiers::default();
         let mut handled = false;
-        app.dispatch_event(ev, 1.0, mods, doc, &mut handled);
+        app.dispatch_event(
+            ev,
+            1.0,
+            mods,
+            &mut ui::widget::Edits::lend(doc),
+            &mut handled,
+        );
     }
 
     /// A `KeyboardInput` press for a named key (Enter, Backspace, `ArrowUp` …).
@@ -3525,7 +3572,7 @@ mod tests {
 
     fn feed_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) {
         let mut handled = false;
-        app.dispatch_event(ev, 1.0, m, doc, &mut handled);
+        app.dispatch_event(ev, 1.0, m, &mut ui::widget::Edits::lend(doc), &mut handled);
     }
 
     // --- contextual channels + cross-workspace Inbox -------------------
@@ -3638,14 +3685,14 @@ mod tests {
                 &mut app,
                 &target,
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(ui::Widget::perform_semantic_action(
                 &mut app,
                 &target,
                 &ui::a11y::Action::SetValue("🦀 Accessible draft".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -3660,7 +3707,7 @@ mod tests {
                     anchor: 0,
                     focus: 1,
                 },
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             let (anchor, caret) = app.composer_main.selection();
@@ -3792,7 +3839,7 @@ mod tests {
                 anchor: 4,
                 focus: 2,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
 
@@ -3831,10 +3878,13 @@ mod tests {
                     msg: "m_me1".into(),
                     anchor: Point::ZERO,
                 },
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
             );
             assert!(app.emoji_open && app.emoji_target.as_deref() == Some("m_me1"));
-            app.on_hit(Hit::EmojiChoice("🔥".into()), &mut doc);
+            app.on_hit(
+                Hit::EmojiChoice("🔥".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert!(!app.emoji_open, "picking closes the picker");
             assert!(reacted(&app), "the picked emoji became my reaction");
             // Re-opening and picking the same emoji toggles it back off.
@@ -3843,9 +3893,12 @@ mod tests {
                     msg: "m_me1".into(),
                     anchor: Point::ZERO,
                 },
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
             );
-            app.on_hit(Hit::EmojiChoice("🔥".into()), &mut doc);
+            app.on_hit(
+                Hit::EmojiChoice("🔥".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             assert!(!reacted(&app), "picking it again removed the reaction");
         }
 
@@ -3887,7 +3940,7 @@ mod tests {
                 &mut app,
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             let (_, _, _, _, after) = app
@@ -4079,7 +4132,10 @@ mod tests {
                 1,
                 "an unseen welcome message shows as unread"
             );
-            app.on_hit(Hit::Channel("c_general".into()), &mut doc);
+            app.on_hit(
+                Hit::Channel("c_general".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             app.land(&mut doc);
             app.reload(&doc);
             assert_eq!(app.active_channel, "c_general");
@@ -4089,7 +4145,10 @@ mod tests {
                 "opening the channel clears its unread"
             );
             // Leaving it keeps it read — the watermark persisted through the mutation.
-            app.on_hit(Hit::Channel("c_crit".into()), &mut doc);
+            app.on_hit(
+                Hit::Channel("c_crit".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             app.land(&mut doc);
             app.reload(&doc);
             assert_eq!(
@@ -4215,7 +4274,7 @@ mod tests {
                 "the return route is a labelled semantic button, not pointer-only chrome"
             );
 
-            app.on_hit(Hit::JumpToLatest, &mut doc);
+            app.on_hit(Hit::JumpToLatest, &mut ui::widget::Edits::lend(&mut doc));
             assert_eq!(app.scroll, 0.0);
             assert!(app.timeline_at_end);
         }
@@ -4256,7 +4315,7 @@ mod tests {
                     .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
                 "the weekend-jam workspace starts text-only"
             );
-            app.on_hit(Hit::StartCall, &mut doc);
+            app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
             assert!(
                 app.call.active,
                 "the Call button starts a call even with no voice channel"
@@ -4283,7 +4342,7 @@ mod tests {
                 .iter()
                 .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
                 .count();
-            app.on_hit(Hit::StartCall, &mut doc);
+            app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
             assert!(app.call.active);
             assert_eq!(
                 app.channel(&app.call.channel).unwrap().kind,
@@ -4312,7 +4371,10 @@ mod tests {
                 "no mute control outside a call"
             );
             // Join a call → the sidebar identity bar now offers real toggles.
-            app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+            app.on_hit(
+                Hit::Channel("c_standup".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             app.land(&mut doc);
             app.reload(&doc);
             assert!(app.call.active);
@@ -4372,7 +4434,7 @@ mod tests {
         app.on_hit_workspace("ws_jam".into());
         app.reload(&doc);
         assert_eq!(voice_channels(&app, "ws_jam"), 0);
-        app.on_hit(Hit::StartCall, &mut doc);
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(voice_channels(&app, "ws_jam"), 1);
         assert!(app.call.active);
         let channel = app.channel(&app.call.channel).expect("call channel");
@@ -4412,11 +4474,11 @@ mod tests {
 
         // The header button keeps its own collapse toggle.
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::StartCall, &mut doc);
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
         app.call.expanded = true;
-        app.on_hit(Hit::StartCall, &mut doc);
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
         assert!(app.call.active && !app.call.expanded);
-        app.on_hit(Hit::StartCall, &mut doc);
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
         assert!(app.call.active && app.call.expanded);
     }
 
@@ -4467,7 +4529,10 @@ mod tests {
         // Phase: joined_call_is_left_once.
         {
             let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+            app.on_hit(
+                Hit::Channel("c_standup".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             app.land(&mut doc);
             app.reload(&doc);
             assert!(
@@ -4483,13 +4548,16 @@ mod tests {
     #[test]
     fn microphone_intent_waits_for_local_service_and_never_writes_membership() {
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        app.on_hit(
+            Hit::Channel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.land(&mut doc);
         app.reload(&doc);
         service_streams(&mut app, "c_standup", 0);
         let before = doc.save();
         assert!(app.call.muted);
-        app.on_hit(Hit::CallMute, &mut doc);
+        app.on_hit(Hit::CallMute, &mut ui::widget::Edits::lend(&mut doc));
         assert!(
             app.call.muted,
             "a microphone request is not local consent or active capture"
@@ -4520,7 +4588,10 @@ mod tests {
     #[test]
     fn voice_profile_rejects_screen_share_even_with_a_portal_source() {
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(
+            Hit::Channel("c_huddle".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.land(&mut doc);
         app.reload(&doc);
         let before = doc.save();
@@ -4529,7 +4600,7 @@ mod tests {
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
         recorder.respond_to_screen_capture(granted(42));
-        app.on_hit(Hit::CallShareScreen, &mut doc);
+        app.on_hit(Hit::CallShareScreen, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.sharing_screen() && app.call.audio_only && !app.call.deafened);
         assert!(app.media_error.is_some());
         assert!(
@@ -4543,10 +4614,13 @@ mod tests {
     fn unsupported_capture_controls_are_absent_and_leave_remains_available_after_downgrade() {
         use ui::permissions::{Actor, PermissionContext, Role};
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(
+            Hit::Channel("c_huddle".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.land(&mut doc);
         app.reload(&doc);
-        app.on_hit(Hit::CallExpand, &mut doc);
+        app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
         app.perms = crate::permissions::ChatPermissions::from_context(
             PermissionContext::from_capabilities(
                 Actor::person(Some(Role::Viewer), model::ME),
@@ -4559,19 +4633,22 @@ mod tests {
                 .iter()
                 .all(|(_, _, _, _, hit, _)| !matches!(hit, Hit::CallShareScreen))
         );
-        app.on_hit(Hit::CallShareScreen, &mut doc);
+        app.on_hit(Hit::CallShareScreen, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.sharing_screen());
-        app.on_hit(Hit::CallLeave, &mut doc);
+        app.on_hit(Hit::CallLeave, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.call.active);
     }
 
     #[test]
     fn expanded_controls_do_not_advertise_screen_capture() {
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(
+            Hit::Channel("c_huddle".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.land(&mut doc);
         app.reload(&doc);
-        app.on_hit(Hit::CallExpand, &mut doc);
+        app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
         let (_, buttons) = app.overlay_controls_layout();
         assert!(
             buttons
@@ -4591,14 +4668,20 @@ mod tests {
     fn emoji_search_enter_picks_the_best_match() {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
-        app.on_hit(Hit::ComposerEmoji(Point::ZERO), &mut doc);
+        app.on_hit(
+            Hit::ComposerEmoji(Point::ZERO),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.emoji_search.set_query("pizza");
-        app.pick_first_emoji_result(&mut doc);
+        app.pick_first_emoji_result(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(app.draft_main, "🍕");
         assert!(!app.emoji_open);
         assert_eq!(app.emoji_recents.items()[0], "🍕");
         // Reopening starts from an empty query.
-        app.on_hit(Hit::ComposerEmoji(Point::ZERO), &mut doc);
+        app.on_hit(
+            Hit::ComposerEmoji(Point::ZERO),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(app.emoji_search.value().is_empty());
     }
 
@@ -4689,8 +4772,8 @@ mod tests {
 
             // Alice sends a message — it reaches Bob, attributed to Alice (not a
             // shared `u_me`).
-            a.insert_text(&mut doc_a, "morning all");
-            a.send_focused(&mut doc_a);
+            a.insert_text(&mut ui::widget::Edits::lend(&mut doc_a), "morning all");
+            a.send_focused(&mut ui::widget::Edits::lend(&mut doc_a));
             exchange(&mut doc_a, &mut doc_b);
             b.reload(&doc_b);
             let alice_msg = b
@@ -4707,8 +4790,8 @@ mod tests {
             let msg_id = alice_msg.id.clone();
 
             // Bob replies — converges back to Alice, attributed to Bob.
-            b.insert_text(&mut doc_b, "morning!");
-            b.send_focused(&mut doc_b);
+            b.insert_text(&mut ui::widget::Edits::lend(&mut doc_b), "morning!");
+            b.send_focused(&mut ui::widget::Edits::lend(&mut doc_b));
             exchange(&mut doc_a, &mut doc_b);
             a.reload(&doc_a);
             let bob_msg = a
@@ -4727,14 +4810,14 @@ mod tests {
                     msg: msg_id.clone(),
                     emoji: "👍".into(),
                 },
-                &mut doc_a,
+                &mut ui::widget::Edits::lend(&mut doc_a),
             );
             b.on_hit(
                 Hit::Reaction {
                     msg: msg_id.clone(),
                     emoji: "👍".into(),
                 },
-                &mut doc_b,
+                &mut ui::widget::Edits::lend(&mut doc_b),
             );
             exchange(&mut doc_a, &mut doc_b);
             a.reload(&doc_a);
@@ -4784,8 +4867,8 @@ mod tests {
             b.reload(&doc_b);
 
             // Alice posts, then Bob sees the original body.
-            a.insert_text(&mut doc_a, "shipping friday");
-            a.send_focused(&mut doc_a);
+            a.insert_text(&mut ui::widget::Edits::lend(&mut doc_a), "shipping friday");
+            a.send_focused(&mut ui::widget::Edits::lend(&mut doc_a));
             exchange(&mut doc_a, &mut doc_b);
             b.reload(&doc_b);
             let msg_id = b
@@ -4804,8 +4887,11 @@ mod tests {
             // append to its working text, and commit.
             a.begin_edit(msg_id.clone());
             assert!(a.editing.is_some(), "the author can open the inline editor");
-            a.insert_text(&mut doc_a, " → moved to monday");
-            a.commit_edit(&mut doc_a);
+            a.insert_text(
+                &mut ui::widget::Edits::lend(&mut doc_a),
+                " → moved to monday",
+            );
+            a.commit_edit(&mut ui::widget::Edits::lend(&mut doc_a));
 
             // The edit — new body + archived prior version — converges to Bob.
             exchange(&mut doc_a, &mut doc_b);
@@ -4825,8 +4911,8 @@ mod tests {
             // A second edit accumulates history without losing the first — proving
             // the log grows rather than overwriting.
             a.begin_edit(msg_id.clone());
-            a.insert_text(&mut doc_a, " (confirmed)");
-            a.commit_edit(&mut doc_a);
+            a.insert_text(&mut ui::widget::Edits::lend(&mut doc_a), " (confirmed)");
+            a.commit_edit(&mut ui::widget::Edits::lend(&mut doc_a));
             exchange(&mut doc_a, &mut doc_b);
             b.reload(&doc_b);
             let m = b.message(&msg_id).unwrap();
@@ -4874,8 +4960,8 @@ mod tests {
 
         // Sending is a no-op under the gate.
         let before = ChatDoc::list_messages(&doc, "c_crit").len();
-        app.insert_text(&mut doc, "should not post");
-        app.send_focused(&mut doc);
+        app.insert_text(&mut ui::widget::Edits::lend(&mut doc), "should not post");
+        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
         app.begin_edit("m_me1".into());
         assert!(
             app.editing.is_none(),
@@ -4892,7 +4978,7 @@ mod tests {
         let png = dir.path().join("x.png");
         write_real_png(&png, 32, 32);
         assert!(
-            !app.attach_file(&mut doc, &png),
+            !app.attach_file(&mut ui::widget::Edits::lend(&mut doc), &png),
             "a gated peer can't attach either"
         );
 
@@ -4908,7 +4994,7 @@ mod tests {
                     msg: id.clone(),
                     emoji: "👍".into(),
                 },
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
             );
             let after = app.messages.iter().find(|mm| mm.id == id).unwrap();
             assert!(
@@ -4929,8 +5015,14 @@ mod tests {
         b.reload(&doc_b);
         let before_a = doc_a.save();
         let before_b = doc_b.save();
-        a.on_hit(Hit::Channel("c_lounge".into()), &mut doc_a);
-        b.on_hit(Hit::Channel("c_lounge".into()), &mut doc_b);
+        a.on_hit(
+            Hit::Channel("c_lounge".into()),
+            &mut ui::widget::Edits::lend(&mut doc_a),
+        );
+        b.on_hit(
+            Hit::Channel("c_lounge".into()),
+            &mut ui::widget::Edits::lend(&mut doc_b),
+        );
         for app in [&mut a, &mut b] {
             assert!(app.call.muted);
             assert_eq!(

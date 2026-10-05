@@ -1017,7 +1017,7 @@ impl ChatApp {
     /// Test-only: apply what this window submitted to `doc`, as the host
     /// applies it after a pass.
     #[cfg(test)]
-    pub(crate) fn land(&self, doc: &mut ui::widget::Edits<'_>) {
+    pub(crate) fn land(&self, doc: &mut AutoCommit) {
         if let Some(dispatch) = &self.dispatch {
             ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
         }

@@ -441,7 +441,7 @@ mod tests {
                 let mut doc = AutoCommit::new();
                 assert!(bar.perform_action(
                     &Action::SetValue(input.into()),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert_eq!(bar.field.suggestions().len(), 1);
@@ -534,7 +534,11 @@ mod tests {
             assert!(trail.state.focused && trail.state.focusable);
 
             let mut doc = AutoCommit::new();
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
             assert!(bar.is_editing());
             let input = bar.accessibility().expect("editable path semantics");
             assert_eq!(input.role, Role::TextInput);

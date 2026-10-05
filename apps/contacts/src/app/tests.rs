@@ -1,6 +1,7 @@
 use super::*;
 use crate::doc::ContactsDoc;
 use crate::model::sample_contacts;
+use automerge::AutoCommit;
 use automerge::ROOT;
 use taffy::{AvailableSpace, Dimension, Size, Style};
 use tilo_automerge::ApplyIncoming;
@@ -2874,14 +2875,14 @@ fn first_run_is_empty_and_actionable() {
         assert!(app.perform_semantic_action(
             "contacts.empty.new",
             &ui::a11y::Action::Focus,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert!(app.empty_action_focused);
         assert!(app.perform_semantic_action(
             "contacts.empty.new",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert_eq!(app.mode, Mode::Edit);

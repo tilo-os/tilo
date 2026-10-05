@@ -142,7 +142,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

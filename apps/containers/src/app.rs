@@ -1186,7 +1186,7 @@ impl ContainersApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
+    pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &AutoCommit) {
         let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
         let resources: Vec<_> = self
@@ -3147,7 +3147,7 @@ mod tests {
                     taffy: &taffy,
                 },
             );
-            app.dispatch_palette_invocation_for_test(&mut doc);
+            app.dispatch_palette_invocation_for_test(&doc);
 
             assert!(!app.palette_open, "Enter closes the palette");
             assert_eq!(
@@ -3288,7 +3288,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3434,7 +3434,7 @@ mod tests {
             .unwrap();
         }
         app.create_open = true;
-        app.submit_create(&mut doc);
+        app.submit_create(&mut ui::widget::Edits::lend(&mut doc));
         let ControlledRuntimeRequest::Create(request) = requests.recv().unwrap() else {
             panic!("expected one controlled create request");
         };
