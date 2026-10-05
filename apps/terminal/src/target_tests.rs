@@ -14,6 +14,96 @@ use crate::{OpenError, Requester, TerminalWidget};
 
 type Opened = Rc<RefCell<Vec<(SessionTarget, Requester)>>>;
 
+#[test]
+fn unopened_terminal_never_accepts_reviewed_input_into_sink() {
+    let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
+    assert_eq!(widget.session_state(), &OpenState::Unopened);
+    assert_eq!(widget.inspect_session()["lifecycle"], "unopened");
+    assert_eq!(widget.inspect_session()["input_available"], false);
+    assert!(widget.try_write_input(b"reviewed command\r").is_err());
+    assert!(
+        widget
+            .perform(crate::resource::TerminalEffect::Run {
+                command: "reviewed command".into(),
+            })
+            .is_err(),
+        "an unattached sink must never report Run completion"
+    );
+    assert!(
+        opened.borrow().is_empty(),
+        "inspection/input must not open a session"
+    );
+}
+
+#[test]
+fn inspect_session_reports_production_open_failed_and_no_runtime_without_output() {
+    use crate::resource::TerminalEffect;
+    // Keep the controlled transport open until this test releases it. An
+    // empty reader would race its real EOF against the inspection assertion.
+    struct Reader(std::sync::mpsc::Receiver<()>);
+    impl std::io::Read for Reader {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            let _ = self.0.recv();
+            Ok(0)
+        }
+    }
+    for (answer, expected, reason) in [
+        (Ok(()), "open", None),
+        (
+            Err(OpenError::Failed("test startup failure".into())),
+            "failed",
+            Some("test startup failure"),
+        ),
+        (
+            Err(OpenError::NoRuntime("test runtime absent".into())),
+            "no_runtime",
+            Some("test runtime absent"),
+        ),
+    ] {
+        let mut app = App::new().expect("terminal");
+        let (held_transport, receiver) = std::sync::mpsc::channel();
+        let mut receiver = Some(receiver);
+        let opens = Rc::new(RefCell::new(0));
+        let count = opens.clone();
+        let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
+            *count.borrow_mut() += 1;
+            answer.clone()?;
+            let mut backend = crate::inner::TerminalBackend::for_test();
+            backend.reader = Box::new(Reader(receiver.take().expect("one open")));
+            Ok(backend)
+        });
+        app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+            .expect("terminal surface");
+        app.settle();
+        let before = *opens.borrow();
+        let output = app
+            .effect(&TerminalEffect::InspectSession)
+            .expect("read-only inspection");
+        let value = output.value.expect("typed inspection result");
+        assert_eq!(value["lifecycle"], expected);
+        assert_eq!(value["startup_reason"].as_str(), reason);
+        assert_eq!(value["input_available"], expected == "open");
+        if expected == "open" {
+            assert!(
+                value["session"]
+                    .as_str()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                    .is_some()
+            );
+        }
+        assert_eq!(*opens.borrow(), before, "Inspect must not open or restart");
+        assert!(
+            value.get("output").is_none(),
+            "explicit shared Read owns terminal contents"
+        );
+        assert_eq!(
+            value["host_access_requirement"],
+            "requires_person_owner_grant"
+        );
+        drop(held_transport);
+    }
+}
+
 /// A tab whose opens are recorded and answered by `answer`.
 fn tab(
     recent: RecentTarget,
@@ -131,6 +221,13 @@ fn the_device_shell_is_asked_for_once_and_opens_when_allowed() {
     widget.sync(&doc, &ROOT);
     let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
     assert_eq!(widget.session_state(), &OpenState::AwaitingAllow);
+    assert_eq!(widget.inspect_session()["lifecycle"], "awaiting_allow");
+    assert_eq!(widget.inspect_session()["input_available"], false);
+    assert!(
+        widget
+            .try_write_input(b"must not reach previous process")
+            .is_err()
+    );
 
     let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
     else {

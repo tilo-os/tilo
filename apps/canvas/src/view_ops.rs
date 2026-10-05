@@ -991,6 +991,16 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         "listed": marks.len(),
         "matching": matching.len(),
     });
+    if inspect.palette == Some(true)
+        && let Value::Object(fields) = &mut answer
+    {
+        let palette = crate::palette::used(matching.iter().copied());
+        fields.insert("palette_colours".into(), json!(palette.len()));
+        fields.insert(
+            "palette".into(),
+            json!(palette.into_iter().take(32).collect::<Vec<_>>()),
+        );
+    }
     if let Some(selection) = selection_info(art)
         && let Value::Object(fields) = &mut answer
     {
