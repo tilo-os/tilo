@@ -547,7 +547,7 @@ impl Widget for ProbeRoot {
     fn start_operation(
         &mut self,
         op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        _: &mut AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()

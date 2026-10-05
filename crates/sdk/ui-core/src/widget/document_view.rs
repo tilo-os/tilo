@@ -314,11 +314,21 @@ where
         self.child.needs_idle_sync()
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
+    ) {
         self.child.on_external_event(payload, state, root);
     }
 
-    fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
+    fn apply_room_action(
+        &mut self,
+        doc: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
         self.child.apply_room_action(doc, type_id, payload)
     }
 
@@ -376,7 +386,12 @@ where
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         crate::search::capability::search_providers(self.child.as_ref())
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         crate::search::capability::activate_search_result(
             self.child.as_mut(),
             action_id,

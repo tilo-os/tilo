@@ -76,7 +76,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -106,7 +106,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -145,7 +145,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -166,7 +166,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -220,7 +220,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -233,7 +233,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -258,7 +258,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -281,7 +281,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -294,7 +294,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

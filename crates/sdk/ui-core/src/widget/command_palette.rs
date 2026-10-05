@@ -4,8 +4,8 @@
 //! root path directly — there is no message layer.
 
 use crate::search::ListIndex;
-use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use crate::widget::ModelPath;
+use automerge::ObjId;
 use std::collections::HashSet;
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -96,7 +96,7 @@ impl SearchFilter {
     }
 }
 
-type SelectFn = dyn Fn(&mut AutoCommit, &ObjId) + Send + Sync;
+type SelectFn = dyn Fn(&mut crate::widget::Edits<'_>, &ObjId) + Send + Sync;
 
 /// When set on an entry, choosing it first collects a free-text argument
 /// before it completes: the palette switches into an argument-entry step
@@ -313,7 +313,7 @@ impl CommandEntry {
     #[must_use]
     pub fn on_select<F>(mut self, f: F) -> Self
     where
-        F: Fn(&mut AutoCommit, &ObjId) + Send + Sync + 'static,
+        F: Fn(&mut crate::widget::Edits<'_>, &ObjId) + Send + Sync + 'static,
     {
         self.on_select = Some(Arc::new(f));
         self
@@ -794,7 +794,7 @@ impl CommandPalette {
 
     /// Exactly what Enter does; hosts also wire pointer clicks here, so
     /// click and Enter share one path.
-    pub fn activate_selected(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    pub fn activate_selected(&mut self, state: &mut crate::widget::Edits<'_>, path: &ObjId) {
         if self.arg_state.is_some() {
             return;
         }
@@ -830,7 +830,7 @@ impl CommandPalette {
     /// palette in Commands mode only (Search mode stays open).
     fn run_entry(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         id: String,
         argument: Option<String>,
@@ -877,7 +877,7 @@ impl CommandPalette {
         key: &winit::keyboard::Key,
         shift: bool,
         ctrl: bool,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -1125,7 +1125,7 @@ impl CommandPalette {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -2173,7 +2173,13 @@ impl Widget for CommandPalette {
         if !self.is_focused {
             return;
         }
-        if self.handle_pointer_event(event, ctx.scale_factor, ctx.state, ctx.path, ctx.handled) {
+        if self.handle_pointer_event(
+            event,
+            ctx.scale_factor,
+            &mut ctx.state,
+            ctx.path,
+            ctx.handled,
+        ) {
             return;
         }
         if matches!(event, WindowEvent::Ime(_)) {
@@ -2222,7 +2228,7 @@ impl Widget for CommandPalette {
                     logical_key,
                     shift,
                     ctrl,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.handled,
                 );
@@ -2244,7 +2250,7 @@ impl Widget for CommandPalette {
                     *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    self.activate_selected(ctx.state, ctx.path);
+                    self.activate_selected(&mut ctx.state, ctx.path);
                     *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Escape) => {
@@ -2468,7 +2474,7 @@ impl Widget for CommandPalette {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -2484,11 +2490,13 @@ impl Widget for CommandPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
+        let path = path
+            .downcast_ref::<automerge::ObjId>()
+            .expect("document path");
 
         if target == "command-palette:query" {
             return match action {
@@ -2561,7 +2569,7 @@ impl CommandPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         let mut handled = false;
@@ -2574,7 +2582,7 @@ impl CommandPalette {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2791,7 +2799,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -3346,7 +3354,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &doc_root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3506,7 +3514,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -3869,7 +3877,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled,
                 focus_target: &mut focus,

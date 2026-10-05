@@ -291,7 +291,7 @@ impl Widget for ShortcutRecorder {
                 let Some(point) = self.pointer else { return };
                 if let Some(reset) = self.reset_rect().filter(|r| r.contains(point)) {
                     let _ = reset;
-                    self.write(ctx.state, ctx.path, self.default.clone());
+                    self.write(ctx.state.doc(), ctx.path, self.default.clone());
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 } else if self.chord_rect().contains(point) {
@@ -308,7 +308,7 @@ impl Widget for ShortcutRecorder {
                         self.capturing = false;
                     } else if let Some(value) = chord_from_event(&event.logical_key, *ctx.modifiers)
                     {
-                        self.write(ctx.state, ctx.path, value);
+                        self.write(ctx.state.doc(), ctx.path, value);
                     }
                     *ctx.handled = true;
                 } else if matches!(
@@ -369,7 +369,7 @@ impl Widget for ShortcutRecorder {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate) {

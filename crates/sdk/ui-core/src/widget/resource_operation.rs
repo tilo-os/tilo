@@ -3,7 +3,7 @@
 
 use super::Widget;
 use crate::invocation_scope::ResourceInvocationScope;
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 
 /// Result of admitting an effect/view operation into a widget.
 ///
@@ -143,7 +143,7 @@ impl<'a> ResourceOperation<'a> {
     pub fn start(
         &self,
         widget: &mut (impl Widget + ?Sized),
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         widget.start_operation(self, doc, path)
@@ -160,7 +160,7 @@ impl<'a> ResourceOperation<'a> {
 pub(crate) fn start_without_document_writes(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,
-    doc: &mut AutoCommit,
+    doc: &mut crate::widget::Edits<'_>,
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
     // `get_heads` would commit the caller's open transaction.
@@ -182,7 +182,7 @@ pub(crate) fn start_without_document_writes(
 pub fn start_in_children<W: Widget + ?Sized>(
     widget: &mut W,
     op: &ResourceOperation<'_>,
-    doc: &mut AutoCommit,
+    doc: &mut crate::widget::Edits<'_>,
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
     op.check()?;
@@ -224,7 +224,7 @@ mod tests {
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,
-            doc: &mut AutoCommit,
+            doc: &mut crate::widget::Edits<'_>,
             _: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
             if op
@@ -241,7 +241,11 @@ mod tests {
         }
     }
 
-    fn offer(widget: &mut Writer, doc: &mut AutoCommit, type_id: &str) -> Result<bool, String> {
+    fn offer(
+        widget: &mut Writer,
+        doc: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+    ) -> Result<bool, String> {
         let op = ResourceOperation::local(
             tilo_actions::InvocationId::new(),
             tilo_actions::OperationKind::View,

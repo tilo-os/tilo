@@ -272,7 +272,7 @@ impl CreateIdentityScreen {
                 &mut crate::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled,
                     focus_target: ctx.focus_target,
@@ -824,7 +824,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut target,

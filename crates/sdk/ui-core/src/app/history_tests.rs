@@ -6514,7 +6514,7 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: doc,
+                        state: crate::widget::Edits::lend(doc),
                         path,
                         handled: &mut handled,
                         focus_target: &mut focus,

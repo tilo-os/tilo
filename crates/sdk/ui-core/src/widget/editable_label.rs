@@ -11,7 +11,7 @@
 //! The outcome of the most recent edit is polled once via [`take_outcome`]
 //! (rising-edge, like [`TextInput::take_dirty`]).
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -568,7 +568,7 @@ impl Widget for EditableLabel {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
@@ -577,11 +577,13 @@ impl Widget for EditableLabel {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
+        let path = path
+            .downcast_ref::<automerge::ObjId>()
+            .expect("document path");
 
         if matches!(action, Action::Focus | Action::Activate) {
             if !self.editing {
@@ -651,7 +653,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: crate::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

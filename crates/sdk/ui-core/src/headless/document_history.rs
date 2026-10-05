@@ -301,7 +301,7 @@ impl FrameHarness {
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut self.state.doc,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             )?
             .ok_or("Unknown local History operation")?;
@@ -658,7 +658,7 @@ impl FrameHarness {
                             &mut crate::widget::EventCtx {
                                 scale_factor: self.input_scale,
                                 modifiers: &self.modifiers,
-                                state: doc,
+                                state: crate::widget::Edits::lend(doc),
                                 path,
                                 handled,
                                 focus_target: focus,
@@ -677,7 +677,7 @@ impl FrameHarness {
                 &mut crate::widget::EventCtx {
                     scale_factor: self.input_scale,
                     modifiers: &self.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -695,7 +695,7 @@ impl FrameHarness {
                 &mut crate::widget::EventCtx {
                     scale_factor: self.input_scale,
                     modifiers: &self.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -713,7 +713,7 @@ impl FrameHarness {
                 &mut crate::widget::EventCtx {
                     scale_factor: self.input_scale,
                     modifiers: &self.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -745,9 +745,14 @@ impl FrameHarness {
         let handled = self
             .dispatch_node(node, |widget, doc, path| {
                 if let Some(target) = semantic_target {
-                    widget.perform_semantic_action(target, action, doc, path)
+                    widget.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(doc),
+                        path,
+                    )
                 } else {
-                    widget.perform_action(action, doc, path)
+                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), path)
                 }
             })
             .map_err(|error| format!("History action refused: {error:?}"))?;

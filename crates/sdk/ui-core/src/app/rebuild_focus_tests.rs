@@ -88,7 +88,12 @@ impl Widget for RebuildHarness {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .collect()
     }
-    fn on_external_event(&mut self, payload: &str, _s: &mut AppModel, _r: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        _s: &mut crate::widget::Edits<'_>,
+        _r: &ModelPath,
+    ) {
         match payload {
             "show_status" => self.show_status = true,
             "reset" => self.request_reset = true,

@@ -446,7 +446,7 @@ pub trait Decorator {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut().perform_action(action, state, path)
@@ -456,7 +456,7 @@ pub trait Decorator {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
@@ -467,7 +467,7 @@ pub trait Decorator {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
@@ -494,7 +494,12 @@ pub trait Decorator {
         self.inner().text_review()
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
+    ) {
         self.inner_mut().on_external_event(payload, state, root);
     }
 
@@ -539,14 +544,19 @@ pub trait Decorator {
         self.inner().needs_idle_sync()
     }
 
-    fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
+    fn apply_room_action(
+        &mut self,
+        doc: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
         self.inner_mut().apply_room_action(doc, type_id, payload)
     }
 
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.inner_mut().start_operation(op, doc, path)
@@ -567,7 +577,12 @@ pub trait Decorator {
         self.inner().accepts_drop(payload)
     }
 
-    fn on_drop(&mut self, payload: DragPayload, state: &mut AppModel, path: &ModelPath) {
+    fn on_drop(
+        &mut self,
+        payload: DragPayload,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         self.inner_mut().on_drop(payload, state, path);
     }
 
@@ -1035,7 +1050,7 @@ impl<T: Decorator + 'static> Widget for T {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Decorator::perform_action(self, action, state, path)
@@ -1045,7 +1060,7 @@ impl<T: Decorator + 'static> Widget for T {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Decorator::perform_action_at(self, action, key_path, state, path)
@@ -1055,7 +1070,7 @@ impl<T: Decorator + 'static> Widget for T {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Decorator::perform_semantic_action(self, target, action, state, path)
@@ -1081,7 +1096,12 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::text_review(self)
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
+    ) {
         Decorator::on_external_event(self, payload, state, root);
     }
 
@@ -1126,14 +1146,19 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::needs_idle_sync(self)
     }
 
-    fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
+    fn apply_room_action(
+        &mut self,
+        doc: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
         Decorator::apply_room_action(self, doc, type_id, payload)
     }
 
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         Decorator::start_operation(self, op, doc, path)
@@ -1153,7 +1178,12 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::accepts_drop(self, payload)
     }
 
-    fn on_drop(&mut self, payload: DragPayload, state: &mut AppModel, path: &ModelPath) {
+    fn on_drop(
+        &mut self,
+        payload: DragPayload,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         Decorator::on_drop(self, payload, state, path);
     }
 

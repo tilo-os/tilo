@@ -16,8 +16,8 @@
 )]
 
 use crate::time::{Duration, Instant};
-use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use crate::widget::ModelPath;
+use automerge::ObjId;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -659,7 +659,7 @@ impl<C: Widget> FloatingWindow<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
@@ -672,7 +672,7 @@ impl<C: Widget> FloatingWindow<C> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut inner_handled,
                 focus_target,
@@ -688,7 +688,7 @@ impl<C: Widget> FloatingWindow<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
@@ -1095,7 +1095,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                         event,
                         ctx.scale_factor,
                         *ctx.modifiers,
-                        ctx.state,
+                        &mut ctx.state,
                         ctx.path,
                         ctx.focus_target,
                     );
@@ -1145,7 +1145,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1157,7 +1157,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1202,7 +1202,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1337,7 +1337,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if target == "floating-window.close"
@@ -1752,7 +1752,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut ft,

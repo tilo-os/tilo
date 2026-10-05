@@ -28,12 +28,12 @@
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -596,7 +596,7 @@ impl ActionPalette {
     fn target(&self, part: &str) -> String {
         format!("ordinary-confirmation:{}:{part}", self.request_generation)
     }
-    fn drain_command(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn drain_command(&mut self, doc: &mut crate::widget::Edits<'_>, path: &ObjId) {
         match self.command.take() {
             Some(true) => {
                 self.focus_part(0);
@@ -626,7 +626,7 @@ impl ActionPalette {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.is_presented() {
@@ -643,7 +643,7 @@ impl ActionPalette {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &modifiers,
-                    state: doc,
+                    state: doc.reborrow(),
                     path,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -670,7 +670,7 @@ impl ActionPalette {
                     &mut crate::widget::EventCtx {
                         scale_factor: scale,
                         modifiers: &modifiers,
-                        state: doc,
+                        state: doc.reborrow(),
                         path,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -1436,7 +1436,7 @@ impl ActionPalette {
     /// pending (e.g. the last activation was a navigation).
     pub fn take_dispatch(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
     ) -> Option<Result<Dispatched, tilo_actions::ActionError>> {
@@ -1589,7 +1589,7 @@ impl ActionPalette {
     }
 
     fn dispatch_encoded(
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         encoded: &EncodedAction,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
@@ -1603,7 +1603,7 @@ impl ActionPalette {
         let action = registry.decode(encoded)?;
         let actor = doc.get_actor().to_bytes().to_vec();
         tilo_actions::dispatch_by_with_context(
-            doc,
+            doc.document_mut(),
             action.as_ref(),
             encoded.clone(),
             transport,
@@ -2040,7 +2040,7 @@ impl ActionPalette {
         results_owner: bool,
         target: Option<&str>,
         action: &crate::a11y::Action,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         // The caller resolves this owner against the current inspection before
@@ -2069,7 +2069,7 @@ impl ActionPalette {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         if self.handle_key(event, &modifiers, doc, root) {
@@ -2123,7 +2123,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if self.history_suspended {
@@ -2420,7 +2420,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) {
         let Some(node) = self.field_node else { return };
@@ -2431,7 +2431,7 @@ impl ActionPalette {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: doc.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -2445,7 +2445,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2462,7 +2462,7 @@ impl ActionPalette {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: doc.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -2574,8 +2574,13 @@ impl Widget for ActionPalette {
         ActionPalette::draw(self, scene, transform, text, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        *ctx.handled |=
-            self.route_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state, ctx.path);
+        *ctx.handled |= self.route_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            &mut ctx.state,
+            ctx.path,
+        );
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         if !self.is_presented() {
@@ -2627,7 +2632,7 @@ impl Widget for ActionPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        doc: &mut AppModel,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if !self.is_presented() {
@@ -2648,7 +2653,9 @@ impl Widget for ActionPalette {
                     self.focus_part(index + 1);
                 }
                 let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
-                let (doc, path) = crate::doc::document(doc, path);
+                let path = path
+                    .downcast_ref::<automerge::ObjId>()
+                    .expect("document path");
                 self.drain_command(doc, path);
                 return handled;
             }

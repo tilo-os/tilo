@@ -580,9 +580,19 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(owner, verb, |widget, doc, root| {
                 if let Some(key_path) = &key_path {
-                    widget.perform_action_at(verb, key_path, doc, root)
+                    widget.perform_action_at(
+                        verb,
+                        key_path,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_semantic_action(&semantic_target, verb, doc, root)
+                    widget.perform_semantic_action(
+                        &semantic_target,
+                        verb,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;

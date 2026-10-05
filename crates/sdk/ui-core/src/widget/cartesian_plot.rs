@@ -11,7 +11,7 @@
 )]
 
 use crate::time::{Duration, Instant};
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -3199,7 +3199,7 @@ impl Widget for CartesianPlot {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {

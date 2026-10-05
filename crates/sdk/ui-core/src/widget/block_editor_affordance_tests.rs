@@ -110,7 +110,7 @@ fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: crate::widget::Edits::lend(doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,

@@ -4363,7 +4363,7 @@ impl Widget for TextInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;

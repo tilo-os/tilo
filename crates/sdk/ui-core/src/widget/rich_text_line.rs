@@ -1240,10 +1240,12 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, path) = crate::doc::document(state, path);
+        let path = path
+            .downcast_ref::<automerge::ObjId>()
+            .expect("document path");
         let handled = Widget::perform_action(&mut self.inner, action, state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
             self.marks.clear();
@@ -1594,7 +1596,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: crate::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1828,7 +1830,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus_target,

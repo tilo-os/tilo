@@ -266,7 +266,7 @@ impl Widget for LiveOwner {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        _: &mut AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let Some(crate::host_operation::OperationRequest {

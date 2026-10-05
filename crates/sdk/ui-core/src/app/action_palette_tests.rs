@@ -133,7 +133,12 @@ impl crate::search::capability::SearchSource for Publisher {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         vec![Box::new(PeopleProvider), Box::new(LazyProvider)]
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, p: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        p: &ModelPath,
+    ) {
         let (doc, _) = crate::doc::document(doc, p);
         doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
             .unwrap();

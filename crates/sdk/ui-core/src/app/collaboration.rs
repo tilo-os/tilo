@@ -1109,9 +1109,11 @@ impl App {
     /// edit along with their own keystroke.
     fn apply_collab_action_arrived(&mut self, type_id: &str, payload: &[u8], from_user_id: &str) {
         let before = self.state.doc.get_heads();
-        let applied = self
-            .root_widget
-            .apply_room_action(&mut self.state.doc, type_id, payload);
+        let applied = self.root_widget.apply_room_action(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            type_id,
+            payload,
+        );
         if applied {
             self.invalidate_widget_resource_cache();
             // Named after the publisher so local Ctrl+Z walks past it

@@ -95,7 +95,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -174,7 +174,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut AutoCommit::new(),
+                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -336,7 +336,7 @@ impl Widget for Recorder {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         use automerge::transaction::Transactable;

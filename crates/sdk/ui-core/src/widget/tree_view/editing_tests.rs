@@ -45,7 +45,7 @@ fn dispatch_with<T: 'static, M: TreeModel + 'static>(
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::from(modifiers),
-            state: &mut doc,
+            state: crate::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,

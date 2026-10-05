@@ -404,7 +404,7 @@ impl Widget for EmbeddedApp {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
         let Some(id) = semantic_target(self.app.semantic_tree(), key_path) else {

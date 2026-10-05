@@ -3626,11 +3626,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
+        let path = path
+            .downcast_ref::<automerge::ObjId>()
+            .expect("document path");
 
         self.paint_dirty = true;
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
@@ -3720,7 +3722,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
     fn route_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let scale_factor = ctx.scale_factor;
         let modifiers = ctx.modifiers;
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         let path = ctx.path;
         let handled = &mut *ctx.handled;
         let focus_target = &mut *ctx.focus_target;
@@ -3739,7 +3741,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled,
                 focus_target,
@@ -3754,7 +3756,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled,
                 focus_target,
@@ -3770,7 +3772,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
                 &mut EventCtx {
                     scale_factor,
                     modifiers,
-                    state,
+                    state: state.reborrow(),
                     path,
                     handled,
                     focus_target,
@@ -4784,7 +4786,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -4808,7 +4810,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

@@ -407,7 +407,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -425,7 +425,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -465,7 +465,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -483,7 +483,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -506,7 +506,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -524,7 +524,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,

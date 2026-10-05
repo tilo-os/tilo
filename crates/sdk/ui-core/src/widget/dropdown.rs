@@ -1184,7 +1184,7 @@ impl Widget for Dropdown {
                 ..
             } => {
                 self.on_left_press(
-                    ctx.state,
+                    ctx.state.doc(),
                     ctx.path,
                     ctx.handled,
                     ctx.focus_target,
@@ -1202,7 +1202,14 @@ impl Widget for Dropdown {
                     },
                 ..
             } if self.is_focused => {
-                self.on_key(event, ke, *ctx.modifiers, ctx.state, ctx.path, ctx.handled);
+                self.on_key(
+                    event,
+                    ke,
+                    *ctx.modifiers,
+                    ctx.state.doc(),
+                    ctx.path,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -1301,7 +1308,7 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -1332,7 +1339,7 @@ impl Widget for Dropdown {
                 let Some(value) = self.values.get(index).cloned() else {
                     return false;
                 };
-                self.commit_value(&value, state, root);
+                self.commit_value(&value, state.doc(), root);
                 self.close();
                 true
             }
@@ -1441,7 +1448,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: crate::widget::Edits::lend(doc),
                 path: root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

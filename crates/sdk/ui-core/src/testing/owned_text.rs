@@ -87,17 +87,17 @@ impl crate::widget::Decorator for OwnedText {
 
     fn handle_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut EventCtx<'_>) {
         self.input.handle_event(event, ctx);
-        self.publish(ctx.state, ctx.path);
+        self.publish(ctx.state.doc(), ctx.path);
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let performed = self.input.perform_action(action, state, path);
-        let (doc, root) = crate::doc::document(state, path);
+        let (doc, root) = crate::doc::document_ref(state.doc(), path);
         self.publish(doc, root);
         performed
     }
@@ -106,11 +106,11 @@ impl crate::widget::Decorator for OwnedText {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let performed = self.input.perform_action_at(action, key_path, state, path);
-        let (doc, root) = crate::doc::document(state, path);
+        let (doc, root) = crate::doc::document_ref(state.doc(), path);
         self.publish(doc, root);
         performed
     }

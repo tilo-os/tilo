@@ -2,7 +2,7 @@
 use super::composition_parts::{Parts, retained_parts};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::style_helpers::{auto, fr, length, min_content, minmax, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;

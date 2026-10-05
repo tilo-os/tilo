@@ -995,7 +995,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1017,7 +1017,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1051,7 +1051,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1069,7 +1069,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1148,7 +1148,7 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: doc,
+            state: crate::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -1166,7 +1166,7 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: doc,
+            state: crate::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -1275,7 +1275,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1293,7 +1293,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2138,7 +2138,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods(false, false),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -2419,7 +2419,7 @@ fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifier
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &m,
-            state: doc,
+            state: crate::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -3821,7 +3821,7 @@ fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut false,
                     focus_target: &mut None,

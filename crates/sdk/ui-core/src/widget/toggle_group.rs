@@ -1222,7 +1222,7 @@ impl Widget for ToggleGroup {
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
-        _doc: &mut AutoCommit,
+        _doc: &mut crate::widget::Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<super::ResourceOperationStart>, String> {
         let Some(request) = op.unscoped() else {
@@ -1284,7 +1284,7 @@ impl Widget for ToggleGroup {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let prefix = self.segment_prefix();
@@ -1443,7 +1443,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

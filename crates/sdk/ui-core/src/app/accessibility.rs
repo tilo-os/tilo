@@ -1079,7 +1079,7 @@ impl App {
                 palette.perform_semantic_action(
                     target,
                     action,
-                    &mut self.state.doc,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
                     &self.state.root,
                 )
             });
@@ -1104,11 +1104,21 @@ impl App {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(target, action, doc, root)
+                    widget.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else if synthetic {
-                    widget.perform_action_at(action, &key_path, doc, root)
+                    widget.perform_action_at(
+                        action,
+                        &key_path,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_action(action, doc, root)
+                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .ok()?;
@@ -1412,7 +1422,7 @@ impl App {
                             palette.perform_semantic_action(
                                 &semantic_target,
                                 &verb,
-                                &mut self.state.doc,
+                                &mut crate::widget::Edits::lend(&mut self.state.doc),
                                 &self.state.root,
                             )
                         });
@@ -1444,9 +1454,19 @@ impl App {
                     let handled = self
                         .dispatch_node(taffy_id, |widget, doc, root| {
                             if let Some(key_path) = keyed_path {
-                                widget.perform_action_at(&verb, &key_path, doc, root)
+                                widget.perform_action_at(
+                                    &verb,
+                                    &key_path,
+                                    &mut crate::widget::Edits::lend(doc),
+                                    root,
+                                )
                             } else {
-                                widget.perform_semantic_action(&semantic_target, &verb, doc, root)
+                                widget.perform_semantic_action(
+                                    &semantic_target,
+                                    &verb,
+                                    &mut crate::widget::Edits::lend(doc),
+                                    root,
+                                )
                             }
                         })
                         .map_err(|error| format!("component dispatch refused: {error:?}"))?;

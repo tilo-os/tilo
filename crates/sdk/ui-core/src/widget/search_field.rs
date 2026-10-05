@@ -13,7 +13,7 @@
 //! `CommandPalette`. Search UI and ranking thus live in
 //! one shared toolkit widget, not in every app's bespoke search bar.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::style_helpers::{length, percent};
@@ -531,10 +531,12 @@ impl Widget for SearchField {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, path) = crate::doc::document(state, path);
+        let path = path
+            .downcast_ref::<automerge::ObjId>()
+            .expect("document path");
         if self.opens_palette {
             return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }
@@ -666,7 +668,7 @@ immaterial"
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &rootid,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -683,7 +685,7 @@ immaterial"
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &rootid,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -815,7 +817,7 @@ immaterial"
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &rootid,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -832,7 +834,7 @@ immaterial"
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &rootid,
                     handled: &mut handled,
                     focus_target: &mut ft,

@@ -380,7 +380,11 @@ impl App {
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
                     if let Some(node) = self.focused_node {
                         let _ = self.dispatch_node(node, |widget, doc, path| {
-                            widget.perform_action(&crate::a11y::Action::Activate, doc, path)
+                            widget.perform_action(
+                                &crate::a11y::Action::Activate,
+                                &mut crate::widget::Edits::lend(doc),
+                                path,
+                            )
                         });
                         handled = true;
                     }
@@ -413,7 +417,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
