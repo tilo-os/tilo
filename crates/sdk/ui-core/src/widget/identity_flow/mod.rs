@@ -2428,7 +2428,7 @@ impl Widget for IdentityFlow {
         Some("identity_flow")
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         match self.current {
             IdentityFlowScreen::CreateIdentity => self.create_identity.sync(state, path),
             IdentityFlowScreen::RecoveryShare => self.recovery_share.sync(state, path),

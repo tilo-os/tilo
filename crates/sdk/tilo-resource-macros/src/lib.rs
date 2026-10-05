@@ -70,11 +70,15 @@ mod schema;
 /// scripts alike. See `tilo_resource::effect`.
 ///
 /// `#[effect(operation = "app.effects")]` names the vocabulary's operation
-/// type. Each variant is unit or has named fields (the effect's typed
+/// type; `device_only` beside it marks every effect device-only. Each variant is unit or has named fields (the effect's typed
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, idempotent, permission = "read")]`. Generates `impl Effect` and one `ActionRef`
+/// destructive, privileged, idempotent, device_only, programmatic, untrusted, risk = "path", permission = "read")]`.
+/// A `device_only` effect reaches the files, hardware or services of the
+/// device it runs on: only the person at that device may invoke it. In a
+/// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts
+/// one effect that reaches nothing of the device (a personal setting). Generates `impl Effect` and one `ActionRef`
 /// constant per variant (`Backups::RESTORE`) for binding controls.
 #[proc_macro_derive(Effect, attributes(effect, param))]
 pub fn derive_effect(input: TokenStream) -> TokenStream {
@@ -640,6 +644,9 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     let mut variants = Vec::new();
     let mut arms = Vec::new();
     let mut risks = Vec::new();
+    let mut permissions = Vec::new();
+    // The least any action asks, ranked from none to administering.
+    let mut least: Option<(u8, proc_macro2::TokenStream)> = None;
     let mut change_kinds = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
@@ -848,6 +855,20 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         } else {
             quote!(.describe(#description))
         };
+        let rank = match action.permission.as_deref() {
+            Some("none") => 0,
+            Some("read") => 1,
+            Some("comment") => 2,
+            None | Some("write") => 3,
+            Some("invite") => 4,
+            _ => 5,
+        };
+        if least.as_ref().is_none_or(|(least, _)| rank < *least) {
+            least = Some((rank, permission.clone()));
+        }
+        permissions.push(quote! {
+            #action_enum::#variant { .. } => #krate::__private::PermissionRequirement::#permission,
+        });
         decls.push(quote! {
             #krate::ActionDecl::new(
                 #id,
@@ -924,6 +945,29 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             }
         }
     };
+    // An action declared at another level than writing is applied at that
+    // level too, whichever door it comes through.
+    let least_fn = match least {
+        Some((rank, least)) if rank != 3 => quote! {
+            fn least_permission() -> #krate::__private::PermissionRequirement {
+                #krate::__private::PermissionRequirement::#least
+            }
+        },
+        _ => quote!(),
+    };
+    let permission_fn = if permissions.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn permission(action: &Self::Action) -> #krate::__private::PermissionRequirement {
+                match &action.operation {
+                    #(#permissions)*
+                }
+            }
+
+            #least_fn
+        }
+    };
     let body = if arms.is_empty() {
         quote!(match *self {})
     } else {
@@ -987,6 +1031,8 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             fn declarations() -> ::std::vec::Vec<#krate::ActionDecl<Self>> {
                 ::std::vec![#(#decls),*]
             }
+
+            #permission_fn
 
             fn children(state: &Self) -> ::std::vec::Vec<#krate::__private::Resource> {
                 let _ = state;

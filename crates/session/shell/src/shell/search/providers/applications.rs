@@ -1442,7 +1442,12 @@ mod tests {
             );
             let row = out.first().expect("a row for the offered app");
             assert!(c.borrow().notifications().is_empty());
-            let opened = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
+            let opened = (row.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &c,
+                &ActionArgs::none(),
+            );
             assert!(
                 opened.is_err(),
                 "no active workspace is no room to launch into — the caller must be told, \
@@ -1483,7 +1488,7 @@ mod tests {
             let row = out.first().expect("a row for the ghost app");
             assert!(c.borrow().notifications().is_empty());
             let outcome = (row.on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &c,
                 &crate::shell::search::action_api::ActionArgs::none(),
@@ -2556,7 +2561,7 @@ mod native_application_tests {
             let directory = tempfile::tempdir().unwrap();
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
             chrome.borrow_mut().hosted_inputs =
-                HostedTileInputs::for_host_directory(directory.path()).unwrap();
+                HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
                 needle: "Files",
@@ -2567,7 +2572,13 @@ mod native_application_tests {
             });
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].id, crate::shell::hosted_inputs::FILES_PACKAGE_ID);
-            (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            (results[0].on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
             assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
             assert!(
                 chrome
@@ -2590,8 +2601,13 @@ mod native_application_tests {
             );
             chrome.borrow_mut().hosted_inputs = HostedTileInputs::default();
             assert!(
-                (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none())
-                    .is_err()
+                (results[0].on_open)(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &chrome,
+                    &ActionArgs::none()
+                )
+                .is_err()
             );
         }
 
@@ -2619,7 +2635,7 @@ mod native_application_tests {
             {
                 let mut state = chrome.borrow_mut();
                 state.hosted_inputs =
-                    HostedTileInputs::for_host_directory(directory.path()).unwrap();
+                    HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
                 state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
                     strip: strip_id,
                     groups: ids
@@ -2648,7 +2664,13 @@ mod native_application_tests {
                 doc: &doc,
                 doc_root: &automerge::ROOT,
             });
-            (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            (results[0].on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
 
             let state = chrome.borrow();
             let tree = state.tree();

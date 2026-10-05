@@ -3,6 +3,7 @@
 //! external one hands the URL to the host's opener, and other schemes and
 //! files are refused.
 
+use ui::widget::Edits;
 use winit::dpi::PhysicalPosition;
 
 use super::*;
@@ -24,9 +25,7 @@ fn open_links() -> Option<(PdfApp, ui::State)> {
         return None;
     }
     let mut state = ui::State::new();
-    let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
-    ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
-    app.sync(&mut state.doc, &state.root);
+    app.sync_settled(&mut state.doc, &state.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
     app.sync_viewport_frame();
@@ -82,7 +81,7 @@ fn click(app: &mut PdfApp, state: &mut ui::State, p: Point) {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut state.doc,
+                state: Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -146,8 +145,11 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         let (mut app, mut state) = open_links().expect("the engine opened the fixture above");
         // Move the appendix (source page 3) to the front: it is now page 1 and
         // the link's own page is page 2.
-        app.perform_action(&mut state.doc, &move_page_plan_action("source-3", None));
-        app.sync(&mut state.doc, &state.root);
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &move_page_plan_action("source-3", None),
+        );
+        app.sync_settled(&mut state.doc, &state.root);
         assert_eq!(app.resource_page_sources, vec![3, 1, 2, 4]);
         app.go_to_page(2);
         let at = link_centre(&mut app, 2, is_internal);
@@ -155,8 +157,11 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         assert_eq!(app.current_page, 1, "the destination moved to the front");
 
         // Delete the appendix: the link says so instead of jumping anywhere.
-        app.perform_action(&mut state.doc, &delete_page_plan_action("source-3"));
-        app.sync(&mut state.doc, &state.root);
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &delete_page_plan_action("source-3"),
+        );
+        app.sync_settled(&mut state.doc, &state.root);
         assert_eq!(app.resource_page_sources, vec![1, 2, 4]);
         app.go_to_page(1);
         let at = link_centre(&mut app, 1, is_internal);

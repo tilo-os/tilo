@@ -264,7 +264,7 @@ impl DesktopSurface {
         let modifiers = *ctx.modifiers;
         if !self.search.is_open() {
             if is_search_chord(event, modifiers, self.platform) {
-                self.open_search(ctx.state, None);
+                self.open_search(&ctx.state, None);
                 self.shared.borrow_mut().search_open = true;
                 return true;
             }

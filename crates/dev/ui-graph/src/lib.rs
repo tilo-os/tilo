@@ -318,8 +318,12 @@ pub enum UiNode {
         accessible_name: Option<String>,
         #[serde(default)]
         tooltip: Option<String>,
+        /// Where a click is reported to the app: the app takes it from the
+        /// graph's `UiValues` by this path and acts on it. The button never
+        /// writes the document.
         #[serde(default)]
         on_click_path: Option<String>,
+        /// What a click reports at `on_click_path`; `"true"` when absent.
         #[serde(default)]
         click_value: Option<String>,
         #[serde(default)]

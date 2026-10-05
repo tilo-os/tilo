@@ -6,6 +6,8 @@
 //! undoable document mutations.
 
 use tilo_doc::snapshot::BlockView;
+#[cfg(test)]
+use ui::widget::Edits;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -869,7 +871,7 @@ mod tests {
             &mut EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: Edits::lend(&mut state),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

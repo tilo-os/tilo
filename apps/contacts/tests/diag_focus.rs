@@ -22,7 +22,7 @@
 #[test]
 fn contacts_root_owns_focus_and_registers_none_with_the_app() {
     let state = ui::State::new();
-    let mut app = ui::App::new(state, contacts::app_root());
+    let mut app = ui::App::new(state, Box::new(contacts::ContactsApp::new()));
     app.init_layout();
     assert!(
         app.focusable_order.is_empty(),

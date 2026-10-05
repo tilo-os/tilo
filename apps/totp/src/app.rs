@@ -1037,7 +1037,7 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // Pull in any QR image the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal();
@@ -1468,7 +1468,7 @@ impl Widget for AuthenticatorApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if self.add_panel.is_open() {
@@ -1597,7 +1597,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &format!("totp.copy:{id}"),
                 &A11yAction::Activate,
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &state.root,
             ));
             assert_eq!(app.selected_account(), Some(id));
@@ -1731,14 +1731,14 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "totp.dialog.issuer",
                 &A11yAction::SetValue("Acme".into()),
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &state.root
             ));
             assert_eq!(app.add_panel.field_snapshot().0, "Acme");
             assert!(app.perform_semantic_action(
                 "totp.dialog.save",
                 &A11yAction::Activate,
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &state.root
             ));
             let dialog = &app
@@ -1767,7 +1767,7 @@ mod tests {
                 assert!(app.perform_semantic_action(
                     target,
                     &A11yAction::Activate,
-                    &mut state.doc,
+                    &mut ui::widget::Edits::lend(&mut state.doc),
                     &state.root
                 ));
             }
@@ -1936,7 +1936,7 @@ mod tests {
         assert!(app.perform_semantic_action(
             "totp.retry-persist",
             &A11yAction::Activate,
-            &mut state.doc,
+            &mut ui::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert!(!app.persistence_pending());
@@ -1975,13 +1975,13 @@ mod tests {
             let img = dir.join("acme-qr.png");
             render_qr_png(uri, &img);
 
-            let (mut app, mut state) = app_with_state();
+            let (mut app, state) = app_with_state();
             app.add_panel.open();
 
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Opened(img));
             ui::host::scoped(&services, || app.request_qr_via_portal());
-            app.sync(&mut state.doc, &state.root);
+            app.sync(&state.doc, &state.root);
 
             assert!(
                 app.portal_rx.is_none(),
@@ -1996,13 +1996,13 @@ mod tests {
 
         // Case `portal_cancel_leaves_the_add_panel_untouched`.
         {
-            let (mut app, mut state) = app_with_state();
+            let (mut app, state) = app_with_state();
             app.add_panel.open();
             let before = app.add_panel.field_snapshot();
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Cancelled);
             ui::host::scoped(&services, || app.request_qr_via_portal());
-            app.sync(&mut state.doc, &state.root);
+            app.sync(&state.doc, &state.root);
             assert!(
                 app.portal_rx.is_none(),
                 "the portal channel clears after a cancel"

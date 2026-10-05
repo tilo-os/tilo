@@ -20,7 +20,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
+use crate::widget::{ModelPath, TaffyTreeExt, Widget};
 
 /// Fluent keys; the same string is the tooltip and the accessible name.
 const SHOW_LABEL: &str = "text-input-show-password";
@@ -318,7 +318,7 @@ impl Widget for RevealToggle {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {

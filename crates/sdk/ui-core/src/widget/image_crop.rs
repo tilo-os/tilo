@@ -1,6 +1,6 @@
 //! Shared direct-manipulation crop editor for scanner, Photos, and image tools.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -425,7 +425,7 @@ impl Widget for ImageCropEditor {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -512,14 +512,14 @@ mod tests {
             assert!(editor.perform_semantic_action(
                 "crop.left",
                 &Action::SetValue("40%".into()),
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert_eq!(state.get().left, 0.4);
             assert!(editor.perform_semantic_action(
                 "crop.right",
                 &Action::Decrement,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(state.get().right < 1.0);

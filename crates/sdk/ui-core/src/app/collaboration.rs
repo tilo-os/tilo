@@ -520,6 +520,7 @@ impl App {
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collaboration.manager.send(request);
         }
+        self.pump_record_content();
         let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
         any |= drained;
         any |= self.observe_collaboration_state();
@@ -644,6 +645,69 @@ impl App {
         (any, action_surface_may_have_changed)
     }
 
+    /// Send what the window's record content store queued on the record's
+    /// route: content it lacks, and content it stored for the record's
+    /// other readers. See [`crate::collaboration::record_content`].
+    fn pump_record_content(&mut self) {
+        use crate::collaboration::record_content::ContentLane;
+        if !self.collaboration.manager.is_connected() {
+            return;
+        }
+        let Some(route) = self
+            .collaboration
+            .manager
+            .primary_route()
+            .map(|witness| witness.route.clone())
+        else {
+            return;
+        };
+        let own = ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""));
+        let lanes = std::iter::once((None, own)).chain(
+            ContentLane::routed(&route.app_id)
+                .into_iter()
+                .map(|(route, lane)| (Some(route), lane)),
+        );
+        for (route, lane) in lanes {
+            {
+                let _entry = self.enter_wake_scope();
+                lane.attach(crate::WakeHandle::new());
+            }
+            self.send_lane_requests(route.as_ref(), &lane);
+        }
+    }
+
+    /// Send what `lane` queued: on the window's own route, or on `route`
+    /// for a record that is not the window's.
+    fn send_lane_requests(
+        &mut self,
+        route: Option<&crate::collaboration::RouteSpec>,
+        lane: &crate::collaboration::record_content::ContentLane,
+    ) {
+        let mut send = |request: CollabRequest| match route {
+            Some(route) => self
+                .collaboration
+                .manager
+                .try_send_to_route(route.clone(), request),
+            None => self.collaboration.manager.try_send(request),
+        };
+        let requests = lane.take_requests();
+        for hash in requests.wants {
+            if let Err(error) = send(CollabRequest::WantContent { hash: hash.clone() }) {
+                tracing::debug!(%error, "collab: record content request deferred");
+                lane.retry_want(hash);
+            }
+        }
+        for (hash, bytes) in requests.offers {
+            match send(CollabRequest::OfferContent {
+                hash: hash.clone(),
+                bytes: bytes.clone(),
+            }) {
+                Ok(()) | Err(crate::collaboration::CollabSendError::TooLarge { .. }) => {}
+                Err(_) => lane.retry_offer(hash, bytes),
+            }
+        }
+    }
+
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
@@ -672,8 +736,15 @@ impl App {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
             },
-            CollabEvent::DocumentSnapshotRequested { .. } => {
-                self.respond_primary_document_snapshot();
+            CollabEvent::DocumentSnapshotRequested { route } => {
+                self.respond_document_snapshot(&route);
+            }
+            CollabEvent::RecordContent { route, hash, bytes } => {
+                crate::collaboration::record_content::ContentLane::of(
+                    &route.app_id,
+                    route.record.as_deref().unwrap_or(""),
+                )
+                .arrive(hash, bytes);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 self.presence_ctx
@@ -855,6 +926,23 @@ impl App {
         }
     }
 
+    /// Answer a request for the whole document on `route`: a record kept
+    /// beside the shown one ([`Widget::record_owners`](crate::widget::Widget::record_owners))
+    /// is published whole on its own route with the next publication; any
+    /// other request is the primary document's.
+    fn respond_document_snapshot(&mut self, route: &crate::collaboration::RouteSpec) {
+        if let Some(entry) = self
+            .document_routes
+            .owners
+            .iter_mut()
+            .find(|entry| entry.answers_snapshots && entry.route == *route)
+        {
+            entry.needs_snapshot = true;
+            return;
+        }
+        self.respond_primary_document_snapshot();
+    }
+
     fn respond_primary_document_snapshot(&mut self) {
         match self.primary_document_snapshot() {
             Ok(data) => {
@@ -927,7 +1015,9 @@ impl App {
         request_id: u64,
         result: Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) {
-        if self.close_broker_result(request_id, &result) {
+        if self.settle_follow_up(request_id, &result)
+            || self.close_broker_result(request_id, &result)
+        {
             return;
         }
         let Some(invocation) = self
@@ -1019,9 +1109,11 @@ impl App {
     /// edit along with their own keystroke.
     fn apply_collab_action_arrived(&mut self, type_id: &str, payload: &[u8], from_user_id: &str) {
         let before = self.state.doc.get_heads();
-        let applied = self
-            .root_widget
-            .apply_room_action(&mut self.state.doc, type_id, payload);
+        let applied = self.root_widget.apply_room_action(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            type_id,
+            payload,
+        );
         if applied {
             self.invalidate_widget_resource_cache();
             // Named after the publisher so local Ctrl+Z walks past it
@@ -1091,8 +1183,8 @@ impl App {
                 None => self.unfollow(),
             },
             CollabEvent::Handoff { request } => self.apply_handoff(request),
-            CollabEvent::DocumentSnapshotRequested { .. } => {
-                self.respond_primary_document_snapshot();
+            CollabEvent::DocumentSnapshotRequested { route } => {
+                self.respond_document_snapshot(&route);
             }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);

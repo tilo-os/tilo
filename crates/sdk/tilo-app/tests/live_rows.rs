@@ -103,8 +103,6 @@ enum Raw {
     Nothing,
     /// A hand-built document action the surface publishes itself.
     DocumentAction,
-    /// The same, from a surface that declares it still does.
-    DeclaredDocumentAction,
 }
 
 /// What the jobs surface does outside the document, each offered on the
@@ -153,7 +151,7 @@ impl ResourceApp for TallyApp {
         Box::new(
             Column::new()
                 .push(Box::new(
-                    Button::new("step-up", "Step up", None)
+                    Button::new("step-up", "Step up")
                         .on_click(move || step.set(step.get().saturating_add(1))),
                 ))
                 .push(cx.surface(Jobs::default())),
@@ -277,10 +275,6 @@ impl ResourceSurface<Tally, JobEffect> for Jobs {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         let id = id.strip_prefix("job:")?.parse().ok()?;
         Some(job(id))
-    }
-
-    fn publishes_document_actions(&self) -> bool {
-        RAW.get() == Raw::DeclaredDocumentAction
     }
 }
 
@@ -414,12 +408,4 @@ fn a_surface_cannot_publish_a_document_action_of_its_own() {
     assert!(rogue.actions.is_empty(), "its document action is dropped");
     assert!(app.call_on("rogue", "bump", json!({})).is_err());
     assert_eq!(app.state(), 0);
-}
-
-#[test]
-fn a_surface_declaring_its_document_actions_keeps_them() {
-    RAW.set(Raw::DeclaredDocumentAction);
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let resources = published(&mut app);
-    assert_eq!(action_ids(find(&resources, "rogue").unwrap()), ["bump"]);
 }

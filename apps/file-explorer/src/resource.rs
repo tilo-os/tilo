@@ -1,95 +1,161 @@
-//! File Explorer as a [`tilo_resource::Resource`].
+//! Files as a [`tilo_resource::Resource`]: the person's bookmarked places.
 //!
-//! Folder presentation, places Open, templates, and filesystem jobs are
-//! View/Effect operations published from this resource via
-//! [`tilo_resource::publish`]. View preferences and bookmark paths are
-//! document actions. Path-scoped live listing rows stay on the surface, and
-//! are the only extras [`PublishesResources`] returns when hosted.
-//! [`FileExplorer::children`] still loads places from disk.
+//! The document holds the places (pinned in the sidebar), in order, and every
+//! change to them is a [`FilesDocAction`] through the framework dispatcher.
+//! How a window shows folders (list or grid, sort, item size, hidden files)
+//! is the person's [`FilesPreferences`], which follow them to their other
+//! devices and are never seen by collaborators. The folder a window shows,
+//! its listing and selection are the window's own; filesystem work is
+//! effects on the live rows the surface publishes.
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Effected, FileHistory, Fixture, LiveRow, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
+};
+use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, ParamType,
+    Action, ActionError, ActionParam, ActionRegistry, EncodedAction, ParamType,
 };
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::doc::ViewDoc;
+use crate::doc::{OpsDoc, PlacesDoc};
+use crate::effects::FilesEffect;
+use crate::file_ops::{FileOp, Outcome, QueuedOp};
 use crate::files_app::{
-    FileExplorerWidget, folder_palette_operations, load_published_places,
-    published_place_resources, published_template_resources,
+    FileExplorerWidget, Ran, published_place_resources, published_template_resources,
 };
 
-/// Collaborative view preferences and favourite paths.
-///
-/// Listing rows, the current directory, and selection are not in this
-/// vocabulary — they stay on the widget.
+/// A change to the Files document: the bookmarked places (stored as
+/// [`crate::places`] names them, so they mean the same folder on every
+/// device) and the filesystem operations queued from Files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilesDocAction {
-    SetView {
-        mode: String,
+    /// Bookmark `place` at position `at` (the end when `None`).
+    AddBookmark { place: String, at: Option<usize> },
+    /// Forget `place`.
+    RemoveBookmark { place: String },
+    /// Move `place` to position `to`.
+    MoveBookmark { place: String, to: usize },
+    /// Queue the filesystem change `op` for `device` to carry out. Undoing
+    /// it queues the revert of the operation.
+    QueueFileOp {
+        id: String,
+        device: String,
+        op: FileOp,
     },
-    SetSort {
-        key: String,
-        order: String,
-    },
-    SetZoom {
-        level: i32,
-    },
-    SetHidden {
-        shown: bool,
-    },
-    /// Ordered favourite paths: places and bookmarks.
-    SetBookmarks {
-        paths: Vec<String>,
-    },
+    /// The device carried out the operation `id`: record what it changed.
+    SettleFileOp { id: String, outcome: Outcome },
 }
 
 impl Action for FilesDocAction {
     fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
-            Self::SetView { mode } => ViewDoc::set_view_mode(doc, mode),
-            Self::SetSort { key, order } => ViewDoc::set_sort(doc, key, order),
-            Self::SetZoom { level } => ViewDoc::set_zoom(doc, *level),
-            Self::SetHidden { shown } => ViewDoc::set_show_hidden(doc, *shown),
-            Self::SetBookmarks { paths } => ViewDoc::set_bookmarks(doc, paths),
+            Self::AddBookmark { place, at } => PlacesDoc::add(doc, place, *at)?,
+            Self::RemoveBookmark { place } => PlacesDoc::remove(doc, place)?,
+            Self::MoveBookmark { place, to } => PlacesDoc::move_to(doc, place, *to)?,
+            Self::QueueFileOp { id, device, op } => OpsDoc::queue(doc, id, device, op)?,
+            Self::SettleFileOp { id, outcome } => OpsDoc::settle(doc, id, outcome)?,
         }
         Ok(())
     }
-}
 
-/// View projection stored in the shared document.
-#[derive(Clone, Debug)]
-pub struct FilesState {
-    pub view_mode: String,
-    pub sort_key: String,
-    pub sort_order: String,
-    pub zoom: i32,
-    pub show_hidden: bool,
-    pub bookmarks: Vec<String>,
-    /// False when the document has no shared view map yet.
-    pub shared: bool,
-}
+    /// Undoing a queued filesystem change takes it back on the filesystem:
+    /// the revert of the operation this action queues, queued the same way.
+    fn inverse_before(&self, doc: &ui::tilo_actions::Doc) -> Option<Self> {
+        let Self::QueueFileOp { id, device, .. } = self else {
+            return None;
+        };
+        let queued = OpsDoc::fresh_id(doc, id);
+        Some(Self::QueueFileOp {
+            id: format!("{queued}-undo"),
+            device: device.clone(),
+            op: FileOp::Revert { op: queued },
+        })
+    }
 
-impl Default for FilesState {
-    fn default() -> Self {
-        Self {
-            view_mode: "list".into(),
-            sort_key: "name".into(),
-            sort_order: "ascending".into(),
-            zoom: 0,
-            show_hidden: false,
-            bookmarks: Vec::new(),
-            shared: false,
+    fn inverse_encoded(&self, doc: &ui::tilo_actions::Doc) -> Option<EncodedAction> {
+        EncodedAction::encode(FileExplorer::ACTION_TYPE, &self.inverse_before(doc)?).ok()
+    }
+
+    /// What a device reports it did is content from outside: it syncs, but
+    /// no undo takes it back (undoing the operation does).
+    fn change_kind(&self) -> ui::tilo_actions::ChangeKind {
+        match self {
+            Self::SettleFileOp { .. } => ui::tilo_actions::ChangeKind::External,
+            _ => ui::tilo_actions::ChangeKind::Content,
         }
     }
 }
 
-/// Current-folder resource. Kind matches the published folder root.
+/// The Files document's state: the bookmarked places, in order, and the
+/// filesystem operations queued from Files.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FilesState {
+    pub bookmarks: Vec<String>,
+    pub ops: Vec<QueuedOp>,
+}
+
+impl FilesState {
+    /// The operations `device` still has to carry out, each with the outcome
+    /// of the operation it reverts (a revert waits until that one is
+    /// carried out).
+    pub fn pending_for(&self, device: &str) -> Vec<(String, (QueuedOp, Option<Outcome>))> {
+        self.ops
+            .iter()
+            .filter(|op| op.device == device && op.outcome.is_none())
+            .filter_map(|op| {
+                let reverting = match &op.op {
+                    FileOp::Revert { op: target } => {
+                        match self.ops.iter().find(|queued| queued.id == *target) {
+                            Some(queued) => Some(queued.outcome.clone()?),
+                            None => None,
+                        }
+                    }
+                    _ => None,
+                };
+                Some((op.id.clone(), (op.clone(), reverting)))
+            })
+            .collect()
+    }
+}
+
+/// How the person likes folders shown, on every device they use.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilesPreferences {
+    /// `list` or `grid`.
+    pub view: String,
+    /// `name`, `size`, `type` or `modified`.
+    pub sort: String,
+    /// `ascending` or `descending`.
+    pub order: String,
+    /// The item size step ([`crate::config::zoom_scale`]).
+    pub zoom: i32,
+    /// Whether dotfiles are listed.
+    pub hidden: bool,
+}
+
+impl Default for FilesPreferences {
+    fn default() -> Self {
+        Self {
+            view: "list".into(),
+            sort: "name".into(),
+            order: "ascending".into(),
+            zoom: 0,
+            hidden: false,
+        }
+    }
+}
+
+impl SettingsSchema for FilesPreferences {
+    const SCOPE: Scope = Scope::Personal;
+}
+
+/// The Files resource: the bookmarked places behind every Files window.
 pub struct FileExplorer;
 
 impl Resource for FileExplorer {
@@ -104,137 +170,117 @@ impl Resource for FileExplorer {
         registry.register::<FilesDocAction>(Self::ACTION_TYPE);
     }
 
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        PlacesDoc::initialize(doc).map_err(|error| ModelError::invalid(error.to_string()))
+    }
+
     fn read(doc: &Doc) -> Result<FilesState, ModelError> {
         Ok(FilesState {
-            view_mode: ViewDoc::view_mode(doc),
-            sort_key: ViewDoc::sort_key(doc),
-            sort_order: ViewDoc::sort_order(doc),
-            zoom: ViewDoc::zoom(doc),
-            show_hidden: ViewDoc::show_hidden(doc),
-            bookmarks: ViewDoc::bookmarks(doc),
-            shared: ViewDoc::is_shared(doc),
+            bookmarks: PlacesDoc::places(doc),
+            ops: OpsDoc::ops(doc),
         })
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        let mut declarations = view_declarations();
-        declarations.extend(bookmark_declarations());
-        declarations
+        bookmark_declarations()
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        // Path-independent folder Views/Effects. Live listing rows and remote
-        // accounts stay on the surface; places/templates are children below.
-        folder_palette_operations()
-    }
-
-    fn children(_state: &FilesState) -> Vec<tilo_actions::Resource> {
-        // Disk places stay here. Document bookmark edits do not replace them.
-        let mut children = published_place_resources(&load_published_places());
+    fn children(state: &FilesState) -> Vec<tilo_actions::Resource> {
+        let mut children =
+            published_place_resources(&crate::files_app::device_places(&state.bookmarks));
         children.extend(published_template_resources());
         children
     }
 }
 
-fn view_declarations() -> Vec<ActionDecl<FileExplorer>> {
-    vec![
-        ActionDecl::new(
-            "set-view",
-            "Set view",
-            vec![
-                ActionParam::required("mode", ParamType::Text, "list | grid")
-                    .with_choices(["list", "grid"]),
-            ],
-            |args, _| {
-                let mode = args
-                    .text("mode")
-                    .ok_or_else(|| "missing view mode".to_owned())?
-                    .to_owned();
-                Ok(FilesDocAction::SetView { mode })
-            },
-        )
-        .describe("Switch the shared list or grid view."),
-        ActionDecl::new(
-            "set-sort",
-            "Set sort",
-            vec![
-                ActionParam::required("key", ParamType::Text, "name | size | type | modified")
-                    .with_choices(["name", "size", "type", "modified"]),
-                ActionParam::required("order", ParamType::Text, "ascending | descending")
-                    .with_choices(["ascending", "descending"]),
-            ],
-            |args, _| {
-                let key = args
-                    .text("key")
-                    .ok_or_else(|| "missing sort key".to_owned())?
-                    .to_owned();
-                let order = args
-                    .text("order")
-                    .ok_or_else(|| "missing sort order".to_owned())?
-                    .to_owned();
-                Ok(FilesDocAction::SetSort { key, order })
-            },
-        )
-        .describe("Set the shared folder sort."),
-        ActionDecl::new(
-            "set-zoom",
-            "Set item size",
-            vec![ActionParam::required(
-                "level",
-                ParamType::Integer,
-                "Zoom step",
-            )],
-            |args, _| {
-                let level = args
-                    .integer("level")
-                    .ok_or_else(|| "missing zoom level".to_owned())?;
-                let level =
-                    i32::try_from(level).map_err(|_| "zoom level is out of range".to_owned())?;
-                Ok(FilesDocAction::SetZoom { level })
-            },
-        )
-        .describe("Set the shared item size."),
-        ActionDecl::new(
-            "set-hidden",
-            "Show hidden files",
-            vec![ActionParam::required(
-                "shown",
-                ParamType::Boolean,
-                "Whether dotfiles are listed",
-            )],
-            |args, _| {
-                let shown = args
-                    .boolean("shown")
-                    .ok_or_else(|| "missing hidden flag".to_owned())?;
-                Ok(FilesDocAction::SetHidden { shown })
-            },
-        )
-        .describe("Set whether the shared view lists hidden files."),
-    ]
+/// The stored place a caller names: a place as stored, or a folder path on
+/// this device.
+fn named_place(text: &str) -> String {
+    if crate::places::is_place(text) {
+        return text.to_owned();
+    }
+    crate::places::place_of(
+        std::path::Path::new(text),
+        crate::model::user_home().as_deref(),
+        &crate::favorites::UserDirs::from_system(),
+    )
+}
+
+fn place_argument(args: &ui::tilo_actions::ActionArgs) -> Result<String, String> {
+    args.text("path")
+        .filter(|path| !path.trim().is_empty())
+        .map(named_place)
+        .ok_or_else(|| "missing folder path".to_owned())
+}
+
+fn path_param() -> ActionParam {
+    ActionParam::required(
+        "path",
+        ParamType::Text,
+        "Folder path on this device, or a stored place such as xdg:documents",
+    )
 }
 
 fn bookmark_declarations() -> Vec<ActionDecl<FileExplorer>> {
     vec![
         ActionDecl::new(
-            "set-bookmarks",
-            "Set bookmarks",
-            vec![ActionParam::required(
-                "paths",
-                ParamType::Array,
-                "Favourite folder paths, in order",
-            )],
+            "add-bookmark",
+            "Add to Favourites",
+            vec![path_param()],
             |args, _| {
-                let paths = args
-                    .array("paths")
-                    .ok_or_else(|| "missing bookmark paths".to_owned())?
-                    .iter()
-                    .filter_map(|value| value.as_str().map(str::to_owned))
-                    .collect();
-                Ok(FilesDocAction::SetBookmarks { paths })
+                Ok(FilesDocAction::AddBookmark {
+                    place: place_argument(args)?,
+                    at: None,
+                })
             },
         )
-        .describe("Replace the shared places and bookmarks order."),
+        .describe("Pin a folder to the Favourites in the sidebar."),
+        ActionDecl::new(
+            "remove-bookmark",
+            "Remove from Favourites",
+            vec![path_param()],
+            |args, _| {
+                Ok(FilesDocAction::RemoveBookmark {
+                    place: place_argument(args)?,
+                })
+            },
+        )
+        .describe("Unpin a folder from the Favourites."),
+        ActionDecl::new(
+            "move-bookmark",
+            "Move favourite",
+            vec![
+                path_param(),
+                ActionParam::required("to", ParamType::Integer, "New position, from 0"),
+            ],
+            |args, _| {
+                let to = args
+                    .integer("to")
+                    .and_then(|to| usize::try_from(to).ok())
+                    .ok_or_else(|| "missing or negative position".to_owned())?;
+                Ok(FilesDocAction::MoveBookmark {
+                    place: place_argument(args)?,
+                    to,
+                })
+            },
+        )
+        .describe("Reorder the Favourites."),
     ]
+}
+
+/// A row the window publishes, as the framework carries it.
+fn live_row(resource: tilo_actions::Resource) -> LiveRow {
+    let mut row = LiveRow::new(resource.id.as_str(), resource.kind.as_str(), resource.label);
+    if let Some(presentation) = resource.presentation {
+        row = row.presentation(presentation);
+    }
+    for action in resource.actions {
+        row = row.operation(action);
+    }
+    for child in resource.children {
+        row = row.row(live_row(child));
+    }
+    row
 }
 
 /// Framework app: the files widget is the surface over [`FileExplorer`].
@@ -245,313 +291,577 @@ impl ResourceApp for FileExplorerShell {
     const ID: &'static str = "so.tilo.file-explorer";
     const TITLE: &'static str = "Files";
     const ICON: Option<&'static str> = Some("file-explorer");
+    /// A folder to open (`file-explorer ~/Documents`), or a received share
+    /// link (`file-explorer tilo-file://v2/…`) to admit and open.
+    const ARGUMENTS: usize = 1;
+    /// A received share link on standard input
+    /// (`--open-share-stdin`), so its secret stays out of the process list.
+    const FLAGS: &'static [&'static str] = &[crate::received_shares::STDIN_FLAG];
+    const FILE_HISTORY: Option<FileHistory> = Some(FileHistory {
+        title: "Selected file",
+        preview: crate::framework_history::preview,
+    });
+
+    fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
+        // Mounted in the shell, Files starts where the shell says and opens
+        // documents through the shell's services; in its own process, at
+        // the person's home.
+        let lent = cx.take_lent::<crate::StartupInputs>();
+        let services = cx.take_lent::<crate::files_app::HostedFileServices>();
+        let widget = match (cx.fixture::<crate::scenarios::Scene>(), lent) {
+            (Some(scene), _) => FileExplorerWidget::for_scene(&scene),
+            (None, Some(inputs)) => match services {
+                Some(services) => {
+                    FileExplorerWidget::with_startup_inputs_and_services(inputs, services)
+                }
+                None => FileExplorerWidget::with_startup_inputs(inputs),
+            },
+            (None, None) => FileExplorerWidget::new(),
+        };
+        cx.surface(widget)
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::scenarios::scenarios()
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1200, 720)
     }
 
-    fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
-        cx.surface(FileExplorerWidget::new())
+    /// A capture browses folders written for it, never the machine's own.
+    fn fixture(fixture: &mut Fixture<FileExplorer>) {
+        crate::scenarios::prepare(fixture);
     }
 }
 
-impl ResourceSurface<FileExplorer> for FileExplorerWidget {
+impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     fn present(&mut self, state: &Rc<FilesState>) {
-        // Adopt shared view prefs and bookmarks only. Path, selection,
-        // clipboard, and the live listing stay process-local.
-        self.adopt_shared_state(state);
+        self.present_places(&state.bookmarks);
+        self.follow_ops(&state.ops);
     }
 
     fn attach(&mut self, cx: SurfaceCx<FileExplorer>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone,
-/// `--shots`, and unit tests.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<FileExplorer>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
+        if let Some(source) = cx.file_history() {
+            self.show_file_history_in(source);
         }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<FileExplorer>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn set_hosted(&mut self, hosted: bool) {
-        self.hosted = hosted;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &FilesDocAction) {
-        let context = ui::tilo_actions::ActionContext::for_action(
-            FileExplorerShell::ID,
-            FileExplorerShell::TITLE,
-            action,
+        if let Some(argument) = cx.launch_arguments().first() {
+            self.open_launch_argument(argument);
+        }
+        if cx.mode().is_live() && cx.launch_flag(crate::received_shares::STDIN_FLAG) {
+            match crate::received_shares::read_link(std::io::stdin()) {
+                Ok(link) => self.admit_received_share(link),
+                Err(error) => self.set_external_status(error),
+            }
+        }
+        // Each device carries out the filesystem changes queued for it, and
+        // records what it changed.
+        let ops = cx.device().map(|device| {
+            let device = device.to_owned();
+            cx.drain(
+                move |state: &FilesState| state.pending_for(&device),
+                |(queued, reverting): (QueuedOp, Option<Outcome>), cx| {
+                    let outcome = crate::file_ops::execute(&queued.op, reverting.as_ref());
+                    cx.apply(&FilesDocAction::SettleFileOp {
+                        id: queued.id,
+                        outcome,
+                    });
+                    Ok(Effected::done())
+                },
+            )
+        });
+        self.attach_framework(
+            cx.dispatcher(),
+            cx.settings::<FilesPreferences>(),
+            cx.settings::<crate::recent::RecentFiles>(),
+            cx.device().map(str::to_owned),
+            ops,
         );
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = EncodedAction::encode(FileExplorer::ACTION_TYPE, action).ok();
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => {
-                self.local
-                    .dispatch_with_context(doc, FileExplorer::ACTION_TYPE, action, context);
-            }
-        }
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
+    fn effect(
+        &mut self,
+        effect: FilesEffect,
+        cx: &mut EffectCx<FileExplorer, Self>,
+    ) -> EffectAnswer {
+        Ok(match self.run_effect(effect)? {
+            Ran::Done(Some(answer)) => Effected::value(answer),
+            Ran::Done(None) => Effected::done(),
+            Ran::Pending => {
+                self.await_effect(cx.reply());
+                Effected::Pending
+            }
+        })
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+
+    /// Pin the folder shown to the Favourites, or unpin it.
+    fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
+        let Some(place) = self.current_place() else {
+            return self.file_op_declarations();
+        };
+        let pinned = self.current_is_favourite();
+        let id = if pinned {
+            "remove-current-bookmark"
         } else {
-            self.local.last_dispatched()
-        }
+            "add-current-bookmark"
+        };
+        let label = if pinned {
+            "Remove this folder from Favourites"
+        } else {
+            "Add this folder to Favourites"
+        };
+        let mut declarations = vec![ActionDecl::new(id, label, Vec::new(), move |_, _| {
+            Ok(if pinned {
+                FilesDocAction::RemoveBookmark {
+                    place: place.clone(),
+                }
+            } else {
+                FilesDocAction::AddBookmark {
+                    place: place.clone(),
+                    at: None,
+                }
+            })
+        })];
+        declarations.extend(self.file_op_declarations());
+        declarations
     }
-}
 
-/// Live launch on the framework host.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<FileExplorerShell>()
+    /// The listing's entries, remote accounts, nearby transfers and a
+    /// failed listing's retry.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.published_rows().into_iter().map(live_row).collect()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.published_row(id).map(live_row)
+    }
+
+    /// Rename, move and trash the entry a row shows, through the queue.
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<FileExplorer>> {
+        self.entry_declarations(row)
+    }
+
+    /// The places, the mount's collaborative records and the remote file
+    /// accounts: what the explorer holds, not the document.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.search_entries_shown()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use ui::resources::PublishesResources;
-    use ui::tilo_actions::OperationKind;
-    use ui::widget::Widget;
+    use ui::prelude::TestApp;
+    use ui::tilo_resource::Invoke;
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one publish check covers places door, folder ops, and hosted extras"
-    )]
+    /// A new document holds the standard places, published as the resource's
+    /// place children; the folder operations ride its publication.
     #[test]
-    fn resource_publish_owns_places_and_folder_ops() {
-        let published =
-            ui::tilo_resource::publish::<FileExplorer>("files", "Folder", &FilesState::default());
+    fn a_new_document_publishes_the_standard_places() {
+        let mut doc = AutoCommit::new();
+        FileExplorer::initialize(&mut doc).unwrap();
+        let state = FileExplorer::read(&doc).unwrap();
+        assert_eq!(state.bookmarks, crate::places::DEFAULT_PLACES);
+
+        let published = ui::tilo_resource::publish::<FileExplorer>("files", "Folder", &state);
         assert_eq!(published.kind, "files.folder");
         let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in ["add-bookmark", "remove-bookmark", "move-bookmark"] {
+            assert!(ids.contains(&expected), "missing `{expected}`: {ids:?}");
+        }
+        let effects: Vec<String> = <FilesEffect as ui::tilo_resource::Effect>::specs()
+            .into_iter()
+            .map(|spec| spec.id)
+            .collect();
         for expected in [
             "refresh",
-            "new-folder",
             "paste",
             "go-to",
-            "up",
-            "back",
-            "forward",
-            "sort-name",
+            "open",
             "list",
             "grid",
-            "add-favorite",
-            "remove-favorite",
+            "sort-name",
         ] {
             assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride local_operations via publish: {ids:?}"
+                effects.iter().any(|id| id == expected),
+                "the window's `{expected}` is an effect: {effects:?}"
             );
         }
-        let refresh = published
-            .actions
-            .iter()
-            .find(|action| action.id == "refresh")
-            .expect("refresh");
-        assert_eq!(refresh.kind, OperationKind::Effect);
-        assert_eq!(refresh.operation_type.as_deref(), Some("files.refresh"));
-        let go_to = published
-            .actions
-            .iter()
-            .find(|action| action.id == "go-to")
-            .expect("go-to");
-        assert_eq!(go_to.kind, OperationKind::View);
-
-        let place_children: Vec<_> = published
-            .children
-            .iter()
-            .filter(|child| child.kind == "files.place")
-            .collect();
+        for gone in [
+            "set-view",
+            "set-sort",
+            "set-zoom",
+            "set-hidden",
+            "set-bookmarks",
+        ] {
+            assert!(!ids.contains(&gone), "`{gone}` is a preference: {ids:?}");
+        }
         assert!(
-            !place_children.is_empty(),
-            "publish must advertise place Open children: {:?}",
             published
                 .children
                 .iter()
-                .map(|c| c.kind.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            place_children
-                .iter()
+                .filter(|child| child.kind == "files.place")
                 .all(|place| place.actions.iter().any(|a| a.id == "open")),
-            "each place child carries Open"
-        );
-
-        let mut widget = FileExplorerWidget::new();
-        let mut doc = AutoCommit::new();
-        widget.sync(&mut doc, &ui::automerge::ROOT);
-        assert!(
-            !widget.is_framework_hosted(),
-            "standalone stays on the local host"
-        );
-        let standalone = widget.resources(&doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "files.folder");
-        assert!(
-            standalone[0]
-                .actions
-                .iter()
-                .any(|a| a.id == "refresh" || a.id == "paste"),
-            "standalone still publishes the folder root"
-        );
-
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
-        widget.navigate(directory.path().to_path_buf());
-        widget.sync(&mut doc, &ui::automerge::ROOT);
-
-        widget.set_framework_hosted(true);
-        assert!(widget.is_framework_hosted());
-        let folder_id = crate::search_provider::folder_resource_id(directory.path());
-        assert!(ui::resources::resource(&widget, &doc, &folder_id).is_none());
-        let place_id = place_children[0].id.as_str().to_owned();
-        assert!(
-            ui::resources::resource(&widget, &doc, &place_id)
-                .is_some_and(|place| place.actions.iter().any(|action| action.id == "open")),
-            "a hosted place stays the published row"
-        );
-        let extras = widget.resources(&doc);
-        assert!(
-            extras.iter().all(|r| r.kind != "files.folder"),
-            "hosted must not republish files.folder beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|r| r.kind == "files.entry" && r.label == "notes.txt"),
-            "hosted still publishes live listing rows: {:?}",
-            extras
-                .iter()
-                .map(|r| (r.kind.as_str(), r.label.as_str()))
-                .collect::<Vec<_>>()
-        );
-        let entry = extras
-            .iter()
-            .find(|r| r.kind == "files.entry")
-            .expect("entry row");
-        let entry_ids: Vec<_> = entry.actions.iter().map(|a| a.id.as_str()).collect();
-        for expected in ["open", "rename", "trash", "copy", "cut"] {
-            assert!(
-                entry_ids.contains(&expected),
-                "live entry missing `{expected}`: {entry_ids:?}"
-            );
-        }
-        assert!(
-            extras.iter().all(|r| r.kind != "files.place"),
-            "places ride publish, not hosted extras"
+            "each place opens"
         );
     }
 
+    /// Bookmarks are edited place by place, so two people pinning at once
+    /// both keep their pin.
     #[test]
-    fn hosted_document_edit_is_submitted_through_the_sink_without_a_second_folder_root() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
-
-        let mut widget = FileExplorerWidget::new();
-        widget.navigate(directory.path().to_path_buf());
-        let mut doc = AutoCommit::new();
-        assert!(
-            !widget.is_framework_hosted(),
-            "standalone stays on the local host"
-        );
-        widget.set_view_mode(crate::model::ViewMode::Grid);
-        widget.sync(&mut doc, &ui::automerge::ROOT);
-        assert!(
-            widget.last_shared_action().is_none(),
-            "an unhosted view change stays on the local widget"
-        );
-        assert!(
-            !ViewDoc::is_shared(&doc),
-            "an unhosted view change must not write the shared document"
-        );
-
-        widget.set_view_mode(crate::model::ViewMode::List);
-        widget.set_framework_hosted(true);
-        assert!(widget.is_framework_hosted());
-        widget.set_view_mode(crate::model::ViewMode::Grid);
-        widget.sync(&mut doc, &ui::automerge::ROOT);
-
-        let submitted = widget
-            .last_shared_action()
-            .expect("hosted edit submitted through the sink");
-        assert_eq!(submitted.type_id, FileExplorer::ACTION_TYPE);
-        let action: FilesDocAction =
-            serde_json::from_slice(&submitted.payload).expect("sink payload is the document edit");
-        assert_eq!(
-            action,
-            FilesDocAction::SetView {
-                mode: "grid".into(),
+    fn bookmark_edits_are_granular() {
+        let mut app = TestApp::<FileExplorerShell>::new().unwrap();
+        app.invoke(
+            Invoke::apply(&FilesDocAction::AddBookmark {
+                place: "~/Projects".into(),
+                at: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.merge_peer_edit(|peer| {
+            FilesDocAction::AddBookmark {
+                place: "/mnt/data".into(),
+                at: Some(1),
             }
-        );
-        assert_eq!(ViewDoc::view_mode(&doc), "grid");
+            .apply(peer)
+            .unwrap();
+        });
+        let places = app.state().bookmarks;
+        assert!(places.contains(&"~/Projects".to_owned()), "{places:?}");
+        assert_eq!(places[1], "/mnt/data");
 
-        let page = PublishesResources::action_directory_resource_page(&widget, &doc, &[], 8)
-            .expect("hosted directory");
-        assert!(
-            page.resources
-                .iter()
-                .all(|resource| resource.kind != "files.folder"),
-            "hosted directory must not include a second folder root: {:?}",
-            page.resources
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
+        app.invoke(
+            Invoke::apply(&FilesDocAction::MoveBookmark {
+                place: "~/Projects".into(),
+                to: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.invoke(
+            Invoke::apply(&FilesDocAction::RemoveBookmark {
+                place: "xdg:music".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let places = app.state().bookmarks;
+        assert_eq!(places[0], "~/Projects");
+        assert!(!places.contains(&"xdg:music".to_owned()));
+    }
+
+    /// Pinning a folder in the window is the resource's action: it lands in
+    /// the document, undo takes it back, and the sidebar follows.
+    #[test]
+    fn pinning_a_folder_is_a_bookmark_action() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut app = TestApp::<FileExplorerShell>::new().unwrap();
+        assert_eq!(app.state().bookmarks, crate::places::DEFAULT_PLACES);
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            files.apply_command(crate::FileCommand::AddFavorite(folder.path().to_path_buf()))
+        })
+        .unwrap();
+        app.settle();
+
+        let place = folder.path().display().to_string();
+        assert!(app.state().bookmarks.contains(&place), "{:?}", app.state());
+        assert!(app.undo());
+        assert!(!app.state().bookmarks.contains(&place));
+        let shown = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files.favorites().iter().any(|f| f.path == folder.path())
+            })
+            .unwrap();
+        assert!(!shown, "the sidebar shows the stored places");
+
+        app.invoke(Invoke::apply(&FilesDocAction::AddBookmark { place, at: None }).unwrap())
+            .unwrap();
+        let shown = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files.favorites().iter().any(|f| f.path == folder.path())
+            })
+            .unwrap();
+        assert!(shown, "an agent's pin reaches the sidebar");
+    }
+
+    /// The view preferences are the person's settings, not the document.
+    #[test]
+    fn view_preferences_are_personal_settings() {
+        let mut app = TestApp::<FileExplorerShell>::new().unwrap();
+        let before = app.peer_document().get_heads();
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            files.set_view_mode(crate::model::ViewMode::Grid);
+            files.apply_command(crate::FileCommand::ZoomIn);
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(
+            app.peer_document().get_heads(),
+            before,
+            "no document change"
         );
-        let extras = widget.resources(&doc);
+        let stored = app.settings::<FilesPreferences>().get();
+        assert_eq!(stored.view, "grid");
+        assert_eq!(stored.zoom, 1);
+    }
+
+    /// A capture browses the folders written for its scenario and reads
+    /// nothing of the machine it runs on; its view state is staged once laid
+    /// out.
+    #[test]
+    fn captures_browse_their_own_scene() {
+        let guard = crate::model::fixture_io_guard::DenyAmbientIo::new();
+        let mut select = TestApp::<FileExplorerShell>::capture(Some("select")).unwrap();
+        assert_eq!(select.harness().inspection().viewport, [1200, 720]);
+        let frame = select.harness().inspection_json().unwrap();
+        assert!(frame.contains("Holiday plan.md"), "{frame}");
+        assert!(frame.contains("Development"), "{frame}");
+        assert_eq!(guard.attempts(), 0, "a capture read ambient state");
+        drop(guard);
+
+        let mut menu = TestApp::<FileExplorerShell>::capture(Some("context-menu")).unwrap();
+        let frame = menu.harness().inspection_json().unwrap();
         assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "files.folder"),
-            "hosted resources must not rebuild the folder root: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
+            frame.contains("Meeting notes"),
+            "the scene's templates: {frame}"
+        );
+    }
+
+    /// A launch naming a folder opens it.
+    #[test]
+    fn a_launch_opens_the_folder_it_names() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("launched.txt"), b"x").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[directory.path().to_str().unwrap()]).unwrap();
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("launched.txt"), "{frame}");
+    }
+
+    /// Invoke the action `id` of the published resource `on` with `args`
+    /// through the door, as an agent does, and let the device carry out
+    /// what it queued.
+    fn act_on(app: &mut TestApp<FileExplorerShell>, on: &str, id: &str, args: &serde_json::Value) {
+        let instance = app.harness().component_instance_id().unwrap();
+        app.harness()
+            .invoke_bound_action_confirmed(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: instance,
+                    address: ui::tilo_actions::ActionAddress::new(on, id),
+                },
+                args.as_object().unwrap(),
+            )
+            .unwrap();
+        app.settle();
+    }
+
+    /// Copying and pasting are queued and undoable like every filesystem
+    /// change: undo moves a copy to Trash and a cut-and-paste back. A row
+    /// offers rename, move and trash on its entry; undoing the trash puts
+    /// the file back.
+    #[test]
+    fn copies_and_row_edits_are_undoable() {
+        // Inside the home, so Trash is the home's and its entries are known.
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap();
+        let folder = tempfile::tempdir_in(&home).unwrap();
+        std::fs::create_dir(folder.path().join("Projects")).unwrap();
+        std::fs::write(folder.path().join("notes.txt"), b"n").unwrap();
+        std::fs::write(folder.path().join("plan.txt"), b"p").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
+        let row = |name: &str| crate::search_provider::entry_resource_id(&folder.path().join(name));
+        let projects = folder.path().join("Projects").display().to_string();
+
+        app.effect_on(
+            &row("notes.txt"),
+            &FilesEffect::Copy {
+                entry: row("notes.txt"),
+            },
+        )
+        .unwrap();
+        app.effect(&FilesEffect::GoTo {
+            path: projects.clone(),
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Paste).unwrap();
+        app.settle();
+        assert!(folder.path().join("Projects/notes.txt").exists());
+        assert!(app.undo());
+        app.settle();
+        assert!(
+            !folder.path().join("Projects/notes.txt").exists(),
+            "the copy goes"
         );
         assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "files.entry" && resource.label == "notes.txt"),
-            "live listing rows stay on the widget: {:?}",
-            extras
-                .iter()
-                .map(|resource| (resource.kind.as_str(), resource.label.as_str()))
-                .collect::<Vec<_>>()
+            folder.path().join("notes.txt").exists(),
+            "the original stays"
         );
+
+        app.effect(&FilesEffect::GoTo {
+            path: folder.path().display().to_string(),
+        })
+        .unwrap();
+        app.effect_on(
+            &row("plan.txt"),
+            &FilesEffect::Cut {
+                entry: row("plan.txt"),
+            },
+        )
+        .unwrap();
+        app.effect(&FilesEffect::GoTo {
+            path: projects.clone(),
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Paste).unwrap();
+        app.settle();
+        assert!(folder.path().join("Projects/plan.txt").exists());
+        assert!(app.undo());
+        app.settle();
+        assert!(
+            folder.path().join("plan.txt").exists(),
+            "cut and paste moves back"
+        );
+
+        app.effect(&FilesEffect::GoTo {
+            path: folder.path().display().to_string(),
+        })
+        .unwrap();
+        act_on(
+            &mut app,
+            &row("plan.txt"),
+            "rename",
+            &serde_json::json!({"name": "agenda.txt"}),
+        );
+        assert!(folder.path().join("agenda.txt").exists());
+        act_on(
+            &mut app,
+            &row("agenda.txt"),
+            "move-to",
+            &serde_json::json!({"folder": projects}),
+        );
+        assert!(folder.path().join("Projects/agenda.txt").exists());
+        act_on(&mut app, &row("notes.txt"), "trash", &serde_json::json!({}));
+        assert!(!folder.path().join("notes.txt").exists(), "trashed");
+        assert!(app.undo());
+        app.settle();
+        assert!(
+            folder.path().join("notes.txt").exists(),
+            "undo restores it from Trash"
+        );
+    }
+
+    /// Invoke the resource's action `id` with `args` through the door, as
+    /// an agent does, and let the device carry out what it queued.
+    fn act(app: &mut TestApp<FileExplorerShell>, id: &str, args: &serde_json::Value) {
+        let instance = app.harness().component_instance_id().unwrap();
+        app.harness()
+            .invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: instance,
+                    address: ui::tilo_actions::ActionAddress::new(FileExplorer::KIND, id),
+                },
+                args.as_object().unwrap(),
+            )
+            .unwrap();
+        app.settle();
+    }
+
+    /// Creating, renaming and moving files are document actions: queued in
+    /// the Files document, carried out by this device's drain, settled with
+    /// what they changed, and undone by queueing their revert.
+    #[test]
+    fn filesystem_changes_are_undoable_document_actions() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("draft.txt"), b"x").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
+        act(
+            &mut app,
+            "new-folder",
+            &serde_json::json!({"name": "Projects"}),
+        );
+        assert!(folder.path().join("Projects").is_dir());
+        act(
+            &mut app,
+            "rename",
+            &serde_json::json!({"entry": "draft.txt", "name": "final.txt"}),
+        );
+        assert!(folder.path().join("final.txt").exists());
+        let projects = folder.path().join("Projects").display().to_string();
+        act(
+            &mut app,
+            "move",
+            &serde_json::json!({"entries": ["final.txt"], "folder": projects}),
+        );
+        assert!(folder.path().join("Projects/final.txt").exists());
+        let ops = app.state().ops;
+        assert_eq!(ops.len(), 3, "{ops:?}");
+        assert!(
+            ops.iter()
+                .all(|op| op.outcome.as_ref().is_some_and(|o| o.error().is_none()))
+        );
+
+        // Undo takes the move back on the filesystem, then the rename.
+        assert!(app.undo());
+        app.settle();
+        assert!(folder.path().join("final.txt").exists(), "moved back");
+        assert!(app.undo());
+        app.settle();
+        assert!(folder.path().join("draft.txt").exists(), "named back");
+        assert!(app.redo());
+        app.settle();
+        assert!(folder.path().join("final.txt").exists(), "renamed again");
+
+        let instance = app.harness().component_instance_id().unwrap();
+        let refused = app.harness().invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: instance,
+                address: ui::tilo_actions::ActionAddress::new(FileExplorer::KIND, "trash"),
+            },
+            serde_json::json!({"entries": ["missing.txt"]})
+                .as_object()
+                .unwrap(),
+        );
+        assert!(refused.is_err(), "a misspelt entry changes nothing");
+    }
+
+    /// The window's other work is its effects: copying a row, pasting,
+    /// showing a folder, pinning the folder shown.
+    #[test]
+    fn the_windows_work_is_its_effects() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::create_dir(folder.path().join("Projects")).unwrap();
+        std::fs::write(folder.path().join("notes.txt"), b"n").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
+        // A row's effect, bound to it, as the palette offers it on the row.
+        let row = crate::search_provider::entry_resource_id(&folder.path().join("notes.txt"));
+        app.effect_on(&row, &FilesEffect::Copy { entry: row.clone() })
+            .unwrap();
+        app.effect(&FilesEffect::GoTo {
+            path: folder.path().join("Projects").display().to_string(),
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Paste).unwrap();
+        assert!(folder.path().join("Projects/notes.txt").exists());
+        assert!(
+            app.effect(&FilesEffect::EmptyTrash).is_err(),
+            "Trash is emptied from the Trash folder only"
+        );
+        act(&mut app, "add-current-bookmark", &serde_json::json!({}));
+        let place = folder.path().join("Projects").display().to_string();
+        assert!(app.state().bookmarks.contains(&place), "{:?}", app.state());
     }
 }

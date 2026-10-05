@@ -319,7 +319,7 @@ app_manifests = "apps/*/tilo-app.toml"
 features = [
   "music/audio", "music/live", "video-player/decode",
   "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
-  "chat/live-media", "mail/live", "disks/live", "video-editor/decode",
+  "mail/live", "disks/live", "video-editor/decode",
   "video-editor/gst",
 ]
 layer = "direct"
@@ -539,7 +539,7 @@ files = [
 [[component]]
 name = "vm-cli"
 kind = "userspace"
-scope = "session"
+scope = "vm"
 packages = ["tilo-vm"]
 bins = ["tilo-vm"]
 layer = "dev-tools"

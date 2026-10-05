@@ -161,11 +161,7 @@ fn drawn_of(scene: &Scene) -> Drawn {
     clippy::cast_precision_loss,
     reason = "W and H are the fixed small test-canvas dimensions (480x120), exactly representable in f32"
 )]
-fn render_widget(
-    mut input: TextInput,
-    doc: &mut AutoCommit,
-    presence: &PresenceCtx,
-) -> LocalRender {
+fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx) -> LocalRender {
     let theme = Theme::dark();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
@@ -226,7 +222,7 @@ fn render_widget(
     }
 }
 
-fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
+fn render_bound(doc: &AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
     let mut input = TextInput::new(Vec::new())
         .with_font_size(28.0)
         .with_plain_chrome();
@@ -240,8 +236,8 @@ fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> Loca
     let input = TextInput::new(path)
         .with_font_size(28.0)
         .with_plain_chrome();
-    let mut throwaway = AutoCommit::new();
-    render_widget(input, &mut throwaway, presence)
+    let throwaway = AutoCommit::new();
+    render_widget(input, &throwaway, presence)
 }
 
 #[track_caller]
@@ -325,7 +321,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         assert_eq!(b_text, a_text, "both peers share one CRDT Text object id");
 
         let empty_presence = PresenceCtx::empty();
-        let b_before = render_bound(&mut b_doc, &b_text, &empty_presence);
+        let b_before = render_bound(&b_doc, &b_text, &empty_presence);
         assert!(
             non_background_pixels(&b_before.pixels) > 0,
             "B's pre-edit render must show the seeded text"
@@ -351,8 +347,8 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         );
         assert_eq!(text_of(&a_doc), text_of(&b_doc), "the two peers converge");
 
-        let b_after = render_bound(&mut b_doc, &b_text, &empty_presence);
-        let a_after = render_bound(&mut a_doc, &a_text, &empty_presence);
+        let b_after = render_bound(&b_doc, &b_text, &empty_presence);
+        let a_after = render_bound(&a_doc, &a_text, &empty_presence);
 
         // B re-rendered locally: its post-edit frame differs from its
         // pre-edit frame (the change is visible in B's OWN render).
@@ -473,7 +469,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         let t = peer_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
         peer_doc.splice_text(&t, 0, 0, "base").unwrap();
         let bound = text_obj(&peer_doc).unwrap();
-        let baseline_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+        let baseline_render = render_bound(&peer_doc, &bound, &PresenceCtx::empty());
 
         let mut writer_doc = AutoCommit::load(&peer_doc.save()).unwrap();
         writer_doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
@@ -514,7 +510,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             "base",
             "a rejected op must not mutate the shared doc"
         );
-        let again = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+        let again = render_bound(&peer_doc, &bound, &PresenceCtx::empty());
         assert_same_frame(&again, &baseline_render, "a rejected op's local render");
 
         // The writer's op validates and is applied via the same
@@ -527,7 +523,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             "base-WROTE",
             "the writer's validated edit converges into the peer doc"
         );
-        let after_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+        let after_render = render_bound(&peer_doc, &bound, &PresenceCtx::empty());
         assert_ne!(
             after_render.drawn, baseline_render.drawn,
             "the writer's validated edit re-renders locally"

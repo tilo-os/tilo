@@ -12,7 +12,7 @@
 //! [`SearchResultsView::set_rect`] for a free-floating overlay — and it lays
 //! its own headers and rows top-down from the current groups.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::style_helpers::{length, percent};
@@ -753,7 +753,7 @@ impl Widget for SearchResultsView {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut AppModel,
+        _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
         if !matches!(
@@ -1077,7 +1077,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -1094,7 +1094,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -1111,7 +1111,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -1151,7 +1151,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -1168,7 +1168,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut ft,

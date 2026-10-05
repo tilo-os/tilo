@@ -872,27 +872,6 @@ impl SpeakerService for BrokerSpeakers {
     }
 }
 
-fn snapshot_cache() -> &'static std::sync::Mutex<SpeakerSnapshot> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<SpeakerSnapshot>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(SpeakerSnapshot::default()))
-}
-
-/// The last snapshot the Speakers pane received, for the action tree.
-#[must_use]
-pub fn cached_snapshot() -> SpeakerSnapshot {
-    snapshot_cache()
-        .lock()
-        .map(|snapshot| snapshot.clone())
-        .unwrap_or_default()
-}
-
-pub(crate) fn remember_snapshot(snapshot: &SpeakerSnapshot) {
-    if let Ok(mut cached) = snapshot_cache().lock() {
-        cached.clone_from(snapshot);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ui::collaboration::{

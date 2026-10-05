@@ -1180,7 +1180,7 @@ impl Widget for SidebarWheelDisc {
         spring_active || self.wheel_last_event.is_some() || self.drag_from.is_some()
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Real (clamped) frame dt keeps the spring wall-clock-correct
         // under frame drops. Clamped to 1/30 s: semi-implicit Euler
         // stays stable, and a long stall just resumes rather than
@@ -1309,7 +1309,7 @@ impl Widget for SidebarWheelDisc {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
@@ -1334,7 +1334,7 @@ impl Widget for SidebarWheelDisc {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
@@ -2438,7 +2438,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &path,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -4022,9 +4022,9 @@ mod tests {
 
                 // Idle is the scroll wheel's version of lifting a finger.
                 std::thread::sleep(Duration::from_millis(WHEEL_SCROLL_TIMEOUT_MS + 60));
-                let mut st = AutoCommit::new();
+                let st = AutoCommit::new();
                 let obj = automerge::ROOT.clone();
-                d.update(&mut st, &obj);
+                d.update(&st, &obj);
                 assert_eq!(
                     d.rotation_deg, 0.0,
                     "the pull never let go once the gesture ended"
@@ -4279,21 +4279,41 @@ mod tests {
         assert_eq!(d.synthetic_accessibility_rect(&[3]), Some(d.plus_rect));
         let mut doc = automerge::AutoCommit::new();
         let path = automerge::ROOT.clone();
-        assert!(d.perform_semantic_action("wheel:workspace:2", &Action::Activate, &mut doc, &path));
+        assert!(d.perform_semantic_action(
+            "wheel:workspace:2",
+            &Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &path
+        ));
         assert_eq!(
             d.selected_idx(),
             2,
             "activating the third sector chooses it"
         );
         assert!(
-            !d.perform_semantic_action("wheel:workspace:9", &Action::Activate, &mut doc, &path),
+            !d.perform_semantic_action(
+                "wheel:workspace:9",
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &path
+            ),
             "a stale address is refused, never guessed"
         );
         assert!(
-            !d.perform_action_at(&Action::Activate, &[9], &mut doc, &path),
+            !d.perform_action_at(
+                &Action::Activate,
+                &[9],
+                &mut ui::widget::Edits::lend(&mut doc),
+                &path
+            ),
             "a stale key is refused, never guessed"
         );
-        assert!(d.perform_action_at(&Action::Activate, &[1], &mut doc, &path));
+        assert!(d.perform_action_at(
+            &Action::Activate,
+            &[1],
+            &mut ui::widget::Edits::lend(&mut doc),
+            &path
+        ));
         assert_eq!(
             d.selected_idx(),
             1,
