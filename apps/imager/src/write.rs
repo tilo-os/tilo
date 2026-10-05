@@ -73,7 +73,7 @@ pub enum WriteBackend {
     /// Raw-device effects are unavailable in this process (tests and shots).
     Disabled,
     /// Real raw write via a direct block-device open. Selecting this is itself
-    /// gated (see [`WriteBackend::system`]); it is never the default.
+    /// gated (see [`WriteBackend::for_window`]); it is never the default.
     System,
     /// The unprivileged live UI will authenticate a short-lived platform
     /// helper at write time.
@@ -85,19 +85,18 @@ pub enum WriteBackend {
 }
 
 impl WriteBackend {
-    /// Choose the backend for the running process. The allow gate is retained
-    /// for deliberate root-side diagnostics; normal live UI uses the narrow
-    /// helper, while tests and shots remain disabled.
-    pub fn system() -> Self {
+    /// Choose the backend for a window: `live` when someone uses it, never
+    /// for a screenshot, a past version or a test. The allow gate is
+    /// retained for deliberate root-side diagnostics; a live window uses the
+    /// narrow helper.
+    pub fn for_window(live: bool) -> Self {
         if cfg!(all(target_os = "linux", feature = "flatpak-media-writer"))
             && std::env::var("TILO_IMAGER_FLATPAK").as_deref() == Ok("1")
         {
             WriteBackend::Udisks2
         } else if allow_write() {
             WriteBackend::System
-        } else if cfg!(feature = "host-media-writer")
-            || std::env::var("IMAGER_LIVE").as_deref() == Ok("1")
-        {
+        } else if cfg!(feature = "host-media-writer") || live {
             WriteBackend::PrivilegedHelper
         } else {
             WriteBackend::Disabled
@@ -110,15 +109,6 @@ impl WriteBackend {
     pub fn is_available(self) -> bool {
         self != WriteBackend::Disabled
     }
-}
-
-/// Whether the running process has a real raw-media write path.
-///
-/// The live application normally returns `true` because it authenticates a
-/// narrow privileged helper at write time. `TILO_IMAGER_ALLOW_WRITE` is only
-/// the explicit diagnostic opt-in for writing directly in this process.
-pub fn write_available() -> bool {
-    WriteBackend::system().is_available()
 }
 
 /// The env allow-gate. `TILO_IMAGER_ALLOW_WRITE=1` is the single switch that
@@ -1985,12 +1975,12 @@ fn finish_target(_target: &TargetDrive, _result: &JobResult) {}
 pub fn spawn_job(
     req: WriteRequest,
     typed: &str,
+    backend: WriteBackend,
 ) -> (JobStart, Option<Receiver<Progress>>, Option<JobControl>) {
     let start = begin_job(&req, typed);
     if start != JobStart::Started {
         return (start, None, None);
     }
-    let backend = WriteBackend::system();
     if backend == WriteBackend::Disabled {
         return (JobStart::WriteDisabled, None, None);
     }
@@ -2148,8 +2138,8 @@ mod tests {
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             // No opt-in env var set → unavailable, never a fake success.
-            env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
-            assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
+            env.remove("TILO_IMAGER_ALLOW_WRITE");
+            assert_eq!(WriteBackend::for_window(false), WriteBackend::Disabled);
             assert!(!allow_write());
         }
 
@@ -2157,18 +2147,22 @@ mod tests {
         #[cfg(feature = "host-media-writer")]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
-            assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
-            assert!(write_available());
+            env.remove("TILO_IMAGER_ALLOW_WRITE");
+            assert_eq!(
+                WriteBackend::for_window(false),
+                WriteBackend::PrivilegedHelper
+            );
+            assert!(WriteBackend::for_window(false).is_available());
         }
 
         // Phase `live_ui_uses_short_lived_privileged_helper`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE")
-                .set("IMAGER_LIVE", "1");
-            assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
-            assert!(write_available());
+            env.remove("TILO_IMAGER_ALLOW_WRITE");
+            assert_eq!(
+                WriteBackend::for_window(true),
+                WriteBackend::PrivilegedHelper
+            );
         }
 
         // Phase `flatpak_selects_udisks_without_enabling_direct_device_writes`.
@@ -2176,9 +2170,8 @@ mod tests {
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("TILO_IMAGER_ALLOW_WRITE")
-                .remove("IMAGER_LIVE")
                 .set("TILO_IMAGER_FLATPAK", "1");
-            assert_eq!(WriteBackend::system(), WriteBackend::Udisks2);
+            assert_eq!(WriteBackend::for_window(false), WriteBackend::Udisks2);
             assert!(!allow_write(), "the sandbox never gains direct /dev access");
         }
 
@@ -2198,14 +2191,14 @@ mod tests {
             // disabled path and the real device write.
             env.set("TILO_IMAGER_ALLOW_WRITE", "1");
             assert!(allow_write());
-            assert_eq!(WriteBackend::system(), WriteBackend::System);
+            assert_eq!(WriteBackend::for_window(false), WriteBackend::System);
             env.remove("TILO_IMAGER_ALLOW_WRITE");
             let expected = if cfg!(feature = "host-media-writer") {
                 WriteBackend::PrivilegedHelper
             } else {
                 WriteBackend::Disabled
             };
-            assert_eq!(WriteBackend::system(), expected);
+            assert_eq!(WriteBackend::for_window(false), expected);
         }
 
         // Phase `spawn_refuses_instead_of_simulating_with_gate_off`.
@@ -2214,10 +2207,10 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             // Validation remains pure, but the live start refuses rather than
             // reporting synthetic progress and success.
-            env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
+            env.remove("TILO_IMAGER_ALLOW_WRITE");
             let r = req();
             assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
-            let (start, rx, control) = spawn_job(r, "sdb");
+            let (start, rx, control) = spawn_job(r, "sdb", WriteBackend::for_window(false));
             assert_eq!(start, JobStart::WriteDisabled);
             assert!(rx.is_none());
             assert!(control.is_none());

@@ -25,6 +25,9 @@ pub enum OpenState {
     AwaitingAllow,
     /// The target could not be opened; the reason is shown on the tab.
     Failed(String),
+    /// No environment can be built on this device (no `env-runtime` image is
+    /// installed). The tab says so and offers the device's own shell.
+    NoRuntime(String),
 }
 
 enum Source {
@@ -76,6 +79,9 @@ pub struct Sessions {
     pub legacy_vms: Vec<String>,
     allow: Option<Rc<RefCell<ui::widget::HostShellAllow>>>,
     intent: Option<ui::widget::AppHostIntent>,
+    /// The person took the tab's offer of the device's own shell; opened at
+    /// the next sync.
+    pub host_requested: bool,
 }
 
 impl std::fmt::Debug for Sessions {
@@ -106,6 +112,7 @@ impl Sessions {
             relays: Vec::new(),
             allow: None,
             intent: None,
+            host_requested: false,
         }
     }
 
@@ -204,13 +211,14 @@ impl Sessions {
     }
 
     /// Ask the shell to put the device's own shell to the person, once.
-    /// Only a shell-hosted tab can ask; elsewhere the reason stays on screen.
+    /// Hosted and native tabs both use the trusted session shell; an unavailable
+    /// shell answers with a refusal.
     pub fn request_allow(&mut self) -> bool {
         #[cfg(test)]
         let scripted = matches!(self.source, Source::Scripted(_));
         #[cfg(not(test))]
         let scripted = false;
-        if scripted || matches!(self.source, Source::Hosted { .. }) {
+        if scripted || matches!(self.source, Source::Hosted { .. } | Source::Standalone) {
             let reply = Rc::new(RefCell::new(ui::widget::HostShellAllow::default()));
             self.intent = Some(ui::widget::AppHostIntent::AllowHostShell {
                 reply: Rc::downgrade(&reply),

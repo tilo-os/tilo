@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -132,7 +132,7 @@ impl CompactSwatchPalette {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<(PaletteKind, PaletteChoice)> {
         let kind = self.kind?;
@@ -164,7 +164,7 @@ impl CompactSwatchPalette {
     pub(super) fn focus_target(
         &mut self,
         target: &str,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         if target == "compact-swatch:clear" && self.kind.is_some() {
@@ -277,7 +277,7 @@ impl CompactSwatchPalette {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<(PaletteKind, PaletteChoice)> {
         let kind = self.kind?;
@@ -356,7 +356,7 @@ impl CompactSwatchPalette {
                 &mut ui::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: root,
                     handled: &mut handled,
                     focus_target: &mut focus,

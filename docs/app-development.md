@@ -175,10 +175,10 @@ For a zero-argument control, keep ordinary closure ergonomics with
 `Button::on_effect` or `Button::on_view`:
 
 ```rust
-let refresh = ui::Button::new("refresh", "Refresh", None)
+let refresh = ui::Button::new("refresh", "Refresh")
     .on_effect(move || refresh_from_service());
 
-let inspector = ui::Button::new("toggle-inspector", "Toggle inspector", None)
+let inspector = ui::Button::new("toggle-inspector", "Toggle inspector")
     .on_view(move || inspector_state.toggle());
 ```
 
@@ -197,7 +197,7 @@ agents see:
 ```rust
 let resource = document_resource(&model);
 let save = ui::tilo_actions::ActionBinding::unit_for(&resource, "save")?;
-let button = ui::Button::new("save", "Save", None).on_action(save);
+let button = ui::Button::new("save", "Save").on_action(save);
 ```
 
 `ActionBinding::unit_for` looks up the actual `ActionSpec` on the resource, so
@@ -727,10 +727,10 @@ tilo-app shot --viewport 1280x800
 tilo-app shot --output artifacts/empty.png --scenario empty
 ```
 
-Arguments after `--` are forwarded as app-defined screenshot options. Use
-`shot_root` only when a deterministic scenario needs different seeded data,
-or `shot_handler` for an app-specific capture pipeline. The default is the
-production widget tree at the requested viewport and active shot theme.
+Arguments after `--` are forwarded as app-defined screenshot options. A
+capture is the production view at the requested viewport and active shot
+theme; a scenario stages it through the resource's actions and its views'
+stage hooks.
 
 Build an installable package from the same app root with:
 
@@ -1005,10 +1005,9 @@ impl ResourceApp for App {
 The same declaration is shared by the real event loop, screenshots, the
 headless driver and `TestApp`. Use toolkit widgets for controls so focus,
 keyboard input, IME positioning, accessibility, theme behavior, and testing
-metadata remain one implementation rather than app-local replicas. The
-toolkit-level `LaunchSpec::new(id, app_root)` path, where the library returns a
-`Box<dyn Widget>` root itself, remains available for roots that manage their
-own documents.
+metadata remain one implementation rather than app-local replicas. A custom
+widget takes part as a surface (`ResourceSurface`) of the app's resource;
+every launch is the framework app's.
 
 Compose ordinary heterogeneous children with the layout macros instead of
 writing one allocation step per child:
@@ -1029,8 +1028,8 @@ pub fn app_root() -> Box<dyn Widget> {
             Checkbox::new("project-pinned", "project-pinned"),
         ),
         ui::row![
-            Button::new("cancel", "cancel-label", None),
-            Button::new("save", "save-label", None).primary(),
+            Button::new("cancel", "cancel-label"),
+            Button::new("save", "save-label").primary(),
         ],
     ])
 }
@@ -1068,7 +1067,7 @@ accessibility, Ctrl+K and headless activation all reach the same action intent:
 
 ```rust
 let save = tilo_actions::ActionBinding::unit_for(&document, "save")?;
-Button::new("save", "app-save", None)
+Button::new("save", "app-save")
     .on_action(save)
     .primary()
     .fit_content(32.0)
@@ -1705,9 +1704,11 @@ ActionSpec::operation(
 ```
 
 For a small widget root with one launchable resource,
-`ui::widget::resource_actions::immediate` or `background` owns the forwarding
-widget, operation dispatch, pending-job bookkeeping, and failure conversion;
-the app supplies only its resource contract and operation closure.
+`ui::widget::resource_actions::immediate` owns the forwarding widget,
+operation dispatch and failure conversion; the app supplies only its resource
+contract and operation closure. An app on the framework declares its effects
+with `#[derive(Effect)]` instead, and runs long work as a job through the
+`EffectCx` its handler receives.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
 effect and view type in `Widget::start_operation`, the single entry: return
@@ -1997,7 +1998,7 @@ Pass message ids—not eagerly translated strings—to retained controls:
 
 ```rust
 let title = Text::new("project-title");
-let save = Button::new("save", "save-project", None);
+let save = Button::new("save", "save-project");
 let name = TextInput::local()
     .with_accessible_name("project-name")
     .with_placeholder("project-name-placeholder");
@@ -2326,7 +2327,8 @@ keeps its own focus, input, animation, inspection, and accessibility behavior:
 let actions = ColumnDef::new("actions", "Actions", ColumnWidth::Fixed(120.0))
     .with_widget(|row: &ResultRow, _visible_index| {
         let id = format!("open-{}", row.id);
-        Box::new(Button::new(&id, "Open", Some("open-result")))
+        let row_id = row.id.clone();
+        Box::new(Button::new(&id, "Open").on_view(move || open(&row_id)))
     });
 ```
 
@@ -2369,7 +2371,7 @@ let list = VirtualList::from_items(
     |contact, _index, _key| {
         Box::new(ui::row![
             Text::new(&contact.name),
-            Button::new("message", "Message", None),
+            Button::new("message", "Message"),
         ])
     },
 )?
@@ -2591,7 +2593,7 @@ let tree = TreeView::from_model(files)
     .with_row_delegate(|model, id, _depth| {
         Box::new(ui::row![
             Text::new(model.label(id).unwrap_or("")),
-            Button::new("more", "More actions", None),
+            Button::new("more", "More actions"),
         ])
     });
 ```

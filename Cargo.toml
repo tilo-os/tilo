@@ -824,6 +824,16 @@ opt-level = 3
 [profile.test.package.tilo-search]
 opt-level = 3
 
+# Release binaries keep their symbol table (`strip = "debuginfo"`), so a field
+# crash log (shell::crash_log) names each frame's function; fully stripped,
+# the same backtrace was only `<unknown>` frames. The line tables compiled
+# below are stripped: kept in the compositor they would also give file:line,
+# but measured on `shell` (thin LTO as packages build it, panic = "abort")
+# they grow the zstd-compressed binary from 46 MB to 220 MB, against 42 MB
+# fully stripped.
+# The OS image, RPM, Debian and Arch packages ship these binaries as built
+# (the RPM spec and PKGBUILD turn their strip passes off); Nix's default
+# debug-only strip keeps the symbol table too.
 [profile.release]
 opt-level = 3
 lto = "fat"
@@ -833,22 +843,23 @@ codegen-units = 1
 # panic still aborts the process: tilo-rt installs a hook that aborts outside
 # `tilo_rt::panic_boundary::isolate` (see that module).
 panic = "unwind"
-strip = "symbols"
+strip = "debuginfo"
 overflow-checks = false
 debug = "line-tables-only"
 incremental = false
 
 # The browser bundles' release build (`build.sh --profile release`), measured
-# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO, one codegen unit and
-# stripped symbols come from `release`. `panic = "abort"` is the only panic
+# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO and one codegen unit
+# come from `release`. `panic = "abort"` is the only panic
 # strategy wasm32-unknown-unknown has on stable: the runtime's panic hook
 # reports the message, then the module traps and the page must reload.
-# No debug info: `strip` would drop it after the linker had written it.
+# No debug info or symbol table: the bundle size is what matters in a browser.
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
 panic = "abort"
 debug = false
+strip = "symbols"
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
 # linking.
@@ -863,6 +874,9 @@ debug = false
 inherits = "release"
 panic = "unwind"
 lto = false
+# Signed app packages stay fully stripped; only the native release binaries
+# keep their symbol table.
+strip = "symbols"
 # Pin codegen-units here: CARGO_PROFILE_RELEASE_CODEGEN_UNITS (set for fast
 # release links in CI and the image) is inherited by thin-app unless the child
 # profile names its own value. The wrapper also forces one unit on each tapp

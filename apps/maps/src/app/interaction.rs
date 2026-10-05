@@ -1,7 +1,4 @@
-use super::{
-    AutoCommit, Hit, Key, MapInfo, MapsApp, NamedKey, Panel, SearchHit, SearchKeyEffect,
-    WindowEvent,
-};
+use super::{Hit, Key, MapInfo, MapsApp, NamedKey, Panel, SearchHit, SearchKeyEffect, WindowEvent};
 
 impl MapsApp {
     /// Route a keystroke into the focused text field (search or an endpoint).
@@ -13,7 +10,7 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if self.endpoints.is_focused() {
             if let Some(effect) = self.endpoints.handle_key(event, scale, modifiers, doc) {
@@ -43,7 +40,7 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         crate::search_box::drive_hand_laid(&mut self.overflow, event, scale, modifiers, doc);
     }
@@ -71,7 +68,7 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         self.search.forward_pointer(event, scale, modifiers, doc);
         self.endpoints.forward_pointer(event, scale, modifiers, doc);
@@ -85,7 +82,7 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         if matches!(which, Hit::Search(SearchHit::Field)) {
             self.search.forward_press(event, scale, modifiers, doc);

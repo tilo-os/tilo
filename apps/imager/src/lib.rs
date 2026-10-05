@@ -76,13 +76,13 @@
 //! authentication for a short-lived helper. The wizard, downloads, and
 //! customization remain in the user's unprivileged session.
 //!
-//! `app_root()` is the live integration point; `app_root_for_shot()` stages
-//! only peer-local capture state before returning the same widget. The live binary sets
-//! `IMAGER_LIVE=1` so the drive list comes from a real `lsblk` probe and the
-//! app starts genuinely blank; `--shots` / `--demo` seed sample content so the
-//! screenshot is deterministic offline. Immediately before writing, the live
-//! inventory is read again and its stable device identity, size, and system-
-//! disk status must still match the confirmed target.
+//! [`ImagerShell`] is the app: the wizard, the guided setup (`--setup`) and
+//! the folder imports (`--import-folders`) are its flows over one resource. A
+//! window someone uses probes real drives and starts genuinely blank; a
+//! screenshot scenario stages sample content so it is deterministic offline.
+//! Immediately before writing, the live inventory is read again and its
+//! stable device identity, size, and system-disk status must still match the
+//! confirmed target.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -111,6 +111,7 @@ pub mod customize;
 pub mod doc;
 mod export_dialog;
 pub mod handoff;
+mod helpers;
 mod host;
 pub mod model;
 pub mod probe;
@@ -184,169 +185,4 @@ pub use model::{
     TargetKind,
 };
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(ImagerApp::new())
-}
-
-/// Build the same widget as [`app_root`], with only peer-local shot state
-/// staged outside the collaborative document.
-pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
-    if scenario.starts_with("import-") {
-        return Box::new(setup::import_view::ImportApp::for_shot(scenario));
-    }
-    if scenario.starts_with("setup-") {
-        return Box::new(setup::view::SetupApp::for_shot(scenario));
-    }
-    let mut app = ImagerApp::new();
-    app.seed_local_shot_state(scenario);
-    if scenario == "confirm" {
-        app.seed_confirmation_for_shot("sdb");
-    } else if scenario == "export" {
-        app.seed_export_for_shot();
-    } else if scenario == "customize-timezone-open" {
-        app.shot_open_customize_timezone();
-    }
-    Box::new(app)
-}
-
-/// The ordered `--shots` scenarios: one per meaningful wizard station, named so
-/// the offscreen renderer can walk them and the gallery reads top-to-bottom.
-pub const SHOT_SCENARIOS: &[&str] = &[
-    "source",
-    "source-empty",
-    "drive",
-    "drive-empty",
-    "drive-internal",
-    "customize",
-    "customize-timezone-open",
-    "export",
-    "confirm",
-    "progress",
-    "done",
-    "done-failed",
-    "setup-experience-checking",
-    "setup-experience",
-    "setup-experience-failed",
-    "setup-folders-copy",
-    "setup-folders-connected",
-    "setup-folders-later",
-    "setup-review",
-    "setup-desktop-installed",
-    "setup-full-review",
-    "setup-full-restart",
-    "import-first-login",
-    "import-first-login-waiting",
-    "import-first-login-later",
-    "import-progress",
-    "import-retry-progress",
-    "import-partial",
-    "import-conflict",
-    "import-complete",
-    "import-issue-pages",
-];
-
-/// Pose the document for one named `--shots` scenario. Sample content is seeded
-/// here via `ImagerDoc::seed_demo` — never by the live app — so a screenshot
-/// is the only place this state is set. Unknown names fall back to the source
-/// step.
-pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
-    use crate::doc::ImagerDoc;
-
-    // The empty-drive scenario is the one case with no sample inventory: seed an
-    // empty document so the honest "insert a drive" state renders.
-    if scenario == "drive-empty" {
-        seed_scenario_drive_empty(doc);
-        return;
-    }
-    // The Source step as the live app actually opens it: nothing browsed yet,
-    // no release known to be on this machine. This is the state a real run
-    // starts in, so it is the one worth looking at.
-    if scenario == "source-empty" {
-        seed_scenario_source_empty(doc);
-        return;
-    }
-    // Internal-disks-revealed: a USB stick plus the *system* disk, shown with
-    // the guard active (the system disk locked, both acknowledgements visible).
-    if scenario == "drive-internal" {
-        seed_scenario_drive_internal(doc);
-        return;
-    }
-
-    // Every other scenario builds on the demo document (sample drives + a Tilo
-    // image + recent history), then poses the wizard station on top.
-    ImagerDoc::seed_demo(doc);
-    seed_scenario_common(doc, scenario);
-}
-
-/// The ISO source shared by the `drive-empty` and `drive` scenarios.
-fn demo_iso_source() -> crate::model::Source {
-    use crate::model::{Source, SourceKind};
-    Source {
-        kind: SourceKind::IsoFile,
-        path: "/home/quinten/Downloads/Fedora-Workstation-Live-42.iso".into(),
-        name: "Fedora-Workstation-Live-42.iso".into(),
-        size: 2_113_929_216,
-        label: "Fedora-WS-Live-42-1-1".into(),
-        installable: false,
-        identity: None,
-        expected_sha256: None,
-    }
-}
-
-fn select_source(doc: &mut automerge::AutoCommit, source: crate::model::Source) {
-    let _ = ui::tilo_actions::Action::apply(
-        &crate::actions::ImagerAction::SelectSource {
-            source: Box::new(source),
-            previous: None,
-            recent_rank: 0,
-        },
-        doc,
-    );
-}
-
-fn ensure_empty_records(doc: &mut automerge::AutoCommit) {
-    let _ = ui::tilo_actions::Action::apply(&crate::actions::ImagerAction::EnsureRecords, doc);
-}
-
-fn seed_scenario_drive_empty(doc: &mut automerge::AutoCommit) {
-    ensure_empty_records(doc);
-    select_source(doc, demo_iso_source());
-}
-
-fn seed_scenario_source_empty(doc: &mut automerge::AutoCommit) {
-    ensure_empty_records(doc);
-}
-
-fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
-    use crate::model::sample_source;
-    ensure_empty_records(doc);
-    select_source(doc, sample_source());
-}
-
-/// Pose the "drive", "customize", "confirm", "progress", "done" and
-/// "done-failed" stations (plus the "source"/unknown default) on top of the
-/// already-seeded demo document.
-fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
-    if scenario == "drive" {
-        select_source(doc, demo_iso_source());
-    }
-}
 pub use resource::{Imager, ImagerShell};
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn drive_scenario_selects_the_iso_through_the_source_action() {
-        let mut doc = ui::automerge::AutoCommit::new();
-        super::seed_scenario(&mut doc, "drive-empty");
-        assert!(
-            !crate::doc::ImagerDoc::is_empty(&doc),
-            "the scenario record is created by EnsureRecords"
-        );
-        let source = crate::doc::ImagerDoc::source(&doc).expect("iso selected");
-        assert!(source.name.contains("Fedora"));
-    }
-}

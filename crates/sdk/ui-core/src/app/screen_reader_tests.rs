@@ -43,8 +43,8 @@ impl TwoButtons {
     fn new() -> Self {
         Self {
             kids: vec![
-                Box::new(Button::new("a", "Save", None)),
-                Box::new(Button::new("b", "Cancel", None)),
+                Box::new(Button::new("a", "Save")),
+                Box::new(Button::new("b", "Cancel")),
             ],
         }
     }

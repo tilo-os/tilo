@@ -2475,7 +2475,6 @@ mod tests {
                 model_timeout: Duration::from_secs(5),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                directory: None,
                 permissions: PermissionContext::from_capabilities(
                     ui::permissions::Actor::agent("agent-1"),
                     vec![],

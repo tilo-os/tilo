@@ -306,6 +306,12 @@ impl RemoteInputFirewall {
         &self.view
     }
 
+    /// Reconcile the seat's focus after an accepted headless-host focus
+    /// transition, without replacing any visibility or host-override flags.
+    pub(crate) fn set_keyboard_focus(&mut self, focus: Option<SurfaceId>) {
+        self.view.keyboard_focus = focus;
+    }
+
     /// Re-resolve a participant's last accepted surface-local pointer
     /// position against the current compositor view. Button events carry no
     /// coordinates, so the shared Wayland pointer must be restored here when

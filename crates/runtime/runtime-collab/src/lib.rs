@@ -66,9 +66,13 @@ pub mod collab_capnp {
 }
 
 pub mod committed_document;
+#[cfg(feature = "client")]
+pub mod live_activity;
 pub mod native_media;
 #[cfg(feature = "client")]
 pub mod settings;
+#[cfg(feature = "client")]
+pub use live_activity::{LiveActivities, LiveActivityHandle};
 #[cfg(feature = "client")]
 pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
 
@@ -1070,6 +1074,21 @@ impl ChannelHandle {
         let reply = self.inner.settings_request().send().promise.await?;
         Ok(AppSettingsHandle {
             inner: Rc::new(reply.get()?.get_settings()?),
+        })
+    }
+
+    /// This application's live activity: what it shows outside its windows
+    /// and the controls pressed on it. The broker binds the capability to
+    /// this channel's certified app.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker presents no live activities
+    /// or is unavailable.
+    pub async fn live_activity(&self) -> Result<LiveActivityHandle, NotAvailable> {
+        let reply = self.inner.live_activity_request().send().promise.await?;
+        Ok(LiveActivityHandle {
+            inner: Rc::new(reply.get()?.get_activity()?),
         })
     }
 

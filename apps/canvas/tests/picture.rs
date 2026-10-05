@@ -49,8 +49,10 @@ fn colour_at(app: &TestApp<App>, region: [f64; 4]) -> [u8; 4] {
         format: Some("png".into()),
         ..Look::default()
     };
+    let mut renderer = Renderer::default();
+    renderer.pictures.read_from(app.content());
     let (picture, _) = view_ops::look(
-        &mut Renderer::default(),
+        &mut renderer,
         &mut ui::TextRenderer::new(),
         &app.state(),
         &look,
@@ -297,6 +299,7 @@ fn exports_are_png_jpeg_or_webp_at_any_scale() {
     app.call("open", json!({"path": halves(400, 200)})).unwrap();
     let art = app.state();
     let mut renderer = Renderer::default();
+    renderer.pictures.read_from(app.content());
     let mut text = ui::TextRenderer::new();
     for (format, magic) in [
         ("png", &b"\x89PNG"[..]),
@@ -431,6 +434,7 @@ fn the_canvas_decodes_a_picture_in_the_background_and_a_look_waits_for_it() {
         panic!();
     };
     let mut canvas = Renderer::impatient();
+    canvas.pictures.read_from(app.content());
     assert_eq!(canvas.pictures.size(src), None, "a frame does not wait");
     assert!(canvas.pictures.decoding());
     let mut ready = None;
@@ -444,6 +448,7 @@ fn the_canvas_decodes_a_picture_in_the_background_and_a_look_waits_for_it() {
     assert_eq!(ready, Some((200, 100)));
     assert!(!canvas.pictures.decoding());
     let mut look = Renderer::default();
+    look.pictures.read_from(app.content());
     assert_eq!(look.pictures.size(src), Some((200, 100)), "a look waits");
 }
 

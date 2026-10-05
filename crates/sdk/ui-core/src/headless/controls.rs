@@ -580,9 +580,19 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(owner, verb, |widget, doc, root| {
                 if let Some(key_path) = &key_path {
-                    widget.perform_action_at(verb, key_path, doc, root)
+                    widget.perform_action_at(
+                        verb,
+                        key_path,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_semantic_action(&semantic_target, verb, doc, root)
+                    widget.perform_semantic_action(
+                        &semantic_target,
+                        verb,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -648,12 +658,12 @@ mod locus_tests {
         let calls = Rc::new(Cell::new(0));
         let mut column = Column::new();
         for id in ["first", "second"] {
-            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit", false);
+            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit");
             resource.id = tilo_actions::ResourceId::new(id);
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             let counter = calls.clone();
             column = column.push(resource_actions::immediate(
-                Box::new(Button::new(id, "Same label", None).on_action(binding)),
+                Box::new(Button::new(id, "Same label").on_action(binding)),
                 resource,
                 move |_| {
                     counter.set(counter.get() + 1);
@@ -870,17 +880,15 @@ mod locus_tests {
 
     #[test]
     fn semantic_locus_refuses_multiple_affordances_for_one_action() {
-        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let root = resource_actions::immediate(
             Box::new(
                 Column::new()
                     .push(Box::new(
-                        Button::new("a", "Same label", None).on_action(binding.clone()),
+                        Button::new("a", "Same label").on_action(binding.clone()),
                     ))
-                    .push(Box::new(
-                        Button::new("b", "Same label", None).on_action(binding),
-                    )),
+                    .push(Box::new(Button::new("b", "Same label").on_action(binding))),
             ),
             resource,
             |_| panic!("observation must not execute"),
@@ -899,11 +907,11 @@ mod locus_tests {
     fn semantic_locus_refuses_control_id_reuse_across_distinct_resources() {
         let mut root = Column::new();
         for kind in ["one", "two"] {
-            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit", false);
+            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit");
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             root = root.push(resource_actions::immediate(
                 Box::new(Column::new().with_id(kind).push(Box::new(
-                    Button::new("edit", "Same label", None).on_action(binding),
+                    Button::new("edit", "Same label").on_action(binding),
                 ))),
                 resource,
                 |_| panic!("observation must not execute"),
@@ -985,11 +993,11 @@ mod locus_tests {
 
     #[test]
     fn semantic_locus_refuses_a_control_whose_resource_is_no_longer_published() {
-        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let frame = FrameHarness::new(
             State::new(),
-            Box::new(Button::new("stale-control", "Same label", None).on_action(binding)),
+            Box::new(Button::new("stale-control", "Same label").on_action(binding)),
             (400, 240),
         );
         assert_eq!(frame.semantic_locus(&interaction("stale:root")), None);
@@ -1083,17 +1091,15 @@ mod locus_tests {
 
     #[test]
     fn exact_resource_bounds_preserves_ambiguity_and_ranked_order() {
-        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let root = resource_actions::immediate(
             Box::new(
                 Column::new()
                     .push(Box::new(
-                        Button::new("b", "Same label", None).on_action(binding.clone()),
+                        Button::new("b", "Same label").on_action(binding.clone()),
                     ))
-                    .push(Box::new(
-                        Button::new("a", "Same label", None).on_action(binding),
-                    )),
+                    .push(Box::new(Button::new("a", "Same label").on_action(binding))),
             ),
             resource,
             |_| panic!("observation must not execute"),
@@ -1130,7 +1136,7 @@ mod locus_tests {
         let moved = frame.action_ui_routes(&address)[0].bounds;
         assert_eq!(moved, Some(frame.targets()["first"]));
         assert_ne!(before, moved);
-        frame.root = Box::new(Button::new("replacement", "Same label", None));
+        frame.root = Box::new(Button::new("replacement", "Same label"));
         frame.invalidate_layout_tree();
         frame.relayout();
         assert!(frame.action_ui_routes(&address).is_empty());

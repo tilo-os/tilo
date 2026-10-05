@@ -973,3 +973,52 @@ fn the_strip_refines_the_selection() {
     let feather = desk.art().selection.as_ref().unwrap().feather;
     assert!(near(feather, 8.0 / desk.zoom, 1e-6), "{feather}");
 }
+
+#[test]
+fn area_tools_show_subject_controls_while_a_mark_stays_selected() {
+    let mut desk = Desk::open();
+    desk.click(270.0, 240.0);
+    let selected = desk
+        .app
+        .call("inspect", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected["selected"], serde_json::json!(["card"]));
+    for key in ["m", "o", "q", "w"] {
+        desk.key(key);
+        assert!(
+            desk.app
+                .harness()
+                .targets()
+                .contains_key("canvas-select-subject"),
+            "{key} must expose its controls without an extra deselect"
+        );
+        assert!(
+            desk.app.harness().resources().iter().any(|resource| {
+                resource.label == "Select subject"
+                    && resource.actions.iter().any(|action| action.id == "invoke")
+            }),
+            "the same control must be reachable through actions"
+        );
+        let current = desk
+            .app
+            .call("inspect", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(current["selected"], selected["selected"]);
+    }
+    desk.key("v");
+    assert!(
+        !desk
+            .app
+            .harness()
+            .targets()
+            .contains_key("canvas-select-subject")
+    );
+    let current = desk
+        .app
+        .call("inspect", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(current["selected"], selected["selected"]);
+}

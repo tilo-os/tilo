@@ -241,14 +241,14 @@ mod tests {
         // Editing a document is an act, gated on `Write` like spawning a tab.
         {
             let (cap, verb) =
-                required_capability(&resource("actions", "text.insert"), &ResourceKind::Action)
+                required_capability(&resource("actions", "record.bring"), &ResourceKind::Action)
                     .expect("writing into a document must be gated");
             assert_eq!(verb, Verb::Write);
             assert_eq!(
                 cap,
                 CapResource::Action {
                     app: SHELL_APP_ID.to_string(),
-                    action: "text.insert".to_string(),
+                    action: "record.bring".to_string(),
                 }
             );
         }
@@ -262,7 +262,7 @@ mod tests {
             let mut ws = Workspace::new(WorkspaceId::new(), "edit-gate");
             ws.owner = Some(owner.clone());
 
-            let edit = resource("actions", "text.insert");
+            let edit = resource("actions", "record.bring");
             let note = resource("notes", "15");
 
             let stranger_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));

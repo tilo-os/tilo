@@ -39,13 +39,13 @@ image = { workspace = true, features = ["png", "jpeg", "webp"] }
 usvg = { version = "0.47", default-features = false }
 # SVG export embeds a painted layer's picture.
 base64.workspace = true
+# Recent artworks that cannot be remembered are reported in the log.
+tracing.workspace = true
 # Selections and shapes are combined (union, subtract, intersect, exclude)
 # exactly, as polygons.
 i_overlay = { version = "9.0", default-features = false }
 # An SVG or reference picture named by a path is read where files have one.
 tilo-files = { path = "../../crates/platform/tilo-files" }
-# The artworks opened or saved lately are kept in the app's own state.
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # A photo's subject is found on this device by the model the person set
 # up, through the model gateway; its edge is refined to the picture here.
 tilo-subject = { path = "../../crates/platform/tilo-subject" }

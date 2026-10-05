@@ -1,6 +1,6 @@
 //! A measured command strip with a shared `ContextMenu` for overflow.
 //! The extent cache is the sole source for intrinsic sizing, fitting and placement.
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -942,7 +942,7 @@ impl Widget for Toolbar {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let target = if target == "toolbar.overflow" && self.has_overflow() {
@@ -1376,7 +1376,7 @@ mod lifecycle_tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Default::default(),
-                state: &mut AutoCommit::new(),
+                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -1485,7 +1485,7 @@ mod lifecycle_tests {
                                 assert!(tb.perform_semantic_action(
                                     &format!("toolbar.item.{index}"),
                                     &Action::Activate,
-                                    &mut AutoCommit::new(),
+                                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                                     &automerge::ROOT
                                 ));
                             }
@@ -1516,7 +1516,7 @@ mod lifecycle_tests {
                                 assert!(tb.perform_semantic_action(
                                     &format!("toolbar.item.{index}"),
                                     &Action::Activate,
-                                    &mut AutoCommit::new(),
+                                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                                     &automerge::ROOT
                                 ));
                             }
@@ -1828,7 +1828,7 @@ mod lifecycle_tests {
                 assert!(host.children_mut()[0].perform_semantic_action(
                     "toolbar.overflow",
                     &Action::Activate,
-                    &mut AutoCommit::new(),
+                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT
                 ));
                 let send = |host: &mut crate::widget::Row, event: WindowEvent| {
@@ -1837,7 +1837,7 @@ mod lifecycle_tests {
                         &mut crate::widget::EventCtx {
                             scale_factor: 1.0,
                             modifiers: &Default::default(),
-                            state: &mut AutoCommit::new(),
+                            state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                             path: &automerge::ROOT,
                             handled: &mut false,
                             focus_target: &mut None,
