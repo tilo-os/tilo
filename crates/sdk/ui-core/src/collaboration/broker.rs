@@ -2558,6 +2558,10 @@ impl CollaborationManager {
     fn from_connected(connected: ConnectedBroker) -> Self {
         let mut manager = Self::with_transport(Box::new(connected.transport));
         manager.primary_route = connected.primary_route;
+        // The bootstrap already acknowledged Ready, but the owner has not
+        // observed it. Its first pump must still announce the initial action
+        // surface and request the document snapshot on the admitted route.
+        manager.reported_state = None;
         manager
     }
 
@@ -7153,6 +7157,9 @@ mod tests {
             // Returning a manager must include the existing Hello/primary barrier.
             assert!(manager.is_connected());
             assert!(manager.primary_route.current(true).is_some());
+            assert_eq!(manager.state(), CollaborationState::Ready);
+            assert_eq!(manager.take_state_change(), Some(CollaborationState::Ready));
+            assert_eq!(manager.take_state_change(), None);
             let joined = captures.lock().unwrap().joined.clone();
             assert_eq!(joined.len(), 1);
             assert_eq!(

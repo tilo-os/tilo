@@ -975,7 +975,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "taffy",
  "tempfile",
  "tilo-actions",
  "tilo-app",
@@ -8482,7 +8481,6 @@ name = "music"
 version = "0.1.0"
 dependencies = [
  "base64",
- "fnv",
  "gstreamer",
  "hex",
  "image",
@@ -11706,7 +11704,6 @@ dependencies = [
  "russh",
  "serde",
  "serde_json",
- "serial_test",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -14603,12 +14600,8 @@ name = "themes"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
- "serde",
  "serde_json",
- "tempfile",
  "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
  "uuid",
  "workspace-hack",
 ]
@@ -19606,7 +19599,6 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
- "taffy",
  "tempfile",
  "tilo-actions",
  "tilo-app",
