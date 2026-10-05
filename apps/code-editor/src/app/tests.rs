@@ -920,7 +920,11 @@ fn duplicate_line_repeats_it_below() {
         app.editor.move_caret_to(0, 0);
         app.pending_command = Some(Command::DuplicateLine);
         app.sync(doc.doc(), &automerge::ROOT);
-        assert_eq!(buffer_lines(app, doc, node), before, "projection leaves the queued edit unwritten");
+        assert_eq!(
+            buffer_lines(app, doc, node),
+            before,
+            "projection leaves the queued edit unwritten"
+        );
         assert!(matches!(app.pending_command, Some(Command::DuplicateLine)));
         app.settle(doc, &automerge::ROOT);
 
