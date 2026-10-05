@@ -2735,6 +2735,7 @@ impl ChromeState {
             id: format!("notification:{}", uuid::Uuid::new_v4()),
             kind: "notification".to_string(),
             label: notification.title.clone(),
+            agent_request: None,
         };
         let room = self
             .tree()

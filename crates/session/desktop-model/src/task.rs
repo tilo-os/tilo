@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Largest full instruction retained for one queued agent task.
+pub const MAX_WORKSPACE_TASK_INSTRUCTION_BYTES: usize = 32 * 1024;
+/// Largest direction a person may append to an active task.
+pub const MAX_WORKSPACE_TASK_DIRECTION_BYTES: usize = 8 * 1024;
+/// Largest terminal or abandonment summary retained in task history.
+pub const MAX_WORKSPACE_TASK_SUMMARY_BYTES: usize = 8 * 1024;
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceTaskStatus {
@@ -58,6 +65,22 @@ pub struct WorkspaceTaskResource {
     pub id: String,
     pub kind: String,
     pub label: String,
+    /// Canonical direct-Chat request behind an explicitly queued agent task.
+    /// The full instruction lives here rather than in the short Task Center
+    /// display title, so an offline agent receives it byte-for-byte later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_request: Option<WorkspaceAgentRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceAgentRequest {
+    #[serde(default)]
+    pub chat_record: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub instruction: String,
+    pub invocation: tilo_actions::InvocationId,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +88,96 @@ pub struct WorkspaceTaskAuditEvent {
     pub at: i64,
     pub actor: String,
     pub summary: String,
+}
+
+/// One person-authored revision to a task's current instructions.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskDirection {
+    pub revision: u64,
+    pub invocation: tilo_actions::InvocationId,
+    pub author: String,
+    pub text: String,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied: Option<WorkspaceTaskDirectionApplied>,
+}
+
+impl WorkspaceTaskDirection {
+    #[must_use]
+    pub fn owner_admitted(
+        revision: u64,
+        invocation: uuid::Uuid,
+        author: String,
+        text: String,
+        created_at: i64,
+    ) -> Self {
+        Self {
+            revision,
+            invocation: tilo_actions::InvocationId(invocation),
+            author,
+            text,
+            created_at,
+            applied: None,
+        }
+    }
+}
+
+/// Durable acknowledgement that the assigned agent incorporated a direction.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskDirectionApplied {
+    pub agent_id: String,
+    pub run_epoch: u64,
+    pub applied_at: i64,
+}
+
+/// The one run currently allowed to act for a task.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskActiveRun {
+    pub epoch: u64,
+    pub agent_id: String,
+    pub started_at: i64,
+    /// Highest contiguous direction revision durably incorporated by the agent.
+    pub applied_direction_revision: u64,
+}
+
+/// Result retained beside a task command so an exact retry is deterministic.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceTaskMutationResult {
+    Queued { task_id: String },
+    RunStarted { task_id: String, epoch: u64 },
+    DirectionAdded { task_id: String, revision: u64 },
+    DirectionApplied { task_id: String, revision: u64 },
+    Finished { task_id: String },
+    Abandoned { task_id: String },
+}
+
+/// Exact replay record for one owner-admitted task mutation.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskMutationReceipt {
+    pub device: [u8; 32],
+    pub invocation: uuid::Uuid,
+    pub request_digest: [u8; 32],
+    pub result: WorkspaceTaskMutationResult,
+}
+
+/// Owner-only task execution state, stored beside `tasks_v1` under the task id.
+/// Keeping it as a sidecar leaves the long-lived public [`WorkspaceTask`] shape
+/// backward compatible while preserving restart fences and exact replay.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskControl {
+    pub run_epoch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run: Option<WorkspaceTaskActiveRun>,
+    #[serde(default)]
+    pub directions: Vec<WorkspaceTaskDirection>,
+    #[serde(default)]
+    pub receipts: Vec<WorkspaceTaskMutationReceipt>,
 }
 
 /// Append-only, broker-authenticated record of an external side effect.

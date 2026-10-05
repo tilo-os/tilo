@@ -357,6 +357,13 @@ pub enum BackendEvent {
     /// `FrameBuilder::dispatch_event` — the same dispatch path the
     /// headless `execute_planned_action` uses.
     Input(WindowEvent),
+    /// A real libinput keyboard event, preserving its kernel `CLOCK_MONOTONIC`
+    /// timestamp before translation or input-loop queueing. Synthetic input
+    /// and compositor-generated repeats never use this variant.
+    PhysicalKey {
+        event: WindowEvent,
+        input_time_ns: u64,
+    },
     /// Raw relative mouse motion, emitted by the direct backend alongside the
     /// clamped absolute cursor event. Spatial device control needs the delta
     /// after the local cursor reaches a display edge.

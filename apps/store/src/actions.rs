@@ -141,6 +141,9 @@ pub fn execute_with_host(
     action: ActionKind,
     staging_dir: &Path,
 ) -> ActionOutcome {
+    if let Some((_, reason)) = item.unavailable_action(action) {
+        return ActionOutcome::fail(reason);
+    }
     match (action, &item.source) {
         (ActionKind::Open, StoreSource::Tilo { .. })
         | (ActionKind::Update, StoreSource::Tilo { .. }) => {
@@ -157,7 +160,7 @@ pub fn execute_with_host(
         (ActionKind::Unmark, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
             host.pin(id, false).map(|()| "Unmarked app.".into())
         }),
-        (ActionKind::FlatpakInstall, StoreSource::Flathub) => {
+        (ActionKind::FlatpakInstall, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             let reference = match item.install_ref_path.as_deref() {
                 Some(path) => match std::fs::read(path) {
                     Ok(bytes) if bytes.len() <= 64 * 1024 => Some(bytes),
@@ -171,22 +174,39 @@ pub fn execute_with_host(
                 None => None,
             };
             host_result(host, |host| {
-                host.flatpak(
-                    app_host::client::FlatpakAction::Install,
-                    &item.id,
-                    reference.as_deref(),
-                )
+                if let StoreSource::FlatpakRemote {
+                    name,
+                    branch,
+                    user_managed,
+                    ..
+                } = &item.source
+                {
+                    if !*user_managed {
+                        return Err("This repository belongs to the device. Ask its administrator to install the app.".into());
+                    }
+                    host.flatpak_install_remote(name, &item.id, branch)
+                } else {
+                    host.flatpak(
+                        app_host::client::FlatpakAction::Install,
+                        &item.id,
+                        reference.as_deref(),
+                    )
+                }
             })
         }
-        (ActionKind::FlatpakUpdate, StoreSource::Flathub) => host_result(host, |host| {
-            host.flatpak(app_host::client::FlatpakAction::Update, &item.id, None)
-        }),
-        (ActionKind::FlatpakOpen, StoreSource::Flathub) => {
+        (ActionKind::FlatpakUpdate, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
+            host_result(host, |host| {
+                host.flatpak(app_host::client::FlatpakAction::Update, &item.id, None)
+            })
+        }
+        (ActionKind::FlatpakOpen, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             host_result(host, |host| host.launch_desktop(&item.id))
         }
-        (ActionKind::FlatpakRemove, StoreSource::Flathub) => host_result(host, |host| {
-            host.flatpak(app_host::client::FlatpakAction::Remove, &item.id, None)
-        }),
+        (ActionKind::FlatpakRemove, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
+            host_result(host, |host| {
+                host.flatpak(app_host::client::FlatpakAction::Remove, &item.id, None)
+            })
+        }
         (ActionKind::NeedsFlatpakHost, _) => {
             ActionOutcome::fail("Install flatpak on the host to use this action.")
         }
