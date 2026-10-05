@@ -483,6 +483,25 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         values.route(path, shown, binding);
     }
 
+    /// Route a serialized screen's checked controls through the resource:
+    /// they show `read` and each edit invokes its typed `action`.
+    pub fn route_graph_bool(
+        &self,
+        values: &ui_core::UiValues,
+        path: &str,
+        read: impl Fn(&T) -> bool + 'static,
+        action: impl Binds<R, bool>,
+    ) {
+        let Some(binding) = self.binding(action) else {
+            return;
+        };
+        let shown = LocalState::new(false);
+        let sink = shown.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        shown.set(initial);
+        values.route_bool(path, shown, binding);
+    }
+
     /// A checkbox showing `read` of the resource; toggling invokes `action`
     /// with the new value.
     pub fn checkbox(

@@ -56,7 +56,12 @@ fn notes_continuation_daily_discovery_does_not_publish_preallocated_destination(
     discovery(false);
 }
 
-fn destination_ids(encoded: &EncodedAction, source: Uuid, duplicate: bool) -> BTreeSet<Uuid> {
+fn destination_ids(
+    encoded: &EncodedAction,
+    source: Uuid,
+    duplicate: bool,
+    daily_order: &str,
+) -> BTreeSet<Uuid> {
     assert_eq!(encoded.type_id, actions::NOTES_ACTION_TYPE);
     let action: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
     if duplicate {
@@ -76,12 +81,16 @@ fn destination_ids(encoded: &EncodedAction, source: Uuid, duplicate: bool) -> BT
         assert_eq!(ids.len(), 2, "every copied page receives an id of its own");
         ids
     } else {
-        let NotesAction::AppendPage { id, title, parent } = action else {
+        let NotesAction::UpsertPage(page) = action else {
             panic!("expected creation of the missing daily note");
         };
-        assert!(parent.is_empty());
-        assert!(chrono::NaiveDate::parse_from_str(&title, "%Y-%m-%d").is_ok());
-        BTreeSet::from([id.parse().unwrap()])
+        assert!(page.parent.is_empty());
+        assert!(chrono::NaiveDate::parse_from_str(&page.title, "%Y-%m-%d").is_ok());
+        assert_eq!(
+            page.order, daily_order,
+            "daily creation keeps its published fractional key"
+        );
+        BTreeSet::from([page.id.parse().unwrap()])
     }
 }
 
@@ -102,15 +111,24 @@ fn retained_declaration(duplicate: bool, json: bool) {
     // Keep the same actual declaration. Rebuilding it between calls would mask
     // the current bug by minting replacement IDs during discovery again.
     let resources = live.resources();
+    let daily_order = f
+        .records
+        .read(&checkout.id, |doc| {
+            let pages = NotesDoc::list_pages(doc);
+            notes::model::key_after(pages.iter().filter(|page| page.parent.is_none()))
+        })
+        .unwrap();
     let first = destination_ids(
         &encode_retained(&resources, &target, json),
         f.root,
         duplicate,
+        &daily_order,
     );
     let second = destination_ids(
         &encode_retained(&resources, &target, json),
         f.root,
         duplicate,
+        &daily_order,
     );
     assert!(
         first.is_disjoint(&second),
