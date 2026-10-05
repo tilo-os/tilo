@@ -73,7 +73,6 @@ fn draw_frame_content(
             &app.permission_ctx,
         );
     }
-    app.presence_ctx.pop_viewport(prev_vp);
     // Everything from here on paints outside the widgets' layout boxes, where
     // their damage cannot describe it.
     let layer_start = scene.encoding().draw_tags.len();
@@ -94,6 +93,9 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
+    // The overlay pass sees the whole window too: what escapes a scrolled
+    // list's box (a menu opened in it) may go anywhere in the window.
+    app.presence_ctx.pop_viewport(prev_vp);
     if app.history_chrome_enabled {
         let context = crate::standalone_history::HistoryReadContext {
             document: &app.state.doc,
@@ -183,9 +185,15 @@ fn draw_visible_tooltip(
     // The widget under a shown tooltip may have been rebuilt since the
     // pointer settled (a toggle that now reads "Show" instead of "Hide"):
     // read its tooltip again rather than showing the old one.
+    let mut side = crate::widget::tooltip::TooltipSide::Below;
     if let Some((_, anchor)) = app.input.tooltip_host.visible() {
-        let current = app.tooltip_target_at(anchor.center());
-        app.input.tooltip_host.refresh(current);
+        let current = app.tooltip_placed_at(anchor.center());
+        if let Some((_, _, placed)) = &current {
+            side = *placed;
+        }
+        app.input
+            .tooltip_host
+            .refresh(current.map(|(rect, label, _)| (rect, label)));
     }
     let Some((text, anchor)) = app
         .input
@@ -201,12 +209,12 @@ fn draw_visible_tooltip(
         f64::from(width) / f64::from(scale_factor),
         f64::from(height) / f64::from(scale_factor),
     );
-    crate::widget::tooltip::draw_hover_tooltip(
+    crate::widget::tooltip::draw_hover_tooltip_on(
         scene,
         transform,
         &mut app.text_renderer,
         &app.theme,
-        anchor,
+        (anchor, side),
         &text,
         viewport,
     );
@@ -260,8 +268,7 @@ fn run_layout_pass(
         }
         app.history_viewport_width = logical.0;
         let _ = app.history_local_resources();
-        app.document_history
-            .sync(&app.state.doc, &app.state.root);
+        app.document_history.sync(&app.state.doc, &app.state.root);
     }
     if !app.layout.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));

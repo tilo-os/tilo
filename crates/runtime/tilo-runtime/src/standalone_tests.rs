@@ -74,6 +74,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         broker,
         room: room.clone(),
         joined,
+        session: None,
     };
     let owner = Caller::local_person("a1".repeat(32))
         .in_room(room)
@@ -707,12 +708,49 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
 fn the_runtime_governs_only_its_own_room_from_its_own_device() {
     use tilo_action_broker::peer_actions::CertificateAuthority as _;
     let room = uuid::Uuid::from_u128(7);
+    let origin = Arc::new(
+        tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            .unwrap()
+            .new_origin(),
+    );
     let certificates = Certificates {
         room: room.to_string(),
         device: [2; 32],
+        policy_time: origin.capture().unwrap(),
+        joined: std::sync::Weak::new(),
     };
     assert!(certificates.governs(room, Some(&[2; 32])));
     assert!(certificates.governs(room, None));
     assert!(!certificates.governs(room, Some(&[3; 32])));
     assert!(!certificates.governs(uuid::Uuid::from_u128(8), None));
+    drop(certificates);
+}
+
+#[test]
+fn runtime_original_policy_time_cannot_survive_origin_retirement() {
+    use tilo_action_broker::peer_actions::CertificateAuthority as _;
+    let origin = Arc::new(
+        tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            .unwrap()
+            .new_origin(),
+    );
+    let certificates = Certificates {
+        room: uuid::Uuid::from_u128(7).to_string(),
+        device: [2; 32],
+        policy_time: origin.capture().unwrap(),
+        joined: std::sync::Weak::new(),
+    };
+    let retained = certificates.policy_time().unwrap().unwrap();
+    origin.invalidate();
+    assert!(certificates.policy_time().is_err());
+    drop(certificates);
+    assert!(retained.now_ns().is_err());
+    let replacement = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        .unwrap()
+        .new_origin();
+    assert!(!retained.same_origin(&replacement.capture().unwrap()));
+    assert!(
+        retained.now_ns().is_err(),
+        "a new runtime clock cannot revive the original custody"
+    );
 }

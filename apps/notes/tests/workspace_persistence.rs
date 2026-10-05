@@ -13,7 +13,7 @@ fn a_reopened_notebook_keeps_its_tree_bodies_and_open_note() {
     let alpha = PageId::new_v4();
     apply(
         &mut app,
-        &new_page_action(alpha, Some(projects), 0, "Project Alpha"),
+        &new_page_action(alpha, Some(projects), "a".into(), "Project Alpha"),
     );
     open(&mut app, alpha);
     assert_eq!(

@@ -269,6 +269,44 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
     );
 }
 
+/// Launch records of the apps the session shows inside its own process: the
+/// app and room each is about to connect for, until its collaboration
+/// connection is attested or the record expires.
+static IN_PROCESS_LAUNCHES: Mutex<Vec<(ServiceLaunchIdentity, Instant)>> = Mutex::new(Vec::new());
+
+/// Record that the session itself is about to connect `app_id` in room
+/// `workspace_id`, as it records a process it launched.
+pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
+    launches.push((
+        ServiceLaunchIdentity {
+            app_id: app_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            allowed_compat_entry_ids: Vec::new(),
+            compat_entry_generation: 0,
+        },
+        Instant::now(),
+    ));
+}
+
+/// Spend the session's launch record for a connection from its own process
+/// naming `app_id` in room `workspace_id`.
+pub fn consume_in_process_launch(pid: u32, app_id: &str, workspace_id: &str) -> bool {
+    if pid != std::process::id() {
+        return false;
+    }
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
+    let Some(index) = launches.iter().position(|(identity, _)| {
+        identity.app_id == app_id && identity.workspace_id == workspace_id
+    }) else {
+        return false;
+    };
+    launches.remove(index);
+    true
+}
+
 /// Consume the compositor's one-shot authority record for a launcher child.
 /// Kernel process facts corroborate the record but never create authority.
 pub fn consume_trusted_service_launch_identity(
@@ -750,6 +788,12 @@ pub enum LaunchEventKind {
     /// The app ran and exited cleanly. Not an error; reported so
     /// callers can retire per-app UI state.
     Exited,
+    /// The app's window went away without anyone closing it, whatever its
+    /// process reported. `code` is its exit status when it had one.
+    WindowLost {
+        code: Option<i32>,
+        stderr_tail: String,
+    },
 }
 
 /// Normal-user copy for an asynchronous launch failure. The launcher keeps
@@ -779,12 +823,27 @@ impl LaunchEvent {
             LaunchEventKind::Failed { code, stderr_tail } => {
                 crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
             }
+            LaunchEventKind::WindowLost { .. } => {
+                crate::shell::i18n::t("launch-failed-window-lost")
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
         };
-        Some(LaunchFailureNotice {
-            title: launch_failure_title(&self.display_name),
-            body,
-        })
+        let window_lost = match &self.kind {
+            LaunchEventKind::WindowLost { .. } => true,
+            LaunchEventKind::Failed { stderr_tail, .. } => {
+                stderr_tail.contains(ui::app::WINDOW_LOST)
+            }
+            _ => false,
+        };
+        let title = if window_lost {
+            crate::shell::i18n::t_args(
+                "launch-window-lost-title",
+                &[("app", compact_notice_name(&self.display_name).into())],
+            )
+        } else {
+            launch_failure_title(&self.display_name)
+        };
+        Some(LaunchFailureNotice { title, body })
     }
 
     /// Preserve the complete failure in the compositor's session log. Field
@@ -811,8 +870,39 @@ impl LaunchEvent {
                     "application stopped before presenting a window"
                 );
             }
+            LaunchEventKind::WindowLost { code, stderr_tail } => {
+                tracing::error!(
+                    target: "tilo::app_launch",
+                    package_id = %self.package_id,
+                    display_name = %self.display_name,
+                    exit_code = ?code,
+                    stderr_tail = ?stderr_tail,
+                    "application window went away without being closed"
+                );
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {}
         }
+    }
+
+    /// This event, read knowing whether the launch's window went away
+    /// without being closed: then neither a clean exit nor an error after
+    /// the window was shown is the app ending as asked.
+    #[must_use]
+    pub(crate) fn with_window_lost(self, lost: bool) -> Self {
+        if !lost {
+            return self;
+        }
+        let kind = match self.kind {
+            LaunchEventKind::Exited => LaunchEventKind::WindowLost {
+                code: Some(0),
+                stderr_tail: String::new(),
+            },
+            LaunchEventKind::Failed { code, stderr_tail } => {
+                LaunchEventKind::WindowLost { code, stderr_tail }
+            }
+            other => other,
+        };
+        Self { kind, ..self }
     }
 }
 
@@ -821,14 +911,24 @@ impl LaunchEvent {
 /// they are only recognised here and logged in full by
 /// [`LaunchEvent::log_failure`].
 fn stopped_reason_key(code: Option<i32>, stderr_tail: &str) -> &'static str {
-    if stderr_tail.contains("error while loading shared libraries")
-        || stderr_tail.contains("cannot open shared object file")
+    let loader_failed = stderr_tail.contains("error while loading shared libraries")
+        || stderr_tail.contains("cannot open shared object file");
+    // The launcher's own refusal (`RunError::RuntimeLibraryMissing`), or the
+    // loader failing on a library only a Tilo runtime bundle ships: the app
+    // was built against another runtime than the one installed.
+    if stderr_tail.contains("built for a different Tilo runtime")
+        || (loader_failed
+            && (stderr_tail.contains("libstd-") || stderr_tail.contains("libruntime_dylib")))
     {
+        "launch-failed-runtime-mismatch"
+    } else if loader_failed {
         "launch-failed-missing-library"
     } else if stderr_tail.lines().any(|line| line.starts_with("bwrap: ")) {
         "launch-failed-sandbox"
     } else if stderr_tail.contains(ui::collaboration::ROUTE_JOIN_FAILED) {
         "launch-failed-collaboration"
+    } else if stderr_tail.contains(ui::app::WINDOW_LOST) {
+        "launch-failed-window-lost"
     } else if code.is_none() {
         "launch-failed-crashed"
     } else {
@@ -928,6 +1028,14 @@ pub(crate) struct SessionLaunches {
     surfaces: Mutex<HashMap<u64, String>>,
     /// Launch keys whose app has shown a window since it last started.
     presented: Mutex<HashSet<String>>,
+    /// Launch keys whose window went away without anyone closing it: the
+    /// compositor never asked, and the person never reached the app to ask
+    /// it. However the process then exits, the window was lost.
+    vanished: Mutex<HashSet<String>>,
+    /// Launch keys whose app has been handed an action invocation since it
+    /// started: an agent, another device or the person drove it, so a
+    /// window it then closes was closed on request.
+    acted_on: Mutex<HashSet<String>>,
     /// User launches still waiting for a window. This outlives the short
     /// placement claim: Wine's first window can announce `wineboot.exe` long
     /// after that claim expires, and it still belongs to the launch the
@@ -960,6 +1068,8 @@ impl Default for SessionLaunches {
             launched: Mutex::default(),
             surfaces: Mutex::default(),
             presented: Mutex::default(),
+            vanished: Mutex::default(),
+            acted_on: Mutex::default(),
             awaiting_window: Mutex::default(),
             unresolved_owners: Mutex::default(),
             session_helpers: Mutex::default(),
@@ -3156,7 +3266,7 @@ pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
 /// its Wayland connection. Host applications may announce an undeclared
 /// toolkit app-id, so this mapping is intentionally independent of protocol
 /// strings and pending-placement matching.
-pub(crate) fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
+pub fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
     lock(&LaunchSession::current().surfaces).insert(surface_id, launch_key.to_string());
 }
 
@@ -3347,8 +3457,44 @@ pub(crate) fn take_launch_presented(key: &str) -> bool {
     lock(&LaunchSession::current().presented).remove(key)
 }
 
-pub(crate) fn forget_surface_launch(surface_id: u64) {
-    lock(&LaunchSession::current().surfaces).remove(&surface_id);
+/// A toplevel went away. `closed` says someone ended it: the compositor
+/// asked it to close, or the person had reached the app and could have
+/// asked it. Otherwise the window was lost under its launch.
+pub(crate) fn note_surface_gone(surface_id: u64, closed: bool) {
+    let session = LaunchSession::current();
+    let key = lock(&session.surfaces).remove(&surface_id);
+    if let Some(key) = key
+        && !closed
+        && !lock(&session.acted_on).contains(&key)
+    {
+        tracing::error!(
+            target: "tilo::app_launch",
+            launch = %key,
+            surface_id,
+            "an application window went away without being closed"
+        );
+        lock(&session.vanished).insert(key);
+    }
+}
+
+/// An action invocation was handed to the app of launch `key`. Driving an
+/// app through its actions is reaching it as much as a key or a click is.
+pub fn note_launch_acted_on(key: &str) {
+    lock(&LaunchSession::current().acted_on).insert(key.to_string());
+}
+
+/// Launch `key` started again: what was said of its previous run no
+/// longer holds.
+pub(crate) fn note_launch_restarted(key: &str) {
+    let session = LaunchSession::current();
+    lock(&session.vanished).remove(key);
+    lock(&session.acted_on).remove(key);
+}
+
+/// Whether a window of launch `key` went away without being closed since
+/// the launch started, clearing the mark.
+pub fn take_launch_vanished(key: &str) -> bool {
+    lock(&LaunchSession::current().vanished).remove(key)
 }
 
 /// Forget every launch this session has recorded — for tests asserting
@@ -3364,6 +3510,8 @@ pub(crate) fn clear_launched_for_test() {
     lock(&session.session_helpers).clear();
     lock(&session.restartable_helpers).clear();
     lock(&session.presented).clear();
+    lock(&session.vanished).clear();
+    lock(&session.acted_on).clear();
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
@@ -4069,8 +4217,29 @@ mod tests {
             (
                 Some(127),
                 "/usr/libexec/tilo/apps/terminal: error while loading shared libraries: \
-                 libstd-8f2c.so: cannot open shared object file: No such file or directory",
+                 libvulkan.so.1: cannot open shared object file: No such file or directory",
                 "The app needs a library this system doesn't have, so it stopped before opening.",
+            ),
+            (
+                Some(127),
+                "/var/tilo-apps/so.tilo.terminal/bin/terminal: error while loading shared \
+                 libraries: libstd-8f2c.so: cannot open shared object file: No such file or \
+                 directory",
+                "This app was built for a different Tilo runtime. Update or reinstall it to get \
+                 the runtime it needs.",
+            ),
+            (
+                Some(1),
+                "tilo-launcher: `so.tilo.terminal` was built for a different Tilo runtime than \
+                 the one installed, so it cannot start: it needs the library \
+                 `libstd-55999f89fc36b51f.so`, which the installed runtime \
+                 `tilo-runtime/2026.10.0` does not provide (looked in \
+                 /usr/lib/tilo-runtime/2026.10.0/lib, /etc/ld.so.cache, /lib64). Update it with \
+                 `app update so.tilo.terminal` or reinstall it with `app install \
+                 so.tilo.terminal`, which also fetches the runtime it needs, or remove it with \
+                 `app remove so.tilo.terminal` to go back to the system build.",
+                "This app was built for a different Tilo runtime. Update or reinstall it to get \
+                 the runtime it needs.",
             ),
             (
                 Some(1),
@@ -4102,6 +4271,59 @@ mod tests {
             assert_eq!(notice.body, body);
             assert!(!notice.body.contains('/'), "no path reaches the banner");
         }
+    }
+
+    /// A window that went away without being closed is a lost window: the
+    /// person is told, whether the process then exited cleanly (an app
+    /// whose drawing surface died used to) or with an error after its
+    /// window was up (which is otherwise an ordinary ending).
+    #[test]
+    fn a_window_lost_unasked_is_reported_however_the_process_exits() {
+        clear_launched_for_test();
+        attribute_surface_launch(7 << 32 | 3, "Broken App");
+        note_surface_gone(7 << 32 | 3, false);
+        assert!(take_launch_vanished("Broken App"));
+        assert!(
+            !take_launch_vanished("Broken App"),
+            "the mark is taken once"
+        );
+
+        attribute_surface_launch(7 << 32 | 4, "Broken App");
+        note_surface_gone(7 << 32 | 4, true);
+        assert!(
+            !take_launch_vanished("Broken App"),
+            "a window someone closed is not lost"
+        );
+
+        let lost = launch_event(LaunchEventKind::Exited).with_window_lost(true);
+        assert!(matches!(
+            lost.kind,
+            LaunchEventKind::WindowLost { code: Some(0), .. }
+        ));
+        let notice = lost.failure_notice().expect("a lost window is reported");
+        assert_eq!(notice.title, "Broken App closed unexpectedly");
+        assert!(
+            launch_event(LaunchEventKind::Exited)
+                .with_window_lost(false)
+                .failure_notice()
+                .is_none(),
+            "a clean exit after a close stays quiet"
+        );
+
+        let stopped = launch_event(LaunchEventKind::Failed {
+            code: Some(ui::app::WINDOW_LOST_EXIT_CODE),
+            stderr_tail: format!(
+                "error: {}: its drawing surface could not be resized: Validation Error",
+                ui::app::WINDOW_LOST
+            ),
+        });
+        let notice = stopped.failure_notice().expect("failure has a notice");
+        assert_eq!(notice.title, "Broken App closed unexpectedly");
+        assert_eq!(
+            notice.body,
+            "Its window stopped without being closed. Open it again from Applications; \
+             the desktop log says why."
+        );
     }
 
     /// The startup metrics of `package_id`'s launches. The metrics registry

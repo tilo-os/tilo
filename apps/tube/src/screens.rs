@@ -248,7 +248,10 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
         })
         .hover_surface(hover_pill_surface(theme))
         .accessible_name("Show or hide navigation");
-    button.on_click(bus, Action::ToggleSidebar)
+    match crate::actions::effect_binding(&crate::actions::TubeEffect::ToggleSidebar) {
+        Some(binding) => button.on_action(binding),
+        None => button.on_click(bus, Action::ToggleSidebar),
+    }
 }
 
 fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
@@ -618,7 +621,17 @@ fn nav_item(
             .push(icon(kind, 22.0, fg))
             .push(text_c(label, 11.0, fg))
     };
-    item.on_click(bus, Action::Navigate(route.clone()))
+    // The rail opens its screen through the same effect the palette and
+    // agents name.
+    let binding = crate::actions::TubeEffect::screen_name(route).and_then(|screen| {
+        crate::actions::effect_binding(&crate::actions::TubeEffect::ShowScreen {
+            screen: screen.to_owned(),
+        })
+    });
+    match binding {
+        Some(binding) => item.on_action(binding),
+        _ => item.on_click(bus, Action::Navigate(route.clone())),
+    }
 }
 
 pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus, width: f64) -> Flex {

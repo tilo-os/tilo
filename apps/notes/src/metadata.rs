@@ -187,8 +187,16 @@ mod tests {
             let mut doc = AutoCommit::new();
             let a = PageId::new_v4();
             let b = PageId::new_v4();
-            apply(&mut doc, actions::new_page_action(a, None, 0, "A"), 100);
-            apply(&mut doc, actions::new_page_action(b, None, 1, "B"), 200);
+            apply(
+                &mut doc,
+                actions::new_page_action(a, None, "a".into(), "A"),
+                100,
+            );
+            apply(
+                &mut doc,
+                actions::new_page_action(b, None, "b".into(), "B"),
+                200,
+            );
             let mut index = NoteDateIndex::default();
             index.sync(&mut doc);
             assert_eq!(
@@ -232,7 +240,7 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut doc,
-                actions::new_page_action(page, None, 0, "Legacy"),
+                actions::new_page_action(page, None, "a".into(), "Legacy"),
                 0,
             );
             let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
@@ -253,7 +261,7 @@ mod tests {
             let mut origin = AutoCommit::new();
             let mut peer = AutoCommit::new();
             let page = PageId::new_v4();
-            let action = actions::new_page_action(page, None, 0, "New note");
+            let action = actions::new_page_action(page, None, "a".into(), "New note");
             let envelope =
                 tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).unwrap();
             assert!(
@@ -296,7 +304,7 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut base,
-                actions::new_page_action(page, None, 0, "Original"),
+                actions::new_page_action(page, None, "a".into(), "Original"),
                 100,
             );
             let meta = crate::doc::NotesDoc::list_pages(&base).remove(0);
@@ -348,7 +356,7 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut state.doc,
-                actions::new_page_action(page, None, 0, "Original"),
+                actions::new_page_action(page, None, "a".into(), "Original"),
                 100,
             );
             let before = state.doc.get_heads();
@@ -390,7 +398,7 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut doc,
-                actions::new_page_action(page, None, 0, "Original"),
+                actions::new_page_action(page, None, "a".into(), "Original"),
                 100,
             );
             let before = doc.get_heads();

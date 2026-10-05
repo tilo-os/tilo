@@ -8,8 +8,10 @@
 //!
 //! - `ok` — a GPU exists and the session and its apps use it;
 //! - `degraded` — a GPU exists and something is not on it (exit status 1);
-//! - `no-gpu` — the machine has no render node, so software rendering is the
-//!   only rendering there is.
+//! - `no-gpu` — the machine has no render node with a GPU behind it, so
+//!   software rendering is the only rendering there is. A virtio GPU without 3D
+//!   acceleration registers a render node all the same; the compositor records
+//!   such nodes as `nodes_without_gpu`, and they do not count.
 //!
 //! It is the hardware check for GPU support: CI machines have no Adreno, Mali or
 //! discrete GPU, so on a real device run `tilo system health --gpu` after
@@ -67,11 +69,16 @@ fn current_uid() -> u32 {
 /// The verdict for `nodes` and the compositor's `record` (`None` when no
 /// session has written one).
 pub fn assess(nodes: &[PathBuf], record: Option<&Value>) -> Value {
-    if nodes.is_empty() {
+    let without_gpu = record.map_or(&Value::Null, |record| at(record, "nodes_without_gpu"));
+    if nodes
+        .iter()
+        .all(|node| !at(without_gpu, &node.display().to_string()).is_null())
+    {
         return json!({
             "status": "no-gpu",
             "problems": [],
-            "render_nodes": [],
+            "render_nodes": nodes.iter().map(|n| n.display().to_string()).collect::<Vec<_>>(),
+            "session": record.cloned().unwrap_or(Value::Null),
         });
     }
     let mut problems: Vec<String> = Vec::new();
@@ -148,7 +155,17 @@ fn print_human(verdict: &Value) {
     let session = at(verdict, "session");
     match at(verdict, "status").as_str() {
         Some("no-gpu") => {
-            println!("GPU: none — this machine has no render node; everything renders in software");
+            println!(
+                "GPU: none — this machine has no render node with a GPU behind it; everything \
+                 renders in software"
+            );
+            for (node, why) in at(session, "nodes_without_gpu")
+                .as_object()
+                .into_iter()
+                .flatten()
+            {
+                println!("  {node:<20} {}", why.as_str().unwrap_or(""));
+            }
             return;
         }
         Some("ok") => println!("GPU: ok"),
@@ -182,6 +199,31 @@ mod tests {
     fn a_machine_without_render_nodes_has_no_gpu_to_miss() {
         let verdict = assess(&[], None);
         assert_eq!(verdict["status"], "no-gpu");
+    }
+
+    #[test]
+    fn render_nodes_without_a_gpu_behind_them_are_no_gpu() {
+        let record = json!({
+            "node": null,
+            "dmabuf_device": null,
+            "nodes_without_gpu": {
+                "/dev/dri/renderD128": "virtio GPU without 3D acceleration"
+            },
+            "problems": [],
+            "app_adapters": {
+                "so.tilo.notes": "window adapter \"llvmpipe (LLVM 22.1.0, 128 bits)\" type=Cpu backend=Vulkan driver=\"llvmpipe\""
+            }
+        });
+        let verdict = assess(&nodes(), Some(&record));
+        assert_eq!(verdict["status"], "no-gpu", "{verdict}");
+
+        // A second node the compositor did not set aside is a GPU the session must use.
+        let both = [
+            PathBuf::from("/dev/dri/renderD128"),
+            PathBuf::from("/dev/dri/renderD129"),
+        ];
+        let verdict = assess(&both, Some(&record));
+        assert_eq!(verdict["status"], "degraded", "{verdict}");
     }
 
     #[test]

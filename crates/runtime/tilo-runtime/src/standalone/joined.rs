@@ -40,7 +40,12 @@ pub(super) const JOINED_ROOMS: &str = "joined-rooms.json";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REDIAL_LONGEST: Duration = Duration::from_secs(60);
 
+#[path = "mcp_admission.rs"]
+mod mcp_admission;
+pub(super) use mcp_admission::SessionAdmission;
+
 pub(super) struct Joined {
+    executions: Arc<super::execution::ExecutionPins>,
     owner: NativeWorkspaceOwner,
     custody: HostIdentity,
     endpoint: iroh::Endpoint,
@@ -79,7 +84,9 @@ impl Joined {
     ) -> io::Result<Arc<Self>> {
         let owner =
             tilo_joined_room::open_file(&profile.join(JOINED_ROOMS)).map_err(io::Error::other)?;
+        let executions = super::execution::ExecutionPins::new(&owner);
         let joined = Arc::new(Self {
+            executions,
             owner,
             custody,
             endpoint,
@@ -464,3 +471,7 @@ fn room_topic(room: RoomId) -> Result<u64, String> {
 #[cfg(test)]
 #[path = "joined_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "admission_tests.rs"]
+mod admission_tests;

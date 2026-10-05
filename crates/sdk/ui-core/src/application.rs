@@ -1091,7 +1091,19 @@ pub struct AppComponent {
     report_drained: bool,
     registry_owner: Rc<()>,
     providers: Rc<RefCell<ProviderPayloads>>,
+    /// The record durability last delivered to the root, and when it was
+    /// sampled.
+    record_save: Option<(crate::record::RecordSaveStatus, crate::time::Instant)>,
+    /// Whether a change to the delivered durability has yet to be presented.
+    save_status_changed: bool,
 }
+
+/// How soon a component whose record is still being written samples its
+/// durability again. The writer settles off the event loop and nothing wakes
+/// the window when it does, so a "Saving…" would otherwise stay on screen,
+/// and in the accessibility tree, until the next unrelated event.
+const SAVING_RESAMPLE: crate::time::Duration = crate::time::Duration::from_millis(100);
+
 impl AppComponent {
     /// The component the app built to show another record in this one's
     /// place, once: the host closes this component and mounts that one.
@@ -1111,6 +1123,32 @@ impl AppComponent {
     /// The id of the application this component is an instance of.
     pub fn app_id(&self) -> &str {
         self.context.app_id()
+    }
+    /// A collaboration manager for this component's record, reached through
+    /// the host's `connector` as an app the host launched: what a host
+    /// showing the component inside its own process hands the App it runs
+    /// it in, so the component publishes and is invoked through the session
+    /// broker as a launched app is. `None` when the component's records have
+    /// no route the broker could acknowledge.
+    #[cfg(all(unix, feature = "broker-transport"))]
+    pub fn collaborate_through(
+        &self,
+        connector: crate::collaboration::HostSessionConnector,
+    ) -> Option<crate::collaboration::CollaborationManager> {
+        let binding = self.callback_binding();
+        let route = binding
+            .broker_route()
+            .or_else(|| binding.admission_route())?;
+        // Built inside the component's wake scope, so the broker's traffic
+        // wakes whoever the component wakes.
+        let _entry = self.context.wake_scope.enter();
+        Some(
+            crate::collaboration::CollaborationManager::for_route_host_in_background(
+                connector,
+                route,
+                Some(binding.checkout.kind.as_str().to_owned()),
+            ),
+        )
     }
     pub(crate) fn take_root_retirement(
         &mut self,
@@ -1244,11 +1282,47 @@ impl AppComponent {
     /// The same checked callback lifetime owns both the sample and the hook.
     pub(crate) fn project_record_save_status(&mut self) {
         let captured = self.callback_binding();
-        let _ = self.with_live_component(&captured, |binding, root, _registry| {
-            if let Ok(status) = binding.records.save_status(&binding.checkout.id) {
-                root.record_save_status(status);
+        let sampled = self
+            .with_live_component(&captured, |binding, root, _registry| {
+                let status = binding.records.save_status(&binding.checkout.id).ok()?;
+                root.record_save_status(status.clone());
+                Some(status)
+            })
+            .ok()
+            .flatten();
+        let Some(status) = sampled else {
+            return;
+        };
+        let changed = self
+            .record_save
+            .as_ref()
+            .is_some_and(|(previous, _)| *previous != status);
+        self.record_save = Some((status, crate::time::now()));
+        if changed {
+            // The root synced before it was handed the new state; a frame of
+            // its own, with a sync of its own, shows it.
+            self.save_status_changed = true;
+            self.context.wake_handle().wake();
+        }
+    }
+
+    /// When the window must sync again without input: shortly after the
+    /// last sample while the record is still being written, so the moment
+    /// it becomes durable is shown. The deadline is fixed to the sample: one
+    /// computed from the time it is asked for would never come due.
+    pub(crate) fn save_status_wake_deadline(&self) -> Option<crate::time::Instant> {
+        match &self.record_save {
+            Some((crate::record::RecordSaveStatus::Saving, sampled)) => {
+                sampled.checked_add(SAVING_RESAMPLE)
             }
-        });
+            _ => None,
+        }
+    }
+
+    /// Whether the delivered durability changed since this was last asked,
+    /// so the window presents the new state instead of keeping the old one.
+    pub(crate) fn take_save_status_changed(&mut self) -> bool {
+        std::mem::take(&mut self.save_status_changed)
     }
 
     pub fn new(
@@ -1289,6 +1363,8 @@ impl AppComponent {
                 payloads: HashMap::new(),
             })),
             registry_owner,
+            record_save: None,
+            save_status_changed: false,
         }
     }
 

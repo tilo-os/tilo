@@ -125,6 +125,26 @@ pub enum RenderRequest {
 
 /// A device and a renderer whose pipelines are compiled for it, with no
 /// surface yet.
+/// Why the drawing surface was lost, kept for the window that stops on it.
+static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Record why the drawing surface was lost; the first reason is the cause.
+fn note_surface_loss(reason: String) {
+    let mut slot = SURFACE_LOSS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    slot.get_or_insert(reason);
+}
+
+/// The reason recorded by the render worker when it lost its surface.
+#[cfg(feature = "native")]
+pub(crate) fn take_surface_loss() -> Option<String> {
+    SURFACE_LOSS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
 #[cfg_attr(
     not(feature = "native"),
     allow(
@@ -481,6 +501,9 @@ pub fn spawn_render_thread(
                         // Re-attempting the same reconfigure on a destroyed
                         // surface fails identically forever.
                         tracing::warn!(%err, "drawing surface is gone; stopping the render thread");
+                        note_surface_loss(format!(
+                            "its drawing surface could not be resized: {err}"
+                        ));
                         log_render_outcome(
                             frame_ix,
                             cpu_frame_id,
@@ -582,6 +605,9 @@ pub fn spawn_render_thread(
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");
                     tilo_startup_metrics::dump();
+                    if let Some(line) = tilo_startup_metrics::summary_line(&startup_app_name()) {
+                        crate::diag!("{line}");
+                    }
                 }
 
                 // `Scene::reset` clears the encoding without freeing the
@@ -1151,6 +1177,7 @@ fn render_one_frame(
     } = present;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         tracing::info!("render device index out of range; stopping the render thread");
+        note_surface_loss("its render device is gone".to_owned());
         return FrameOutcome::SurfaceGone;
     };
     if frame_ix == 0 {
@@ -1169,6 +1196,9 @@ fn render_one_frame(
             // and ask main to redraw.
             if let Err(err) = configure_surface_checked(render_cx, surface) {
                 tracing::info!(%err, "drawing surface is gone; abandoning the frame");
+                note_surface_loss(format!(
+                    "its drawing surface could not be reconfigured: {err}"
+                ));
                 return FrameOutcome::SurfaceGone;
             }
             if let Some(observer) = presentation.filter(|_| timing::enabled()) {
@@ -1193,6 +1223,7 @@ fn render_one_frame(
             // Same shutdown race as the reconfigure above; panicking here
             // used to abort the process for an ordinary end of session.
             tracing::info!("drawing surface is no longer usable; stopping the render thread");
+            note_surface_loss("its drawing surface was lost".to_owned());
             return FrameOutcome::SurfaceGone;
         }
     };
@@ -1860,8 +1891,17 @@ mod retained_damage_tests {
         let scene = marching_ants();
         let corner = [Rect::new(0.0, 0.0, 24.0, 24.0)];
 
+        // Software rasterization sums a tile's segments in GPU scheduling
+        // order, and this dense scene's dashes then differ by more than
+        // anti-aliasing between two complete renders. Both renderers sum in a
+        // fixed order, so the comparison sees only missing geometry.
+        let renderer_for = || {
+            let mut renderer = Renderer::new(device, options()).unwrap();
+            renderer.enable_canonical_segment_order(device).unwrap();
+            renderer
+        };
         // What a renderer that already knows this scene presents.
-        let mut oracle = Renderer::new(device, options()).unwrap();
+        let mut oracle = renderer_for();
         let (oracle_texture, oracle_view) = target(device);
         let mut oracle_cache = DamageCache::default();
         let mut fitted = false;
@@ -1885,7 +1925,7 @@ mod retained_damage_tests {
         assert!(fitted, "the oracle must converge to a complete frame");
         let expected = read(device, queue, &oracle_texture);
 
-        let mut renderer = Renderer::new(device, options()).unwrap();
+        let mut renderer = renderer_for();
         let (retained_texture, retained_view) = target(device);
         let retained = RetainedTarget {
             texture: &retained_texture,
@@ -1959,6 +1999,68 @@ mod retained_damage_tests {
         assert_eq!(
             differing, 0,
             "after {repaints} repaint(s) the presented frame still lacks {differing} pixels"
+        );
+    }
+
+    /// A frame whose bump counters report no overflow drew everything. The
+    /// segments reservation is separate from seg_counts and had no overflow
+    /// check: a frame could outgrow it, report `failed=0`, and be presented
+    /// with geometry missing, which the overflow repaint then never fixed.
+    #[test]
+    fn a_frame_reported_complete_is_complete() {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let base_color = Color::from_rgb8(10, 10, 12);
+        let scene = marching_ants();
+        let mut renderer = Renderer::new(
+            device,
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .unwrap();
+        let (texture, view) = target(device);
+        let mut cache = DamageCache::default();
+        let mut render = |renderer: &mut Renderer| {
+            rasterize_damage(
+                (device, queue),
+                RetainedTarget {
+                    texture: &texture,
+                    view: &view,
+                },
+                renderer,
+                &mut cache,
+                &content(&scene, base_color, &[], true),
+            )
+            .unwrap();
+            renderer.settle_bump_budget(device)
+        };
+        let mut overflows = 0;
+        while render(&mut renderer) {
+            overflows += 1;
+            assert!(overflows <= 8, "the reservation must converge");
+        }
+        assert!(
+            overflows > 0,
+            "the scene must overflow a fresh reservation, or this test proves nothing"
+        );
+        let reported_complete = read(device, queue, &texture);
+        assert!(
+            !render(&mut renderer),
+            "a converged reservation keeps fitting"
+        );
+        let again = read(device, queue, &texture);
+        let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            &reported_complete,
+            &again,
+        );
+        assert_eq!(
+            differing, 0,
+            "a frame reported complete after {overflows} overflow(s) lacked {differing} pixels"
         );
     }
 
@@ -2074,4 +2176,17 @@ mod retained_damage_tests {
             );
         }
     }
+}
+
+/// The app a startup summary names: its package, else its executable.
+fn startup_app_name() -> String {
+    std::env::var("TILO_PACKAGE_ID").ok().unwrap_or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "unknown".to_owned())
+    })
 }

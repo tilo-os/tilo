@@ -5,9 +5,9 @@
 set -euo pipefail
 
 mode=${1:-}
-usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|oobe-text TEXT...|post-identity|clipboard-is TEXT|clipboard-keeps TEXT SECRET|copy-image|desktop|established|lock|auth}"
+usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|oobe-text TEXT...|post-identity|clipboard-is TEXT|clipboard-keeps TEXT SECRET|copy-image|desktop|established|lock|auth|quick-settings}"
 case "$mode" in
-  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|post-identity|copy-image|desktop|established|lock|auth) ;;
+  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|post-identity|copy-image|desktop|established|lock|auth|quick-settings) ;;
   oobe-text) (($# > 1)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-is) (($# == 2)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-keeps) (($# == 3)) || { echo "$usage" >&2; exit 2; } ;;
@@ -573,6 +573,51 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
     wait_for_names "Tilo lock screen" "Password" "Type your password and press Enter"
     assert_password_role "Password"
     ;;
+  quick-settings)
+    # Open Quick Settings from the top bar and change the power profile
+    # there, then confirm the change in the power daemon itself: a panel
+    # that opens but whose controls never reach the system fails here.
+    # Only the profiles the daemon offers may be chosen, so every press
+    # must land on one of them.
+    command -v powerprofilesctl >/dev/null
+    before=$(powerprofilesctl get)
+    offered=$(powerprofilesctl list | sed -n 's/^[* ] *\([a-z-]*\):$/\1/p' | wc -l)
+    ((offered >= 2)) || { echo "the power daemon offers only $offered profile(s)" >&2; exit 1; }
+    wait_for_names "Open quick settings"
+    click_named "Open quick settings"
+    wait_for_names "Change power profile"
+    changed=""
+    for press in $(seq 1 "$offered"); do
+      current=$(powerprofilesctl get)
+      # The panel learns which profiles exist from a read that starts
+      # when it opens; a press before that lands may be refused once.
+      # A panel that asks for a profile the daemon lacks keeps failing.
+      for attempt in 1 2 3; do
+        click_named "Change power profile"
+        for _ in $(seq 1 60); do
+          now=$(powerprofilesctl get)
+          [[ $now != "$current" ]] && break
+          sleep 0.05
+        done
+        [[ $now != "$current" ]] && break
+        collect_tree
+      done
+      [[ $now != "$current" ]] || {
+        echo "press $press on the power profile left the daemon at '$current'" >&2
+        exit 1
+      }
+      [[ -n $changed ]] || changed=$now
+      collect_tree
+    done
+    # Pressing through every offered profile comes back to where it began.
+    [[ $(powerprofilesctl get) == "$before" ]] || {
+      echo "cycling the offered profiles did not return to '$before'" >&2
+      exit 1
+    }
+    echo "Quick Settings changed the power profile from '$before' to '$changed' and back"
+    click_named "Open quick settings"
+    wait_for_absent "Change power profile"
+    ;;
   auth)
     # Ask polkit for an administrator action on behalf of the graphical
     # session, exactly as pkexec from a terminal in it would. polkit hands
@@ -582,6 +627,21 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
     # input without publishing it, and a Cancel that answers polkit.
     session=$(loginctl show-user "$(id -un)" -p Display --value)
     [[ -n "$session" ]] || { echo "no graphical login session" >&2; exit 1; }
+    # pkexec names the process asking, never the session: polkit's rules
+    # engine reads a subject as a process or a bus name only, and polkitd
+    # aborts on a unix-session subject. The asker here is one of this
+    # user's processes in the graphical session, which polkit maps to that
+    # session and so to the agent the compositor registered for it.
+    scope="/sys/fs/cgroup/user.slice/user-$(id -u).slice/session-$session.scope/cgroup.procs"
+    asker=""
+    while read -r pid; do
+      [[ $(stat -c %u "/proc/$pid" 2>/dev/null) == "$(id -u)" ]] && { asker=$pid; break; }
+    done <"$scope"
+    [[ -n "$asker" ]] || { echo "no process of $(id -un) in session $session ($scope)" >&2; exit 1; }
+    stat_line=$(<"/proc/$asker/stat")
+    read -r -a stat_fields <<<"${stat_line##*) }"
+    # Field 22 of stat(5), counted after the command name's closing paren.
+    started=${stat_fields[19]}
     answer=$(mktemp)
     checker=""
     trap 'rm -f "$answer"; [[ -z "$checker" ]] || kill "$checker" 2>/dev/null || true' EXIT
@@ -589,10 +649,14 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       --dest org.freedesktop.PolicyKit1 \
       --object-path /org/freedesktop/PolicyKit1/Authority \
       --method org.freedesktop.PolicyKit1.Authority.CheckAuthorization \
-      "('unix-session', {'session-id': <'$session'>})" \
+      "('unix-process', {'pid': <uint32 $asker>, 'start-time': <uint64 $started>, 'uid': <int32 $(id -u)>})" \
       org.freedesktop.policykit.exec '{}' 1 '' >"$answer" 2>&1 &
     checker=$!
-    wait_for_names "Administrator access" "Password" "Authenticate" "Cancel"
+    wait_for_names "Administrator access" "Password" "Authenticate" "Cancel" || {
+      echo "polkit answered the request with:" >&2
+      cat "$answer" >&2
+      exit 1
+    }
     assert_password_role "Password"
     focus_named "Password"
     path=$(editable_node_named "Password")

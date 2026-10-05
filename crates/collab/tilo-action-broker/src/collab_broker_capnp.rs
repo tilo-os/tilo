@@ -586,6 +586,26 @@ impl AdmittedJoinIdentity {
         .from_foreign_device(foreign)
     }
 
+    /// The caller this certified identity is in `room`, from its own
+    /// device: foreign when it was held to the cap there or the host keeps
+    /// a stricter restriction for it.
+    fn certified_caller(&self, room: &str, restricted: bool) -> tilo_actions::remote::Caller {
+        let verified = &self.verified;
+        match &self.agent_id {
+            Some(agent) => tilo_actions::remote::Caller::delegated_agent(
+                agent.clone(),
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+            None => tilo_actions::remote::Caller::authenticated(
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+        }
+        .in_room(room)
+        .from_foreign_device(verified.capped || restricted)
+    }
+
     fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
         let room = workspace.room.to_string();
         if let Some(agent) = &self.agent_id {
@@ -1252,13 +1272,21 @@ impl CapnpBrokerState {
         peer_id: u64,
         running: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::Caller> {
-        self.pending_invocations
+        // Doors that take the caller's own invocation id can admit two
+        // callers' invocations under one id; such an id names nobody.
+        let mut matching = self
+            .pending_invocations
             .lock()
             .ok()?
             .values()
-            .find(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
-            .and_then(|pending| pending.caller.clone())?
-            .current(self)
+            .filter(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
+            .map(|pending| pending.caller.clone())
+            .take(2)
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return None;
+        }
+        matching.pop()??.current(self)
     }
 }
 
@@ -1268,8 +1296,15 @@ impl CapnpBrokerState {
 enum ContinuingCaller {
     /// A caller the door knew directly.
     Caller(tilo_actions::remote::Caller),
-    /// A remote device's certified caller, checked again each time.
-    Certified(Box<VerifiedActionCaller>),
+    /// A certified caller, its certificate checked again each time.
+    Certified {
+        caller: Box<VerifiedActionCaller>,
+        /// A stricter foreign-device restriction the host kept for them.
+        foreign_restriction: bool,
+        /// The exact caller the door admitted, with its execution, when it
+        /// knew one; it continues only while that execution is live.
+        direct: Option<tilo_actions::remote::Caller>,
+    },
     /// A person or agent on a connection this host admitted, in a room.
     Admitted {
         room: String,
@@ -1280,7 +1315,11 @@ enum ContinuingCaller {
 impl ContinuingCaller {
     fn from_durable(durable: DurableContext<'_>) -> Self {
         match durable {
-            DurableContext::Peer(caller, _) => Self::Certified(Box::new(caller.clone())),
+            DurableContext::Peer(caller, _) => Self::Certified {
+                caller: Box::new(caller.clone()),
+                foreign_restriction: false,
+                direct: None,
+            },
             DurableContext::Local { caller, .. } => {
                 let (room, admitted) = caller.admitted_in();
                 Self::Admitted {
@@ -1293,7 +1332,14 @@ impl ContinuingCaller {
 
     fn from_origin(origin: &InvocationCaller) -> Self {
         match origin {
-            InvocationCaller::Certified(caller) => Self::Certified(caller.clone()),
+            InvocationCaller::Certified {
+                caller,
+                foreign_restriction,
+            } => Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: None,
+            },
             InvocationCaller::Local { route, admitted } => Self::Admitted {
                 room: route.cluster_id.clone(),
                 admitted: admitted.clone(),
@@ -1301,15 +1347,51 @@ impl ContinuingCaller {
         }
     }
 
+    /// Who `caller` was admitted as: certified, with the custody its door
+    /// holds, when it holds one.
+    fn admitted(
+        caller: Option<&tilo_actions::remote::Caller>,
+        durable: Option<DurableContext<'_>>,
+        origin: Option<&InvocationCaller>,
+    ) -> Option<Self> {
+        match (caller, origin) {
+            (
+                Some(direct),
+                Some(InvocationCaller::Certified {
+                    caller,
+                    foreign_restriction,
+                }),
+            ) => Some(Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: Some(direct.clone()),
+            }),
+            (Some(caller), _) => Some(Self::Caller(caller.clone())),
+            (None, _) => durable
+                .map(Self::from_durable)
+                .or_else(|| origin.map(Self::from_origin)),
+        }
+    }
+
     /// The caller as they stand now: a certified caller whose certificate
-    /// no longer verifies, or who changed, is nobody.
+    /// no longer verifies, who changed, or whose execution ended, is nobody.
+    /// A certified caller keeps their own device, so they stay held to the
+    /// foreign-device cap wherever that device does not govern the room.
     fn current(&self, state: &CapnpBrokerState) -> Option<tilo_actions::remote::Caller> {
         match self {
             Self::Caller(caller) => Some(caller.clone()),
-            Self::Certified(caller) => state
-                .current_action_caller(caller)
-                .ok()
-                .map(|admitted| admitted.caller(&caller.room)),
+            Self::Certified {
+                caller,
+                foreign_restriction,
+                direct,
+            } => {
+                let admitted = state.current_action_caller(caller).ok()?;
+                match direct {
+                    Some(direct) => (direct.execution_id().is_none() || direct.execution_is_live())
+                        .then(|| direct.clone()),
+                    None => Some(admitted.certified_caller(&caller.room, *foreign_restriction)),
+                }
+            }
             Self::Admitted { room, admitted } => Some(admitted.caller(room)),
         }
     }
@@ -1325,6 +1407,7 @@ impl PendingInvocation {
 mod action_host;
 mod app_consent;
 mod launchable;
+mod local_action_host;
 
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
@@ -3334,6 +3417,7 @@ impl CapnpBrokerState {
     }
 
     /// Stand in for an application's invocation stream on `peer_id`.
+    /// The fixture receives the full envelope, including its stable invocation UUID.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_invocations_for_test(
         &self,
@@ -3342,6 +3426,9 @@ impl CapnpBrokerState {
         let (tx, rx) = mpsc::unbounded_channel();
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.insert(peer_id, tx);
+        }
+        if let Ok(mut stable) = self.stable_invocation_subscribers.lock() {
+            stable.insert(peer_id);
         }
         rx
     }
@@ -4381,11 +4468,32 @@ impl CapnpBrokerState {
         inputs: InvocationInputs<'_>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
+        self.start_invocation_from_offered_origin(peer_id, offered, inputs, revision, None)
+    }
+
+    fn start_invocation_from_offered_origin(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        inputs: InvocationInputs<'_>,
+        revision: Option<&str>,
+        origin: Option<InvocationCaller>,
+    ) -> Result<InvocationJob, String> {
         let _admission = self
             .admission_lock
             .lock()
             .map_err(|_| "invocation admission unavailable")?;
-        self.dispatch_invocation_from_offered(peer_id, offered, inputs, None, revision)
+        self.dispatch_invocation_from_offered_owned(
+            peer_id,
+            offered,
+            inputs,
+            AdmissionProvenance {
+                durable: None,
+                revision,
+                origin,
+                retained_time: None,
+            },
+        )
     }
 
     fn dispatch_invocation_from_offered(
@@ -4434,11 +4542,7 @@ impl CapnpBrokerState {
             origin,
             retained_time,
         } = provenance;
-        let continuing = caller
-            .cloned()
-            .map(ContinuingCaller::Caller)
-            .or_else(|| durable.map(ContinuingCaller::from_durable))
-            .or_else(|| origin.as_ref().map(ContinuingCaller::from_origin));
+        let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = durable.map_or_else(
             || InvocationOwner::Local {
                 actor: actor.id.clone(),
@@ -4447,7 +4551,31 @@ impl CapnpBrokerState {
         );
         owner.validate()?;
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor)?;
+        let context = invoker::host_set_invoker(context, actor, execution.as_ref())?;
+        // A certified local origin retains its original registered clock and
+        // exact person/room through an asynchronous directory lookup. Never
+        // recapture a replacement origin at dispatch or accept a payload actor.
+        let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
+            let admitted = self.current_action_caller(caller)?;
+            if caller.room != offered.0.route.cluster_id
+                || actor.is_agent
+                || actor.id != admitted.principal_id
+            {
+                return Err("original caller does not match the invocation route or actor".into());
+            }
+            Some(
+                caller
+                    .policy_time
+                    .as_ref()
+                    .ok_or("original policy clock unavailable")?,
+            )
+        } else {
+            None
+        };
+        if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
+            return Err("duplicate original invocation custody".into());
+        }
+        let retained_time = original_time.or(retained_time);
         let policy_time = match (durable, retained_time) {
             (Some(context), None) => self.checked_policy_time(context.time())?.0,
             (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
@@ -4512,7 +4640,7 @@ impl CapnpBrokerState {
                 &offered.1,
             )?;
         }
-        if durable.is_some()
+        if (durable.is_some() || execution.is_some())
             && !self
                 .stable_invocation_subscribers
                 .lock()
@@ -4562,7 +4690,10 @@ impl CapnpBrokerState {
             .map_err(|_| "invocation handle space exhausted")?;
         let invocation = match durable {
             Some(context) => context.invocation(),
-            None => tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+            None => execution.as_ref().map_or_else(
+                || tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+                ExecutionScope::invocation,
+            ),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
@@ -4615,7 +4746,7 @@ impl CapnpBrokerState {
             id,
             PendingInvocation {
                 caller: continuing,
-                activity: ActivityTarget::new(execution, actor, &offered.0, &offered.1),
+                activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
                 original: OriginalInvocationData::capture(
@@ -4635,6 +4766,7 @@ impl CapnpBrokerState {
                     revision,
                     durable.map(DurableContext::origin).or(origin),
                     policy_time.clone(),
+                    execution.as_ref().map(ExecutionScope::lease),
                 ),
                 policy_time,
                 journal_key,
@@ -7688,6 +7820,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "invocation subscriber registry unavailable".into(),
             ));
         }
+        // The app the launcher attested, else the one this channel names.
+        let (app, room) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .map_or_else(
+                || {
+                    let route = self.route();
+                    (route.app_id, route.cluster_id)
+                },
+                |app| (app.app_id.clone(), app.workspace_id.clone()),
+            );
+        let delivered = invocation_delivery_notice(&self.state.services, app, room);
         let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -7695,6 +7840,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 &self.verified_identity,
             ),
             rx: Rc::new(AsyncMutex::new(rx)),
+            delivered,
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -9618,9 +9764,22 @@ impl realtime_stream::Server for RealtimeStreamServer {
     }
 }
 
+/// What the host is told each time an invocation is handed to `app` in
+/// `room`; nothing when no launcher hosts it.
+fn invocation_delivery_notice(
+    services: &HostServices,
+    app: String,
+    room: String,
+) -> Option<Box<dyn Fn()>> {
+    let launcher = services.launcher.clone().filter(|_| !app.is_empty())?;
+    Some(Box::new(move || launcher.note_acted_on(&app, &room)))
+}
+
 struct InvocationStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+    /// Told each time an invocation is handed to the app.
+    delivered: Option<Box<dyn Fn()>>,
 }
 
 struct TaskRunStreamServer {
@@ -9684,6 +9843,9 @@ impl invocation_stream::Server for InvocationStreamServer {
             })?;
             drop(guard);
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            if let Some(delivered) = &self.delivered {
+                delivered();
+            }
             let mut result = results.get();
             result.set_id(invocation.id);
             result.set_invocation_uuid(invocation.invocation.0.as_bytes());
@@ -12141,6 +12303,13 @@ pub mod tests {
             self.directory_state.borrow_mut().resolve_mode = mode;
         }
 
+        pub fn take_invocation_identity(&mut self) -> Option<(u64, tilo_actions::InvocationId)> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| (invocation.id, invocation.invocation))
+        }
+
         pub fn take_invocation_actor(&mut self) -> Option<String> {
             self.invocation_rx
                 .try_recv()
@@ -12297,12 +12466,7 @@ pub mod tests {
                 },
             );
         state.refresh_action_directory_root_snapshot();
-        let (invocation_tx, invocation_rx) = tokio::sync::mpsc::unbounded_channel();
-        state
-            .invocation_subscribers
-            .lock()
-            .expect("invocation subscribers")
-            .insert(peer_id, invocation_tx);
+        let invocation_rx = state.capture_invocations_for_test(peer_id);
         fanout.attach_capnp(Arc::clone(&state));
         LocalDirectoryFixture {
             _fanout: fanout,
@@ -12478,6 +12642,60 @@ pub mod tests {
         let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
         assert!(after_disconnect.roots.is_empty());
         assert!(after_disconnect.generation > second.generation);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
+        use tilo_actions::remote::{
+            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+        };
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut fixture = local_directory_fixture();
+                let caller = Caller::local_person("fixture-owner")
+                    .in_room(fixture.cluster_id.clone())
+                    .in_new_execution();
+                let request = InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                    on_behalf_of: None,
+                };
+                let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+                let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        drain_directory_bridge(&fixture).await;
+                        if let PendingPoll::Ready(result) = pending.poll_ready() {
+                            break result;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("bounded actual directory admission");
+                admitted.expect("full-envelope consumer supports scoped invocation UUIDs");
+                let (job, delivered) = fixture.take_invocation_identity().expect("actual delivery");
+                assert_eq!(delivered, request.invocation);
+                assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
+                fixture
+                    .complete_invocation(
+                        job,
+                        &tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: delivered,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                    )
+                    .await
+                    .expect("actual peer-bound completion accepts the delivered UUID");
+                assert!(fixture.take_invocation_identity().is_none());
+            })
+            .await;
     }
 
     #[test]
@@ -14601,6 +14819,7 @@ pub mod tests {
                             capnp_rpc::new_client(InvocationStreamServer {
                                 host_guard: None,
                                 rx: rx.clone(),
+                                delivered: None,
                             });
                         let response = stream.read_request().send().promise.await.unwrap();
                         assert_eq!(response.get().unwrap().get_id(), wire_id);
@@ -14741,6 +14960,7 @@ pub mod tests {
                         capnp_rpc::new_client(InvocationStreamServer {
                             host_guard: None,
                             rx: rx.clone(),
+                            delivered: None,
                         });
                     let response = stream.read_request().send().promise.await.unwrap();
                     let delivered = response.get().unwrap();
@@ -15062,6 +15282,74 @@ pub mod tests {
                 );
                 assert!(fixture.invocation_rx.try_recv().is_err());
             }
+        }
+
+        /// An agent, a device admin or another device drives an app through
+        /// its actions. The host learns of each invocation the app is handed,
+        /// so a window the app closes because of it is not taken for one it
+        /// lost.
+        #[tokio::test(flavor = "current_thread")]
+        async fn the_host_learns_each_invocation_an_app_is_handed() {
+            struct Recording(Mutex<Vec<(String, String)>>);
+            impl crate::services::LauncherServices for Recording {
+                fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                    Vec::new()
+                }
+                fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                    Err("this host launches nothing".into())
+                }
+                fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                    false
+                }
+                fn note_acted_on(&self, app: &str, room: &str) {
+                    self.0.lock().unwrap().push((app.into(), room.into()));
+                }
+            }
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let recording = Arc::new(Recording(Mutex::new(Vec::new())));
+                    let services = HostServices {
+                        launcher: Some(recording.clone()),
+                        ..Default::default()
+                    };
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let stream: invocation_stream::Client =
+                        capnp_rpc::new_client(InvocationStreamServer {
+                            host_guard: None,
+                            rx: Rc::new(AsyncMutex::new(rx)),
+                            delivered: invocation_delivery_notice(
+                                &services,
+                                "so.tilo.notes".into(),
+                                "room-7".into(),
+                            ),
+                        });
+                    assert!(recording.0.lock().unwrap().is_empty());
+                    tx.send(InvocationEnvelope {
+                        id: 1,
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(1)),
+                        resource: "window".into(),
+                        action: "close".into(),
+                        argument: None,
+                        actor: "agent:assistant".into(),
+                        context: None,
+                    })
+                    .unwrap();
+                    stream.read_request().send().promise.await.unwrap();
+                    assert_eq!(
+                        *recording.0.lock().unwrap(),
+                        vec![("so.tilo.notes".to_owned(), "room-7".to_owned())]
+                    );
+                    assert!(
+                        invocation_delivery_notice(
+                            &HostServices::default(),
+                            "a".into(),
+                            "r".into()
+                        )
+                        .is_none(),
+                        "a host without a launcher has no one to tell"
+                    );
+                })
+                .await;
         }
 
         #[tokio::test(flavor = "current_thread")]

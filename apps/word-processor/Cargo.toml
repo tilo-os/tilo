@@ -30,7 +30,6 @@ thin = ["dep:runtime-dylib"]
 test-support = []
 
 [dependencies]
-fnv.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

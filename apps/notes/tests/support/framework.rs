@@ -21,14 +21,7 @@ pub fn apply(app: &mut TestApp<NotesShell>, action: &NotesAction) {
 /// notes the notebook already has.
 pub fn add_note(app: &mut TestApp<NotesShell>, title: &str, body: &str) -> PageId {
     let page = PageId::new_v4();
-    let order = u32::try_from(app.read_document(|doc| {
-        notes::doc::NotesDoc::list_pages(doc)
-            .iter()
-            .filter(|page| page.parent.is_none())
-            .count()
-    }))
-    .unwrap();
-    apply(app, &actions::new_page_action(page, None, order, title));
+    apply(app, &actions::append_page_action(page, None, title));
     if !body.is_empty() {
         let blocks = MainPanel::seed_blocks(body, |_| None);
         apply(app, &actions::write_body_action(page, &blocks));

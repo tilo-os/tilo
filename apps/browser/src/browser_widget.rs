@@ -1472,6 +1472,12 @@ impl BrowserWidget {
         if let Some(outline) = &reply.outline {
             value.insert("outline".into(), outline.as_str().into());
         }
+        if let Some(data) = &reply.data {
+            value.insert("data".into(), data.clone());
+        }
+        // Everything here came from the page: data to reason about, never
+        // instructions to follow.
+        value.insert("provenance".into(), "web-content".into());
         ui::tilo_actions::InvocationUpdate::Succeeded {
             invocation,
             output: ui::tilo_actions::ActionOutput {
@@ -4075,6 +4081,10 @@ pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:app/so.tilo.browser-engi
 /// instead of its pixels: what a web client of this host sees. Either way the
 /// session can share the page as that stream.
 fn default_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
+    #[cfg(test)]
+    if let Some(engine) = test_window_engine::take() {
+        return (engine, None);
+    }
     let (engine, problem) = native_engine(mode);
     if problem.is_some() {
         return (engine, problem);
@@ -4085,6 +4095,29 @@ fn default_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
     // Drawn from pixels here; captured as a display list only while the
     // session shares the window with someone watching (a web member).
     (ui::webview::paint::PaintEngine::streaming(engine), None)
+}
+
+/// The engine a test's next live window drives instead of the native one,
+/// so a test can run Browser in its real app host without starting a
+/// browser process.
+#[cfg(test)]
+pub(crate) mod test_window_engine {
+    use std::cell::RefCell;
+
+    use ui::webview::SharedEngine;
+
+    thread_local! {
+        static NEXT: RefCell<Option<SharedEngine>> = const { RefCell::new(None) };
+    }
+
+    /// The next live window on this thread drives `engine`.
+    pub(crate) fn install(engine: SharedEngine) {
+        NEXT.with_borrow_mut(|next| *next = Some(engine));
+    }
+
+    pub(super) fn take() -> Option<SharedEngine> {
+        NEXT.with_borrow_mut(Option::take)
+    }
 }
 
 /// Deterministic rendering is confined to `new_headless`.
@@ -5254,7 +5287,31 @@ impl BrowserWidget {
                 },
                 &["key", "element"][..],
             ),
-            (E::SubmitPage { element }, &["element"][..]),
+            (
+                E::FillPageSecret {
+                    element: element.clone(),
+                    text: String::new(),
+                },
+                &["element", "text"][..],
+            ),
+            (
+                E::SubmitPage {
+                    element,
+                    cross_origin: None,
+                },
+                &["element", "cross_origin"][..],
+            ),
+            (E::ReadPageChanges, &[][..]),
+            (E::ReadPageElementAt { x: 0.0, y: 0.0 }, &["x", "y"][..]),
+            (
+                E::WaitPageSettled {
+                    quiet_ms: None,
+                    timeout_ms: None,
+                },
+                &["quiet_ms", "timeout_ms"][..],
+            ),
+            (E::ReadPageConsole { since: None }, &["since"][..]),
+            (E::ReadPageNetwork { since: None }, &["since"][..]),
         ] {
             let spec = spec.bound_asking(asking);
             page.actions.push(if web_page {
@@ -5550,8 +5607,8 @@ impl BrowserWidget {
         self.pending_replies.push((invocation, reply));
     }
 
-    fn sync_frame(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync_frame(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         if self.private_window_request.get() {
             self.private_window_request.set(false);
             self.private_window_notice = crate::private_window::launch(None).err();
@@ -6901,11 +6958,25 @@ mod tests {
                 "select-page",
                 "press-page",
                 "submit-page",
+                "fill-page-secret",
+                "read-page-changes",
+                "read-page-element-at",
+                "wait-page-settled",
+                "read-page-console",
+                "read-page-network",
             ] {
                 let action = page_action(&widget, &doc, id);
                 assert!(action.contract.validate_declaration().is_empty(), "{id}");
                 assert!(action.contract.availability.is_available(), "{id}");
                 assert!(action.contract.is_programmatic(), "{id}");
+                assert!(
+                    action
+                        .contract
+                        .tags
+                        .iter()
+                        .any(|tag| tag == ui::tilo_actions::UNTRUSTED_CONTENT_TAG),
+                    "{id} answers with page content: data, never instructions"
+                );
                 assert_eq!(
                     action.contract.permission,
                     ui::tilo_actions::PermissionRequirement::Write,
@@ -7019,6 +7090,7 @@ mod tests {
                     PageRequest::Fill {
                         element: "d3e7".into(),
                         text: String::new(),
+                        secret: false,
                     },
                     PageRequest::Select {
                         element: "d3e8".into(),
@@ -7045,6 +7117,95 @@ mod tests {
             );
         }
 
+        // Phase `agent_reads_and_consented_writes_reach_the_engine_typed`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            let secret = page_action(&widget, &doc, "fill-page-secret");
+            assert!(
+                secret
+                    .params()
+                    .iter()
+                    .any(|param| param.name == "text"
+                        && param.ty == ui::tilo_actions::ParamType::Secret),
+                "a password is a secret parameter, kept out of logs and history"
+            );
+            let mut answers = Vec::new();
+            for (id, args) in [
+                ("read-page-changes", serde_json::json!({})),
+                (
+                    "read-page-element-at",
+                    serde_json::json!({"x": 12.5, "y": 40}),
+                ),
+                ("wait-page-settled", serde_json::json!({})),
+                (
+                    "wait-page-settled",
+                    serde_json::json!({"quiet_ms": 200, "timeout_ms": 3000}),
+                ),
+                ("read-page-console", serde_json::json!({"since": 4})),
+                ("read-page-network", serde_json::json!({})),
+                (
+                    "fill-page-secret",
+                    serde_json::json!({"element": "d1e3", "text": "hunter2"}),
+                ),
+                ("submit-page", serde_json::json!({"element": "d1e9"})),
+                (
+                    "submit-page",
+                    serde_json::json!({"element": "d1e9", "cross_origin": true}),
+                ),
+            ] {
+                let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
+                widget.sync(&mut doc, &root);
+                let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                    widget.poll_invocation(invocation)
+                else {
+                    panic!("{id} must succeed its invocation");
+                };
+                answers.push(output.value.unwrap());
+            }
+            assert_eq!(
+                page_requests(&engine),
+                vec![
+                    PageRequest::Changes,
+                    PageRequest::At { x: 12.5, y: 40.0 },
+                    PageRequest::Settle {
+                        quiet_ms: 500,
+                        timeout_ms: 10_000,
+                    },
+                    PageRequest::Settle {
+                        quiet_ms: 200,
+                        timeout_ms: 3000,
+                    },
+                    PageRequest::Console { since: 4 },
+                    PageRequest::Network { since: 0 },
+                    PageRequest::Fill {
+                        element: "d1e3".into(),
+                        text: "hunter2".into(),
+                        secret: true,
+                    },
+                    PageRequest::Submit {
+                        element: "d1e9".into(),
+                        cross_origin: false,
+                    },
+                    PageRequest::Submit {
+                        element: "d1e9".into(),
+                        cross_origin: true,
+                    },
+                ],
+                "a form leaves for another site only when the caller says so"
+            );
+            for value in &answers {
+                assert_eq!(value["provenance"], "web-content", "{value}");
+            }
+            assert!(
+                answers[0]["outline"].is_string(),
+                "changes answer outline lines"
+            );
+            assert_eq!(answers[1]["data"]["x"], 12.5);
+            assert_eq!(answers[2]["data"]["settled"], true);
+            assert_eq!(answers[4]["data"]["entries"], serde_json::json!([]));
+            assert_eq!(answers[5]["data"]["next"], 0);
+        }
+
         // Phase `an_action_that_navigates_completes_on_the_page_it_opened`.
         {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/cart");
@@ -7052,6 +7213,7 @@ mod tests {
                 url: "https://shop.test/cart".into(),
                 message: "Clicked button \"Checkout\"".into(),
                 outline: None,
+                data: None,
                 navigated: true,
                 loading: true,
             }));

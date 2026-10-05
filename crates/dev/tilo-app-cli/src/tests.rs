@@ -4382,8 +4382,17 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         };
         assert_eq!(build_dev_candidate(&plan).unwrap(), executable);
         assert_eq!(dev_binary_name(&manifest).unwrap(), "desktop");
-        let arguments = std::fs::read_to_string(argument_log).unwrap();
+        let arguments = std::fs::read_to_string(&argument_log).unwrap();
         assert!(arguments.contains("--bin\ndesktop\n"), "{arguments}");
+        assert!(!arguments.contains("--profile"), "{arguments}");
+        let DevCandidate::Built(optimised) =
+            build_dev_candidate_interruptible(&plan, Some("thin-app"), None, &[], |_| {}).unwrap()
+        else {
+            panic!("no watcher, so nothing supersedes the build");
+        };
+        assert_eq!(optimised, executable);
+        let arguments = std::fs::read_to_string(&argument_log).unwrap();
+        assert!(arguments.contains("--profile\nthin-app\n"), "{arguments}");
 
         let failing_cargo = app.join("failing-cargo");
         std::fs::write(&failing_cargo, "#!/bin/sh\nexit 9\n").unwrap();
@@ -4517,7 +4526,8 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
         ))
         .add_path(source)));
     });
-    let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    let outcome =
+        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
     watcher.join().unwrap();
     assert!(
         matches!(outcome, DevCandidate::Superseded),
@@ -4581,7 +4591,8 @@ fn dev_build_keeps_compiling_through_editor_noise() {
         ))
         .add_path(app.join("target/debug/desktop"))))
         .unwrap();
-    let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    let outcome =
+        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
     assert_eq!(outcome_path(outcome), executable);
 }
 
@@ -4598,7 +4609,8 @@ fn dev_restart_hands_the_checkpoint_to_the_next_process() {
 dir=\"$TILO_DEV_SESSION\"\n\
 if [ -z \"$dir\" ]; then echo missing session >&2; exit 2; fi\n\
 if [ -f \"$dir/checkpoint.bin\" ]; then\n\
-  cp \"$dir/checkpoint.bin\" \"$dir/restored\"\n\
+  cp \"$dir/checkpoint.bin\" \"$dir/restored.part\"\n\
+  mv \"$dir/restored.part\" \"$dir/restored\"\n\
 fi\n\
 trap 'printf document-route-caret > \"$dir/checkpoint.bin\"; exit 0' TERM\n\
 touch \"$dir/ready\"\n\
@@ -4915,7 +4927,13 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
             .collect::<Vec<_>>()
     };
 
-    let member = thin_dev_steps(manifest, "notes", &ThinDevLinkage::WorkspaceToolkit, true);
+    let member = thin_dev_steps(
+        manifest,
+        "notes",
+        &ThinDevLinkage::WorkspaceToolkit,
+        None,
+        true,
+    );
     assert_eq!(
         member.iter().map(|step| step.label).collect::<Vec<_>>(),
         ["the reload host", "the reload library"]
@@ -4934,6 +4952,7 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
         manifest,
         "notes",
         &ThinDevLinkage::Target(triple.into()),
+        None,
         false,
     );
     assert_eq!(
@@ -4953,6 +4972,32 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
     };
     assert_eq!(key, "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS");
     assert!(flags.to_string_lossy().ends_with("-C prefer-dynamic"));
+
+    assert!(
+        member
+            .iter()
+            .all(|step| !args(step).contains(&"--profile".to_owned()))
+    );
+    let optimised = thin_dev_steps(
+        manifest,
+        "notes",
+        &ThinDevLinkage::WorkspaceToolkit,
+        Some(DEV_RELEASE_PROFILE),
+        true,
+    );
+    assert!(optimised.iter().all(|step| {
+        let args = args(step);
+        let separator = args.iter().position(|arg| arg == "--").unwrap();
+        args[..separator]
+            .windows(2)
+            .any(|pair| pair == ["--profile", "thin-app"])
+    }));
+    assert!(profile_reloads_in_place(None));
+    assert!(profile_reloads_in_place(Some(DEV_RELEASE_PROFILE)));
+    assert!(
+        !profile_reloads_in_place(Some("release")),
+        "an LTO profile cannot link the toolkit dynamically"
+    );
 
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     assert!(app_is_workspace_member(&repo.join("apps/hot-reload-demo")));

@@ -1148,13 +1148,12 @@ mod tests {
             on_ui_thread(|scope, wakes| {
                 let ui_thread = std::thread::current().id();
                 let mut request = LatestRequest::new();
+                // Held until the checks below, so the result cannot already
+                // be there when they look.
                 let (release, gate) = tokio::sync::oneshot::channel::<()>();
                 assert!(request.spawn(async move {
                     // Cross an await point, so a runtime driven from the caller
                     // would have to be polled again here.
-                    tokio::task::yield_now().await;
-                    // Held until the UI thread has looked, so a result
-                    // present then could only have come from running inline.
                     let _ = gate.await;
                     let current = std::thread::current();
                     (

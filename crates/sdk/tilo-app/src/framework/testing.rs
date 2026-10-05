@@ -728,6 +728,28 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// Any published action of `resource`, by id with JSON arguments,
+    /// delivered for `invoker` as the host delivers an admitted execution's
+    /// invocation: what it builds is bound to the invoker's own participant
+    /// view, and what it submits is applied as theirs.
+    ///
+    /// # Errors
+    /// As [`Self::effect`].
+    pub fn call_by(
+        &mut self,
+        invoker: tilo_actions::ActionInvoker,
+        resource: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "arguments are an object".into(),
+            ));
+        };
+        self.effect_invoked(Some(invoker), resource, id, &arguments, false)
+    }
+
     /// [`Self::effect`] after the caller confirmed it, as the host's
     /// confirmation prompt does for a destructive effect.
     ///

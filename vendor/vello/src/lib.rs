@@ -166,6 +166,28 @@ use wgpu::{Device, Queue, TextureView};
 #[cfg(all(feature = "wgpu", feature = "wgpu-profiler"))]
 use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
 
+/// Supplies the pixels of an image drawn with an empty blob — one whose
+/// pixels live in a texture overridden on another renderer (see
+/// [`Renderer::override_image`]) — to a renderer that has no override for
+/// it. Given the blob id, it returns the image's tightly packed pixels.
+#[cfg(feature = "wgpu")]
+pub type ExternalImageSource = fn(u64) -> Option<Vec<u8>>;
+
+#[cfg(feature = "wgpu")]
+static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> =
+    std::sync::OnceLock::new();
+
+/// Install the process's [`ExternalImageSource`]. The first one installed stays.
+#[cfg(feature = "wgpu")]
+pub fn set_external_image_source(source: ExternalImageSource) {
+    let _ = EXTERNAL_IMAGE_SOURCE.set(source);
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) fn external_image_pixels(id: u64) -> Option<Vec<u8>> {
+    EXTERNAL_IMAGE_SOURCE.get().and_then(|source| source(id))
+}
+
 /// Represents the anti-aliasing method to use during a render pass.
 ///
 /// Can be configured for a render operation by setting [`RenderParams::antialiasing_method`].

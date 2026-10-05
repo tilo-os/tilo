@@ -34,8 +34,8 @@ pub const ROUTE_JOIN_FAILED: &str = "joining collaboration route failed";
 
 #[cfg(feature = "broker-transport")]
 mod broker;
-#[cfg(feature = "broker-transport")]
 pub mod channel_live_activity;
+#[cfg(feature = "broker-transport")]
 mod channel_settings;
 pub mod handoff;
 mod history;

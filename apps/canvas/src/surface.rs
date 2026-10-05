@@ -446,6 +446,77 @@ impl CanvasSurface {
         self.start_text_edit(id) || self.start_points(id)
     }
 
+    /// A subject to find or an edge to refine, asked from a button: what it
+    /// needs is drawn here, the model and the edge filter run off the
+    /// window's thread so it keeps drawing, and the area is applied as one
+    /// step when it is found. Meanwhile the header says it is under way.
+    fn take_finding(&mut self) {
+        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let wanted = {
+            let mut finding = self.tools.finding.borrow_mut();
+            // One at a time: a press while one is under way is dropped.
+            if finding.pending.is_some() {
+                finding.wanted = None;
+            }
+            finding.wanted.take()
+        };
+        if let Some(select) = wanted {
+            let text = self.look_text.get_or_insert_with(TextRenderer::new);
+            let prepared = crate::subject::prepare(
+                &select,
+                &mut self.tools.renderer.borrow_mut(),
+                text,
+                &self.art,
+            );
+            match prepared {
+                Err(why) => self.tools.notice.set(Some(why)),
+                Ok(prepared) => {
+                    let (send, receive) = std::sync::mpsc::channel();
+                    drop(ui::rt::app().spawn_blocking(move || {
+                        let found =
+                            prepared
+                                .finish()
+                                .map(|(area, matte, _)| crate::selection::Select {
+                                    d: Some(crate::model::path_data(&area.to_path())),
+                                    matte,
+                                    ..crate::selection::Select::default()
+                                });
+                        let _ = send.send(found);
+                    }));
+                    self.tools.finding.borrow_mut().pending = Some(receive);
+                    self.tools
+                        .notice
+                        .set(Some(lookup(if select.subject == Some(true) {
+                            "canvas-finding-subject"
+                        } else {
+                            "canvas-refining-edge"
+                        })));
+                }
+            }
+        }
+        let answer = {
+            let finding = self.tools.finding.borrow();
+            let Some(channel) = finding.pending.as_ref() else {
+                return;
+            };
+            match channel.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Ok(answer) => answer,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(lookup("canvas-finding-failed"))
+                }
+            }
+        };
+        self.tools.finding.borrow_mut().pending = None;
+        match answer {
+            Ok(select) => {
+                self.tools.notice.set(None);
+                self.dispatch(&CanvasAction::Select(Box::new(select)));
+            }
+            Err(why) => self.tools.notice.set(Some(why)),
+        }
+    }
+
     /// A picture the chooser answered with: the artwork, when the sheet is
     /// empty; else placed on it, fitted inside and selected.
     fn take_picked(&mut self) {
@@ -738,9 +809,14 @@ impl CanvasSurface {
                     .map(crate::model::Selection::region)
             })
             .flatten();
-        // Sampling one layer, the chosen one (the top one when none is).
-        let layers = (self.tools.sampling.with(|sampling| *sampling)
-            == crate::tools::Sampling::Layer)
+        // Sampling one layer, the chosen one (the top one when none is):
+        // the bucket's own choice, or the wand's.
+        let sampling = if fill {
+            &self.tools.fill_sampling
+        } else {
+            &self.tools.sampling
+        };
+        let layers = (sampling.with(|sampling| *sampling) == crate::tools::Sampling::Layer)
             .then(|| {
                 self.ink()
                     .layer
@@ -2895,6 +2971,7 @@ impl Widget for CanvasSurface {
         self.follow_view();
         self.follow_crop();
         self.take_picked();
+        self.take_finding();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -2916,6 +2993,15 @@ impl Widget for CanvasSurface {
                 .as_ref()
                 .is_some_and(|reference| reference.visible),
             wet: self.wet(),
+            detail: Some(crate::detail::Detail {
+                visible: to_screen
+                    .inverse()
+                    .transform_rect_bbox(transform.transform_rect_bbox(self.rect))
+                    .intersect(board),
+                pixels_per_unit: to_screen.determinant().abs().sqrt(),
+                wait: false,
+            }),
+            live: true,
             ..Options::default()
         };
         if let Some(shown) = self.shown() {
@@ -2978,6 +3064,30 @@ impl Widget for CanvasSurface {
                     self.modifiers = ctx.modifiers.state();
                     self.press(self.cursor);
                     *ctx.handled = true;
+                }
+                // A right-click is about what is under it: with the
+                // selecting tool it picks that mark first, as a left click
+                // would, and the menu over the canvas offers what to do
+                // with it. It leaves the press to that menu.
+                (ElementState::Pressed, MouseButton::Right)
+                    if self.rect.contains(self.cursor) && self.drag.is_none() =>
+                {
+                    if !self.focused {
+                        self.pressed_into_focus = true;
+                    }
+                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.current_tool() == Tool::Select && self.points.is_none() {
+                        let at = self.content_point(self.cursor);
+                        let hit = edit::pick_near(&self.art, at, self.pick_slop(), false);
+                        if hit.is_empty() {
+                            if !self.frame().is_some_and(|frame| frame.contains(at)) {
+                                self.select(Vec::new());
+                            }
+                        } else if !hit.iter().all(|id| self.selection.contains(id)) {
+                            self.select(hit);
+                        }
+                        self.tools.selection.set(self.selection.clone());
+                    }
                 }
                 (ElementState::Pressed, MouseButton::Middle) if self.rect.contains(self.cursor) => {
                     self.viewport.begin_pan(self.cursor);
@@ -3084,10 +3194,18 @@ impl Widget for CanvasSurface {
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
         // drawing until it has caught up. A picture being chosen, or
-        // decoded, is waited for.
+        // decoded, is waited for. Close up, the finer tiles of a painted
+        // layer arrive as they are simulated, and a painted layer's
+        // simulation catches up with a stroke just laid.
         self.wet().is_some()
             || self.tools.picking.borrow().is_some()
+            || {
+                let finding = self.tools.finding.borrow();
+                finding.wanted.is_some() || finding.pending.is_some()
+            }
             || self.tools.renderer.borrow().pictures.decoding()
+            || self.tools.renderer.borrow().detail_pending()
+            || self.tools.renderer.borrow().settling()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<CursorIcon> {
@@ -3134,6 +3252,16 @@ impl Widget for CanvasSurface {
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.follow_keys();
         self.follow_view();
+        // How large a brush can be follows the artwork's size.
+        let extent = self.art.width.max(self.art.height);
+        if extent > 0.0
+            && self
+                .tools
+                .extent
+                .with(|known| (*known - extent).abs() > f64::EPSILON)
+        {
+            self.tools.extent.set(extent);
+        }
         // The panels show what is selected.
         if self.tools.selection.with(|shown| *shown != self.selection) {
             self.tools.selection.set(self.selection.clone());

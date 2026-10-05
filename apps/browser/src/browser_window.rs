@@ -1247,4 +1247,92 @@ mod tests {
             );
         }
     }
+
+    /// The address arrives on the keyboard as a person types it: Ctrl+L, the
+    /// address, Enter navigates the page to exactly that address, whatever
+    /// the engine reports about the start page before, during or after.
+    #[test]
+    fn a_typed_address_after_ctrl_l_navigates_there() {
+        const URL: &str = "http://127.0.0.1:42975/";
+        // Before Ctrl+L, mid-scheme, mid-host, and just before Enter.
+        const SPLITS: [usize; 4] = [0, 3, 12, URL.len() + 1];
+        let scenarios: Vec<(&str, Vec<WebViewEvent>)> = vec![
+            (
+                "uri",
+                vec![WebViewEvent::UriChanged("https://duckduckgo.com/".into())],
+            ),
+            (
+                "uri+title+finished",
+                vec![
+                    WebViewEvent::UriChanged("https://duckduckgo.com/".into()),
+                    WebViewEvent::TitleChanged("DuckDuckGo".into()),
+                    WebViewEvent::LoadFinished,
+                ],
+            ),
+            (
+                "failed",
+                vec![WebViewEvent::LoadFailed {
+                    uri: "https://duckduckgo.com/".into(),
+                    error: "net::ERR_CERT_AUTHORITY_INVALID".into(),
+                }],
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (name, events) in &scenarios {
+            for split in SPLITS {
+                // Browser runs in its own app host, which routes the address
+                // bar's typed navigate action to the page's engine.
+                let engine = PageEngine::new();
+                crate::browser_widget::test_window_engine::install(engine.clone());
+                let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::new()
+                    .expect("Browser opens");
+                let harness = app.harness();
+                for _ in 0..3 {
+                    harness.relayout();
+                }
+                let emit = |harness: &mut ui::headless::FrameHarness| {
+                    for event in events {
+                        engine.emit(event.clone());
+                    }
+                    harness.relayout();
+                    harness.relayout();
+                };
+                if split == 0 {
+                    emit(harness);
+                }
+                harness.send_host_event(&WindowEvent::ModifiersChanged(
+                    winit::keyboard::ModifiersState::CONTROL.into(),
+                ));
+                harness.key("l");
+                harness.send_host_event(&WindowEvent::ModifiersChanged(
+                    winit::keyboard::ModifiersState::empty().into(),
+                ));
+                harness.relayout();
+                for (at, ch) in URL.chars().enumerate() {
+                    if split == at + 1 {
+                        emit(harness);
+                    }
+                    harness.key(&ch.to_string());
+                    harness.relayout();
+                }
+                if split == URL.len() + 1 {
+                    emit(harness);
+                }
+                harness.key("Enter");
+                app.settle();
+                let commands = engine.commands.lock().unwrap().clone();
+                let navigated: Vec<_> = commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        WebViewCommand::Navigate(url) => Some(url.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if !navigated.iter().any(|url| url == URL) {
+                    failures.push(format!("{name} split {split}: {navigated:?}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
 }

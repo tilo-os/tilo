@@ -353,6 +353,21 @@ impl AppActionBroker {
             })
     }
 
+    /// A local action door bound to an already-issued signed room admission and
+    /// one host-issued execution. No device is enrolled and no grant is minted.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable/currently invalid admission, a missing registered
+    /// policy clock, or any mismatch with the transport-owned caller.
+    pub fn certified_local_action_host(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+    ) -> Result<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
+        self.state.certified_local_action_host(caller, presentation)
+    }
+
     /// Reusable native broker attachment for an ordinary standalone peer.
     ///
     /// # Errors

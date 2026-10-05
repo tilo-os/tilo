@@ -12,6 +12,10 @@ pub struct CurrentHost {
     pub additional_certificates: Mutex<Vec<DeviceCert>>,
     pub checks: AtomicUsize,
     pub time: Option<crate::peer_actions::PolicyTime>,
+    /// Whether this host governs its room, as a standalone runtime governs its
+    /// own: then only its own device (or this host itself) escapes the
+    /// foreign-device cap there.
+    pub governs_room: std::sync::atomic::AtomicBool,
 }
 
 impl CurrentHost {
@@ -26,6 +30,7 @@ impl CurrentHost {
             additional_certificates: Mutex::new(vec![]),
             checks: AtomicUsize::new(0),
             time,
+            governs_room: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
@@ -33,6 +38,17 @@ impl CurrentHost {
 impl crate::peer_actions::CertificateAuthority for CurrentHost {
     fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
         Ok(self.time.clone())
+    }
+    fn governs(&self, room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        self.governs_room.load(Ordering::SeqCst)
+            && room.to_string() == self.route.cluster_id
+            && device.is_none_or(|device| {
+                self.certificate
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|cert| &cert.device_public_key == device)
+            })
     }
     fn authorize(&self, room: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
         if room.to_string() != self.route.cluster_id

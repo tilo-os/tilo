@@ -12,14 +12,16 @@ use std::rc::Rc;
 
 use ui::application::ComponentBehaviour;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
+use ui::tilo_resource::{Doc, Invoke, ModelError, NoAction, Resource};
 use ui::widget::Element;
 
-use crate::effects::SettingsEffect;
+use crate::categories::Category;
+use crate::effects::{NavigationEffect, SettingsEffect};
 use crate::host::PaneCx;
+use crate::panes::agent_models::AgentModelsEffect;
 use crate::settings_app::SettingsApp;
 
 /// The Settings resource: the door its effects and live rows are published
@@ -45,6 +47,50 @@ impl Resource for Settings {
     }
 }
 
+/// Decode a `settings://` link: `settings://models/<model-id>` shows that
+/// local model's card and `settings://<pane>[/…]` opens a pane. The launcher
+/// already checked the scheme; this keeps a malformed value from becoming a
+/// model or pane id.
+///
+/// # Errors
+/// Returns why `uri` is not a Settings link this version understands.
+pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
+    let rest = uri
+        .strip_prefix("settings://")
+        .or_else(|| uri.strip_prefix("settings:"))
+        .ok_or_else(|| "not a Settings link".to_string())?;
+    if let Some(id) = rest.strip_prefix("models/") {
+        let id = id.trim_end_matches('/');
+        if id.is_empty()
+            || id.len() > 128
+            || !id.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'_' | b'.' | b'/')
+            })
+        {
+            return Err("invalid local model id in Settings link".into());
+        }
+        return Ok(AgentModelsEffect::ShowLocalModel {
+            model: id.to_owned(),
+        }
+        .into());
+    }
+    let pane = rest.split('/').next().unwrap_or_default();
+    // Camera and other apps link to the privacy controls by their common
+    // name; the pane is Permissions.
+    let pane = match pane {
+        "privacy" => "permissions",
+        "models" => "agent_models",
+        other => other,
+    };
+    let category = Category::from_slug(pane).ok_or("unknown Settings pane in link")?;
+    Ok(NavigationEffect::OpenPane {
+        pane: category.slug().to_owned(),
+    }
+    .into())
+}
+
 /// Framework app: the settings widget is the surface over [`Settings`].
 pub struct SettingsShell;
 
@@ -60,9 +106,26 @@ impl ResourceApp for SettingsShell {
         appearance_reconcile: true,
         ..ComponentBehaviour::DEFAULT
     };
+    /// A `settings://` link.
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
         cx.surface(SettingsApp::new())
+    }
+
+    /// `settings://models/<id>` opens Agent Models at that model's card and
+    /// `settings://<pane>` opens the pane. Neither changes anything.
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Settings>> {
+        let Some(argument) = input.argument() else {
+            return Vec::new();
+        };
+        match parse_settings_uri(argument) {
+            Ok(effect) => vec![Invoke::effect(&effect)],
+            Err(error) => {
+                tracing::warn!(%error, "ignoring the Settings link");
+                Vec::new()
+            }
+        }
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -108,5 +171,41 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         crate::effects::row(self, id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Model links name a validated model id, pane links a known pane, and
+    /// anything else is refused rather than guessed.
+    #[test]
+    fn settings_links_decode_to_what_they_show() {
+        assert_eq!(
+            parse_settings_uri("settings://models/u2net-subject"),
+            Ok(AgentModelsEffect::ShowLocalModel {
+                model: "u2net-subject".into()
+            }
+            .into())
+        );
+        assert_eq!(
+            parse_settings_uri("settings://privacy/camera"),
+            Ok(NavigationEffect::OpenPane {
+                pane: "permissions".into()
+            }
+            .into())
+        );
+        assert_eq!(
+            parse_settings_uri("settings://agent_models"),
+            Ok(NavigationEffect::OpenPane {
+                pane: "agent_models".into()
+            }
+            .into())
+        );
+        assert!(parse_settings_uri("settings://models/").is_err());
+        assert!(parse_settings_uri("settings://models/U2NET?x=1").is_err());
+        assert!(parse_settings_uri("settings://nowhere").is_err());
+        assert!(parse_settings_uri("https://models/u2net-subject").is_err());
     }
 }

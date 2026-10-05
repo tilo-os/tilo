@@ -181,6 +181,9 @@ pub struct Tools {
     pub layer_adjust: LocalState<bool>,
     /// A picture being chosen to add, until the chooser answers.
     pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
+    /// A subject to find or an edge to refine, asked from a button: the
+    /// canvas draws what it needs and the rest runs off the window's thread.
+    pub finding: Rc<RefCell<Finding>>,
     /// The preset the brush lays strokes with on a plain layer.
     pub preset: LocalState<Preset>,
     /// The brush's opacity, `0..=1`.
@@ -193,9 +196,15 @@ pub struct Tools {
     pub taper: LocalState<f64>,
     /// What the eraser takes: whole strokes, or the paint under it.
     pub erasing: LocalState<Erasing>,
-    /// What the magic wand and the bucket find colour in: every layer as
-    /// shown, or the chosen layer alone.
+    /// What the magic wand finds colour in: every layer as shown, or the
+    /// chosen layer alone.
     pub sampling: LocalState<Sampling>,
+    /// What the bucket finds the area to fill in: the chosen layer, as
+    /// painters expect a fill to stay on the layer it lands on, or every
+    /// layer as shown.
+    pub fill_sampling: LocalState<Sampling>,
+    /// The artwork's longest side in units: how large a brush can be.
+    pub extent: LocalState<f64>,
     /// How crisp the eraser's edge is, `0..=1`.
     pub eraser_hardness: LocalState<f64>,
     /// How much paint the eraser takes off, `0..=1`.
@@ -371,6 +380,7 @@ impl Default for Tools {
             crop: LocalState::new(false),
             live: Rc::default(),
             picking: Rc::default(),
+            finding: Rc::default(),
             layer_adjust: LocalState::new(false),
             preset: LocalState::new(Preset::Round),
             opacity: LocalState::new(1.0),
@@ -380,6 +390,8 @@ impl Default for Tools {
             taper: LocalState::new(round.taper),
             erasing: LocalState::new(Erasing::Paint),
             sampling: LocalState::new(Sampling::All),
+            fill_sampling: LocalState::new(Sampling::Layer),
+            extent: LocalState::new(1200.0),
             eraser_hardness: LocalState::new(1.0),
             eraser_strength: LocalState::new(1.0),
             tolerance: LocalState::new(crate::author::TOLERANCE),
@@ -408,8 +420,14 @@ pub const ROOM_STEP: u32 = 24; // a granularity of a measured width, not spacing
 /// chrome, so it does not follow the theme.
 const INK: &str = "#2b3f8f";
 
-/// The smallest and largest brush, in artwork units.
-const BRUSH_RANGE: (f64, f64) = (1.0, 120.0);
+/// The smallest brush, in artwork units.
+const BRUSH_SMALLEST: u8 = 1; // a brush width in artwork units, not on-screen spacing
+/// The largest brush on any artwork, in units: a small artwork still gets
+/// a broad one.
+const BRUSH_LARGEST_LEAST: u8 = 120; // a brush width in artwork units, not on-screen spacing
+/// The largest brush as a share of the artwork's longest side: a quarter,
+/// enough to lay in a sky in a few strokes on any size of artwork.
+const BRUSH_LARGEST_SHARE: f64 = 0.25;
 
 impl Tools {
     /// A smaller (`[`) or larger (`]`) brush and eraser: a step of the
@@ -426,10 +444,18 @@ impl Tools {
         true
     }
 
-    /// The brush width in artwork units.
+    /// The brush width in artwork units: the slider's travel, finer at the
+    /// small end, up to a quarter of the artwork's longest side.
     pub fn brush_size(&self) -> f64 {
         let travel = self.size.with(|size| size.clamp(0.0, 1.0));
-        BRUSH_RANGE.0 + travel * travel * (BRUSH_RANGE.1 - BRUSH_RANGE.0)
+        let smallest = f64::from(BRUSH_SMALLEST);
+        smallest + travel * travel * (self.largest_brush() - smallest)
+    }
+
+    /// The largest brush on this artwork, in units.
+    pub fn largest_brush(&self) -> f64 {
+        let extent = self.extent.with(|extent| *extent);
+        (extent * BRUSH_LARGEST_SHARE).max(f64::from(BRUSH_LARGEST_LEAST))
     }
 
     /// The paint on the brush as a mark names it: `pigment:<name>` or
@@ -606,4 +632,13 @@ mod tests {
             .set(Some(("burnt-sienna".into(), "#8a3c1e".into())));
         assert_eq!(tools.paint(), "pigment:burnt-sienna");
     }
+}
+
+/// Finding an area off the window's thread.
+#[derive(Default)]
+pub struct Finding {
+    /// Asked for and not started: the select it resolves.
+    pub wanted: Option<crate::selection::Select>,
+    /// Under way: the area, as the select to apply, or why not.
+    pub pending: Option<std::sync::mpsc::Receiver<Result<crate::selection::Select, String>>>,
 }

@@ -1,0 +1,32 @@
+# The system interfaces this image serves, with every version of each.
+#
+# An app requires an interface by naming it `required@N` in its manifest's
+# `[sandbox.services]`. The registry client offers only builds whose
+# requirements are all listed here, `tilo-install` refuses the rest, and the
+# launcher runs the image's own copy of an app instead of a user copy that
+# needs a version missing here. The image's preinstalled apps always fit:
+# crates/packaging/launcher checks every manifest in apps/ against this file.
+#
+# A change an existing client could not work with is a new version. Keep
+# serving the old one beside it for as long as published builds use it; a
+# version dropped here strands every installed build that requires it on the
+# image's copy.
+
+[interfaces]
+# The image-owned grant Settings drives the system through: host clients and
+# configuration, the filtered system bus to the system's authorities
+# (NetworkManager, BlueZ, logind, timedated, ...), PipeWire and the
+# compositor's runtime state (crates/packaging/launcher/src/system_authority.rs).
+system = [1]
+
+# Session services handed to apps as connected sockets.
+app-host = [1]
+collab = [1]
+compat = [1]
+identity = [1]
+model-gateway = [1]
+models = [1]
+shell-ui = [1]
+tilo-fs = [1]
+tools = [1]
+ush = [1]

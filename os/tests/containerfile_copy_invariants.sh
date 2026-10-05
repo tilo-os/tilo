@@ -91,7 +91,8 @@ containerfile="$repo/os/Containerfile"
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
 # The image ships one login session and no peer-sync marker unit.
-# The release gate's input hotplug check ships beside them.
+# The release gate's input hotplug check and the device admin's action-model
+# check ship beside them.
 # The boot units gate ships with the rollback units whose confirmation it gates.
 # The ush supervisor ships with what it runs: the two relay helpers for
 # Terminal, and the legacy VM service behind app shims. The WPE engine overlay
@@ -99,7 +100,17 @@ containerfile="$repo/os/Containerfile"
 # app store and its Chromium engine a signed runtime bundle under
 # /usr/lib/tilo-runtime, both already copied.
 # NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
-expected_contract=04f66dbee7ef23f2100a3eed9fa16b9738b2f8e52729967d0b6d23a84ab05014
+# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
+# components.toml) and its dracut module ship in the rollback-files overlay
+# beside tilo-rollback, which the initramfs carries the same way.
+# The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
+# publisher.hex), which the launcher trusts for runtimes the Store installs,
+# is a deliberate addition.
+# /usr/bin/terminal, /usr/bin/file-explorer and /usr/bin/settings are
+# deliberate removals: those apps ship only as packages in the app store.
+# The system-interface declaration (/usr/share/tilo/system-interfaces.toml),
+# which says what app builds this OS can run, is a deliberate addition.
+expected_contract=1bc647b84344453fca7941751d821e0998ef390e21528730cb373890a9c08755
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -19,6 +19,10 @@ use tilo_agent_participant::{AppCatalogue, PlanModel, StepAction, component_apps
 /// shared record: there is nothing for an agent to edit there.
 pub const LOCAL_STATE: &[(&str, &str)] = &[
     (
+        "so.tilo.camera",
+        "the record holds only what this device's camera took and scanned; its preferences are settings",
+    ),
+    (
         "so.tilo.hex-editor",
         "edits a local file; the record holds nothing until one is opened",
     ),

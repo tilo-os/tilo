@@ -40,6 +40,19 @@ pub(crate) const QUALITY_OPTIONS: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 /// Registry `type_id` for every Tube action.
 pub const TUBE_ACTION_TYPE: &str = "tube.action";
 
+/// The binding of one fully specified effect, for a control: the same
+/// published effect the palette and agents invoke.
+pub fn effect_binding(effect: &TubeEffect) -> Option<ui::tilo_actions::ActionBinding<()>> {
+    use ui::tilo_resource::{Effect as _, Resource as _};
+    let spec = TubeEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == effect.id())?;
+    let app = crate::resource::Tube::KIND;
+    let root = ui::tilo_actions::Resource::new(app, app, crate::resource::Tube::LABEL)
+        .with_action(spec.clone());
+    ui::tilo_actions::ActionBinding::static_json(&root, &spec, effect.arguments()).ok()
+}
+
 /// What Tube does that changes no document, invoked from its own controls,
 /// the palette, an agent or a script alike. A live row offers the effects
 /// bound to its entity (open *this* video).
@@ -47,13 +60,13 @@ pub const TUBE_ACTION_TYPE: &str = "tube.action";
 #[effect(operation = "tube.effect")]
 pub enum TubeEffect {
     /// Show a screen.
-    #[effect(permission = "read")]
+    #[effect(view)]
     ShowScreen {
         #[param("home | trending | subscriptions | queue | history | settings")]
         screen: String,
     },
     /// Show or hide navigation.
-    #[effect(permission = "read")]
+    #[effect(view)]
     ToggleSidebar,
     /// Open video.
     #[effect(permission = "read")]
@@ -191,6 +204,19 @@ pub enum TubeEffect {
 
 impl TubeEffect {
     /// The screen `ShowScreen` names.
+    /// The name [`Self::ShowScreen`] gives `route`, for a screen it shows.
+    pub(crate) fn screen_name(route: &Route) -> Option<&'static str> {
+        Some(match route {
+            Route::Home => "home",
+            Route::Trending => "trending",
+            Route::Subscriptions => "subscriptions",
+            Route::Queue => "queue",
+            Route::History => "history",
+            Route::Settings => "settings",
+            _ => return None,
+        })
+    }
+
     pub(crate) fn screen(name: &str) -> Option<Route> {
         Some(match name {
             "home" => Route::Home,

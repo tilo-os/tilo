@@ -1533,15 +1533,13 @@ impl Widget for Scrollable {
             }
             _ => true,
         };
+        // A capturing child also gets presses outside: what it shows past
+        // the clip (an open menu) is chosen or dismissed by them.
         let child_pointer_allowed = pointer_in_content
             || (child_has_capture
                 && matches!(
                     event,
-                    WindowEvent::CursorMoved { .. }
-                        | WindowEvent::MouseInput {
-                            state: ElementState::Released,
-                            ..
-                        }
+                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
                 ));
         if !child_pointer_allowed {
             return;

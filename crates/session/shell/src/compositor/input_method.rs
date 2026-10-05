@@ -20,7 +20,7 @@
 //! preference is `auto`, `always` or `never`, and `auto` keeps it running
 //! wherever a touchscreen or a convertible's tablet mode can need it. Whether
 //! it is shown for a focused field is [`osk_wanted`], which follows the input
-//! in use — a touch with nothing typed on a physical keyboard since, or a
+//! in use — a touch with no key press or pointer use since, or a
 //! convertible folded into tablet mode. Keeping the service alive while it is
 //! merely hidden means a tap into a field never waits for, or races, a fresh
 //! keyboard process binding the input method.
@@ -134,9 +134,9 @@ impl OskPreference {
 pub struct OskInput {
     /// A touchscreen is attached.
     pub touchscreen: bool,
-    /// A physical key was pressed after the most recent touch (or before any
-    /// touch).
-    pub typed_since_touch: bool,
+    /// The screen was touched after the most recent key press or pointer
+    /// use.
+    pub touch_is_current: bool,
     /// A convertible reports that its keyboard is folded away.
     pub tablet_mode: bool,
 }
@@ -145,7 +145,7 @@ impl OskInput {
     pub fn from_environment(input: &super::input_environment::InputEnvironment) -> Self {
         Self {
             touchscreen: input.available().contains(ui::InputDevice::Touch),
-            typed_since_touch: input.typed_since_touch(),
+            touch_is_current: input.touch_is_current(),
             tablet_mode: input.tablet_mode(),
         }
     }
@@ -165,13 +165,14 @@ pub fn osk_service_wanted(preference: OskPreference, input: OskInput) -> bool {
 /// Whether the on-screen keyboard should be shown for a focused field.
 ///
 /// In `Auto`, a convertible in tablet mode always gets it: its keyboard is
-/// folded away. Otherwise it needs a touchscreen, and a key press on a
-/// physical keyboard hides it until the screen is touched again.
+/// folded away. Otherwise it is shown only while touch is the input in use:
+/// nothing before the first touch, and a key press or any mouse, touchpad or
+/// pen use hides it until the screen is touched again.
 pub fn osk_wanted(preference: OskPreference, input: OskInput) -> bool {
     match preference {
         OskPreference::Always => true,
         OskPreference::Never => false,
-        OskPreference::Auto => input.tablet_mode || (input.touchscreen && !input.typed_since_touch),
+        OskPreference::Auto => input.tablet_mode || (input.touchscreen && input.touch_is_current),
     }
 }
 
@@ -361,23 +362,23 @@ mod tests {
     fn automatic_on_screen_keyboard_follows_touch_typing_and_tablet_mode() {
         use OskPreference::{Always, Auto, Never};
         use serde_json::json;
-        // (preference, touchscreen, typed since touch, tablet mode) → wanted
+        // (preference, touchscreen, touch is current, tablet mode) → wanted
         let table = [
             ((Auto, false, false, false), false),
-            ((Auto, true, false, false), true),
-            ((Auto, true, true, false), false),
+            ((Auto, true, false, false), false),
+            ((Auto, true, true, false), true),
             ((Auto, false, true, false), false),
             ((Auto, false, false, true), true),
-            ((Auto, true, true, true), true),
-            ((Always, false, true, false), true),
-            ((Always, true, true, false), true),
-            ((Never, true, false, false), false),
-            ((Never, true, false, true), false),
+            ((Auto, true, false, true), true),
+            ((Always, false, false, false), true),
+            ((Always, true, false, false), true),
+            ((Never, true, true, false), false),
+            ((Never, true, true, true), false),
         ];
-        for ((preference, touchscreen, typed_since_touch, tablet_mode), expected) in table {
+        for ((preference, touchscreen, touch_is_current, tablet_mode), expected) in table {
             let input = OskInput {
                 touchscreen,
-                typed_since_touch,
+                touch_is_current,
                 tablet_mode,
             };
             assert_eq!(
@@ -406,8 +407,8 @@ mod tests {
             assert_eq!(OskPreference::from_setting(stored.as_ref()), expected);
         }
 
-        // A key press hides it until the next touch; pointer use in between
-        // is not typing.
+        // Nothing shows it before the first touch; a key press or pointer
+        // use hides it until the next touch.
         let mut environment = super::super::input_environment::InputEnvironment::default();
         environment.device_added(
             "panel",
@@ -416,12 +417,15 @@ mod tests {
         let wanted = |environment: &super::super::input_environment::InputEnvironment| {
             osk_wanted(Auto, OskInput::from_environment(environment))
         };
+        assert!(!wanted(&environment), "a field focused before any input");
         environment.note_used(ui::InputModality::Keyboard);
         assert!(!wanted(&environment), "typed before any touch");
         environment.note_used(ui::InputModality::Touch);
         assert!(wanted(&environment));
         environment.note_used(ui::InputModality::Pointer);
-        assert!(wanted(&environment), "pointer use is not typing");
+        assert!(!wanted(&environment), "the mouse moved");
+        environment.note_used(ui::InputModality::Touch);
+        assert!(wanted(&environment));
         environment.note_used(ui::InputModality::Keyboard);
         assert!(!wanted(&environment));
         assert!(

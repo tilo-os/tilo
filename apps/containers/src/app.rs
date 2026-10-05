@@ -1858,12 +1858,12 @@ impl ContainersApp {
             ("containers.container", "unpause") => podman::run_action(Action::Unpause, target)?,
             ("containers.container", "remove") => podman::run_action(Action::Remove, target)?,
             ("containers.container", "shell") => {
-                crate::terminal::spawn_exec_attach(target, "/bin/sh").map_err(|e| e.to_string())?;
+                crate::terminal::open(crate::terminal::exec_attach_intent(target))?;
             }
             ("containers.image", "remove") => podman::remove_image(target, true)?,
             ("containers.volume", "remove") => podman::remove_volume(target, false)?,
             ("containers.distrobox", "enter") => {
-                crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
+                crate::terminal::open(crate::terminal::distrobox_enter_intent(target))?;
             }
             _ => return Err(format!("`{verb}` is not a container engine operation")),
         }

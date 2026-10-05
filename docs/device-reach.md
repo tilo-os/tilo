@@ -73,6 +73,21 @@ An IP address is only a hint.
   machine reaches devices this way by enrolling as one of the person's
   devices, like any other.
 
+  The route is served by `tilo-device-admin.service` on dev images, a system
+  service rather than the session's endpoint, so a device at the greeter, or
+  one nobody has logged in to since boot, stays reachable. It shares the
+  device key: its endpoint id is derived from it, as tilo-relay's is, since
+  one endpoint id published by two processes would take each other's relay
+  slot, and the device key proves who answers inside the handshake. Both
+  sides present their root-signed certificate and sign a challenge bound to
+  the QUIC connection's two endpoint ids. The device admits only a device of
+  its own identity whose certificate grants `can_administer_devices` and that
+  is not revoked, bridges the session to a fresh `tilo-vmd rpc`, and logs each
+  session and request to its journal. A developer's machine is certified for
+  this with `tilo-enroll certify --capability admin` on the device that holds
+  the identity, which also lists it among the person's devices, where Settings
+  can remove it (`tilo-vm vm enrol-admin`).
+
 ## Updating what it runs
 
 An update is a set of layers, never edits to `/usr`. Every change can be
@@ -100,6 +115,60 @@ rolled back, and the next boot either keeps or drops it on purpose.
   from the registry by digest. A local build streams its layer from the
   builder to the device, so the dev machine's disk never holds the binaries.
 
+## Unlocking it after a reboot
+
+An encrypted disk that waits for a passphrase at the machine's keyboard
+undoes everything above: an update reboots, and nobody can reach the machine
+until someone types it in. Unlock has three factors. Each one is optional, and
+the recovery key always remains (`tilo-disk-encrypt`).
+
+- **TPM2 with a signed PCR policy**, where the machine has a TPM Linux can
+  drive. The policy is PCR 4 + PCR 7 with a signed prediction per generation,
+  as `docs/security/boot-chain.md` describes, so an OS update does not fall
+  back to the recovery key. The machine unlocks by itself, and only into a
+  boot chain Tilo signed.
+- **A sibling's consent over the network.** A LUKS slot opens with a key
+  derived from two halves:
+  - The device half lives on the machine, in a token in the volume's own
+    LUKS2 header beside the slot it opens: sealed to the TPM where there is
+    one, otherwise in the clear. Like the boot partition, the header is
+    readable by anyone holding the disk, and early boot reads it without
+    mounting anything.
+  - The sibling half is sealed to the person's root-derived secret-sync key
+    and held by their other devices.
+
+  Early boot brings up the network and asks the person's devices for the
+  sibling half over the peer network (relay fallback included). It
+  authenticates with a boot-only key pair whose public half the person's
+  devices certified when the slot was enrolled. A sibling releases its half
+  only after the owner approves the typed `device.unlock` action, which works
+  like any other action from their own identity: a prompt on their phone or
+  laptop, or an admin invoking it, a developer's tilo-vm among them. Policy can
+  auto-approve a request from a machine whose TPM attested the expected boot
+  chain. A stolen machine can ask, but it cannot unlock without the owner. A
+  copied boot partition alone gets nothing.
+- **The passphrase or recovery key** at the keyboard, as today.
+
+Wi-Fi-only machines need the network in early boot. The initramfs runs the
+image's NetworkManager, only for a root enrolled for sibling unlock: wired
+links come up with DHCP, plus the networks the owner chose for unlocking
+(`tilo-disk-encrypt enrol --sibling --network NAME`), and no others. Their
+credentials are stored with the device half: sealed to the TPM where there is
+one, otherwise in the clear, readable by anyone holding the disk, which
+Settings tells the owner when they choose them (`tilo-sibling-unlock status`
+reports the sealing). They unlock nothing on their own.
+
+The prompt for the passphrase is up while early boot asks; whichever answers
+first opens the volume. The client answers systemd-cryptsetup's passphrase
+request as a password agent, and only with a key it has already checked
+against the slot, so a failed or refused attempt costs the person nothing and
+leaves the prompt as it was.
+
+The Lenovo Yoga Slim 7x has no TPM Linux can use yet. Its firmware TPM sits
+behind Qualcomm's TEE, and the driver for it (`tpm_qcom` on QCOMTEE) is still
+in review. So on that machine the sibling factor is what replaces typing the
+passphrase.
+
 ## Verification
 
 - Unit tests cover how logind locks map onto the registry, lease expiry and
@@ -114,3 +183,8 @@ rolled back, and the next boot either keeps or drops it on purpose.
   5. B's link is cut and restored, and the action route reconnects.
 - On hardware, a board on Ethernet and a laptop on Wi-Fi each run a swap and a
   rollback through the `device` slot, then sleep and are woken by name.
+- A VM with an encrypted disk reboots and is unlocked by its paired sibling
+  after `device.unlock` is approved (`os/dev/test-nearby-pairing.sh
+  --unlock`). A denied request, a replayed earlier exchange, a boot key that
+  was never certified, and a device removed from the fleet each leave it at
+  the passphrase prompt, with the attempt in the owner's history.
