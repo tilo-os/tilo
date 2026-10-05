@@ -7,5 +7,6 @@
 //! Portable code opens a [`Dir`](crate::Dir) instead.
 
 pub mod atomic;
+pub mod bounded;
 pub mod lock;
 pub mod private;

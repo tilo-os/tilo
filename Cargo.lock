@@ -15799,6 +15799,7 @@ dependencies = [
  "tilo-clipboard",
  "tilo-clock",
  "tilo-dialogs",
+ "tilo-files",
  "tilo-location",
  "tilo-media",
  "tilo-notify",
