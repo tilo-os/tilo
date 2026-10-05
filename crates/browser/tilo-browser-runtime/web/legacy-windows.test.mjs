@@ -120,7 +120,7 @@ function fakeLive() {
     },
   };
 }
-function mount({control = false, refuse = false, dismissed = () => [], paintFrame = () => false, takePaintInput = () => [], focusWindow, focusDesktop} = {}) {
+function mount({control = false, refuse = false, dismissed = () => [], paintFrame = () => false, takePaintInput = () => [], focusWindow, focusDesktop, sendInput, onError} = {}) {
   const doc = fakeDocument();
   const surface = doc.createElement('div');
   const live = fakeLive();
@@ -135,13 +135,13 @@ function mount({control = false, refuse = false, dismissed = () => [], paintFram
     surface, document: doc, live: () => live, ...codecs, now: () => clock.t, mac: false,
     windows: () => rects,
     setWindows: list => shown.push(list),
-    dismissed, focusWindow, focusDesktop,
+    dismissed, focusWindow, focusDesktop, onError,
     paintFrame,
     takePaintInput,
-    sendInput: async (publisher, stream, events) => {
+    sendInput: sendInput ?? (async (publisher, stream, events) => {
       if (events.length) sent.push({publisher, stream, events});
       return events.length ? control && !refuse : control;
-    },
+    }),
     requestFrame: callback => { frames.push(callback); return frames.length; }, cancelFrame: () => {},
     setInterval: callback => { poll = callback; return 1; }, clearInterval: () => {},
   });
@@ -505,4 +505,58 @@ test('input on a painted page goes to its host only when this member drives it',
   assert.deepEqual(driver.sent.flatMap(request => request.events), events, 'in order');
   driver.layer.close();
   await tick();
+});
+
+
+test('a delayed HTTPS send preserves a mixed-case typing burst in wire order', async () => {
+  let release;
+  const sent = [], errors = [];
+  const m = await controlled({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      if (sent.length === 1) await new Promise(resolve => { release = resolve; });
+      return true;
+    }});
+  const physical = [
+    ['ShiftLeft', 42, true, true], ['KeyA', 30, true, true], ['KeyA', 30, false, true],
+    ['ShiftLeft', 42, false, false], ['KeyB', 48, true, false], ['KeyB', 48, false, false],
+    ['Digit1', 2, true, false], ['Digit1', 2, false, false],
+    ['ShiftLeft', 42, true, true], ['Slash', 53, true, true], ['Slash', 53, false, true],
+    ['ShiftLeft', 42, false, false],
+  ];
+  const expected = [];
+  for (let repeat = 0; repeat < 20; repeat++) {
+    for (const [code, keysym, pressed, shiftKey] of physical) {
+      m.canvas.dispatch(pressed ? 'keydown' : 'keyup', {code, shiftKey});
+      expected.push({Key: {keysym, pressed, modifiers: 0}});
+    }
+  }
+  assert.equal(sent.length, 1, 'one send in flight while the remaining physical keys queue');
+  assert.equal(m.layer.streams()[0].control, true, 'typing retains the granted control');
+  assert.deepEqual(errors, []);
+  release();
+  for (let batch = 0; batch < 6; batch++) await tick();
+  assert.deepEqual(sent.flat(), expected, 'every physical key reaches the host exactly once in order');
+  assert.ok(sent.every(batch => batch.length <= 64), 'each request respects the host wire bound');
+  m.layer.close();
+});
+
+test('an unresponsive host still bounds the input queue and revokes control', async () => {
+  let release;
+  const errors = [], sent = [];
+  const m = await controlled({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      await new Promise(resolve => { release = resolve; });
+      return true;
+    }});
+  for (let i = 0; i < 600; i++) m.canvas.dispatch(i % 2 ? 'keyup' : 'keydown', {code: 'KeyA'});
+  assert.equal(m.layer.streams()[0].control, false);
+  assert.deepEqual(errors, ['Error: legacy window input backlog exceeded']);
+  release();
+  await tick();
+  assert.equal(sent.length, 1, 'revocation drops the unsent queue');
+  m.layer.close();
 });
