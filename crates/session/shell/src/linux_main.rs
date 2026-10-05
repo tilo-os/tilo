@@ -33,74 +33,6 @@ const SECRET_SERVICE_STARTUP_ATTEMPTS: usize = 8;
 const SECRET_SERVICE_STARTUP_RETRY_DELAY: std::time::Duration =
     std::time::Duration::from_millis(250);
 
-/// Install a panic hook that writes a crash report to
-/// `~/.cache/tilo/crashes/<timestamp>-<pid>.log` and echoes the panic message +
-/// log path to stderr — without this, a session launched outside a
-/// terminal (greetd, .desktop double-click) discards stderr, making "the shell just disappeared" unactionable.
-///
-/// Chains to the default hook AFTER writing the file so a developer running from a terminal still sees the colored panic + backtrace.
-///
-/// Reports carry backtraces and payloads, so they are private (0700 directory,
-/// 0600 file, never following a link). Without a home cache directory only the
-/// stderr copy is made: a shared fallback such as `/tmp` would let another user
-/// plant the path.
-fn install_crash_log_hook() {
-    let dir = xdg_paths::cache_dir()
-        .map(|cache| cache.join("tilo").join("crashes"))
-        .filter(|dir| private_fs::directory(dir).is_ok());
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let ts = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        let payload = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| (*s).to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "<unknown payload>".to_string());
-        let loc = info.location().map_or_else(
-            || "<unknown location>".to_string(),
-            |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
-        );
-        let thread = std::thread::current();
-        let thread = thread.name().unwrap_or("<unnamed>");
-        let contained = if tilo_rt::panic_boundary::is_isolated() {
-            "yes: the failing helper restarts and the session continues"
-        } else {
-            "no: the session ends"
-        };
-        let body = format!(
-            "tilo shell panic\n\
-             ===============\n\
-             timestamp: {ts}\n\
-             thread:    {thread}\n\
-             contained: {contained}\n\
-             location:  {loc}\n\
-             message:   {payload}\n\n\
-             backtrace:\n{backtrace}\n"
-        );
-        if let Some(dir) = &dir {
-            use std::io::Write as _;
-            let path = dir.join(format!("{ts}-{}.log", std::process::id()));
-            let wrote = private_fs::create_new(&path)
-                .and_then(|mut file| file.write_all(body.as_bytes()))
-                .is_ok();
-            if wrote {
-                eprintln!("\n[tilo] crash log written to {}", path.display());
-            } else {
-                eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
-            }
-        } else {
-            eprintln!("\n[tilo] no private cache directory; crash log not written");
-        }
-        default_hook(info);
-    }));
-    // After the crash log: a panic outside a helper's panic boundary still
-    // ends the compositor, in every build. Inside one (the collaboration
-    // broker's thread) it unwinds to the helper's owner, which restarts it.
-    tilo_rt::panic_boundary::abort_outside_boundaries();
-}
-
 /// The in-sandbox Landlock shim token. Only `tilo-launcher` implements it;
 /// the compositor never builds a sandbox.
 const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
@@ -515,7 +447,11 @@ pub fn run() -> std::process::ExitCode {
     let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
     tracing_subscriber::fmt::init();
-    install_crash_log_hook();
+    shell::crash_log::install("tilo shell panic");
+    // After the crash log: a panic outside a helper's panic boundary still
+    // ends the compositor, in every build. Inside one (the collaboration
+    // broker's thread) it unwinds to the helper's owner, which restarts it.
+    tilo_rt::panic_boundary::abort_outside_boundaries();
     log_gpu_pin(gpu_pin.as_ref());
     compositor::dev_env::report_build_mode();
 

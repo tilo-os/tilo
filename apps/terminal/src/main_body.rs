@@ -3380,6 +3380,10 @@ impl TerminalWidget {
             return;
         }
         let mods = modifiers.state();
+        if self.take_no_runtime_offer(logical_key, mods) {
+            *handled = true;
+            return;
+        }
         if !mods.control_key()
             && !mods.alt_key()
             && !mods.super_key()
@@ -6425,11 +6429,9 @@ pub fn exec_script(argv: &[String]) -> String {
 /// service socket on this app's behalf, per `[sandbox.services]`.
 pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
-/// The launcher hands over one connection, and a connection carries one
-/// session. Once a session has taken it, its descriptor number may name
-/// something else entirely — but the supervisor is still this window's only
-/// route, so the service stays the chosen one.
-static USH_SERVICE_TAKEN: AtomicBool = AtomicBool::new(false);
+/// Ownership and refusal retries live with the runtime's service transport.
+static USH_SERVICE: runtime_portal::service_socket::InheritedServiceSocket =
+    runtime_portal::service_socket::InheritedServiceSocket::new("ush");
 
 /// Who caused a session to open. The device's own shell is never opened for
 /// an agent, whatever else allows it.
@@ -6472,8 +6474,22 @@ pub enum OpenError {
     Refused(String),
     /// Nothing here can run this target.
     Unavailable(String),
+    /// No environment can be built on this device: no `env-runtime` image is
+    /// installed. The device's own shell may still be opened instead.
+    NoRuntime(String),
     /// Opening failed.
     Failed(String),
+}
+
+impl OpenError {
+    /// Whether the supervisor answered and refused, leaving the connection
+    /// usable for another request.
+    pub fn is_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::NeedsAllow(_) | Self::Refused(_) | Self::NoRuntime(_)
+        )
+    }
 }
 
 impl std::fmt::Display for OpenError {
@@ -6482,6 +6498,7 @@ impl std::fmt::Display for OpenError {
             Self::NeedsAllow(reason)
             | Self::Refused(reason)
             | Self::Unavailable(reason)
+            | Self::NoRuntime(reason)
             | Self::Failed(reason) => f.write_str(reason),
         }
     }
@@ -6521,7 +6538,7 @@ pub fn confinement_route(target: &crate::target::SessionTarget) -> ConfineRoute 
     #[cfg(unix)]
     decide_route(
         target,
-        USH_SERVICE_TAKEN.load(Ordering::Acquire) || ush_service_fd().is_some(),
+        USH_SERVICE.was_taken() || ush_service_fd().is_some(),
         can_build_namespace(),
         ush_binary(),
     )
@@ -6699,24 +6716,20 @@ fn ush_service_backend(
     requested_by: Requester,
     relay_session: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
-    use std::os::fd::{FromRawFd, RawFd};
-    use std::os::unix::net::UnixStream;
+    use runtime_portal::service_socket::ServiceSocketError;
 
-    let raw: RawFd = std::env::var(USH_SERVICE_FD_ENV)
-        .ok()
-        .and_then(|raw| raw.parse().ok())
-        .ok_or_else(|| OpenError::Failed("the ush service descriptor is missing".into()))?;
-    if USH_SERVICE_TAKEN.swap(true, Ordering::AcqRel) {
-        return Err(OpenError::Unavailable(
+    // SAFETY: this process-wide instance alone owns the launcher's ush fd.
+    let stream = unsafe { USH_SERVICE.take() }.map_err(|error| match error {
+        ServiceSocketError::InUse => OpenError::Unavailable(
             "This window's shell service is already in use; open a new tab".into(),
-        ));
+        ),
+        other => OpenError::Failed(other.to_string()),
+    })?;
+    let opened = ush_backend_on(&stream, program, target, requested_by, relay_session);
+    if opened.as_ref().is_err_and(OpenError::is_refusal) {
+        let _ = USH_SERVICE.retry_after_refusal(stream);
     }
-    // SAFETY: the launcher passed this descriptor as a connected socket and
-    // documents it in `TILO_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
-    // is correct — nothing else in this process refers to it, and
-    // `USH_SERVICE_TAKEN` keeps a second session from taking it again.
-    let stream = unsafe { UnixStream::from_raw_fd(raw) };
-    ush_backend_on(&stream, program, target, requested_by, relay_session)
+    opened
 }
 
 #[cfg(windows)]
@@ -6824,6 +6837,7 @@ pub(crate) fn refusal(payload: &[u8]) -> OpenError {
     }
     match serde_json::from_slice::<Reply>(payload) {
         Ok(reply) if reply.result == "host-not-allowed" => OpenError::NeedsAllow(reply.reason),
+        Ok(reply) if reply.result == "no-runtime" => OpenError::NoRuntime(reply.reason),
         Ok(reply) if !reply.reason.is_empty() => OpenError::Refused(reply.reason),
         _ => OpenError::Refused(format!(
             "the ush service refused this session: {}",

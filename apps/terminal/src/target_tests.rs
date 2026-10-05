@@ -338,6 +338,89 @@ fn legacy_vms_appear_once_the_legacy_vm_service_has_made_one() {
     );
 }
 
+fn press_enter(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
+    crate::tests::send_key_without_text(
+        widget,
+        doc,
+        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+    );
+}
+
+#[test]
+fn without_a_runtime_the_tab_says_why_and_offers_the_device_shell() {
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), |target| {
+        if target.is_host() {
+            Ok(())
+        } else {
+            Err(OpenError::NoRuntime(
+                "no environment can be built on this device: no env-runtime image is installed"
+                    .into(),
+            ))
+        }
+    });
+    let state = on_tab(&mut app, |widget| widget.session_state().clone());
+    assert!(matches!(state, OpenState::NoRuntime(_)), "{state:?}");
+    let screen = on_tab(&mut app, |widget| widget.grid_text());
+    assert!(
+        screen.contains("env-runtime"),
+        "the tab says why:\n{screen}"
+    );
+    assert!(
+        screen.contains("Enter"),
+        "the tab says what to do about it:\n{screen}"
+    );
+    assert!(
+        on_tab(&mut app, |widget| widget.is_disconnected()),
+        "the tab is not taken for a live shell"
+    );
+    assert_eq!(
+        recorded(&app),
+        Some(SessionTarget::default_environment()),
+        "nothing moves to the device's shell unasked"
+    );
+
+    // Enter takes the offer through the real hosted event and settlement path.
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Open
+    );
+    assert_eq!(
+        opened.borrow().last(),
+        Some(&(SessionTarget::Host, Requester::Person))
+    );
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
+}
+
+#[test]
+fn an_agent_is_told_why_and_never_offered_the_device_shell() {
+    let (mut widget, opened) = tab(RecentTarget::none(), |_| {
+        Err(OpenError::NoRuntime(
+            "no env-runtime image is installed".into(),
+        ))
+    });
+    let mut doc = AutoCommit::new();
+    widget.sync(&doc, &ROOT);
+    let err = widget
+        .switch_target(&SessionTarget::default_environment(), Requester::Agent)
+        .unwrap_err();
+    assert!(err.contains("env-runtime"), "{err}");
+    assert!(
+        matches!(widget.session_state(), OpenState::Failed(_)),
+        "an agent's open offers nothing: {:?}",
+        widget.session_state()
+    );
+    press_enter(&mut widget, &mut doc);
+    widget.sync(&doc, &ROOT);
+    assert!(
+        opened.borrow().iter().all(|(target, _)| !target.is_host()),
+        "{:?}",
+        opened.borrow()
+    );
+}
+
 const RELAY: &str = "abababababababababababababababababababababababababababababababab";
 
 fn on_relay(record: &str) -> SessionTarget {

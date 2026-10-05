@@ -2798,6 +2798,8 @@ impl ControlState for FrameBuilderControlState<'_> {
             // and where it is painted while it serves the focused field.
             "on_screen_keyboard": {
                 "connected": self.fb.osk_connected(),
+                "requested": self.fb.osk_requested(),
+                "mapped": self.fb.osk_mapped(),
                 "commits": self.fb.osk_commits(),
                 "serves_shell_field": self.fb.osk_serves_shell(),
                 "shown": self.fb.osk_surface_rect().map(|(_, rect)| serde_json::json!({
@@ -10065,6 +10067,12 @@ pub fn run() {
             frame_builder.with_chrome(|chrome| {
                 for request in app_closes.drain() {
                     let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
+                    eprintln!(
+                        "app-close-requested: app={} room={} windows={}",
+                        request.app_id,
+                        request.room,
+                        tabs.len()
+                    );
                     for tab in tabs {
                         let _ = crate::shell::window_actions::close_tab(chrome, tab);
                     }

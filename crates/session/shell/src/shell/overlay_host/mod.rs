@@ -8354,6 +8354,14 @@ impl ShellOverlayHost {
         self.palette.set_focus(focused);
     }
 
+    /// The palette owns text input while open, including when its host
+    /// routes keys directly without changing the native widget focus.
+    pub fn palette_ime_field(&self) -> Option<ui::ime::ImeWindowState> {
+        (self.palette_visible && self.palette.is_focused())
+            .then(|| ui::ime::ImeWindowState::from_widget(&self.palette))
+            .flatten()
+    }
+
     /// Force-set the palette visibility, so headless harnesses can drive
     /// the palette scene without a synthetic Ctrl+K.
     pub fn set_palette_visible(&mut self, v: bool) {

@@ -25,6 +25,16 @@
 #   4. Signing out and in again resumes after the identity: no identity choice,
 #      no recovery screen, and the identity verifies at login unchanged.
 #
+# With --wake (x86_64, a dev disk carrying tilo-control), the paired devices
+# then reach and wake each other:
+#   5. A's remote action reaches B, where it holds idle-suspend off with a
+#      "Remote use from" lease.
+#   6. B suspends to RAM. A invokes `device.wake` for B; a magic packet for
+#      B's MAC appears on the segment (captured on A's side of it). The harness
+#      resumes B with `system_wakeup`, standing in for the NIC, and A reports
+#      that B rejoined. A's next remote action reaches B unchanged.
+#   7. B's links are cut and restored, and A's remote action reaches B again.
+#
 # With --unlock (a dev disk carrying tilo-control), B's root then moves onto
 # LUKS2 with a sibling-unlock slot, and B reboots several times
 # (os/dev/nearby-unlock-phase.sh):
@@ -34,7 +44,7 @@
 #      certified, and B's removal from the fleet each leave B at the
 #      passphrase prompt, with the attempt in A's history.
 #
-# Usage: os/dev/test-nearby-pairing.sh DISK_QCOW2 [--out DIR] [--display gl|2d] [--unlock]
+# Usage: os/dev/test-nearby-pairing.sh DISK_QCOW2 [--out DIR] [--display gl|2d] [--wake] [--unlock]
 #
 # DISK_QCOW2 is never booted or modified; each VM boots its own overlay.
 set -euo pipefail
@@ -45,11 +55,13 @@ base="${1:?usage: test-nearby-pairing.sh DISK_QCOW2 [--out DIR] [--display gl|2d
 shift
 out="$PWD/nearby-pairing-artifacts"
 display="${TILO_VM_DISPLAY:-gl}"
+wake=0
 unlock=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:?--out needs a directory}"; shift 2 ;;
     --display) display="${2:?--display needs gl or 2d}"; shift 2 ;;
+    --wake) wake=1; shift ;;
     --unlock) unlock=1; shift ;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
   esac
@@ -84,6 +96,10 @@ vm_a() {
     TILO_VM_LAN_PORT=23901 TILO_VM_LAN_PEER=23902 TILO_VM_LAN_MAC="$mac_a" \
     "$vm" "$@"
 }
+# For --wake, B suspends to RAM and its segment NIC is one that takes a
+# Wake-on-LAN setting.
+b_lan_model=virtio-net-pci
+[ "$wake" = 0 ] || b_lan_model=e1000
 # Wait until B's onboarding shows a node whose name contains each fragment.
 # `vm.sh ssh` hands its words to the guest's shell, so each fragment is quoted
 # for it.
@@ -93,6 +109,7 @@ b_shows() {
 vm_b() {
   TILO_RUN="$run_b" TILO_SSH_PORT="${TILO_NEARBY_SSH_B:-2232}" \
     TILO_VM_LAN_PORT=23902 TILO_VM_LAN_PEER=23901 TILO_VM_LAN_MAC="$mac_b" \
+    TILO_VM_LAN_MODEL="$b_lan_model" TILO_VM_S3="$wake" \
     "$vm" "$@"
 }
 # Root on the guest for test setup only (the LAN address, the injected
@@ -149,20 +166,22 @@ done
 # the limited broadcast a pairing device sends leaves through the shared
 # segment rather than the VM's private user-mode NAT.
 configure_lan() {
-  local each_sudo=$1 mac=$2 address=$3
+  local each_sudo=$1 mac=$2 address=$3 wol=${4:-default}
   "$each_sudo" "
     set -eu
     iface=\$(ip -o link | awk -F': ' -v mac='$mac' 'index(tolower(\$0), mac) { print \$2; exit }')
     [ -n \"\$iface\" ]
     nmcli connection add type ethernet ifname \"\$iface\" con-name tilo-nearby-lan \
       ipv4.method manual ipv4.addresses $address/24 ipv4.gateway 192.168.231.1 \
-      ipv4.route-metric 10 ipv6.method disabled >/dev/null
+      ipv4.route-metric 10 ipv6.method disabled 802-3-ethernet.wake-on-lan $wol >/dev/null
     nmcli connection up tilo-nearby-lan >/dev/null
     ip route get 255.255.255.255 | grep -q \"dev \$iface \"
   "
 }
 configure_lan sudo_a "$mac_a" "$lan_a" || die "VM A: shared segment could not be configured"
-configure_lan sudo_b "$mac_b" "$lan_b" || die "VM B: shared segment could not be configured"
+b_wol=default
+[ "$wake" = 0 ] || b_wol=magic
+configure_lan sudo_b "$mac_b" "$lan_b" "$b_wol" || die "VM B: shared segment could not be configured"
 if vm_a ssh 'command -v ping >/dev/null'; then
   for attempt in $(seq 1 30); do
     vm_a ssh "ping -c 1 -W 2 $lan_b" >/dev/null 2>&1 && break
@@ -403,6 +422,10 @@ vm_b ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/she
 no_privileged_pairing
 note "B joined A's identity from first-boot onboarding"
 
+if [ "$wake" = 1 ]; then
+  # shellcheck source=os/dev/nearby-wake-phase.sh
+  source "$dev_dir/nearby-wake-phase.sh"
+fi
 if [ "$unlock" = 1 ]; then
   # shellcheck source=os/dev/nearby-unlock-phase.sh
   source "$dev_dir/nearby-unlock-phase.sh"

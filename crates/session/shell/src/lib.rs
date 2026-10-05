@@ -18,6 +18,7 @@ pub mod bluetooth_prompt;
 pub mod collab;
 pub mod compositor;
 pub mod config;
+pub mod crash_log;
 pub use tilo_identity_host::device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
