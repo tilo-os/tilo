@@ -38,14 +38,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         _ => return Err("expected source revision and actual encoded commit object".into()),
     };
     let architecture = std::env::consts::ARCH;
-    let output = "target/browser-runtime-release-proof";
+    let output = format!("target/browser-runtime-release-proof-{source}");
     let status = Command::new("python3")
         .current_dir(&root)
         .args([
             "tools/apps/browser_runtime_release.py",
             "native-proof",
             "--out",
-            output,
+            &output,
             "--arch",
             architecture,
             "--source",
@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !status.success() {
         return Err(format!("native engine release proof failed: {status}").into());
     }
-    let package = root.join(output).join("package");
+    let package = root.join(&output).join("package");
     let payload_blob = package
         .read_dir()?
         .collect::<Result<Vec<_>, _>>()?
@@ -75,11 +75,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .find(|path| path.extension().is_some_and(|value| value == "tapp"))
         .ok_or("signed engine package contains no thin archive")?;
     std::fs::rename(&payload_blob, &hidden_blob)?;
-    let result = Command::new(root.join(output).join("bin/tilo-app-package"))
+    let result = Command::new(root.join(&output).join("bin/tilo-app-package"))
         .args(["entry", "--arch", architecture, "--objects"])
         .arg(&package)
         .arg("--identity")
-        .arg(root.join(output).join("work/app-identity.json"))
+        .arg(root.join(&output).join("work/app-identity.json"))
         .args(["--url", "https://apps.tilo.so/artifacts/engine.tapp"])
         .arg(thin_package)
         .output();
