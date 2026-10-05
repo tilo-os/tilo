@@ -95,6 +95,35 @@ impl BlockingClient {
         parse_id(bytes)
     }
 
+    /// Install the exact signed catalogue offer through the shared installer.
+    ///
+    /// # Errors
+    /// Returns why the selected offer, runtime or installation was refused.
+    pub fn install_offer(
+        &self,
+        registry: &str,
+        expected: &InstallExpectation,
+    ) -> Result<PackageId, String> {
+        let mut request = self.client.install_offer_request();
+        {
+            let mut params = request.get();
+            params.set_registry(registry);
+            params.set_app_id(&expected.app_id);
+            params.set_version(&expected.version);
+            params.set_expected_root(expected.package_root.as_bytes());
+            params.set_expected_publisher(&expected.publisher);
+            params.set_expected_size_bytes(expected.size_bytes);
+        }
+        let response = self.wait(request.send().promise)?;
+        parse_id(
+            response
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_id()
+                .map_err(|error| error.to_string())?,
+        )
+    }
+
     /// List the packages the host service can launch: the user's, and the
     /// read-only system packages they do not shadow.
     ///

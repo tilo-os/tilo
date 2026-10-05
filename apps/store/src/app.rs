@@ -776,6 +776,7 @@ impl StoreApp {
                     url: "https://dl.flathub.org/repo/".into(),
                     title: "Flathub".into(),
                     disabled: false,
+                    user_managed: true,
                 }]);
             }
             Some("progress") => {
@@ -2301,6 +2302,7 @@ impl StoreApp {
         reason = "the machine-scoped remote editor and its canonical remove controls are deliberately composed together so their responsive layouts cannot diverge"
     )]
     fn build_remotes(&self, theme: &Theme) -> Box<dyn Widget> {
+        crate::resource::STORE_CATALOG.ensure();
         let mut back = ui::widget::Button::new("store.remotes.back", "Back to apps", None);
         if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
             back = back.on_action(binding);
@@ -2312,8 +2314,8 @@ impl StoreApp {
         );
         let header = secondary_page_header(
             back,
-            "Flatpak remotes",
-            "Repositories are machine-scoped and every change runs through the package worker.",
+            &ui::i18n!("store-remotes-title"),
+            &ui::i18n!("store-remotes-description"),
             theme,
         );
         // The body separates its groups — add form, configured list — by one
@@ -2326,7 +2328,7 @@ impl StoreApp {
         let mut remote_rows: Vec<Box<dyn Widget>> = Vec::new();
         for remote in &self.remotes {
             let mut remove = ui::widget::Button::new(
-                &format!("store.remote.{}.remove", remote.name),
+                &format!("store.{}.remove", remote.resource_id()),
                 "Remove remote",
                 None,
             );
@@ -2335,6 +2337,7 @@ impl StoreApp {
             }
             let remove = Box::new(
                 remove
+                    .with_enabled(remote.user_managed)
                     .danger()
                     .fit_content(40.0)
                     .tooltip(format!("Remove {} from this machine", remote.title)),
@@ -2353,13 +2356,9 @@ impl StoreApp {
                                     .with_color(theme.text_dim),
                             ))
                             .push(Box::new(
-                                Text::new(if remote.disabled {
-                                    "Disabled"
-                                } else {
-                                    "Enabled"
-                                })
-                                .with_scaled_size(12.0)
-                                .with_color(theme.text_dim),
+                                Text::new(&remote_state_label(remote))
+                                    .with_scaled_size(12.0)
+                                    .with_color(theme.text_dim),
                             ))
                             .push(remove),
                     )),
@@ -2386,13 +2385,9 @@ impl StoreApp {
                                                 .with_color(theme.text_dim),
                                         ))
                                         .push(Box::new(
-                                            Text::new(if remote.disabled {
-                                                "Disabled"
-                                            } else {
-                                                "Enabled"
-                                            })
-                                            .with_scaled_size(12.0)
-                                            .with_color(theme.text_dim),
+                                            Text::new(&remote_state_label(remote))
+                                                .with_scaled_size(12.0)
+                                                .with_color(theme.text_dim),
                                         )),
                                 )),
                         ))
@@ -3773,6 +3768,16 @@ impl StoreApp {
             }
             StoreEffect::RemoveRemote { name } => {
                 validate_remote_name(&name)?;
+                if !self
+                    .remotes
+                    .iter()
+                    .any(|remote| remote.name == name && remote.user_managed)
+                {
+                    return Err(
+                        "This repository is provided by the device and cannot be removed here."
+                            .into(),
+                    );
+                }
                 self.reserve_job()?;
                 return Ok(Job::admitted(Request::RemoteRemove(name), Finish::Status));
             }
@@ -4223,11 +4228,11 @@ impl StoreApp {
             let item = self.items.iter().find(|item| publisher_of(item).0 == key)?;
             return Some(LiveRow::new(id, "store.publisher", publisher_of(item).1));
         }
-        if let Some(name) = id.strip_prefix("remote:") {
+        if id.starts_with("remote:") {
             return self
                 .remotes
                 .iter()
-                .find(|remote| remote.name == name)
+                .find(|remote| remote.resource_id() == id)
                 .map(remote_row);
         }
         match id {
@@ -4333,15 +4338,52 @@ const REMOTES_ID: &str = "store:remotes";
 const LATEST_JOB_ID: &str = "store:latest-job";
 const CATALOGUE_SNAPSHOT_ID: &str = "store:catalogue-snapshot";
 
-fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
-    LiveRow::new(
-        format!("remote:{}", remote.name),
-        "store.remote",
-        remote.title.clone(),
-    )
-    .effect(&StoreEffect::RemoveRemote {
-        name: remote.name.clone(),
+fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
+    crate::resource::STORE_CATALOG.ensure();
+    ui::i18n!(if remote.user_managed {
+        "store-remote-user"
+    } else {
+        "store-remote-system"
     })
+}
+
+fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
+    ui::i18n::I18nManager::format(
+        "store-remote-state",
+        &[
+            (
+                "scope",
+                ui::i18n::ArgValue::Text(remote_scope_label(remote)),
+            ),
+            (
+                "state",
+                ui::i18n::ArgValue::Text(ui::i18n!(if remote.disabled {
+                    "store-remote-disabled"
+                } else {
+                    "store-remote-enabled"
+                })),
+            ),
+        ],
+    )
+}
+
+fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
+    let scope = remote_scope_label(remote);
+    let title = ui::i18n::I18nManager::format(
+        "store-remote-title",
+        &[
+            ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
+            ("scope", ui::i18n::ArgValue::Text(scope)),
+        ],
+    );
+    let row = LiveRow::new(remote.resource_id(), "store.remote", title);
+    if remote.user_managed {
+        row.effect(&StoreEffect::RemoveRemote {
+            name: remote.name.clone(),
+        })
+    } else {
+        row
+    }
 }
 
 fn operation_error_summary() -> &'static str {
@@ -4419,6 +4461,53 @@ mod tests {
 
     /// Installed apps with a newer catalogue version, the system image's
     /// among them, are listed under Updates and updated by one job.
+    #[test]
+    fn system_remotes_have_distinct_resources_and_no_user_remove_action() {
+        let mut app = seeded_app();
+        let system = crate::flathub_client::Remote {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            title: "Flathub".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        app.set_remotes(vec![system.clone()]);
+        let resource = app
+            .live_row("remote:system:flathub")
+            .unwrap()
+            .into_resource();
+        assert!(
+            !resource
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        assert!(
+            app.admit(StoreEffect::RemoveRemote {
+                name: "flathub".into()
+            })
+            .is_err()
+        );
+        let mut user = system;
+        user.user_managed = true;
+        app.set_remotes(vec![
+            user.clone(),
+            crate::flathub_client::Remote {
+                user_managed: false,
+                ..user
+            },
+        ]);
+        assert!(
+            app.live_row("remote:flathub")
+                .unwrap()
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        assert!(app.live_row("remote:system:flathub").is_some());
+    }
+
     #[test]
     fn update_all_queues_every_app_with_an_update() {
         let mut app = seeded_app();
@@ -4652,6 +4741,7 @@ mod tests {
                 url: "https://dl.flathub.org/repo/".into(),
                 title: "Flathub".into(),
                 disabled: false,
+                user_managed: true,
             }]);
             for id in [REMOTES_ID, "remote:flathub", crate::resource::MODERATION_ID] {
                 assert!(app.live_row(id).is_some(), "{id} resolves");

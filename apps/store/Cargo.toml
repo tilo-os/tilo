@@ -30,6 +30,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # — one definition, so the two cannot drift into disagreeing about
 # whether an entry verifies.
 app-cli = { path = "../../crates/packaging/app-cli" }
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 app-host = { path = "../../crates/packaging/app-host" }
 # The installed-package row the app host lists.
 package-store = { path = "../../crates/packaging/package-store" }
