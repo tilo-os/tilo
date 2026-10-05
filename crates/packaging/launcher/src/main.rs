@@ -71,6 +71,9 @@ enum Cmd {
         /// Path to the package manifest (TOML).
         #[arg(long)]
         manifest: PathBuf,
+        /// Refuse if the actual signed installation differs from this root.
+        #[arg(long)]
+        expected_package_hash: Option<String>,
         /// Directory containing the unpacked package payload.
         #[arg(long)]
         payload_root: PathBuf,
@@ -288,6 +291,7 @@ fn main() -> ExitCode {
     match cli.cmd {
         Cmd::Run {
             manifest,
+            expected_package_hash,
             payload_root,
             runtime,
             no_services,
@@ -308,6 +312,7 @@ fn main() -> ExitCode {
             rest,
         } => run_gui_command(RunCliArgs {
             manifest,
+            expected_package_hash,
             payload_root,
             runtime,
             no_services,
@@ -378,6 +383,7 @@ fn main() -> ExitCode {
 )]
 struct RunCliArgs {
     manifest: PathBuf,
+    expected_package_hash: Option<String>,
     payload_root: PathBuf,
     runtime: Option<PathBuf>,
     no_services: bool,
@@ -410,6 +416,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         );
     }
     let opts = RunOptions {
+        expected_package_hash: args.expected_package_hash,
         no_services: args.no_services,
         runtime_root: args.runtime,
         bwrap_bin: None,
@@ -845,6 +852,7 @@ fn run_installed(
         );
     let opts = RunOptions {
         no_services,
+        expected_package_hash: None,
         runtime_root: None,
         bwrap_bin: None,
         sandbox_shim_bin: None,
