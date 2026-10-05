@@ -188,6 +188,7 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "sidebar" => app.snap_sidebar(true),
         "collapsed" => app.snap_sidebar(false),
         "context" => app.snap_track_menu(),
+        "row-actions" => app.snap_row_actions(),
         "new-playlist" => app.snap_new_playlist_prompt(),
         "skeleton" => app.snap_skeleton(),
         "nowplaying" => app.snap_nowplaying(),
