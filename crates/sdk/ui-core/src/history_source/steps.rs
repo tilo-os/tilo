@@ -505,7 +505,7 @@ pub fn checkpoints(doc: &AutoCommit) -> Vec<Checkpoint> {
 ///
 /// # Errors
 /// Names what a version can be, and the checkpoints there are.
-pub fn resolve(doc: &mut AutoCommit, version: &str) -> Result<Vec<ChangeHash>, String> {
+pub fn resolve(doc: &AutoCommit, version: &str) -> Result<Vec<ChangeHash>, String> {
     let version = version.trim();
     if let Some(found) = checkpoints(doc)
         .into_iter()
@@ -515,7 +515,7 @@ pub fn resolve(doc: &mut AutoCommit, version: &str) -> Result<Vec<ChangeHash>, S
     }
     let hex = version.to_ascii_lowercase();
     if hex.len() >= 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        let matching: Vec<ChangeHash> = tilo_resource::history::versions(doc)
+        let matching: Vec<ChangeHash> = tilo_resource::history::committed_versions(doc)
             .into_iter()
             .map(|version| version.hash)
             .filter(|hash| hash.to_string().starts_with(&hex))

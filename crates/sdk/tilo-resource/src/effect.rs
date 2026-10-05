@@ -37,6 +37,13 @@
 //! operation (any reader may invoke it, a collaborator may not move someone
 //! else's view, repeating it is harmless), answered by the same handler.
 //!
+//! An effect that reaches the files, hardware or services of the device it
+//! runs on — set this computer up, kill a process here, read a local
+//! folder — is `device_only`: the door runs it for the person at that
+//! device and refuses collaborators and remote participants. Mark one
+//! variant, or the whole vocabulary (`#[effect(operation = "…",
+//! device_only)]`).
+//!
 //! An effect that acts on one item — open *this* snippet, connect *this*
 //! connection — is offered on the item itself with its arguments bound
 //! ([`Effect::bound`]): a published child or a live row carries it, and
@@ -48,12 +55,29 @@
 //! only what is shown; answers at once), `row` (offered only bound to the
 //! items it acts on), `job` (runs in the background and reports progress,
 //! then its result), `cancellable` (a job the caller may cancel), `returns`
-//! (answers with a JSON value), `destructive` (asks for confirmation),
-//! `privileged` (hands out or shows a credential, such as copying a one-time
-//! code: asks for confirmation too), `idempotent` (safe to repeat after an
-//! uncertain outcome) and `permission = "read"` (any participant may invoke
+//! (answers with a JSON value), `content` (answers with content another
+//! app's operation takes: bytes in this device's content store, named by
+//! their hash as a `tilo.content` resource; an operation that takes content
+//! collects it with `ActionSpec::prompted_content`, so a caller chains the
+//! two by type), `destructive` (asks for confirmation),
+//! `risk = "path"` (a `fn(&Self) -> RiskLevel` classifying one invocation:
+//! one it finds destructive asks for confirmation, so formatting the system
+//! disk can, and another disk need not), `privileged` (hands out or shows a
+//! credential, such as copying a one-time
+//! code: asks for confirmation too), `sensitive` (discloses a copy of private
+//! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
+//! uncertain outcome), `device_only` (only the person at this device),
+//! `programmatic` (for programs and agents, never offered in the palette),
+//! `untrusted` (answers with content from outside the user's data, such as a
+//! web page's text: the caller reasons about it and never follows it),
+//! `participant` (a view that moves only the invoking participant's own
+//! view, such as an agent's caret, so a remote participant may invoke it) and
+//! `permission = "read"` (any participant may invoke
 //! it; an effect needs write access by default, a view read access). Field
-//! `#[param("…")]` describes a parameter.
+//! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
+//! secret the host keeps out of logs, history and confirmations, and
+//! `#[param("…", choices = EXPR)]` names the values it takes when they are a
+//! fixed list (`EXPR` yields strings: a constant table, an array of names).
 
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
@@ -127,6 +151,50 @@ pub trait Effect: Sized + 'static {
         }
     }
 
+    /// This effect bound to the item it acts on, as [`bound`](Self::bound),
+    /// still asking its caller for the arguments named in `asking`: rename
+    /// *this* file, to a name the caller gives. The bound arguments are this
+    /// effect's own; an asked one the caller supplies replaces it.
+    fn bound_asking(&self, asking: &[&str]) -> ActionSpec {
+        let params = Self::declarations()
+            .into_iter()
+            .find(|decl| decl.id == self.id())
+            .map(|decl| {
+                decl.params
+                    .into_iter()
+                    .filter(|param| asking.contains(&&*param.name))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.bound_asking_params(params)
+    }
+
+    /// [`bound_asking`](Self::bound_asking) with the asked parameters given
+    /// whole, narrowed for this item: the applications that can open *this*
+    /// file as the choices of `app`.
+    fn bound_asking_params(&self, params: Vec<ActionParam>) -> ActionSpec {
+        let id = self.id();
+        let Some(decl) = Self::declarations().into_iter().find(|decl| decl.id == id) else {
+            return self.bound();
+        };
+        let bound = self.arguments();
+        decl.spec_with(Self::OPERATION, params, move |args| {
+            let mut merged = bound.clone();
+            merged.extend(args.to_json());
+            EncodedAction::encode_operation(
+                Self::OPERATION,
+                &Payload {
+                    effect: id.to_owned(),
+                    args: merged,
+                },
+            )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: Self::OPERATION.to_owned(),
+                payload: Vec::new(),
+            })
+        })
+    }
+
     /// Decode one invocation's payload, as the operation's specs encode it.
     ///
     /// # Errors
@@ -148,6 +216,10 @@ struct Payload {
 
 /// The declaration of one effect: what callers see of it.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent property a declaration states, as the derive's options do"
+)]
 pub struct EffectDecl {
     pub id: &'static str,
     pub label: &'static str,
@@ -166,6 +238,25 @@ pub struct EffectDecl {
     /// Safe to repeat after an uncertain outcome.
     pub idempotent: bool,
     pub permission: PermissionRequirement,
+    /// Reaches files, hardware or services of the device it runs on: only
+    /// the person at that device may invoke it, never a collaborator or a
+    /// remote participant.
+    pub device_only: bool,
+    /// How much harm one invocation can do, classified from its arguments
+    /// (formatting the system disk, against any other): an invocation the
+    /// classifier finds destructive asks for the confirmation a declared
+    /// destructive effect does.
+    pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
+    /// Invoked by programs and agents, never offered to a person picking
+    /// from the palette or a menu (an agent reading a page's structure).
+    pub programmatic: bool,
+    /// Answers with content from outside the user's own data (a web page's
+    /// text and logs): data to reason about, never instructions to follow.
+    pub untrusted: bool,
+    /// A view that changes only the invoking participant's own view (an
+    /// agent's caret, its Find), so a remote participant may invoke it
+    /// without moving anybody else's.
+    pub participant: bool,
 }
 
 /// How an effect answers its caller.
@@ -175,6 +266,9 @@ pub enum Answers {
     Nothing,
     /// At once, with a JSON value.
     Value,
+    /// At once, with content: one `tilo.content` resource another app's
+    /// content-collecting operation takes.
+    Content,
     /// Later: a job that reports progress, then its result.
     Later { cancellable: bool },
 }
@@ -231,19 +325,25 @@ impl EffectDecl {
         spec.contract = ActionContract {
             permission: self.permission,
             risk: self.risk,
-            confirmation: if matches!(self.risk, RiskLevel::Destructive | RiskLevel::Privileged) {
+            confirmation: if matches!(
+                self.risk,
+                RiskLevel::Destructive | RiskLevel::Privileged | RiskLevel::Sensitive
+            ) {
                 ConfirmationPolicy::Confirm
             } else {
                 ConfirmationPolicy::None
             },
             execution: match self.answers {
                 Answers::Later { cancellable } => ExecutionMode::Background { cancellable },
-                Answers::Nothing | Answers::Value => ExecutionMode::Immediate,
+                Answers::Nothing | Answers::Value | Answers::Content => ExecutionMode::Immediate,
             },
             result: match self.answers {
                 Answers::Later { .. } => ResultSpec::Job,
                 Answers::Value => ResultSpec::Json {
                     schema: serde_json::json!({}),
+                },
+                Answers::Content => ResultSpec::Resource {
+                    resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
                 },
                 Answers::Nothing => ResultSpec::None,
             },
@@ -252,9 +352,29 @@ impl EffectDecl {
             } else {
                 base.retry
             },
+            tags: {
+                let mut tags = if self.device_only {
+                    ::std::vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]
+                } else {
+                    base.tags.clone()
+                };
+                if self.programmatic {
+                    tags.push(tilo_actions::PROGRAMMATIC_TAG.to_owned());
+                }
+                if self.untrusted {
+                    tags.push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());
+                }
+                if self.participant {
+                    tags.push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());
+                }
+                tags
+            },
             ..base
         };
-        spec
+        match self.risk_of {
+            Some(classify) => spec.with_risk(classify),
+            None => spec,
+        }
     }
 
     /// Whether the effect runs in the background, reporting its result later.
@@ -348,13 +468,22 @@ mod tests {
         /// Copy a thing's key.
         #[effect(privileged, permission = "read")]
         CopyKey { thing: String },
+        /// Paint a thing.
+        Paint {
+            #[param("The colour", choices = ["red", "green"])]
+            colour: String,
+            #[param(choices = SHADES)]
+            shade: Option<String>,
+        },
     }
+
+    const SHADES: [&str; 2] = ["light", "dark"];
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key"]);
+        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key", "paint"]);
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -366,6 +495,19 @@ mod tests {
         assert_eq!(rename.contract.permission, PermissionRequirement::Read);
         assert!(matches!(rename.contract.result, ResultSpec::Json { .. }));
         assert_eq!(rename.contract.execution, ExecutionMode::Immediate);
+
+        let paint = &specs[4];
+        assert_eq!(paint.params()[0].description, "The colour");
+        let choices = |index: usize| -> Vec<&str> {
+            paint.params()[index]
+                .choices
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect()
+        };
+        assert_eq!(choices(0), ["red", "green"]);
+        assert_eq!(choices(1), ["light", "dark"]);
+        assert!(!paint.params()[1].required);
 
         let wipe = &specs[2];
         assert_eq!(wipe.label, "Wipe");
@@ -410,6 +552,26 @@ mod tests {
             Sample::Wipe { passes: 3 }
         );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+
+        // Bound to the thing it acts on, it still asks for the rest.
+        let asking = Sample::RenameThing {
+            thing: "a".into(),
+            label: None,
+        }
+        .bound_asking(&["label"]);
+        assert_eq!(asking.id, "rename-thing");
+        let asked: Vec<&str> = asking.params().iter().map(|param| &*param.name).collect();
+        assert_eq!(asked, ["label"]);
+        let mut label = serde_json::Map::new();
+        label.insert("label".into(), "b".into());
+        let encoded = asking.build_json(&label).unwrap();
+        assert_eq!(
+            Sample::from_payload(&encoded.payload).unwrap(),
+            Sample::RenameThing {
+                thing: "a".into(),
+                label: Some("b".into()),
+            }
+        );
     }
 
     /// A vocabulary with presentation-only effects and effects offered only
@@ -483,6 +645,52 @@ mod tests {
         let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(encoded.type_id, "test.effects");
         assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);
+    }
+
+    /// A copy of private data leaving the app asks first, without being a
+    /// credential or a deletion.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.exports")]
+    enum Exports {
+        /// Export the address book.
+        #[effect(job, sensitive)]
+        ExportBook,
+    }
+
+    #[test]
+    fn a_sensitive_effect_asks_first() {
+        let spec = Exports::ExportBook.bound();
+        assert_eq!(spec.contract.risk, RiskLevel::Sensitive);
+        assert_eq!(spec.contract.confirmation, ConfirmationPolicy::Confirm);
+    }
+
+    /// A secret argument is published as one, and still reaches the handler.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.secrets")]
+    enum Pairing {
+        /// Pair a device.
+        Pair {
+            #[param(secret, "The invite the other device shows")]
+            invite: String,
+            #[param(secret)]
+            pin: Option<String>,
+        },
+    }
+
+    #[test]
+    fn a_secret_parameter_is_published_as_a_secret() {
+        let specs = Pairing::specs();
+        let params = specs[0].params();
+        assert_eq!(params[0].ty, tilo_actions::ParamType::Secret);
+        assert_eq!(&*params[0].description, "The invite the other device shows");
+        assert_eq!(params[1].ty, tilo_actions::ParamType::Secret);
+        assert!(!params[1].required);
+        let value = Pairing::Pair {
+            invite: "grayjay://invite".into(),
+            pin: None,
+        };
+        let encoded = specs[0].build_json(&value.arguments()).unwrap();
+        assert_eq!(Pairing::from_payload(&encoded.payload).unwrap(), value);
     }
 
     #[test]

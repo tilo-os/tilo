@@ -5,8 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc};
+use automerge::{AutoCommit, ROOT};
 use ui::widget::Widget;
 
 use crate::sessions::{OpenState, Sessions};
@@ -30,11 +29,40 @@ fn tab(
     (widget, opened)
 }
 
-fn recorded(doc: &AutoCommit) -> Option<SessionTarget> {
-    doc.get(ROOT, crate::target::TARGET_KEY)
-        .unwrap()
-        .and_then(|(value, _)| value.into_string().ok())
-        .and_then(|raw| SessionTarget::decode(&raw))
+type App = ui::framework::testing::TestApp<crate::TerminalShell>;
+
+/// Give the terminal `app` hosts on its session record a session source
+/// whose opens are recorded and answered by `answer`, and run the sync that
+/// opens its session.
+fn host_tab(
+    app: &mut App,
+    recent: RecentTarget,
+    mut answer: impl FnMut(&SessionTarget) -> Result<(), OpenError> + 'static,
+) -> Opened {
+    let opened: Opened = Rc::default();
+    let log = opened.clone();
+    let sessions = Sessions::scripted(recent, move |target, by, _attach| {
+        log.borrow_mut().push((target.clone(), by));
+        answer(target).map(|()| crate::inner::TerminalBackend::for_test())
+    });
+    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+        .expect("the terminal surface is hosted");
+    app.settle();
+    opened
+}
+
+/// Where the session record says the session runs.
+fn recorded(app: &App) -> Option<SessionTarget> {
+    app.state().target
+}
+
+/// Drive the hosted terminal.
+fn on_tab<T>(app: &mut App, visit: impl FnOnce(&mut TerminalWidget) -> T) -> T {
+    let out = app
+        .with_surface(visit)
+        .expect("the terminal surface is hosted");
+    app.settle();
+    out
 }
 
 #[test]
@@ -42,50 +70,47 @@ fn a_new_tab_opens_the_most_recent_environment_and_records_it() {
     let dir = tempfile::tempdir().unwrap();
     let recent = RecentTarget::at(dir.path().join("recent.json"));
     recent.remember(&SessionTarget::environment("work"));
-    let (mut widget, opened) = tab(recent, |_| Ok(()));
-    let mut doc = AutoCommit::new();
-
-    widget.sync(&mut doc, &ROOT);
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, recent, |_| Ok(()));
 
     assert_eq!(
         opened.borrow().as_slice(),
         &[(SessionTarget::environment("work"), Requester::Person)]
     );
-    assert_eq!(widget.session_state(), &OpenState::Open);
-    assert_eq!(recorded(&doc), Some(SessionTarget::environment("work")));
     assert_eq!(
-        <crate::resource::Terminal as ui::tilo_resource::Resource>::read(&doc)
-            .unwrap()
-            .target,
+        on_tab(&mut app, |tab| tab.session_state().clone()),
+        OpenState::Open
+    );
+    assert_eq!(
+        recorded(&app),
         Some(SessionTarget::environment("work")),
         "the target is part of the synced session record"
     );
 
-    // A second sync does not open another session.
-    widget.sync(&mut doc, &ROOT);
+    // Another sync does not open another session.
+    on_tab(&mut app, |_| ());
     assert_eq!(opened.borrow().len(), 1);
 }
 
 #[test]
 fn reopening_a_session_goes_back_to_its_recorded_target_and_survives_a_new_process() {
-    let (mut first, _) = tab(RecentTarget::none(), |_| Ok(()));
-    let mut doc = AutoCommit::new();
-    first.sync(&mut doc, &ROOT);
-    first
-        .switch_target(&mut doc, &ROOT, &SessionTarget::Host, Requester::Person)
-        .unwrap();
-    assert_eq!(recorded(&doc), Some(SessionTarget::Host));
+    let mut app = App::new().unwrap();
+    host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
+    on_tab(&mut app, |tab| {
+        tab.switch_target(&SessionTarget::Host, Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
 
-    // Another device, or the next login, opens the same record.
-    let mut reopened_doc = doc.fork();
-    let (mut again, opened) = tab(RecentTarget::none(), |_| Ok(()));
-    again.sync(&mut reopened_doc, &ROOT);
+    // The next login opens the same record.
+    let mut app = app.reopen().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
     assert_eq!(
         opened.borrow().as_slice(),
         &[(SessionTarget::Host, Requester::Person)]
     );
     assert_eq!(
-        recorded(&reopened_doc),
+        recorded(&app),
         Some(SessionTarget::Host),
         "binding the new process clears the old screen, not where it runs"
     );
@@ -102,16 +127,16 @@ fn the_device_shell_is_asked_for_once_and_opens_when_allowed() {
             Ok(())
         }
     });
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
-    let _ = widget.switch_target(&mut doc, &ROOT, &SessionTarget::Host, Requester::Person);
+    let doc = AutoCommit::new();
+    widget.sync(&doc, &ROOT);
+    let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
     assert_eq!(widget.session_state(), &OpenState::AwaitingAllow);
 
     let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
     else {
         panic!("the tab must ask the shell for the person's allow");
     };
-    widget.sync(&mut doc, &ROOT);
+    widget.sync(&doc, &ROOT);
     assert_eq!(
         widget.session_state(),
         &OpenState::AwaitingAllow,
@@ -120,7 +145,7 @@ fn the_device_shell_is_asked_for_once_and_opens_when_allowed() {
 
     *allowed.borrow_mut() = true;
     reply.upgrade().unwrap().borrow_mut().answer = Some(true);
-    widget.sync(&mut doc, &ROOT);
+    widget.sync(&doc, &ROOT);
     assert_eq!(widget.session_state(), &OpenState::Open);
     let log = opened.borrow();
     assert_eq!(log.last(), Some(&(SessionTarget::Host, Requester::Person)));
@@ -135,47 +160,47 @@ fn a_declined_allow_leaves_the_tab_saying_so() {
             Ok(())
         }
     });
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
-    let _ = widget.switch_target(&mut doc, &ROOT, &SessionTarget::Host, Requester::Person);
+    let doc = AutoCommit::new();
+    widget.sync(&doc, &ROOT);
+    let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
     let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
     else {
         panic!("expected an allow request");
     };
     reply.upgrade().unwrap().borrow_mut().answer = Some(false);
-    widget.sync(&mut doc, &ROOT);
+    widget.sync(&doc, &ROOT);
     assert!(matches!(widget.session_state(), OpenState::Failed(_)));
     assert!(widget.is_disconnected());
 }
 
 #[test]
 fn agents_and_collaborators_never_open_the_device_shell() {
-    let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
-    let before = recorded(&doc);
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
+    let before = recorded(&app);
 
-    let err = widget
-        .switch_target(&mut doc, &ROOT, &SessionTarget::Host, Requester::Agent)
-        .unwrap_err();
+    let err = on_tab(&mut app, |tab| {
+        tab.switch_target(&SessionTarget::Host, Requester::Agent)
+    })
+    .unwrap_err();
     assert!(err.contains("agents"), "{err}");
-    assert_eq!(recorded(&doc), before, "a refused target is not recorded");
+    assert_eq!(recorded(&app), before, "a refused target is not recorded");
 
     // Through the published operation, as an agent or a collaborator in a
     // shared room would reach it.
-    let payload = serde_json::to_vec("host").unwrap();
-    let op = ui::widget::ResourceOperation::local(
-        ui::tilo_actions::InvocationId::new(),
-        ui::tilo_actions::OperationKind::Effect,
-        "terminal.target",
-        &payload,
-    );
-    for actor in ["agent:helper", "0123abcd"] {
+    let operate = |app: &mut App, actor: &str, target: &str| {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ui::tilo_actions::ActionInvoker::actor(actor),
         );
+        on_tab(app, |tab| {
+            tab.perform(crate::resource::TerminalEffect::OpenIn {
+                target: target.into(),
+            })
+        })
+    };
+    for actor in ["agent:helper", "0123abcd"] {
         assert!(
-            Widget::start_operation(&mut widget, &op, &mut doc, &ROOT).is_err(),
+            operate(&mut app, actor, "host").is_err(),
             "{actor} must not open the device's own shell"
         );
     }
@@ -185,18 +210,8 @@ fn agents_and_collaborators_never_open_the_device_shell() {
     );
 
     // An agent may move the session to another environment.
-    let payload = serde_json::to_vec("environment:work").unwrap();
-    let op = ui::widget::ResourceOperation::local(
-        ui::tilo_actions::InvocationId::new(),
-        ui::tilo_actions::OperationKind::Effect,
-        "terminal.target",
-        &payload,
-    );
-    let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
-        "agent:helper",
-    ));
-    Widget::start_operation(&mut widget, &op, &mut doc, &ROOT).unwrap();
-    assert_eq!(recorded(&doc), Some(SessionTarget::environment("work")));
+    operate(&mut app, "agent:helper", "environment:work").unwrap();
+    assert_eq!(recorded(&app), Some(SessionTarget::environment("work")));
     assert_eq!(
         opened.borrow().last(),
         Some(&(SessionTarget::environment("work"), Requester::Agent))
@@ -333,7 +348,8 @@ fn press_enter(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
 
 #[test]
 fn without_a_runtime_the_tab_says_why_and_offers_the_device_shell() {
-    let (mut widget, opened) = tab(RecentTarget::none(), |target| {
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), |target| {
         if target.is_host() {
             Ok(())
         } else {
@@ -343,15 +359,9 @@ fn without_a_runtime_the_tab_says_why_and_offers_the_device_shell() {
             ))
         }
     });
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
-
-    assert!(
-        matches!(widget.session_state(), OpenState::NoRuntime(_)),
-        "{:?}",
-        widget.session_state()
-    );
-    let screen = widget.grid_text();
+    let state = on_tab(&mut app, |widget| widget.session_state().clone());
+    assert!(matches!(state, OpenState::NoRuntime(_)), "{state:?}");
+    let screen = on_tab(&mut app, |widget| widget.grid_text());
     assert!(
         screen.contains("env-runtime"),
         "the tab says why:\n{screen}"
@@ -361,25 +371,27 @@ fn without_a_runtime_the_tab_says_why_and_offers_the_device_shell() {
         "the tab says what to do about it:\n{screen}"
     );
     assert!(
-        widget.is_disconnected(),
+        on_tab(&mut app, |widget| widget.is_disconnected()),
         "the tab is not taken for a live shell"
     );
     assert_eq!(
-        recorded(&doc),
+        recorded(&app),
         Some(SessionTarget::default_environment()),
         "nothing moves to the device's shell unasked"
     );
 
-    // Enter takes the offer: the device's own shell, for the person, opened
-    // at the next sync and recorded as where this session runs.
-    press_enter(&mut widget, &mut doc);
-    widget.sync(&mut doc, &ROOT);
-    assert_eq!(widget.session_state(), &OpenState::Open);
+    // Enter takes the offer through the real hosted event and settlement path.
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Open
+    );
     assert_eq!(
         opened.borrow().last(),
         Some(&(SessionTarget::Host, Requester::Person))
     );
-    assert_eq!(recorded(&doc), Some(SessionTarget::Host));
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
 }
 
 #[test]
@@ -390,14 +402,9 @@ fn an_agent_is_told_why_and_never_offered_the_device_shell() {
         ))
     });
     let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
+    widget.sync(&doc, &ROOT);
     let err = widget
-        .switch_target(
-            &mut doc,
-            &ROOT,
-            &SessionTarget::default_environment(),
-            Requester::Agent,
-        )
+        .switch_target(&SessionTarget::default_environment(), Requester::Agent)
         .unwrap_err();
     assert!(err.contains("env-runtime"), "{err}");
     assert!(
@@ -406,7 +413,7 @@ fn an_agent_is_told_why_and_never_offered_the_device_shell() {
         widget.session_state()
     );
     press_enter(&mut widget, &mut doc);
-    widget.sync(&mut doc, &ROOT);
+    widget.sync(&doc, &ROOT);
     assert!(
         opened.borrow().iter().all(|(target, _)| !target.is_host()),
         "{:?}",
@@ -422,102 +429,88 @@ fn on_relay(record: &str) -> SessionTarget {
     })
 }
 
+/// Give the hosted terminal a session source that records every relay
+/// session it is asked to re-attach to and answers with `answer`.
+fn attach_with(
+    app: &mut App,
+    attaches: &Rc<RefCell<Vec<Option<String>>>>,
+    mut answer: impl FnMut(
+        &SessionTarget,
+        Option<&str>,
+    ) -> Result<crate::inner::TerminalBackend, OpenError>
+    + 'static,
+) {
+    let seen = attaches.clone();
+    let sessions = Sessions::scripted(RecentTarget::none(), move |target, _, attach| {
+        seen.borrow_mut().push(attach.map(str::to_owned));
+        answer(target, attach)
+    });
+    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+        .expect("the terminal surface is hosted");
+    app.settle();
+}
+
 #[test]
 fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
     let attaches: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
-    let seen = attaches.clone();
     let session = "0123456789abcdef0123456789abcdef";
-    let mut widget = TerminalWidget::spawn_headless().unwrap();
-    widget.set_sessions(Sessions::scripted(
-        RecentTarget::none(),
-        move |_, _, attach| {
-            seen.borrow_mut().push(attach.map(str::to_owned));
-            if attach == Some("ffffffffffffffffffffffffffffffff") {
-                return Err(OpenError::Refused("unknown session".into()));
-            }
-            let mut backend = crate::inner::TerminalBackend::for_test();
+    let on_the_relay = move |target: &SessionTarget, _: Option<&str>| {
+        let mut backend = crate::inner::TerminalBackend::for_test();
+        if target.location().is_some_and(|l| !l.is_this_device()) {
             backend.relay_session = Some(session.into());
-            Ok(backend)
-        },
-    ));
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
-    widget
-        .switch_target(&mut doc, &ROOT, &on_relay("work"), Requester::Person)
-        .unwrap();
-    let kept = |doc: &AutoCommit| {
-        doc.get(ROOT, crate::target::RELAY_SESSION_KEY)
-            .unwrap()
-            .and_then(|(value, _)| value.into_string().ok())
+        }
+        Ok(backend)
     };
-    assert_eq!(kept(&doc).as_deref(), Some(session));
+    let mut app = App::new().unwrap();
+    attach_with(&mut app, &attaches, on_the_relay);
+    on_tab(&mut app, |tab| {
+        tab.switch_target(&on_relay("work"), Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(app.state().relay_session.as_deref(), Some(session));
 
-    // Reopened — here or on another device — it re-attaches.
-    let mut reopened = doc.fork();
-    let (mut again, _) = tab(RecentTarget::none(), |_| Ok(()));
-    let again_seen = attaches.clone();
-    again.set_sessions(Sessions::scripted(
-        RecentTarget::none(),
-        move |_, _, attach| {
-            again_seen.borrow_mut().push(attach.map(str::to_owned));
-            Ok(crate::inner::TerminalBackend::for_test())
-        },
-    ));
-    again.sync(&mut reopened, &ROOT);
+    // Reopened, it re-attaches.
+    let mut app = app.reopen().unwrap();
+    attach_with(&mut app, &attaches, on_the_relay);
     assert_eq!(attaches.borrow().last(), Some(&Some(session.to_owned())));
 
     // A session the relay no longer has is replaced by a new one.
-    let mut stale = AutoCommit::new();
-    stale
-        .put(ROOT, crate::target::TARGET_KEY, on_relay("work").encode())
-        .unwrap();
-    stale
-        .put(
-            ROOT,
-            crate::target::RELAY_SESSION_KEY,
-            "ffffffffffffffffffffffffffffffff",
-        )
-        .unwrap();
+    let gone = "ffffffffffffffffffffffffffffffff";
+    app.invoke(
+        ui::tilo_resource::Invoke::apply(&crate::resource::TerminalAction::SetRelaySession {
+            session: Some(gone.into()),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let mut app = app.reopen().unwrap();
     let before = attaches.borrow().len();
-    widget.set_sessions(Sessions::scripted(RecentTarget::none(), {
-        let seen = attaches.clone();
-        move |target: &SessionTarget, _, attach: Option<&str>| {
-            seen.borrow_mut().push(attach.map(str::to_owned));
-            if attach.is_some() {
-                return Err(OpenError::Refused("unknown session".into()));
-            }
-            let mut backend = crate::inner::TerminalBackend::for_test();
-            if target.location().is_some_and(|l| !l.is_this_device()) {
-                backend.relay_session = Some(session.into());
-            }
-            Ok(backend)
+    attach_with(&mut app, &attaches, move |target, attach| {
+        if attach.is_some() {
+            return Err(OpenError::Refused("unknown session".into()));
         }
-    }));
-    widget.sync(&mut stale, &ROOT);
+        on_the_relay(target, attach)
+    });
+    assert_eq!(attaches.borrow()[before..], [Some(gone.to_owned()), None]);
     assert_eq!(
-        attaches.borrow()[before..],
-        [Some("ffffffffffffffffffffffffffffffff".to_owned()), None]
+        on_tab(&mut app, |tab| tab.session_state().clone()),
+        OpenState::Open
     );
-    assert_eq!(widget.session_state(), &OpenState::Open);
-    assert_eq!(kept(&stale).as_deref(), Some(session));
+    assert_eq!(app.state().relay_session.as_deref(), Some(session));
 
     // Back on this device, nothing is left to re-attach to.
-    widget
-        .switch_target(
-            &mut stale,
-            &ROOT,
-            &SessionTarget::environment("work"),
-            Requester::Person,
-        )
-        .unwrap();
-    assert_eq!(kept(&stale), None);
+    on_tab(&mut app, |tab| {
+        tab.switch_target(&SessionTarget::environment("work"), Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(app.state().relay_session, None);
 }
 
 #[test]
 fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
+    let doc = AutoCommit::new();
+    widget.sync(&doc, &ROOT);
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
     let run_on = ui::i18n::I18nManager::lookup("terminal-run-on", None);
@@ -537,17 +530,14 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     assert!(labels.contains(&format!("{run_on} Home")), "{labels:?}");
 
     // An agent names the relay with the environment.
-    let payload = serde_json::to_vec(&format!("environment:work@{RELAY}")).unwrap();
-    let op = ui::widget::ResourceOperation::local(
-        ui::tilo_actions::InvocationId::new(),
-        ui::tilo_actions::OperationKind::Effect,
-        "terminal.target",
-        &payload,
-    );
     let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
         "agent:helper",
     ));
-    Widget::start_operation(&mut widget, &op, &mut doc, &ROOT).unwrap();
+    widget
+        .perform(crate::resource::TerminalEffect::OpenIn {
+            target: format!("environment:work@{RELAY}"),
+        })
+        .unwrap();
     assert_eq!(
         opened.borrow().last(),
         Some(&(on_relay("work"), Requester::Agent))
@@ -557,5 +547,105 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
         crate::parse_target_argument("environment:work@home"),
         None,
         "a relay is named by its endpoint id"
+    );
+}
+
+#[test]
+fn native_terminal_requests_the_same_person_confirmed_host_shell_allow() {
+    let mut sessions = crate::sessions::Sessions::standalone();
+    assert!(sessions.request_allow());
+    let ui::widget::AppHostIntent::AllowHostShell { reply } = sessions.take_intent().unwrap()
+    else {
+        panic!("expected host shell permission");
+    };
+    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+    assert_eq!(sessions.take_allow_answer(), Some(false));
+    assert_eq!(sessions.take_allow_answer(), None);
+}
+
+#[test]
+fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
+    let allowed = Rc::new(RefCell::new(false));
+    let gate = allowed.clone();
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), move |target| {
+        if target.is_host() && !*gate.borrow() {
+            Err(OpenError::NeedsAllow("not allowed".into()))
+        } else {
+            Ok(())
+        }
+    });
+    on_tab(&mut app, |widget| {
+        widget.switch_target(&SessionTarget::Host, Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::AwaitingAllow
+    );
+    let versions = app.versions().len();
+    let intent = app
+        .harness()
+        .take_host_intent()
+        .expect("the canonical native app adapter must see the request");
+    let ui::widget::AppHostIntent::AllowHostShell { reply } = intent else {
+        panic!("expected host permission");
+    };
+    assert!(
+        app.harness().take_host_intent().is_none(),
+        "the host consumes the request once"
+    );
+    assert_eq!(
+        app.versions().len(),
+        versions,
+        "consuming host intent does not write the record"
+    );
+    *allowed.borrow_mut() = true;
+    reply.upgrade().unwrap().borrow_mut().answer = Some(true);
+    app.settle();
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Open
+    );
+    assert_eq!(
+        opened.borrow().last(),
+        Some(&(SessionTarget::Host, Requester::Person))
+    );
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
+}
+
+#[test]
+fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), |target| {
+        if target.is_host() {
+            Err(OpenError::NeedsAllow("not allowed".into()))
+        } else {
+            Ok(())
+        }
+    });
+    on_tab(&mut app, |widget| {
+        widget.switch_target(&SessionTarget::Host, Requester::Person)
+    })
+    .unwrap();
+    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
+        app.harness().take_host_intent()
+    else {
+        panic!("expected canonical host permission");
+    };
+    let attempts = opened.borrow().len();
+    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+    app.settle();
+    assert!(matches!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Failed(_)
+    ));
+    assert!(on_tab(&mut app, |widget| widget.is_disconnected()));
+    assert!(app.harness().take_host_intent().is_none());
+    app.settle();
+    assert_eq!(
+        opened.borrow().len(),
+        attempts,
+        "refusal never retries the host session"
     );
 }

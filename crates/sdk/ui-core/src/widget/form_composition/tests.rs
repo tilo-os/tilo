@@ -172,8 +172,8 @@ fn long_form() -> Form {
                 .with_error("Enter a valid email address, including the domain after the at sign.")))
             .section(FormSection::new("Preferences").content(Box::new(super::super::Checkbox::new("updates", "updates")
                 .with_label("Send me occasional product updates and tips for working with my team."))))
-            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).primary())
-                .secondary(super::super::Button::new("cancel", "Cancel", None)))
+            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes").primary())
+                .secondary(super::super::Button::new("cancel", "Cancel")))
 }
 #[test]
 fn form_page_edges_and_resize_match_fresh_layout() {

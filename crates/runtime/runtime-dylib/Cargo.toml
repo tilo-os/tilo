@@ -25,6 +25,9 @@ tilo-cli-kit = { path = "../cli" }
 # app enables a UI feature absent here, Cargo builds a second `ui` instance and
 # the app can link successfully but fail at runtime with undefined symbols.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
+# Apps bind resources, actions and native presentation through this public SDK.
+# Keep its dispatcher and runner in the runtime alongside the internal toolkit.
+tilo-app = { path = "../../sdk/tilo-app" }
 # Heavy document engines belong in the versioned runtime rather than each tapp.
 typst = "0.15"
 typst-render = "0.15"
@@ -66,6 +69,10 @@ tilo-oauth = { path = "../../system/tilo-oauth" }
 async-imap.workspace = true
 agent-provider-config = { path = "../../agent/provider-config" }
 tilo-model-gateway = { path = "../../agent/model-gateway" }
+# Deterministic painting and subject-matte engines belong in the shared runtime. Canvas
+# keeps its resources and actions in the tapp without repeating these engines.
+tilo-wet-media = { path = "../../media/wet-media" }
+tilo-subject = { path = "../../platform/tilo-subject" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-files = { path = "../../platform/tilo-files" }
 # Versioned format/network engines used by system apps. Keeping these in the

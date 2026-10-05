@@ -79,25 +79,74 @@
 //!   dispatcher; plain text is [`PlainText`](tilo_resource::PlainText),
 //!   whose [`TextControl`] binds a `TextInput` or `CodeEditor` so every
 //!   keystroke is a splice action.
+//! * **Handing a result to another app** — a picture to place, a file to
+//!   attach — is an effect declared `content`: it answers
+//!   [`Effected::content`] with the hash of bytes in the device's content
+//!   store, its declaration's result is a `tilo.content` resource, and an
+//!   operation that takes content (`ActionSpec::prompted_content`) receives
+//!   it as its input. The caller chains the two by those types and never
+//!   reads the producing app's document.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//!   A surface whose window should reopen as it was left (the open note,
+//!   the caret) also provides
+//!   [`ApplicationViewState`](ui_core::application_view::ApplicationViewState):
+//!   the root saves and restores it with the window.
 //! * **Launching on something** — a path or URL on the command line, a file
 //!   a host hands over — asks the app which record that is
 //!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
 //!   it, a minted one) and which of the resource's actions the launch takes
 //!   there ([`ResourceApp::launch`], through the same door as every
 //!   control), or which of its effects, for a launch that shows something
-//!   (a link to one item) rather than editing ([`Invoke::effect`](tilo_resource::Invoke::effect)). [`ResourceApp::OPENS`] names the media types it is handed and
-//!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A command the
-//!   binary runs instead of a window (`--emit-photos DIR`) is a
-//!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
-//!   its [`ResourceApp::catalog`], loaded in every host that mounts it.
+//!   (a link to one item) rather than editing
+//!   ([`Invoke::effect`](tilo_resource::Invoke::effect)); the view reads the
+//!   same launch ([`ViewCx::launch`]) to show what those actions made.
+//!   [`ResourceApp::OPENS`] names the media types it is handed and
+//!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A handed file's
+//!   bytes are kept in the launch's content store ([`LaunchInput::content`]),
+//!   which the actions name by hash, so the record never carries the file.
+//!   The app's own Open is the same launch in the window it runs in
+//!   ([`ViewCx::open_here`], [`SurfaceCx::opener`]): the window shows the
+//!   record that launch names in place of its own, so a document has one
+//!   record however it was opened.
+//!   An app that offers private windows ([`ResourceApp::PRIVATE_WINDOWS`],
+//!   `--private`) runs one on a profile thrown away with the process,
+//!   attached to no runtime, and its view knows ([`ViewCx::is_private`]).
+//!   A command the binary runs instead of a window (`--emit-photos DIR`) is a
+//!   [`Command`] in [`ResourceApp::commands`]; a helper the binary also is
+//!   (a privileged writer started with its own command line) is a
+//!   [`Helper`] in [`ResourceApp::helpers`], asked before anything of the
+//!   app starts; and the app's messages are
+//!   its [`ResourceApp::catalog`], loaded in every host that mounts it. A
+//!   launch that continues playback another device or app handed over says
+//!   where it stood ([`LaunchInput::handoff`]): the media is what the launch
+//!   names, the position and play state are the view's to restore.
+//!   The app's own options — how the window runs rather than what it opens,
+//!   such as the layout an on-screen keyboard starts in — are
+//!   [`ResourceApp::OPTIONS`] and [`ResourceApp::FLAGS`], read with
+//!   [`ViewCx::launch_option`] / [`SurfaceCx::launch_option`].
+//! * **A system surface** — the session's on-screen keyboard — declares its
+//!   window's role in [`ResourceApp::BEHAVIOUR`]
+//!   ([`WindowRole::InputSurface`](ui_core::application::WindowRole)): the
+//!   window announces the app's id to the compositor and no headless drive
+//!   operates it. The connections it serves the session through (an input
+//!   method, a virtual keyboard) are the surface's own, opened in a live run
+//!   ([`SurfaceCx::mode`]) and woken through [`SurfaceCx::waker`].
+//! * **Mounted in another process** — the shell hosting a terminal tab in
+//!   its own — the app is the same component, on a record the host opens
+//!   for it, publishing into the host's palette and agent door. What only
+//!   the host can provide (the session's process supervisor) it lends
+//!   ([`HostContext::lend`](ui_core::application::HostContext::lend)); the
+//!   view takes it with [`ViewCx::take_lent`] and otherwise uses its own.
 //! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
 //!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
 //!   inside an action: the same id, pinned with the action so every replica
 //!   reads it. The resource state stays the same for everyone; a view
 //!   compares the authors it records with `me`, and an action signs what it
-//!   writes with its author rather than carrying one in its payload.
+//!   writes with its author rather than carrying one in its payload. What a
+//!   view shows for an id is the name the host's roster has for it
+//!   ([`ViewCx::people`], [`SurfaceCx::people`]): the document keeps ids,
+//!   so a name that changes or arrives late reads right everywhere.
 //! * **A brand-new record** starts with the resource's
 //!   [`initialize`](tilo_resource::Resource::initialize), its genesis: the
 //!   same change on every device, so two people creating the same record
@@ -126,6 +175,15 @@
 //!   one document item (a profile's password) is
 //!   `secrets().item(purpose, id)`, so the document names the item and the
 //!   secret stays on the device.
+//! * **The person's own data** — what they watched, the words they taught
+//!   the keyboard, where they stopped reading: data that grows, has history
+//!   and is undone, but belongs to the person rather than the room — is a
+//!   resource kept in the person's own room ([`ViewCx::person`],
+//!   [`SurfaceCx::person`]). The [`PersonRecord`] is one record per kind on
+//!   all of the person's devices, edited with the resource's actions,
+//!   attributed, in its history and undone per step, and synced to the
+//!   person's devices only — never to a collaborator, whatever room the app
+//!   is open in. A preference is still a setting.
 //! * **Effects** — work with no document delta (reload, back up now,
 //!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
 //!   an enum, one variant per effect. A view answers it with
@@ -139,7 +197,15 @@
 //!   [`EffectCx`] ([`thread`](EffectCx::thread), [`spawn`](EffectCx::spawn),
 //!   [`reply`](EffectCx::reply)): it reports progress, may be cancelled, and
 //!   finishes on the UI thread, changing the document with ordinary actions
-//!   and answering its caller. Effects never run in History mode. A variant
+//!   and answering its caller. Importing and exporting is such a job: the
+//!   host's file chooser opens through [`EffectCx::choose_file`] and
+//!   [`EffectCx::save_file`], the same on every host, a browser page
+//!   included.
+//!   An effect whose harm depends on its arguments (formatting the system
+//!   disk) classifies each invocation (`#[effect(risk = "…")]`), and asks
+//!   for confirmation only when it is destructive. A surface withholds one
+//!   of the resource's own actions while its live state forbids it
+//!   ([`ResourceSurface::availability`]). Effects never run in History mode. A variant
 //!   that only changes what its caller sees (open, reveal, show) is
 //!   `#[effect(view)]`, published as a View operation and answered by the
 //!   same handler.
@@ -153,11 +219,20 @@
 //!   is `#[effect(row)]`, so the resource does not also offer it with an id
 //!   to type. No view or surface answers a raw `Widget::start_operation`
 //!   for it.
+//! * **Jobs nobody invoked** — a route fetched when the destination
+//!   changes, a feed refreshed when it opens — start through the view's or
+//!   surface's [`Jobs`] ([`ViewCx::jobs`], [`SurfaceCx::jobs`]), under a key
+//!   the latest request takes over, and finish like an effect's.
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
 //!   the live app after every change, on every participant's device, and
 //!   the drain acknowledges each entry with an action.
+//! * **Files of the mounted filesystem** an app shows (a file manager's
+//!   selected file) have a history of their own, kept by the filesystem's
+//!   projection rather than the app's document. The app declares it
+//!   ([`ResourceApp::FILE_HISTORY`]) and its surface names the file
+//!   ([`SurfaceCx::file_history`]); History offers it beside the resource's.
 //! * **Run mode.** A view is built for a window someone uses, a past version
 //!   in History, or a screenshot ([`RunMode`], from [`ViewCx::mode`] and
 //!   [`SurfaceCx::mode`]). Only a live view starts work that reaches outside
@@ -174,10 +249,21 @@
 //! * **Live external rows** — processes, devices, containers, journal
 //!   entries, fetched catalogue rows, running jobs — are [`LiveRow`]s from
 //!   [`ResourceSurface::live_rows`], merged by id into the resource's
-//!   published children. A row carries only view and effect operations.
+//!   published children. A row carries only view and effect operations
+//!   (an effect bound to the row with `LiveRow::effect`) and may say how
+//!   its entity stands right now (`LiveRow::presentation`). An edit of the
+//!   resource bound to a row (rename *this* file) is one of
+//!   [`ResourceSurface::row_declarations`], published on the row.
 //!   Neither rows nor children need to be published whole: a bounded page is
 //!   published and the rest resolve by id (`ResourceSurface::live_row`,
 //!   `Resource::child`).
+//! * **One search source** — what the app's search finds is the resource's
+//!   entries ([`Resource::search`](tilo_resource::Resource::search)) and,
+//!   for what a surface shows that the resource does not hold (a page's
+//!   text, a book's outline, processes), the surface's own
+//!   ([`ResourceSurface::search_entries`]), indexed together. An entry says
+//!   how its hit reads — its result group, subtitle, icon and the action it
+//!   invokes — so the app needs no search provider beside it.
 //! * **One published tree** — the palette, agents and scripts see the
 //!   resource's publication and nothing beside it that changes the document:
 //!   a document action a content widget publishes through its own
@@ -197,8 +283,10 @@
 //!   and collaborators shown where they are. The resource is staged with
 //!   actions ([`ResourceApp::scenario`]), and view state where it lives,
 //!   once the actions are laid out: [`ViewCx::on_stage`] for a view's local
-//!   state, `ResourceSurface::stage` for a custom surface's. The capture
-//!   then waits until no surface reports unfinished visual work (an async
+//!   state, `ResourceSurface::stage` for a custom surface's. What a person
+//!   does in the scene (typing, a drag held over its target) is
+//!   [`ResourceApp::scenario_input`], driven through the window's own event
+//!   path. The capture then waits until no surface reports unfinished visual work (an async
 //!   page render, a decode). [`stage`] runs a scenario on any harness, and
 //!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
 //!   frame `--shots` writes in a test.
@@ -207,6 +295,7 @@ mod app;
 mod controls;
 // In-place reload swaps native code into a running process; a browser build
 // has neither the thin shared library nor the host that loads it.
+mod delivery;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dev_reload;
 mod dispatch;
@@ -217,6 +306,8 @@ mod kinds;
 mod launch;
 mod live;
 mod participant;
+mod people;
+mod person;
 mod preview;
 mod root;
 mod rows;
@@ -236,22 +327,26 @@ pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
-pub use app::{ResourceApp, SeedCx, definition};
+pub use app::{FileHistory, ResourceApp, SeedCx, definition, run_helper};
 pub use controls::{ActionControl, Actions};
+pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{
-    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress, Projection,
+    ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,
+    JobProgress, Jobs, Progress, Projection,
 };
-pub use kinds::resource_kind;
-pub use launch::{Command, LaunchInput};
+pub use kinds::{hosted_kinds, resource_kind, seed_record};
+pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
 pub use participant::Participant;
+pub use people::People;
+pub use person::PersonRecord;
 pub use preview::PastVersion;
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;
-pub use stage::stage;
+pub use stage::{stage, time_frames};
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};

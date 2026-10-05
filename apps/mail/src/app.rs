@@ -19,19 +19,21 @@
 //! the movable [`ComposeWindow`], the row context menu, the account-setup
 //! sheet, and a status toast.
 //!
-//! The live app loads a real [`AccountStore`] and drives the account
-//! [`crate::engine`] worker (IMAP fetch / SMTP submit; a network-free stub by
-//! default). It does **not** fabricate a sample mailbox — an unconfigured
-//! account shows an empty state. The bundled sample corpus is used only by the
-//! hermetic `--shots` / test constructors.
+//! A live window loads the [`AccountStore`] of its host's profile and drives
+//! the account [`crate::engine`] worker (IMAP fetch / SMTP submit). It does
+//! **not** fabricate a sample mailbox — an unconfigured account shows an empty
+//! state. The bundled sample corpus is a screenshot's fixture.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -39,12 +41,12 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use accounts::person::PersonAccounts;
 use tilo_content::ContentStore;
+use ui::framework::PersonRecord;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
-use ui::portal::{
-    FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
-};
+use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -56,6 +58,7 @@ use ui::widget::{
 use ui::{ColorCompat, ImageStore};
 
 use crate::account::{Account, AccountStore};
+use crate::actions::{MailAction, Outgoing, ServerUpdate};
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
 use ui::surface::pill;
@@ -98,7 +101,7 @@ const CONTEXT_MENU_PAD: f64 = 6.0;
 struct EventContext<'a> {
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
-    state: &'a mut AutoCommit,
+    state: ui::widget::Edits<'a>,
     path: &'a ObjId,
     handled: &'a mut bool,
     focus_target: &'a mut Option<NodeId>,
@@ -140,52 +143,67 @@ struct EngineHandle {
     rx: std::sync::mpsc::Receiver<EngineEvent>,
 }
 
-/// A locally-authored message waiting for a real SMTP acknowledgement.  It is
-/// deliberately kept out of Sent until the server accepts it: treating MIME
-/// serialization as delivery makes an offline fallback (and a rejected SMTP
-/// send) look like mail was sent.
+/// A message from the outbox the engine is delivering. It joins Sent only
+/// once the server accepts it: treating MIME serialization as delivery makes
+/// an offline fallback (and a rejected SMTP send) look like mail was sent.
 struct PendingSend {
-    request_id: EngineRequestId,
+    outgoing: Outgoing,
+    /// The copy Sent shows once it is delivered.
     message: Message,
-    edited_draft: Option<MessageId>,
+    done: ServerUpdateDone,
+}
+
+/// How the drain that asked for a server update hears how it went.
+type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
+
+/// The server updates the document's projection asked for: queued until the
+/// next sync hands them to the engine, then carried out by it. Whichever
+/// device's drain asked, the engine's acknowledgement records the update as
+/// applied in the document ([`crate::actions::MailAction::ServerApplied`]).
+#[derive(Default)]
+pub(crate) struct ServerOutbox {
+    queued: Vec<(ServerUpdate, ServerUpdateDone)>,
+    sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
+    /// Messages from the document's outbox, waiting for the engine.
+    deliveries: Vec<(Outgoing, ServerUpdateDone)>,
+}
+
+impl ServerOutbox {
+    /// Carry out `update`, then tell `done` how it went.
+    pub(crate) fn push(&mut self, update: ServerUpdate, done: ServerUpdateDone) {
+        self.queued.push((update, done));
+    }
+
+    /// Deliver `outgoing`, then tell `done` how it went.
+    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+        self.deliveries.push((outgoing, done));
+    }
 }
 
 /// An attachment whose bytes were already hydrated and are now waiting for a
 /// user-selected destination from the desktop portal. The path itself is never
 /// invented or retained before the portal grants it.
-struct PendingAttachmentSave {
-    message_id: MessageId,
-    index: usize,
-    attachment: Attachment,
-}
-
 /// Where account add / edit / remove is persisted.
 ///
-/// Only the **live** app may write the user's real account store
-/// (`$XDG_CONFIG_HOME/tilo/accounts/`). The sample / `--shots` / test
-/// constructors target a throwaway sandbox directory instead, so exercising the
-/// save flow (or a test that adds an account) can never leak fabricated demo
-/// accounts into the real store. The historic leak — `you@example.test`,
-/// `you@hooli.example`, `new@host.example` appearing pre-configured in the live
-/// app — was exactly this: a test that drove the save path wrote the bundled
-/// sample store to the real config root.
+/// Only a live window writes an account store, and only the one of the
+/// profile its host gave it: the person's own (`$XDG_CONFIG_HOME/tilo/accounts/`)
+/// in a session, a test or `--data-dir` profile's own otherwise. A screenshot
+/// or a past version writes nothing.
 #[derive(Clone)]
 enum AccountsPersist {
-    /// The real per-user config root — live app only.
-    Real,
-    /// A throwaway directory, removed when the app is dropped. The `TempDir`
-    /// guard owns the directory's lifetime.
+    /// The configuration directory of the host's profile.
+    Profile(std::path::PathBuf),
+    /// A throwaway directory, removed when the app is dropped.
+    #[cfg(test)]
     Sandbox(Arc<tempfile::TempDir>),
-    /// No writable sandbox could be created — persistence is a silent no-op.
-    /// A safe fallback that still never touches the real store.
+    /// Nothing is written: a capture, a past version, or a profile without a
+    /// configuration directory.
     Disabled,
 }
 
 impl AccountsPersist {
-    /// A fresh throwaway sandbox for the sample / shots / test constructors.
-    /// Falls back to [`AccountsPersist::Disabled`] (never [`AccountsPersist::Real`])
-    /// if a temp dir cannot be created, so sample mode can never reach the real
-    /// store.
+    /// A fresh throwaway sandbox for tests.
+    #[cfg(test)]
     fn sandbox() -> Self {
         match tempfile::Builder::new()
             .prefix("tilo-mail-sample-")
@@ -196,59 +214,42 @@ impl AccountsPersist {
         }
     }
 
-    /// Persist `accounts` to the target this variant names.
-    fn persist(&self, accounts: &AccountStore) -> std::io::Result<()> {
+    /// The configuration directory this persists into.
+    fn root(&self) -> Option<std::path::PathBuf> {
         match self {
-            AccountsPersist::Real => accounts.persist(),
-            AccountsPersist::Sandbox(dir) => accounts.persist_in(dir.path()),
-            AccountsPersist::Disabled => Ok(()),
-        }
-    }
-
-    /// The device-local preference lives beside the account store, but outside
-    /// its shared account schema. It is never a collaborative document field.
-    fn load_compose_format(&self) -> ComposeFormat {
-        let Some(path) = self.local_preferences_path() else {
-            return ComposeFormat::Html;
-        };
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<LocalPreferences>(&bytes).ok())
-            .map_or(ComposeFormat::Html, |prefs| {
-                ComposeFormat::from_key(&prefs.compose_format)
-            })
-    }
-
-    fn persist_compose_format(&self, format: ComposeFormat) -> std::io::Result<()> {
-        let Some(path) = self.local_preferences_path() else {
-            return Ok(());
-        };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec(&LocalPreferences {
-            compose_format: format.as_key().to_string(),
-        })
-        .map_err(std::io::Error::other)?;
-        std::fs::write(path, bytes)
-    }
-
-    fn local_preferences_path(&self) -> Option<std::path::PathBuf> {
-        let root = match self {
-            AccountsPersist::Real => accounts::config_root(),
+            AccountsPersist::Profile(root) => Some(root.clone()),
+            #[cfg(test)]
             AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
             AccountsPersist::Disabled => None,
-        }?;
-        Some(root.join("mail-local.json"))
+        }
+    }
+
+    /// The accounts stored there; none when nothing is.
+    fn load(&self) -> AccountStore {
+        self.root()
+            .map_or_else(AccountStore::new, |root| AccountStore::load_in(&root))
+    }
+
+    /// Persist `accounts` to the target this variant names.
+    fn persist(&self, accounts: &AccountStore) -> std::io::Result<()> {
+        match self.root() {
+            Some(root) => accounts.persist_in(&root),
+            None => Ok(()),
+        }
     }
 }
 
-/// Device-local Mail preferences. Kept deliberately small and separate from
-/// the shared account payload: a peer must never adopt another window's
-/// composer mode just because it received mailbox changes.
-#[derive(serde::Deserialize, serde::Serialize)]
-struct LocalPreferences {
-    compose_format: String,
+/// The configuration directory of the profile `storage` belongs to: the
+/// person's own in a session, else the directory of the settings document a
+/// test, capture or `--data-dir` host gave the app, so such a profile never
+/// reads or writes the person's accounts.
+fn profile_config_root(storage: &ui::storage::AppStorage) -> Option<std::path::PathBuf> {
+    match storage.settings_document() {
+        ui::storage::SettingsDocument::Session => accounts::config_root(),
+        ui::storage::SettingsDocument::File(path) => {
+            path.parent().map(std::path::Path::to_path_buf)
+        }
+    }
 }
 
 struct PendingSetupValidation {
@@ -288,9 +289,6 @@ pub struct MailApp {
     /// Where draft attachment bytes live; drafts carry only their content id.
     /// The engine worker holds a clone to build outgoing MIME.
     content: ContentStore,
-    /// One retained catalogue per mailbox revision. Palette providers clone
-    /// this Arc-backed handle; typing never rebuilds the loaded-mail index.
-    mail_search_provider: crate::search_provider::MailSearchProvider,
     nav: NavShell,
     /// The theme the host last handed to `build_layout` / `draw`. The nav
     /// shell resolves its breakpoint and pane widths from the theme (F1,
@@ -343,7 +341,19 @@ pub struct MailApp {
     setup_discovery: Option<PendingSetupDiscovery>,
 
     engine: Option<EngineHandle>,
-    pending_send: Option<PendingSend>,
+    /// What the document still has to tell mail servers, on its way to the
+    /// engine.
+    server_outbox: Rc<RefCell<ServerOutbox>>,
+    /// The drain that fills the outbox, told when a server may now accept
+    /// what it refused (a fetch arrived, the engine reconnected).
+    projection: Option<ui::framework::Projection>,
+    /// The drain that hands the document's outbox to the engine.
+    delivery: Option<ui::framework::Projection>,
+    /// Outbox messages the engine is delivering, by request.
+    pending_send: HashMap<EngineRequestId, PendingSend>,
+    /// The outbox message the composer was reopened from after its server
+    /// refused it; sending again replaces it.
+    resending: Option<String>,
     /// Where account changes persist. The live app targets the real user config
     /// root; the sample / shots / test constructors target a throwaway sandbox
     /// so they can never write into the real account store.
@@ -353,9 +363,14 @@ pub struct MailApp {
     /// so observing the id here gives every selection path one persistence
     /// boundary without leaking that preference into Automerge.
     persisted_active_account: Option<String>,
-    /// Last format persisted to this device-local preference store. This lets
-    /// format toggles save immediately without rewriting disk at every close.
-    persisted_compose_format: ComposeFormat,
+    /// The person's accounts, which Settings keeps and every device of theirs
+    /// shares, followed in a live window; and the revision last shown.
+    person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
+    /// The person's Mail preferences, followed in a live window: the compose
+    /// format and the folded account sidebars.
+    preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
+    /// The preferences as this window last read or stored them.
+    followed_preferences: crate::resource::MailPreferences,
     connect_requested: bool,
     /// True between posting a connect/fetch and receiving its result, so the
     /// app only keeps polling the worker while a reply is outstanding (it fully
@@ -371,17 +386,13 @@ pub struct MailApp {
     /// update, so a subsequent refresh cannot overwrite an unobserved result.
     resource_refresh_invocation: Option<(EngineRequestId, tilo_actions::InvocationId)>,
     resource_refresh_result: Option<tilo_actions::InvocationUpdate>,
-    /// One host-native attachment Save chooser at a time. The receiver is
-    /// polled from `sync`, never awaited on the UI thread.
-    attachment_save_rx: Option<PortalChannel>,
     /// One portal-open attachment staging request. The returned descriptor is
     /// copied straight into the content store; its original path is never retained.
     compose_attachment_rx: Option<OpenFileChannel>,
-    pending_attachment_save: Option<PendingAttachmentSave>,
-    /// A typed resource operation must not claim success before the chooser
-    /// returns and the bytes reach the chosen destination.
-    resource_attachment_save_invocation: Option<tilo_actions::InvocationId>,
-    resource_attachment_save_result: Option<tilo_actions::InvocationUpdate>,
+    /// What effects asked to show that needs the document, for the next sync.
+    reveals: Vec<Reveal>,
+    /// Callers waiting for a refresh to settle.
+    effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
@@ -406,30 +417,30 @@ pub struct MailApp {
     /// first real layout snaps it to the resting state for the current width so
     /// a narrow launch doesn't flash the drawer open before easing it closed.
     first_layout: bool,
+    /// The screenshot scenario the framework asked to stage, until the next
+    /// sync stages it with the document.
+    pending_stage: Option<String>,
     dirty: bool,
 }
 
 impl MailApp {
+    /// Stage screenshot `scenario` on the next sync, which has the document.
+    pub(crate) fn request_stage(&mut self, scenario: &str) {
+        self.pending_stage = Some(scenario.to_owned());
+        self.dirty = true;
+    }
+
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Mail>,
     ) {
-        self.shared.borrow_mut().actions.attach(dispatcher.clone());
+        self.shared.borrow_mut().dispatcher = Some(dispatcher.clone());
         self.compose.attach_framework(dispatcher);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.shared.borrow().actions.is_hosted()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&self) {
-        self.shared.borrow_mut().actions.mark_hosted_for_test();
-    }
-
     pub(crate) fn has_pending_send(&self) -> bool {
-        self.pending_send.is_some()
+        !self.pending_send.is_empty()
     }
 
     #[cfg(test)]
@@ -437,39 +448,24 @@ impl MailApp {
         self.shared.borrow().mailbox.messages.len()
     }
 
-    /// The hermetic constructor used by `--shots` and tests: the bundled
-    /// sample corpus, no engine, deterministic "now".
-    pub fn new_sample() -> Self {
-        let shared = MailState::shared(MailState::new_sample(avatar_store_offline()));
-        Self::assemble(
-            shared,
-            ContentStore::memory(),
-            None,
-            AccountsPersist::sandbox(),
-        )
-    }
-
-    /// The live constructor: a real account list loaded from disk and the
-    /// engine worker spawned. No fabricated messages.
-    pub fn new_live() -> Self {
-        let accounts = load_account_store();
+    /// A window someone uses: the accounts of the host's profile, and the
+    /// engine worker that keeps them current. No fabricated messages.
+    pub(crate) fn for_window(
+        storage: &ui::storage::AppStorage,
+        content: Option<ContentStore>,
+    ) -> Self {
+        let persist = profile_config_root(storage)
+            .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
+        let accounts = persist.load();
         let shared = MailState::shared(MailState::new_live(accounts, avatar_store()));
-        let content = ContentStore::for_app();
+        let content = content.unwrap_or_else(ContentStore::memory);
         let (tx, rx) = crate::engine::spawn(content.clone());
-        // Only the live app writes the user's real account store.
-        Self::assemble(
-            shared,
-            content,
-            Some(EngineHandle { tx, rx }),
-            AccountsPersist::Real,
-        )
+        Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist)
     }
 
-    /// A first-run constructor with no configured account and no engine —
-    /// renders the onboarding / welcome screen. Used by the `firstrun` shot.
-    /// Persists to a throwaway sandbox (never the real store) so a driven
-    /// add-account in this mode stays hermetic.
-    pub fn new_first_run() -> Self {
+    /// A past version in History: what the document holds, and nothing that
+    /// reaches a mail server or the account store.
+    pub(crate) fn for_past_version() -> Self {
         let shared = MailState::shared(MailState::new_live(
             AccountStore::new(),
             avatar_store_offline(),
@@ -478,8 +474,52 @@ impl MailApp {
             shared,
             ContentStore::memory(),
             None,
-            AccountsPersist::sandbox(),
+            AccountsPersist::Disabled,
         )
+    }
+
+    /// A screenshot: the scenario's fixture mailbox and accounts, no engine,
+    /// a pinned clock and nothing written outside the document.
+    pub(crate) fn for_capture(fixture: &crate::sample::MailFixture) -> Self {
+        let shared = MailState::shared(MailState::from_fixture(fixture, avatar_store_offline()));
+        Self::assemble(
+            shared,
+            ContentStore::memory(),
+            None,
+            AccountsPersist::Disabled,
+        )
+    }
+
+    /// The sample mailbox, editing the document it is synced with and
+    /// persisting account changes into a sandbox.
+    #[cfg(test)]
+    pub fn new_sample() -> Self {
+        let shared = MailState::shared(MailState::new_sample(avatar_store_offline()));
+        let mut app = Self::assemble(
+            shared,
+            ContentStore::memory(),
+            None,
+            AccountsPersist::sandbox(),
+        );
+        app.attach_framework(ui::framework::testing::dispatcher("so.tilo.mail"));
+        app
+    }
+
+    /// No account configured yet, persisting into a sandbox.
+    #[cfg(test)]
+    pub fn new_first_run() -> Self {
+        let shared = MailState::shared(MailState::new_live(
+            AccountStore::new(),
+            avatar_store_offline(),
+        ));
+        let mut app = Self::assemble(
+            shared,
+            ContentStore::memory(),
+            None,
+            AccountsPersist::sandbox(),
+        );
+        app.attach_framework(ui::framework::testing::dispatcher("so.tilo.mail"));
+        app
     }
 
     fn assemble(
@@ -488,10 +528,6 @@ impl MailApp {
         engine: Option<EngineHandle>,
         accounts_persist: AccountsPersist,
     ) -> Self {
-        let mail_search_provider = {
-            let state = shared.borrow();
-            crate::search_provider::MailSearchProvider::new(&state.mailbox)
-        };
         let sidebar = Pane::boxed(Role::Sidebar, shared.clone());
         let overview = Pane::boxed(Role::List, shared.clone());
         let detail = Pane::boxed(Role::Reader, shared.clone());
@@ -511,11 +547,9 @@ impl MailApp {
                     .map(|account| account.id.clone()),
             )
         };
-        let compose_format = accounts_persist.load_compose_format();
         Self {
             shared,
             content,
-            mail_search_provider,
             nav,
             shell_theme: Theme::dark(),
             first_run: EmptyState::new("Welcome to Mail")
@@ -524,7 +558,7 @@ impl MailApp {
                 .with_action("Add account")
                 .with_action_id("mail.add-account"),
             first_run_node: None,
-            compose: ComposeWindow::new(compose_format),
+            compose: ComposeWindow::new(ComposeFormat::default()),
             shortcuts: MailShortcutsOverlay::new(),
             editing_draft: None,
             context_menu: None,
@@ -545,21 +579,25 @@ impl MailApp {
             setup_validation: None,
             setup_discovery: None,
             engine,
-            pending_send: None,
+            server_outbox: Rc::default(),
+            projection: None,
+            delivery: None,
+            pending_send: HashMap::new(),
+            resending: None,
             accounts_persist,
             persisted_active_account,
-            persisted_compose_format: compose_format,
+            person_accounts: None,
+            preferences: None,
+            followed_preferences: crate::resource::MailPreferences::default(),
             connect_requested: false,
             awaiting_engine: false,
             background_poll_deadline: Cell::new(None),
             pending_engine_requests: HashMap::new(),
             resource_refresh_invocation: None,
             resource_refresh_result: None,
-            attachment_save_rx: None,
             compose_attachment_rx: None,
-            pending_attachment_save: None,
-            resource_attachment_save_invocation: None,
-            resource_attachment_save_result: None,
+            reveals: Vec::new(),
+            effect_replies: Vec::new(),
             last_auto_refresh_min: 0,
             toast_text: None,
             toast_deadline: None,
@@ -567,29 +605,113 @@ impl MailApp {
             rect: Rect::ZERO,
             layout_theme: Theme::dark(),
             first_layout: true,
+            pending_stage: None,
             dirty: true,
         }
     }
 
-    // ---- `--shots` priming ------------------------------------------------
+    // ---- screenshot staging ----------------------------------------------
 
-    /// Open the composer with a representative HTML draft (compose shot).
-    pub fn prime_compose_shot(&mut self) {
-        self.compose.open_demo();
+    /// Stage the view state screenshot `scenario` shows over the fixture
+    /// mailbox. Runs in the sync after the framework asked for it, with the
+    /// document, so a scenario that changes mail (moving messages to Trash
+    /// before confirming a purge) does it through the resource's actions.
+    fn stage_scenario(&mut self, doc: &mut ui::widget::Edits<'_>, scenario: &str) {
+        match scenario {
+            "compose" | "compose_narrow" => self.compose.open_demo(),
+            "narrow_detail" => {
+                self.nav.show_detail();
+                self.nav.snap();
+            }
+            "narrow_drawer" => {
+                self.nav.open_sidebar();
+                self.nav.snap_sidebar(true);
+            }
+            "setup" | "setup_narrow" => {
+                let active = self.shared.borrow().accounts.active;
+                self.open_setup_edit(Some(active));
+            }
+            "setup_add" => self.stage_setup_add(),
+            "setup_oauth" => {
+                self.open_setup_edit(None);
+                self.set_setup_input(0, "Grace Hopper");
+                self.set_setup_input(1, "grace.hopper@gmail.com");
+                // The built-in provider table only: a capture opens no socket.
+                self.maybe_autofill_live_typing();
+                self.focus_setup(Some(1));
+            }
+            "html_mail" => self.stage_html_mail(doc),
+            "search" => {
+                let mut st = self.shared.borrow_mut();
+                st.search = "spatial".into();
+                st.search_focused = true;
+                st.selected = st.list_rows().first().map(|(id, _)| *id);
+                st.dirty = true;
+            }
+            "preview" => self.stage_preview(),
+            "bulk" => self.stage_bulk(),
+            "bulk_purge_confirmation" => self.stage_bulk_purge_confirmation(doc),
+            "reply" => self.stage_reply(),
+            "context_menu" => {
+                let selected = self.shared.borrow().selected;
+                if let Some(id) = selected {
+                    self.shared
+                        .borrow_mut()
+                        .push_intent(Intent::ContextMenu(id, Point::new(790.0, 206.0)));
+                    self.process_intents();
+                }
+            }
+            "loading" => {
+                self.awaiting_engine = true;
+                self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
+            }
+            "offline" => {
+                self.shared.borrow_mut().status =
+                    Some("You’re offline · Showing downloaded mail".into());
+            }
+            "error" => {
+                self.stage_setup_add();
+                self.setup_error = Some(
+                    "Couldn’t connect to IMAP. Check the server, port, and TLS settings, then try again."
+                        .into(),
+                );
+            }
+            _ => {}
+        }
         self.dirty = true;
     }
 
-    /// Push the detail pane in and snap it (narrow "reading a message" shot).
-    pub fn prime_detail_shot(&mut self) {
-        self.nav.show_detail();
-        self.nav.snap();
-        self.dirty = true;
+    /// A blank "Add account" sheet with an email typed and its servers
+    /// filled in, focus on a server field so its focus ring shows.
+    fn stage_setup_add(&mut self) {
+        self.open_setup_edit(None);
+        self.set_setup_input(0, "Grace Hopper");
+        self.set_setup_input(1, "grace@fastmail.com");
+        // The built-in provider table only: a capture opens no socket.
+        self.maybe_autofill_live_typing();
+        self.focus_setup(Some(4));
     }
 
-    /// Open an unread sample message through the same explicit read-state
-    /// neutral path that agents and Ctrl+K use, so visual review covers the
-    /// persistent preview indicator rather than relying only on a unit test.
-    pub fn prime_preview_shot(&mut self) {
+    /// The bundled HTML newsletter open in the reader (it is starred, so the
+    /// filled-star action shows too).
+    fn stage_html_mail(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let id = {
+            let st = self.shared.borrow();
+            st.mailbox
+                .messages
+                .values()
+                .find(|m| m.from.email == "news@weekly.example.test")
+                .map(|m| m.id)
+        };
+        if let Some(id) = id {
+            self.shared.borrow_mut().select_message(doc, id);
+            self.process_intents();
+        }
+    }
+
+    /// An unread message inspected through the read-neutral preview, so the
+    /// persistent preview indicator shows.
+    fn stage_preview(&mut self) {
         let id = self
             .shared
             .borrow()
@@ -601,13 +723,11 @@ impl MailApp {
             self.shared.borrow_mut().preview_message(id);
             self.process_intents();
         }
-        self.dirty = true;
     }
 
-    /// Show the local multi-message triage state with a small, deliberate
-    /// selection. This exercises the extra header row, selected-row treatment,
-    /// and bulk controls without putting synthetic mail on the live path.
-    pub fn prime_bulk_shot(&mut self) {
+    /// Two messages selected for bulk triage: the extra header row, the
+    /// selected-row treatment and the bulk controls.
+    fn stage_bulk(&self) {
         let ids: Vec<MessageId> = self
             .shared
             .borrow()
@@ -621,14 +741,11 @@ impl MailApp {
         for id in ids {
             state.toggle_bulk_selection(id);
         }
-        drop(state);
-        self.dirty = true;
     }
 
-    /// Render the destructive confirmation after an all-Trash selection. This
-    /// is a visual contract test: the review surface names the affected count
-    /// and the irreversibility before the canonical purge action is authored.
-    pub fn prime_bulk_purge_confirmation_shot(&mut self) {
+    /// Two messages moved to Trash and selected, with the confirmation that
+    /// names how many will be deleted for good.
+    fn stage_bulk_purge_confirmation(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let ids: Vec<MessageId> = self
             .shared
             .borrow()
@@ -639,19 +756,20 @@ impl MailApp {
             .map(|message| message.id)
             .collect();
         let mut state = self.shared.borrow_mut();
+        for id in &ids {
+            state.move_message(doc, *id, Folder::Trash);
+        }
         state.set_bulk_selecting(true);
         for id in ids {
-            state.mailbox.move_to(id, Folder::Trash);
             state.toggle_bulk_selection(id);
         }
         state.push_intent(Intent::ConfirmBulkPurge);
         drop(state);
         self.process_intents();
-        self.dirty = true;
     }
 
-    /// Review a real reply draft rather than a generic blank composition.
-    pub fn prime_reply_shot(&mut self) {
+    /// A reply to the newest inbox message, rather than a blank composition.
+    fn stage_reply(&mut self) {
         let id = self
             .shared
             .borrow()
@@ -663,99 +781,6 @@ impl MailApp {
             self.shared.borrow_mut().push_intent(Intent::Reply(id));
             self.process_intents();
         }
-        self.dirty = true;
-    }
-
-    /// Open the same menu a row right-click produces. It exercises only the
-    /// existing sample mailbox and never implies provider activity or delivery.
-    pub fn prime_context_menu_shot(&mut self) {
-        let selected = self.shared.borrow().selected;
-        if let Some(id) = selected {
-            self.shared
-                .borrow_mut()
-                .push_intent(Intent::ContextMenu(id, Point::new(790.0, 206.0)));
-            self.process_intents();
-        }
-        self.dirty = true;
-    }
-
-    /// Put the list in an active, non-empty search state. This is deliberately
-    /// seeded through the same shared query state used by type-ahead rather
-    /// than fabricating a separate search-only data path.
-    pub fn prime_search_shot(&mut self) {
-        let mut st = self.shared.borrow_mut();
-        st.search = "spatial".into();
-        st.search_focused = true;
-        st.selected = st.list_rows().first().map(|(id, _)| *id);
-        st.dirty = true;
-        drop(st);
-        self.dirty = true;
-    }
-
-    /// Open the account-setup sheet (setup shot).
-    pub fn prime_setup_shot(&mut self) {
-        let active = self.shared.borrow().accounts.active;
-        self.open_setup_edit(Some(active));
-    }
-
-    /// Open a blank "Add account" sheet with an email typed + servers
-    /// autofilled, so the shot shows the add flow with single-border fields.
-    pub fn prime_setup_add_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Grace Hopper");
-        self.set_setup_input(1, "grace@fastmail.com");
-        self.maybe_autofill();
-        // Land focus on a server field so the single-border focus ring shows.
-        self.focus_setup(Some(4));
-    }
-
-    /// Open a blank "Add account" sheet with a Gmail address — which presets to
-    /// OAuth — so the shot shows the OAuth sign-in flow.
-    pub fn prime_setup_oauth_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Grace Hopper");
-        self.set_setup_input(1, "grace.hopper@gmail.com");
-        self.maybe_autofill();
-        self.focus_setup(Some(1));
-    }
-
-    /// Select the bundled HTML newsletter so the reader renders it through the
-    /// sandboxed `WebView` (HTML-mail shot). Also demonstrates the filled-star
-    /// action (the newsletter is starred).
-    pub fn prime_html_mail_shot(&mut self) {
-        let id = {
-            let st = self.shared.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "news@weekly.example.test")
-                .map(|m| m.id)
-        };
-        if let Some(id) = id {
-            let mut doc = AutoCommit::new();
-            self.shared.borrow_mut().select_message(&mut doc, id);
-            self.process_intents();
-        }
-        self.dirty = true;
-    }
-
-    /// A configured mailbox before any messages have arrived.
-    pub fn prime_empty_shot(&mut self) {
-        let mut st = self.shared.borrow_mut();
-        let account = st.mailbox.account.clone();
-        st.mailbox = crate::model::Mailbox::new(account);
-        st.selected = None;
-        st.folder = Folder::Inbox;
-        st.dirty = true;
-        drop(st);
-        self.dirty = true;
-    }
-
-    /// A real in-flight sync indication over cached mail.
-    pub fn prime_loading_shot(&mut self) {
-        self.awaiting_engine = true;
-        self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
-        self.dirty = true;
     }
 
     /// Queue one worker request and account for it exactly once.  Every engine
@@ -783,29 +808,6 @@ impl MailApp {
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
         self.pending_engine_requests.get(&request_id) == Some(&kind)
-    }
-
-    /// Cached mail remains usable while connectivity is unavailable.
-    pub fn prime_offline_shot(&mut self) {
-        self.shared.borrow_mut().status = Some("You’re offline · Showing downloaded mail".into());
-        self.dirty = true;
-    }
-
-    /// A recoverable account error: the configuration stays open and editable.
-    pub fn prime_error_shot(&mut self) {
-        self.prime_setup_add_shot();
-        self.setup_error = Some(
-            "Couldn’t connect to IMAP. Check the server, port, and TLS settings, then try again."
-                .into(),
-        );
-        self.dirty = true;
-    }
-
-    /// Open the sidebar overlay drawer and snap it (narrow drawer shot).
-    pub fn prime_drawer_shot(&mut self) {
-        self.nav.open_sidebar();
-        self.nav.snap_sidebar(true);
-        self.dirty = true;
     }
 
     // ---- nav layout -------------------------------------------------------
@@ -940,48 +942,6 @@ impl MailApp {
         }
     }
 
-    /// Durably replace the portal-authorized target with attachment bytes.
-    /// The portal owns the parent/destination choice; Mail only accepts a
-    /// normal file (or a new leaf), never follows a selected symlink or
-    /// manufactures a missing parent. Atomic replacement ensures an existing
-    /// chosen file remains intact if the write fails partway through.
-    fn write_portal_attachment(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-        if bytes.len() > MAX_ATTACHMENT_SAVE_BYTES {
-            return Err(format!(
-                "attachment exceeds the {MAX_ATTACHMENT_SAVE_BYTES}-byte save limit"
-            ));
-        }
-        match std::fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err("refusing to overwrite a symbolic-link destination".into());
-            }
-            Ok(metadata) if !metadata.is_file() => {
-                return Err("selected destination is not a regular file".into());
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!("couldn’t inspect selected destination: {error}"));
-            }
-        }
-        let Some(parent) = path.parent() else {
-            return Err("selected destination has no parent folder".into());
-        };
-        let parent_metadata = std::fs::symlink_metadata(parent)
-            .map_err(|error| format!("couldn’t inspect selected folder: {error}"))?;
-        if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
-            return Err("selected destination is outside a regular folder".into());
-        }
-        tilo_files::native::atomic::write(path, bytes).map_err(|error| error.to_string())
-    }
-
-    fn attachment_save_busy(&self) -> bool {
-        self.attachment_save_rx.is_some()
-            || self.pending_attachment_save.is_some()
-            || self.resource_attachment_save_invocation.is_some()
-            || self.resource_attachment_save_result.is_some()
-    }
-
     fn request_compose_attachment(&mut self) {
         if self.compose_attachment_rx.is_some() {
             self.shared.borrow_mut().status = Some("Attachment picker is already open".into());
@@ -1047,154 +1007,6 @@ impl MailApp {
     /// sole Mail path that writes attachment bytes: it asks the portal for a
     /// destination first and is deliberately asynchronous so a slow desktop
     /// chooser never freezes Mail.
-    fn begin_attachment_save(&mut self, message_id: MessageId, index: usize) -> Result<(), String> {
-        if self.attachment_save_busy() {
-            return Err("another attachment save is already in progress".into());
-        }
-        let attachment = self
-            .shared
-            .borrow()
-            .mailbox
-            .get(message_id)
-            .and_then(|message| message.attachments.get(index))
-            .cloned()
-            .ok_or_else(|| "attachment is no longer loaded".to_string())?;
-        if !attachment.is_downloadable() {
-            return Err("attachment content is not downloaded yet".into());
-        }
-        if attachment.content.len() > MAX_ATTACHMENT_SAVE_BYTES {
-            return Err(format!(
-                "{} is too large to save here; open it in Files instead",
-                attachment.filename
-            ));
-        }
-        let content_len = u64::try_from(attachment.content.len())
-            .map_err(|_| "attachment is too large to save".to_string())?;
-        if attachment.size != content_len {
-            return Err("attachment metadata no longer matches its downloaded content".into());
-        }
-        let suggested_name = Self::attachment_save_name(&attachment.filename);
-        self.pending_attachment_save = Some(PendingAttachmentSave {
-            message_id,
-            index,
-            attachment,
-        });
-        self.attachment_save_rx = Some(
-            PickRequest::save("Save attachment", "Save", &suggested_name)
-                .thread_name("mail-portal-save-attachment")
-                .filter(FileFilter::all_files())
-                .send(),
-        );
-        self.shared.borrow_mut().status = Some("Choose where to save the attachment".into());
-        self.dirty = true;
-        Ok(())
-    }
-
-    fn finish_attachment_save(
-        &mut self,
-        outcome: Result<String, Option<String>>,
-        saved_resource: Option<String>,
-    ) {
-        match &outcome {
-            Ok(message) | Err(Some(message)) => {
-                self.shared.borrow_mut().status = Some(message.clone());
-            }
-            Err(None) => self.shared.borrow_mut().status = Some("Attachment save cancelled".into()),
-        }
-        if let Some(invocation) = self.resource_attachment_save_invocation.take() {
-            self.resource_attachment_save_result = Some(match outcome {
-                Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput {
-                        value: None,
-                        resources: saved_resource.into_iter().collect(),
-                    },
-                },
-                Err(Some(message)) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "mail.attachment_save_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-                Err(None) => tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("attachment save cancelled".into()),
-                },
-            });
-        }
-        self.dirty = true;
-    }
-
-    /// Drain exactly one portal outcome without blocking. A typed resource
-    /// effect reaches a terminal result only here, after a successful write;
-    /// this prevents history and agents from reporting a saved file merely
-    /// because a chooser was opened.
-    fn drain_attachment_save(&mut self) {
-        let outcome = self
-            .attachment_save_rx
-            .as_ref()
-            .map(std::sync::mpsc::Receiver::try_recv);
-        let Some(outcome) = outcome else {
-            return;
-        };
-        match outcome {
-            Ok(PortalOutcome::Opened(path)) => {
-                self.attachment_save_rx = None;
-                let Some(pending) = self.pending_attachment_save.take() else {
-                    return;
-                };
-                let result = Self::write_portal_attachment(&path, &pending.attachment.content)
-                    .map_or_else(
-                        |error| {
-                            Err(Some(format!(
-                                "Couldn’t save {}: {error}",
-                                pending.attachment.filename
-                            )))
-                        },
-                        |()| {
-                            Ok(format!(
-                                "Saved {} to {}",
-                                pending.attachment.filename,
-                                path.display()
-                            ))
-                        },
-                    );
-                self.finish_attachment_save(
-                    result,
-                    Some(format!(
-                        "mail.attachment:{}:{}",
-                        pending.message_id, pending.index
-                    )),
-                );
-            }
-            Ok(PortalOutcome::Cancelled) => {
-                self.attachment_save_rx = None;
-                self.pending_attachment_save = None;
-                self.finish_attachment_save(Err(None), None);
-            }
-            Ok(PortalOutcome::Failed(reason)) => {
-                self.attachment_save_rx = None;
-                self.pending_attachment_save = None;
-                self.finish_attachment_save(
-                    Err(Some(format!("Attachment save unavailable: {reason}"))),
-                    None,
-                );
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.attachment_save_rx = None;
-                self.pending_attachment_save = None;
-                self.finish_attachment_save(
-                    Err(Some("Attachment save picker stopped unexpectedly".into())),
-                    None,
-                );
-            }
-        }
-    }
-
     fn process_intents(&mut self) {
         let intents = self.shared.borrow_mut().take_intents();
         for intent in intents {
@@ -1222,9 +1034,7 @@ impl MailApp {
                 }
                 Intent::Settings(idx) => self.open_setup_edit(idx),
                 Intent::SaveAttachment(message_id, index) => {
-                    if let Err(error) = self.begin_attachment_save(message_id, index) {
-                        self.shared.borrow_mut().status = Some(error);
-                    }
+                    self.request_attachment_save(message_id, index);
                 }
                 Intent::Engine(req) => {
                     self.post_engine(req);
@@ -1345,12 +1155,11 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn send_compose(&mut self, doc: &mut AutoCommit) {
-        self.persist_compose_format_if_changed();
-        if self.pending_send.is_some() {
-            self.shared.borrow_mut().status = Some("Message is still sending…".into());
-            return;
-        }
+    /// Send the message the composer holds: it goes into the mailbox's
+    /// outbox as an action — undone like any edit until it is delivered —
+    /// and a device that holds its account delivers it.
+    fn send_compose(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.store_preferences_if_changed();
         let draft = self.compose.to_draft(doc);
         let acct = self.shared.borrow().accounts.active_config();
         if acct.email.trim().is_empty() {
@@ -1359,51 +1168,45 @@ impl MailApp {
             self.dirty = true;
             return;
         }
-        if self.engine.is_none() {
+        if self.shared.borrow().dispatcher.is_none() {
             self.shared.borrow_mut().status =
                 Some("Sending is unavailable in this offline preview; save a draft instead".into());
             self.dirty = true;
             return;
         }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
-        match crate::transport::build_mime(&self.content, &from, &draft) {
-            Ok(_) => {
-                let to = crate::transport::parse_addr_list(&draft.to);
-                let now = self.shared.borrow().now_min;
-                let msg = Message {
-                    id: uuid::Uuid::new_v4(),
-                    rfc_message_id: None,
-                    in_reply_to: None,
-                    from,
-                    to,
-                    cc: crate::transport::parse_addr_list(&draft.cc),
-                    subject: draft.subject.clone(),
-                    body: draft.body.clone(),
-                    html_body: draft.html_body.clone(),
-                    attachments: draft.attachments.iter().map(attachment_meta).collect(),
-                    timestamp_min: now,
-                    read: true,
-                    starred: false,
-                    folder: Folder::Sent,
-                    labels: Vec::new(),
-                };
-                let Some(request_id) = self.post_engine(EngineRequest::send(acct, Box::new(draft)))
-                else {
-                    return;
-                };
-                self.pending_send = Some(PendingSend {
-                    request_id,
-                    message: msg,
-                    edited_draft: self.editing_draft,
-                });
-                self.shared.borrow_mut().status = Some("Sending…".into());
-            }
-            Err(e) => self.shared.borrow_mut().status = Some(format!("Send failed: {e}")),
+        if let Err(e) = crate::transport::build_mime(&self.content, &from, &draft) {
+            self.shared.borrow_mut().status = Some(format!("Send failed: {e}"));
+            self.dirty = true;
+            return;
         }
+        if crate::transport::parse_addr_list(&draft.to).is_empty() {
+            self.shared.borrow_mut().status = Some("Add a recipient before sending".into());
+            self.dirty = true;
+            return;
+        }
+        {
+            let st = self.shared.borrow();
+            if let Some(refused) = self.resending.take() {
+                st.dispatch_external(doc, &MailAction::CancelSend { id: refused });
+            }
+            st.dispatch_external(doc, &MailAction::Send(Outgoing::new(&acct.email, &draft)));
+        }
+        // The message is in the outbox now; the draft it was written in is
+        // done with.
+        if let Some(draft_id) = self.editing_draft.take() {
+            let mut st = self.shared.borrow_mut();
+            st.mailbox.messages.remove(&draft_id);
+            st.mailbox
+                .order
+                .retain(|message_id| *message_id != draft_id);
+        }
+        self.compose.close();
+        self.shared.borrow_mut().status = Some("Sending…".into());
         self.dirty = true;
     }
 
-    fn save_compose_draft(&mut self, doc: &mut AutoCommit) {
+    fn save_compose_draft(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let draft = self.compose.to_draft(doc);
         // Persist the draft as an action (survives a crash / syncs to peers /
         // one undo boundary) …
@@ -1414,13 +1217,13 @@ impl MailApp {
         self.editing_draft = Some(id);
         self.shared.borrow_mut().status = Some("Draft saved to Drafts".into());
         self.compose.close();
-        self.persist_compose_format_if_changed();
+        self.store_preferences_if_changed();
         self.dirty = true;
     }
 
     /// Insert (or, when editing an existing draft, update in place) a Drafts
     /// folder message reflecting `draft`, and return its id.
-    fn upsert_draft_message(&self, doc: &mut AutoCommit, draft: &Draft) -> MessageId {
+    fn upsert_draft_message(&self, doc: &mut ui::widget::Edits<'_>, draft: &Draft) -> MessageId {
         let (from, now) = {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
@@ -1935,7 +1738,7 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn save_setup(&mut self, _doc: &mut AutoCommit) {
+    fn save_setup(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.setup_validation.is_some() {
             return;
         }
@@ -2014,7 +1817,7 @@ impl MailApp {
     #[cfg(test)]
     fn save_setup_with(
         &mut self,
-        _doc: &mut AutoCommit,
+        _doc: &mut ui::widget::Edits<'_>,
         probe: &dyn crate::validate::ProbeTransport,
     ) {
         self.maybe_autofill();
@@ -2053,10 +1856,10 @@ impl MailApp {
             };
             let mut updated = st.accounts.clone();
             updated.upsert(account);
-            // Persist to the shared on-disk store + vault so the account (and
-            // its password) survive a restart. Routed through `accounts_persist`
-            // so sample / shots / test builds never touch the real store.
-            if let Err(error) = self.accounts_persist.persist(&updated) {
+            // Keep it in the person's accounts, on all of their devices, and
+            // its password in this device's vault; sample / shots / test
+            // builds keep it in a store of their own.
+            if let Err(error) = self.persist_accounts(&updated) {
                 let message = format!("Couldn’t save account: {error}");
                 self.setup_error = Some(message.clone());
                 st.status = Some(message);
@@ -2076,10 +1879,10 @@ impl MailApp {
         self.close_setup();
     }
 
-    /// Remove the account currently being edited, persist the removal to disk
-    /// (dropping it from the shared store + purging its vault secret), and close
-    /// the sheet. A no-op on the add flow (no editing target).
-    fn remove_editing_account(&mut self, _doc: &mut AutoCommit) {
+    /// Remove the account currently being edited from the person's accounts
+    /// (dropping its secret from this device's vault), and close the sheet.
+    /// A no-op on the add flow (no editing target).
+    fn remove_editing_account(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         let Some(idx) = self.setup_editing else {
             return;
         };
@@ -2090,7 +1893,7 @@ impl MailApp {
             };
             let mut updated = st.accounts.clone();
             updated.remove(&id);
-            if let Err(error) = self.accounts_persist.persist(&updated) {
+            if let Err(error) = self.persist_accounts(&updated) {
                 let message = format!("Couldn’t remove account: {error}");
                 self.setup_error = Some(message.clone());
                 st.status = Some(message);
@@ -2384,7 +2187,7 @@ impl MailApp {
 
     fn apply_fetched_messages(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         account_id: &str,
@@ -2392,7 +2195,11 @@ impl MailApp {
         messages: Vec<Message>,
     ) {
         let count = messages.len();
-        st.ingest_messages(doc, &messages);
+        st.ingest_fetched(doc, account_id, &messages);
+        // The server answered: what it refused before may go through now.
+        for projection in [&self.projection, &self.delivery].into_iter().flatten() {
+            projection.outside_changed();
+        }
         for message in messages {
             st.mailbox.insert(message);
         }
@@ -2427,45 +2234,40 @@ impl MailApp {
 
     fn apply_sent_message(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         wire_bytes: usize,
     ) {
-        if self
-            .pending_send
-            .as_ref()
-            .is_none_or(|pending| pending.request_id != request_id)
-        {
-            return;
-        }
-        let Some(pending) = self.pending_send.take() else {
+        let Some(pending) = self.pending_send.remove(&request_id) else {
             return;
         };
-        // A message joins Sent only after SMTP has accepted its bytes. If this
-        // was an edited draft, remove it at the same point; failures leave the
-        // composer and draft intact for retry.
-        if let Some(draft_id) = pending.edited_draft {
-            st.mailbox.messages.remove(&draft_id);
-            st.mailbox
-                .order
-                .retain(|message_id| *message_id != draft_id);
-        }
+        // A message joins Sent only after SMTP has accepted its bytes.
         st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
-        self.editing_draft = None;
-        self.compose.close();
+        st.dispatch_external(
+            doc,
+            &MailAction::Delivered {
+                id: pending.outgoing.id,
+            },
+        );
+        (pending.done)(Ok(()));
         st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
     }
 
     fn apply_engine_error(
         &mut self,
+        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         context: &str,
         message: &str,
     ) {
         let detail = format!("{context}: {message}");
+        let refused = self.server_outbox.borrow_mut().sent.remove(&request_id);
+        if let Some((_, done)) = refused {
+            done(Err(detail.clone()));
+        }
         st.status = Some(detail.clone());
         let account_id = st.accounts.active_config().email;
         let lower = detail.to_ascii_lowercase();
@@ -2478,13 +2280,21 @@ impl MailApp {
             accounts::AccountSyncHealth::Error
         };
         report_account_sync(&account_id, health, false, Some(&detail));
-        if self
-            .pending_send
-            .as_ref()
-            .is_some_and(|pending| pending.request_id == request_id)
-        {
-            // Failed SMTP delivery leaves the composer contents recoverable.
-            self.pending_send = None;
+        if let Some(pending) = self.pending_send.remove(&request_id) {
+            // The server refused it: it stays in the outbox with the reason,
+            // and comes back to the composer to be fixed and sent again.
+            st.dispatch_external(
+                doc,
+                &MailAction::SendFailed {
+                    id: pending.outgoing.id.clone(),
+                    reason: detail.clone(),
+                },
+            );
+            if !self.compose.open {
+                self.compose.open_with_draft(&pending.outgoing.to_draft());
+                self.resending = Some(pending.outgoing.id);
+            }
+            (pending.done)(Err(detail.clone()));
         }
         if self
             .resource_refresh_invocation
@@ -2503,7 +2313,12 @@ impl MailApp {
         }
     }
 
-    fn apply_engine_event(&mut self, doc: &mut AutoCommit, st: &mut MailState, event: EngineEvent) {
+    fn apply_engine_event(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        st: &mut MailState,
+        event: EngineEvent,
+    ) {
         match event {
             EngineEvent::Connected {
                 request_id,
@@ -2556,7 +2371,7 @@ impl MailApp {
                 context,
                 message,
             } if self.expects_engine_event(request_id, kind) => {
-                self.apply_engine_error(st, request_id, &context, &message);
+                self.apply_engine_error(doc, st, request_id, &context, &message);
             }
             EngineEvent::Completed { request_id, kind }
                 if self.expects_engine_event(request_id, kind) =>
@@ -2564,6 +2379,11 @@ impl MailApp {
                 // Only the worker acknowledgement settles a queued request:
                 // connect has two payloads and successful writes have none.
                 self.pending_engine_requests.remove(&request_id);
+                let sent = self.server_outbox.borrow_mut().sent.remove(&request_id);
+                if let Some((update, done)) = sent {
+                    st.dispatch_external(doc, &MailAction::ServerApplied(update));
+                    done(Ok(()));
+                }
             }
             ignored => {
                 tracing::warn!(request_id = %ignored.request_id(), "mail: ignoring unmatched or wrong-kind engine event");
@@ -2571,7 +2391,118 @@ impl MailApp {
         }
     }
 
-    fn drain_engine(&mut self, doc: &mut AutoCommit) {
+    /// Hand the server updates the projection asked for to the engine, each
+    /// on the account it belongs to. One this device cannot carry out (no
+    /// such account here, no engine) is refused; another device with the
+    /// account carries it out.
+    fn flush_server_outbox(&mut self) {
+        let deliveries = std::mem::take(&mut self.server_outbox.borrow_mut().deliveries);
+        for (outgoing, done) in deliveries {
+            self.deliver(outgoing, done);
+        }
+        let queued = std::mem::take(&mut self.server_outbox.borrow_mut().queued);
+        for (update, done) in queued {
+            let account = self
+                .shared
+                .borrow()
+                .accounts
+                .accounts
+                .iter()
+                .find(|account| account.config.email == update.account())
+                .map(|account| account.config.clone());
+            let Some(account) = account else {
+                done(Err(format!(
+                    "{} is not set up on this device",
+                    update.account()
+                )));
+                continue;
+            };
+            let message = Box::new(update.locate());
+            let request = match &update {
+                ServerUpdate::Flags { .. } => EngineRequest::store_flag(account, message),
+                ServerUpdate::Move { to, .. } => EngineRequest::move_message(account, message, *to),
+                ServerUpdate::Remove { .. } => EngineRequest::purge(account, message),
+            };
+            match self.post_engine(request) {
+                Some(request_id) => {
+                    self.server_outbox
+                        .borrow_mut()
+                        .sent
+                        .insert(request_id, (update, done));
+                }
+                None => done(Err("the mail engine is not running".into())),
+            }
+        }
+    }
+
+    /// Hand an outbox message to the engine on the account it is sent from.
+    /// One whose account this device does not hold is left for a device
+    /// that does.
+    fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+        let account = self
+            .shared
+            .borrow()
+            .accounts
+            .accounts
+            .iter()
+            .find(|account| account.config.email == outgoing.account)
+            .map(|account| account.config.clone());
+        let Some(account) = account else {
+            done(Err(format!(
+                "{} is not set up on this device",
+                outgoing.account
+            )));
+            return;
+        };
+        let draft = outgoing.to_draft();
+        let message = Message {
+            id: outgoing.id.parse().unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            rfc_message_id: None,
+            in_reply_to: None,
+            from: Addr::new(account.display_name.clone(), account.email.clone()),
+            to: crate::transport::parse_addr_list(&draft.to),
+            cc: crate::transport::parse_addr_list(&draft.cc),
+            subject: draft.subject.clone(),
+            body: draft.body.clone(),
+            html_body: draft.html_body.clone(),
+            attachments: draft.attachments.iter().map(attachment_meta).collect(),
+            timestamp_min: self.shared.borrow().now_min,
+            read: true,
+            starred: false,
+            folder: Folder::Sent,
+            labels: Vec::new(),
+        };
+        match self.post_engine(EngineRequest::send(account, Box::new(draft))) {
+            Some(request_id) => {
+                self.pending_send.insert(
+                    request_id,
+                    PendingSend {
+                        outgoing,
+                        message,
+                        done,
+                    },
+                );
+            }
+            None => done(Err("the mail engine is not running".into())),
+        }
+    }
+
+    /// The outbox the projection drain fills.
+    pub(crate) fn server_outbox(&self) -> Rc<RefCell<ServerOutbox>> {
+        Rc::clone(&self.server_outbox)
+    }
+
+    /// Keep the drain that fills the outbox.
+    pub(crate) fn follow_projection(&mut self, projection: ui::framework::Projection) {
+        self.projection = Some(projection);
+    }
+
+    /// Keep the drain that hands the document's outbox to the engine.
+    pub(crate) fn follow_delivery(&mut self, delivery: ui::framework::Projection) {
+        self.delivery = Some(delivery);
+    }
+
+    fn drain_engine(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(handle) = &self.engine else { return };
         let mut events = Vec::new();
         while let Ok(event) = handle.rx.try_recv() {
@@ -2594,7 +2525,7 @@ impl MailApp {
     /// Register the locally hydrated corpus before actions target it. This is
     /// external ingestion, not a user mutation: it never writes flags from a
     /// presentation cache into the collaborative document.
-    fn register_hydrated_messages(&self, doc: &mut AutoCommit) {
+    fn register_hydrated_messages(&self, doc: &mut ui::widget::Edits<'_>) {
         let messages: Vec<_> = self
             .shared
             .borrow()
@@ -2606,7 +2537,7 @@ impl MailApp {
         self.shared.borrow_mut().ingest_messages(doc, &messages);
     }
 
-    /// Flush an active-account change to the device-local shared account store.
+    /// Keep an active-account change in the person's accounts.
     /// This runs after every input path (pane pointer/keyboard, accessibility,
     /// or canonical resource operation) has selected an account. It never
     /// touches the Automerge document.
@@ -2624,7 +2555,7 @@ impl MailApp {
         if active == self.persisted_active_account {
             return;
         }
-        match self.accounts_persist.persist(&accounts) {
+        match self.persist_accounts(&accounts) {
             Ok(()) => self.persisted_active_account = active,
             Err(error) => {
                 self.shared.borrow_mut().status = Some(format!(
@@ -2634,27 +2565,163 @@ impl MailApp {
         }
     }
 
-    /// Persist the compose mode on this device only. The caller invokes this
-    /// at every format-changing or composer lifecycle boundary; the retained
-    /// value makes unchanged close/save/send paths a no-op.
-    fn persist_compose_format_if_changed(&mut self) {
-        let format = self.compose.format();
-        if format == self.persisted_compose_format {
+    /// Follow the person's accounts in this window. What this device's file
+    /// held before it followed the record is taken in first, and the file
+    /// then follows the record.
+    pub(crate) fn follow_person_accounts(&mut self, accounts: PersonRecord<PersonAccounts>) {
+        if let Some(root) = self.accounts_persist.root() {
+            let device = accounts::AccountStore::load_in(&root);
+            for edit in accounts.get().taking_in(&device) {
+                if let Err(error) = accounts.invoke(&edit) {
+                    tracing::warn!(%error, "an account of this device could not be taken in");
+                }
+            }
+            if let Err(error) = accounts.get().project_in(&root) {
+                tracing::warn!(%error, "the device's account file could not follow the person's accounts");
+            }
+        }
+        self.person_accounts = Some((accounts, None));
+        self.adopt_person_accounts();
+    }
+
+    /// Keep `updated` as the person's mail accounts: through their accounts
+    /// record, which follows them to every device, with each password in
+    /// this device's vault and the device's account file following the
+    /// record. Outside a live window, in the store this window keeps.
+    fn persist_accounts(&self, updated: &AccountStore) -> std::io::Result<()> {
+        let Some((record, _)) = &self.person_accounts else {
+            return self.accounts_persist.persist(updated);
+        };
+        let (edits, removed) = updated.edits_for(&record.get());
+        for edit in &edits {
+            record
+                .invoke(edit)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
+        if let Some(root) = self.accounts_persist.root() {
+            updated.keep_secrets_in(&root, &removed)?;
+            record.get().project_in(&root)?;
+        }
+        Ok(())
+    }
+
+    /// Show the person's accounts when their record moved: each account's
+    /// settings from the record, its password from this device's vault. A
+    /// newly shown active account is connected.
+    fn adopt_person_accounts(&mut self) {
+        let Some((record, seen)) = &mut self.person_accounts else {
+            return;
+        };
+        let revision = record.revision();
+        if *seen == Some(revision) {
             return;
         }
-        match self.accounts_persist.persist_compose_format(format) {
-            Ok(()) => self.persisted_compose_format = format,
+        *seen = Some(revision);
+        let person = record.get();
+        let vault = self
+            .accounts_persist
+            .root()
+            .map_or_else(accounts::SecretVault::open, |root| {
+                accounts::SecretVault::open_in(&root)
+            });
+        let mut adopted = AccountStore::from_store(&person.store(), &vault);
+        let changed = {
+            let mut st = self.shared.borrow_mut();
+            if let Some(shown) = st
+                .accounts
+                .active_account()
+                .map(|account| account.id.clone())
+                && let Some(index) = adopted.accounts.iter().position(|a| a.id == shown)
+            {
+                adopted.active = index;
+            }
+            let changed = st.accounts != adopted;
+            st.accounts = adopted;
+            changed
+        };
+        if changed && self.connect_requested && self.engine.is_some() {
+            let cfg = self.shared.borrow().accounts.active_config();
+            self.post_engine(EngineRequest::connect(cfg.clone()));
+            self.post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
+        }
+        self.dirty = true;
+    }
+
+    /// Follow the person's Mail preferences in this window.
+    pub(crate) fn follow_preferences(
+        &mut self,
+        preferences: ui::framework::Setting<crate::resource::MailPreferences>,
+    ) {
+        let current = preferences.get();
+        self.preferences = Some(preferences);
+        self.adopt_preferences(current);
+    }
+
+    /// Show `preferences`: the format a new composition starts in (an open
+    /// composer keeps its own) and which account sidebars are folded.
+    fn adopt_preferences(&mut self, preferences: crate::resource::MailPreferences) {
+        if !self.compose.open {
+            self.compose.set_format(preferences.compose_format);
+        }
+        for account in &mut self.shared.borrow_mut().accounts.accounts {
+            account.collapsed = preferences.collapsed_accounts.contains(&account.id);
+        }
+        self.followed_preferences = preferences;
+        self.dirty = true;
+    }
+
+    /// The preferences as this window shows them now.
+    fn shown_preferences(&self) -> crate::resource::MailPreferences {
+        crate::resource::MailPreferences {
+            compose_format: self.compose.format(),
+            collapsed_accounts: self
+                .shared
+                .borrow()
+                .accounts
+                .accounts
+                .iter()
+                .filter(|account| account.collapsed)
+                .map(|account| account.id.clone())
+                .collect(),
+        }
+    }
+
+    /// Adopt what another window or device stored, then store what changed
+    /// here: a format switched, an account folded.
+    fn sync_preferences(&mut self) {
+        let Some(preferences) = &self.preferences else {
+            return;
+        };
+        let stored = preferences.get();
+        if stored != self.followed_preferences {
+            self.adopt_preferences(stored);
+            return;
+        }
+        self.store_preferences_if_changed();
+    }
+
+    /// Store the preferences this window shows when they changed. Called at
+    /// every format-changing or composer lifecycle boundary and every sync.
+    fn store_preferences_if_changed(&mut self) {
+        let Some(preferences) = &self.preferences else {
+            return;
+        };
+        let shown = self.shown_preferences();
+        if shown == self.followed_preferences {
+            return;
+        }
+        match preferences.set(shown.clone()) {
+            Ok(()) => self.followed_preferences = shown,
             Err(error) => {
-                self.shared.borrow_mut().status = Some(format!(
-                    "Compose format changed, but could not save that preference: {error}"
-                ));
+                self.shared.borrow_mut().status =
+                    Some(format!("Could not save your Mail preferences: {error}"));
             }
         }
     }
 
     /// Apply collaborative domain state to the local hydrated corpus. Folder,
     /// selection, search, and composer format remain local to this window.
-    fn hydrate_domain_state(&self, doc: &mut AutoCommit) {
+    fn hydrate_domain_state(&self, doc: &mut ui::widget::Edits<'_>) {
         {
             let mut st = self.shared.borrow_mut();
             MailDoc::apply_flags(doc, &mut st.mailbox);
@@ -2664,78 +2731,6 @@ impl MailApp {
         let draft = MailDoc::load_draft(doc);
         if !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty() {
             self.upsert_draft_message(doc, &draft);
-        }
-    }
-
-    /// The context the Ctrl+K resource tree is built from: the account label, the
-    /// open folder and its messages, the user's local-folder registry, and
-    /// whether a draft is in progress. Everything is read from state the document
-    /// already holds; nothing is fabricated. See [`crate::actions`].
-    pub(crate) fn mail_resource_ctx(&self, doc: &AutoCommit) -> crate::actions::MailResourceCtx {
-        let st = self.shared.borrow();
-        let mailbox_label = {
-            let cfg = st.accounts.active_config();
-            if cfg.email.is_empty() {
-                "Mailbox".to_string()
-            } else {
-                cfg.email
-            }
-        };
-        let current_folder = st.folder;
-        let accounts = st
-            .accounts
-            .accounts
-            .iter()
-            .enumerate()
-            .map(|(index, account)| {
-                (
-                    account.id.clone(),
-                    account.label().to_string(),
-                    st.accounts.active == index,
-                )
-            })
-            .collect();
-        // `messages_in` is the single folder projection shared with the list;
-        // importantly it includes the virtual Starred folder.  Give each row
-        // the anchor from that same projection so resource/history identities
-        // stay independent of user-editable subjects.
-        let thread_ids: HashMap<_, _> = st
-            .mailbox
-            .threads_in(current_folder)
-            .into_iter()
-            .flat_map(|thread| {
-                let anchor = thread.id;
-                thread
-                    .message_ids
-                    .into_iter()
-                    .map(move |id| (id, anchor.clone()))
-            })
-            .collect();
-        let messages = st
-            .mailbox
-            .messages_in(current_folder)
-            .into_iter()
-            .take(crate::actions::OPEN_MESSAGE_LIMIT)
-            .map(|message| {
-                let mut row = crate::actions::message_row(message);
-                if let Some(thread_id) = thread_ids.get(&message.id) {
-                    row.thread_id.clone_from(thread_id);
-                }
-                row
-            })
-            .collect();
-        let custom_folders = MailDoc::list_folders(doc);
-        let draft = MailDoc::load_draft(doc);
-        let has_draft = !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty();
-        let can_sync = self.engine.is_some() && mailbox_label != "Mailbox";
-        crate::actions::MailResourceCtx {
-            mailbox_label,
-            current_folder,
-            accounts,
-            messages,
-            custom_folders,
-            has_draft,
-            can_sync,
         }
     }
 
@@ -3595,11 +3590,7 @@ impl MailApp {
     /// prove sample mode never resolves the real store path.
     #[cfg(test)]
     fn accounts_persist_root(&self) -> Option<std::path::PathBuf> {
-        match &self.accounts_persist {
-            AccountsPersist::Real => accounts::config_root(),
-            AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
-            AccountsPersist::Disabled => None,
-        }
+        self.accounts_persist.root()
     }
 }
 
@@ -3938,13 +3929,6 @@ fn draft_from_message(m: &Message) -> Draft {
     }
 }
 
-/// Load the account list from the shared canonical store
-/// (`$XDG_CONFIG_HOME/tilo/accounts/`), hydrating each password from the
-/// encrypted vault. An empty store when nothing is configured yet.
-fn load_account_store() -> AccountStore {
-    AccountStore::load()
-}
-
 fn report_account_sync(
     account_id: &str,
     health: accounts::AccountSyncHealth,
@@ -4041,22 +4025,9 @@ fn autoconfig_lookup(
 // =============================== Widget impl ===============================
 
 impl MailApp {
-    /// The retained search index is deliberately independent from the visible
-    /// mailbox. Keep an indexing fault addressable until a later successful
-    /// snapshot clears it, instead of hiding it in a transient toast.
-    pub(crate) fn mail_search_error(&self) -> Option<String> {
-        self.mail_search_provider.last_error()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inject_mail_search_snapshot_failure(&self) {
-        self.mail_search_provider.inject_snapshot_failure_for_test();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn refresh_mail_search_for_test(&self) -> Result<(), String> {
-        let state = self.shared.borrow();
-        self.mail_search_provider.refresh(&state.mailbox)
+    /// The loaded mailbox, which search reads its messages from.
+    pub(crate) fn shared_mailbox(&self) -> std::cell::Ref<'_, crate::model::Mailbox> {
+        std::cell::Ref::map(self.shared.borrow(), |state| &state.mailbox)
     }
 
     /// Route events to the open compose modal and report whether it consumed
@@ -4068,7 +4039,7 @@ impl MailApp {
             &mut ComposeEventContext {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 node_id: ctx.node_id,
                 taffy: ctx.taffy,
@@ -4077,20 +4048,20 @@ impl MailApp {
         let lifecycle_boundary = !matches!(&action, ComposeAction::None);
         match action {
             ComposeAction::RequestAttachment => self.request_compose_attachment(),
-            ComposeAction::Send => self.send_compose(ctx.state),
-            ComposeAction::SaveDraft => self.save_compose_draft(ctx.state),
+            ComposeAction::Send => self.send_compose(&mut ctx.state),
+            ComposeAction::SaveDraft => self.save_compose_draft(&mut ctx.state),
             ComposeAction::Close => {
                 self.dirty = true;
             }
             ComposeAction::None => {}
         }
         if lifecycle_boundary || self.compose.format() != format_before {
-            self.persist_compose_format_if_changed();
+            self.store_preferences_if_changed();
         }
         consumed
     }
 
-    fn confirm_bulk_purge(&mut self, state: &mut AutoCommit) {
+    fn confirm_bulk_purge(&mut self, state: &mut ui::widget::Edits<'_>) {
         let affected = self
             .shared
             .borrow_mut()
@@ -4139,7 +4110,7 @@ impl MailApp {
             }
         );
         if confirm_key {
-            self.confirm_bulk_purge(ctx.state);
+            self.confirm_bulk_purge(&mut ctx.state);
         } else if cancel_key {
             self.bulk_purge_confirmation = None;
             self.dirty = true;
@@ -4155,7 +4126,7 @@ impl MailApp {
             let (cancel, confirm) = Self::bulk_purge_confirmation_buttons(panel);
             let point = self.shared.borrow().last_mouse;
             if confirm.contains(point) {
-                self.confirm_bulk_purge(ctx.state);
+                self.confirm_bulk_purge(&mut ctx.state);
             } else if cancel.contains(point) || !panel.contains(point) {
                 self.bulk_purge_confirmation = None;
                 self.dirty = true;
@@ -4170,7 +4141,7 @@ impl MailApp {
     fn handle_context_menu_keyboard(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
@@ -4239,7 +4210,11 @@ impl MailApp {
 
     /// One dispatcher for pointer, keyboard and assistive-technology menu
     /// activation. The message must still be loaded when the command lands.
-    fn activate_context_menu_item(&mut self, index: usize, state: &mut AutoCommit) -> bool {
+    fn activate_context_menu_item(
+        &mut self,
+        index: usize,
+        state: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         let Some(menu) = self.context_menu.take() else {
             return false;
         };
@@ -4259,7 +4234,7 @@ impl MailApp {
     }
 
     /// Activate the clicked context-menu item or dismiss the open menu.
-    fn handle_context_menu_click(&mut self, pt: Point, state: &mut AutoCommit) {
+    fn handle_context_menu_click(&mut self, pt: Point, state: &mut ui::widget::Edits<'_>) {
         self.rebuild_overlay_hits();
         let item = self
             .overlay_hits
@@ -4274,106 +4249,6 @@ impl MailApp {
         }
     }
 
-    fn invoke_resource_effect(
-        &mut self,
-        operation: &crate::actions::MailOperation,
-    ) -> Result<bool, String> {
-        match operation {
-            crate::actions::MailOperation::RefreshCurrentFolder => {
-                if self.engine.is_none() {
-                    return Err("no connected mail account is available".into());
-                }
-                let _ = self.refresh_active_folder();
-                Ok(true)
-            }
-            crate::actions::MailOperation::SaveAttachment { .. } => {
-                Err("Save attachment must use the admitted portal operation path".into())
-            }
-            _ => Ok(false),
-        }
-    }
-
-    fn invoke_resource_view(
-        &mut self,
-        operation: crate::actions::MailOperation,
-        doc: &AutoCommit,
-    ) -> Result<bool, String> {
-        match operation {
-            crate::actions::MailOperation::ComposeNew => {
-                self.shared.borrow_mut().push_intent(Intent::Compose);
-                self.process_intents();
-            }
-            crate::actions::MailOperation::RevealFolder { folder } => {
-                let Some(folder) = Folder::from_key(&folder) else {
-                    return Err("folder no longer exists".into());
-                };
-                self.shared.borrow_mut().reveal_folder(folder);
-                self.process_intents();
-            }
-            crate::actions::MailOperation::RevealAccount { id } => {
-                let Some(index) = self
-                    .shared
-                    .borrow()
-                    .accounts
-                    .accounts
-                    .iter()
-                    .position(|account| account.id == id)
-                else {
-                    return Err("account no longer exists".into());
-                };
-                let mut state = self.shared.borrow_mut();
-                state.accounts.set_active(index);
-                state.reveal_folder(Folder::Inbox);
-                drop(state);
-                self.process_intents();
-            }
-            crate::actions::MailOperation::RevealMessage { id: _ } => {
-                return Err("Open message must use the admitted mutable operation path".into());
-            }
-            crate::actions::MailOperation::InspectMessage { id } => {
-                let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
-                if !self.shared.borrow_mut().preview_message(id) {
-                    return Err("message is no longer loaded".into());
-                }
-                self.shared.borrow_mut().status =
-                    Some("Previewing without changing this message’s read state".into());
-                self.process_intents();
-            }
-            operation @ (crate::actions::MailOperation::Reply { .. }
-            | crate::actions::MailOperation::ReplyAll { .. }
-            | crate::actions::MailOperation::Forward { .. }) => {
-                let (raw_id, kind) = match operation {
-                    crate::actions::MailOperation::Reply { id } => (id, CtxAction::Reply),
-                    crate::actions::MailOperation::ReplyAll { id } => (id, CtxAction::ReplyAll),
-                    crate::actions::MailOperation::Forward { id } => (id, CtxAction::Forward),
-                    _ => return Ok(false),
-                };
-                let id = raw_id
-                    .parse::<MessageId>()
-                    .map_err(|_| "invalid message id")?;
-                if self.shared.borrow().mailbox.get(id).is_none() {
-                    return Err("message is no longer loaded".into());
-                }
-                let intent = match kind {
-                    CtxAction::Reply => Intent::Reply(id),
-                    CtxAction::ReplyAll => Intent::ReplyAll(id),
-                    CtxAction::Forward => Intent::Forward(id),
-                    _ => return Ok(false),
-                };
-                self.shared.borrow_mut().push_intent(intent);
-                self.process_intents();
-            }
-            crate::actions::MailOperation::RevealDraft => {
-                let draft = MailDoc::load_draft(doc);
-                self.compose.open_with_draft(&draft);
-                self.editing_draft = None;
-                self.dirty = true;
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
     /// Route app-owned modal surfaces in front-to-back order. Returning true
     /// stops propagation to the navigation shell and global shortcuts.
     fn handle_app_modal_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
@@ -4386,7 +4261,7 @@ impl MailApp {
             return true;
         }
 
-        if self.context_menu.is_some() && self.handle_context_menu_keyboard(event, ctx.state) {
+        if self.context_menu.is_some() && self.handle_context_menu_keyboard(event, &mut ctx.state) {
             *ctx.handled = true;
             return true;
         }
@@ -4398,7 +4273,7 @@ impl MailApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &ctx.modifiers,
-                        state: ctx.state,
+                        state: ctx.state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -4439,7 +4314,7 @@ impl MailApp {
         {
             if *button == MouseButton::Left {
                 let point = self.shared.borrow().last_mouse;
-                self.handle_context_menu_click(point, ctx.state);
+                self.handle_context_menu_click(point, &mut ctx.state);
             } else {
                 self.context_menu = None;
             }
@@ -4873,45 +4748,25 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::MAIL_OPERATION_TYPE]
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         self.background_poll_deadline.set(None);
+        self.adopt_person_accounts();
         if self.first_run.take_action() {
             self.open_setup_edit(None);
         }
-        // Drain any engine results first so freshly-fetched messages are present
-        // before layout/draw.
-        self.drain_engine(state);
         self.drain_setup_validation();
         self.drain_setup_discovery();
         // The host Save dialog runs off-thread; its outcome is applied here
         // so attachment export never blocks the frame loop or claims success
         // before the chosen file is actually written.
-        self.drain_attachment_save();
         self.drain_compose_attachment();
         self.compose.sync(state, path);
         // Fade out a transient status toast once its lifetime elapses.
         self.expire_toast_at(ui::time::now());
 
         let mem_seeded = self.shared.borrow().seeded;
-        if mem_seeded {
-            self.hydrate_domain_state(state);
-        } else {
-            self.register_hydrated_messages(state);
-            // Seeding baselines is not a user undo bracket; discard so a
-            // subsequent View (InspectMessage) is not mistaken for a commit.
-            let _ = self.shared.borrow_mut().take_committed_action();
-            self.hydrate_domain_state(state);
+        if !mem_seeded {
             // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();
             if self.engine.is_some() && has_accounts && !self.connect_requested {
@@ -4933,77 +4788,24 @@ impl Widget for MailApp {
             self.maybe_auto_refresh();
         }
         self.persist_active_account_if_changed();
-        let search_refresh = {
-            let state = self.shared.borrow();
-            self.mail_search_provider.refresh(&state.mailbox)
-        };
-        if let Err(error) = search_refresh {
-            self.shared.borrow_mut().status = Some(error);
-        }
+        self.sync_preferences();
         self.nav.sync(state, path);
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = self.admit_resource_operation_with_document(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
+    fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.drain_engine(state);
+        self.reveal_requested(state);
+        self.deliver_effect_replies();
+        self.flush_server_outbox();
+        self.compose.settle(state, path);
+        if !self.shared.borrow().seeded {
+            self.register_hydrated_messages(state);
         }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self
-            .resource_refresh_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_refresh_invocation = None;
-            self.resource_refresh_result.take()
-        } else if self
-            .resource_attachment_save_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_attachment_save_result.take()
-        } else if cancellation_requested
-            && self.resource_attachment_save_invocation == Some(invocation)
-        {
-            self.attachment_save_rx = None;
-            self.pending_attachment_save = None;
-            self.resource_attachment_save_invocation = None;
-            Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("attachment save cancelled".into()),
-            })
-        } else {
-            None
+        self.hydrate_domain_state(state);
+        if let Some(scenario) = self.pending_stage.take() {
+            self.stage_scenario(state, &scenario);
         }
+        self.nav.settle(state, path);
     }
 
     fn build_layout(
@@ -5137,7 +4939,7 @@ impl Widget for MailApp {
             let mut context = EventContext {
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: ctx.handled,
                 focus_target: ctx.focus_target,
@@ -5154,7 +4956,7 @@ impl Widget for MailApp {
         self.process_intents();
 
         if !*ctx.handled {
-            self.global_shortcuts(event, *ctx.modifiers, ctx.state, ctx.handled);
+            self.global_shortcuts(event, *ctx.modifiers, &mut ctx.state, ctx.handled);
         }
 
         self.dirty = true;
@@ -5300,7 +5102,7 @@ impl Widget for MailApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
@@ -5402,7 +5204,6 @@ impl Widget for MailApp {
         let pending = self.awaiting_engine
             || self.setup_validation.is_some()
             || self.setup_discovery.is_some()
-            || self.attachment_save_rx.is_some()
             || self.compose_attachment_rx.is_some();
         let background = pending.then(|| {
             let deadline = self
@@ -5443,196 +5244,424 @@ impl Widget for MailApp {
     }
 }
 
-impl ui::search::capability::SearchSource for MailApp {
-    /// Fold the mailbox into the unified Ctrl+K palette: a snapshot
-    /// [`MailSearchProvider`](crate::search_provider::MailSearchProvider) makes
-    /// every already-loaded message findable there by subject / sender / body,
-    /// alongside the actions the app exports. The provider never touches the
-    /// IMAP engine, so a Ctrl+K query stays synchronous.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        let search_refresh = {
-            let state = self.shared.borrow();
-            self.mail_search_provider.refresh(&state.mailbox)
-        };
-        if let Err(error) = search_refresh {
-            self.shared.borrow_mut().status = Some(error);
-        }
-        vec![Box::new(self.mail_search_provider.clone())]
-    }
-}
-
-impl ui::resources::PublishesResources for MailApp {
-    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
-    /// folder/message Document ops ride [`tilo_resource::publish`]; this
-    /// returns only live extras — never a second `mail.mailbox` Document door.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.shared.borrow().actions.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        if self.shared.borrow().actions.is_hosted() {
-            // Document mailbox root is ResourceRoot's publish, not a second page.
-            return Some(ui::widget::ActionDirectoryResourcePage {
-                resources: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: true,
-            });
-        }
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: if cursor.is_empty() && max_results > 0 {
-                self.publish_resources(doc)
-            } else {
-                Vec::new()
-            },
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() && id == "mail.mailbox" {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
-}
-
-impl ui::undo::CommittedActions for MailApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its mail action, so it records one undo boundary bracketing it (the same
-    /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
-    /// cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A standalone body start dispatches through the composer; everything
-        // else through Mail's own host. One event does one or the other.
-        let body = self.compose.take_committed_action();
-        let mail = self.shared.borrow_mut().take_committed_action();
-        body.or(mail)
-    }
+/// What an effect asked the window to show that needs the document to show
+/// it: opening a message records it read through the same `SetRead` action
+/// as every control, the draft is read from the document, and an invitation
+/// is saved as the draft. Taken up on the next sync.
+#[derive(Debug)]
+enum Reveal {
+    Message(MessageId),
+    Draft,
+    Invitation(Draft),
 }
 
 impl MailApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match kind {
-            tilo_actions::OperationKind::Effect => self.invoke_resource_effect(&operation),
-            tilo_actions::OperationKind::View => self.invoke_resource_view(operation, doc),
-            tilo_actions::OperationKind::Document => Ok(false),
-        }
-    }
-
-    fn admit_resource_operation(
+    /// Start `effect`, invoked as `invocation`. Showing something answers at
+    /// once; a refresh answers once the server replied, through
+    /// [`Self::take_effect_result`]. Saving an attachment is the surface's,
+    /// which asks the host where to put it.
+    ///
+    /// # Errors
+    /// Why the effect does not apply to what this window has loaded now: a
+    /// message, folder or account that is gone, no connected account.
+    pub(crate) fn begin_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect
-            || type_id != crate::actions::MAIL_OPERATION_TYPE
-        {
-            return Ok(None);
-        }
-        let operation = crate::actions::decode_operation(type_id, payload)?;
-        if let Some(crate::actions::MailOperation::SaveAttachment { message_id, index }) = operation
-        {
-            let message_id = message_id
-                .parse::<MessageId>()
-                .map_err(|_| "invalid message id")?;
-            self.begin_attachment_save(message_id, index)?;
-            self.resource_attachment_save_invocation = Some(invocation);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if self.resource_refresh_invocation.is_some() || self.awaiting_engine {
-            return Err("a mail operation is already running".into());
-        }
-        if matches!(
-            operation,
-            Some(crate::actions::MailOperation::RefreshCurrentFolder)
-        ) {
-            let request_id = self
-                .refresh_active_folder()
-                .ok_or_else(|| "mail refresh could not be queued".to_string())?;
-            self.resource_refresh_invocation = Some((request_id, invocation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if !self.awaiting_engine {
-            return Err("mail refresh could not be queued".into());
-        }
-        Ok(None)
-    }
-
-    /// Admit the compound normal-open operation at the one framework boundary
-    /// allowed to mutate the document.  The view transition and its canonical
-    /// `SetRead` action are therefore one explicit Open interaction, never a
-    /// deferred consequence of rendering or navigation.  Preview deliberately
-    /// stays on the read-only operation route above.
-    fn admit_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = crate::actions::decode_operation(type_id, payload)?;
-        if kind == tilo_actions::OperationKind::Effect
-            && let Some(crate::actions::MailOperation::PrepareCalendarInvitation {
+        effect: crate::actions::MailEffect,
+    ) -> Result<ui::framework::Effected, String> {
+        use crate::actions::MailEffect;
+        let done = ui::framework::Effected::done();
+        match effect {
+            MailEffect::Compose => {
+                self.shared.borrow_mut().push_intent(Intent::Compose);
+                self.process_intents();
+                Ok(done)
+            }
+            MailEffect::Refresh => {
+                if self.engine.is_none() {
+                    return Err("no connected mail account is available".into());
+                }
+                if self.resource_refresh_invocation.is_some() || self.awaiting_engine {
+                    return Err("a mail operation is already running".into());
+                }
+                let request_id = self
+                    .refresh_active_folder()
+                    .ok_or_else(|| "mail refresh could not be queued".to_string())?;
+                self.resource_refresh_invocation = Some((request_id, invocation));
+                Ok(ui::framework::Effected::Pending)
+            }
+            MailEffect::PrepareCalendarInvitation {
                 to,
                 subject,
                 body,
                 calendar_ics,
-            }) = operation.clone()
-        {
-            let draft = prepare_calendar_invitation_draft(&to, &subject, &body, &calendar_ics)?;
-            self.shared.borrow_mut().save_draft(doc, &draft);
-            self.compose.open_with_draft(&draft);
-            self.editing_draft = None;
-            self.shared.borrow_mut().status =
-                Some("Invitation prepared — review it before sending".into());
-            self.dirty = true;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput {
+            } => {
+                let draft = prepare_calendar_invitation_draft(&to, &subject, &body, &calendar_ics)?;
+                self.reveals.push(Reveal::Invitation(draft));
+                self.dirty = true;
+                Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
                     value: None,
                     resources: vec!["mail.draft".into()],
-                },
-            )));
-        }
-        if kind == tilo_actions::OperationKind::View
-            && let Some(crate::actions::MailOperation::RevealMessage { id }) = operation
-        {
-            let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
-            if !self.shared.borrow_mut().open_message(doc, id) {
-                return Err("message is no longer loaded".into());
+                }))
             }
-            self.process_intents();
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
+            MailEffect::Open { target } => self.open_target(target).map(|()| done),
+            MailEffect::Inspect { message } => {
+                let id = message
+                    .parse::<MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                if !self.shared.borrow_mut().preview_message(id) {
+                    return Err("message is no longer loaded".into());
+                }
+                self.shared.borrow_mut().status =
+                    Some("Previewing without changing this message’s read state".into());
+                self.process_intents();
+                Ok(done)
+            }
+            MailEffect::Reply { message } => {
+                self.compose_from(&message, Intent::Reply).map(|()| done)
+            }
+            MailEffect::ReplyAll { message } => {
+                self.compose_from(&message, Intent::ReplyAll).map(|()| done)
+            }
+            MailEffect::Forward { message } => {
+                self.compose_from(&message, Intent::Forward).map(|()| done)
+            }
+            MailEffect::Save { message, index } => {
+                self.attachment_to_save(&message, index)?;
+                Err("saving an attachment asks the host where to put it".into())
+            }
         }
-        self.admit_resource_operation(invocation, kind, type_id, payload, doc, path)
     }
+
+    /// Start the effect a published operation's `payload` names, as the
+    /// host does when it is invoked.
+    #[cfg(test)]
+    pub(crate) fn start_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        payload: &[u8],
+    ) -> Result<ui::framework::Effected, String> {
+        let effect =
+            <crate::actions::MailEffect as ui::tilo_resource::Effect>::from_payload(payload)?;
+        self.begin_effect(invocation, effect)
+    }
+
+    /// Show `target`, once it is still there.
+    fn open_target(&mut self, target: crate::actions::MailTarget) -> Result<(), String> {
+        use crate::actions::MailTarget;
+        match target {
+            MailTarget::Folder(folder) => {
+                let folder = Folder::from_key(&folder).ok_or("folder no longer exists")?;
+                self.shared.borrow_mut().reveal_folder(folder);
+                self.process_intents();
+            }
+            MailTarget::Account(id) => {
+                let index = self
+                    .shared
+                    .borrow()
+                    .accounts
+                    .accounts
+                    .iter()
+                    .position(|account| account.id == id)
+                    .ok_or("account no longer exists")?;
+                let mut state = self.shared.borrow_mut();
+                state.accounts.set_active(index);
+                state.reveal_folder(Folder::Inbox);
+                drop(state);
+                self.process_intents();
+            }
+            MailTarget::Message(id) => {
+                let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
+                if self.shared.borrow().mailbox.get(id).is_none() {
+                    return Err("message is no longer loaded".into());
+                }
+                self.reveals.push(Reveal::Message(id));
+            }
+            MailTarget::Draft => self.reveals.push(Reveal::Draft),
+        }
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Open the composer replying to, replying to all of, or forwarding the
+    /// loaded `message`.
+    fn compose_from(
+        &mut self,
+        message: &str,
+        intent: fn(MessageId) -> Intent,
+    ) -> Result<(), String> {
+        let id = message
+            .parse::<MessageId>()
+            .map_err(|_| "invalid message id")?;
+        if self.shared.borrow().mailbox.get(id).is_none() {
+            return Err("message is no longer loaded".into());
+        }
+        self.shared.borrow_mut().push_intent(intent(id));
+        self.process_intents();
+        Ok(())
+    }
+
+    /// Take up what effects asked to show that needs the document.
+    fn reveal_requested(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        for reveal in std::mem::take(&mut self.reveals) {
+            match reveal {
+                Reveal::Message(id) => {
+                    if self.shared.borrow_mut().open_message(doc, id) {
+                        self.process_intents();
+                    }
+                }
+                Reveal::Draft => {
+                    let draft = MailDoc::load_draft(doc);
+                    self.compose.open_with_draft(&draft);
+                    self.editing_draft = None;
+                }
+                Reveal::Invitation(draft) => {
+                    self.shared.borrow_mut().save_draft(doc, &draft);
+                    self.compose.open_with_draft(&draft);
+                    self.editing_draft = None;
+                    self.shared.borrow_mut().status =
+                        Some("Invitation prepared — review it before sending".into());
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// The outcome of the refresh invoked as `invocation`, once the server
+    /// replied; taken once.
+    pub(crate) fn take_effect_result(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !self
+            .resource_refresh_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return None;
+        }
+        self.resource_refresh_invocation = None;
+        self.resource_refresh_result.take()
+    }
+
+    /// Answer `invocation`'s caller through `reply` once the server replied.
+    pub(crate) fn await_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        reply: ui::framework::EffectReply,
+    ) {
+        self.effect_replies.push((invocation, reply));
+    }
+
+    /// Answer every waiting caller whose refresh has settled.
+    fn deliver_effect_replies(&mut self) {
+        for (invocation, reply) in std::mem::take(&mut self.effect_replies) {
+            match self.take_effect_result(invocation) {
+                Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                    reply.answer(Ok(output));
+                }
+                Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                    reply.answer(Err(error));
+                }
+                Some(_) => reply.answer(Ok(tilo_actions::ActionOutput::default())),
+                None => self.effect_replies.push((invocation, reply)),
+            }
+        }
+    }
+
+    /// Whether a connected account can fetch and prepare mail now.
+    pub(crate) fn can_sync(&self) -> bool {
+        self.engine.is_some()
+            && !self
+                .shared
+                .borrow()
+                .accounts
+                .active_config()
+                .email
+                .is_empty()
+    }
+
+    /// The attachment `index` of the loaded `message`, as the name to suggest
+    /// and the bytes to save.
+    ///
+    /// # Errors
+    /// Why it cannot be saved: gone, not downloaded yet, too large, or its
+    /// metadata no longer matching its bytes.
+    pub(crate) fn attachment_to_save(
+        &self,
+        message: &str,
+        index: usize,
+    ) -> Result<(String, Vec<u8>), String> {
+        let message_id = message
+            .parse::<MessageId>()
+            .map_err(|_| "invalid message id")?;
+        let attachment = self
+            .shared
+            .borrow()
+            .mailbox
+            .get(message_id)
+            .and_then(|message| message.attachments.get(index))
+            .cloned()
+            .ok_or_else(|| "attachment is no longer loaded".to_string())?;
+        if !attachment.is_downloadable() {
+            return Err("attachment content is not downloaded yet".into());
+        }
+        if attachment.content.len() > MAX_ATTACHMENT_SAVE_BYTES {
+            return Err(format!(
+                "{} is too large to save here; open it in Files instead",
+                attachment.filename
+            ));
+        }
+        let content_len = u64::try_from(attachment.content.len())
+            .map_err(|_| "attachment is too large to save".to_string())?;
+        if attachment.size != content_len {
+            return Err("attachment metadata no longer matches its downloaded content".into());
+        }
+        Ok((
+            Self::attachment_save_name(&attachment.filename),
+            attachment.content.clone(),
+        ))
+    }
+
+    /// Say whether the attachment `name` was saved, and answer its caller
+    /// with the attachment it saved.
+    pub(crate) fn finish_attachment_save(
+        &mut self,
+        saved: bool,
+        name: &str,
+        resource: String,
+    ) -> ui::framework::Effected {
+        self.shared.borrow_mut().status = Some(if saved {
+            format!("Saved {name}")
+        } else {
+            "Attachment save cancelled".into()
+        });
+        self.dirty = true;
+        ui::framework::Effected::Done(tilo_actions::ActionOutput {
+            value: None,
+            resources: if saved { vec![resource] } else { Vec::new() },
+        })
+    }
+
+    /// Ask to save the attachment `index` of `message` through the effect
+    /// every caller uses, so the window's own button, the palette and an
+    /// agent save it the same way.
+    fn request_attachment_save(&self, message: MessageId, index: usize) {
+        if let Err(error) = self.attachment_to_save(&message.to_string(), index) {
+            self.shared.borrow_mut().status = Some(error);
+            return;
+        }
+        let dispatcher = self.shared.borrow().dispatcher.clone();
+        if let Some(dispatcher) = dispatcher {
+            dispatcher.effect_on(
+                &format!("mail.attachment:{message}:{index}"),
+                &crate::actions::MailEffect::Save {
+                    message: message.to_string(),
+                    index,
+                },
+            );
+        }
+    }
+
+    /// The rows this window shows beside the mailbox: the accounts, an
+    /// in-flight send and a search-index fault.
+    pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
+        let mut rows: Vec<_> = crate::resource::live_extras(self)
+            .into_iter()
+            .map(live_row)
+            .collect();
+        rows.push(live_row(crate::actions::accounts_collection(
+            &self.accounts_rows(),
+        )));
+        rows
+    }
+
+    /// The row `id` this window has loaded that the mailbox does not hold:
+    /// a message the document has no flags for yet, a thread, an attachment,
+    /// an account.
+    pub(crate) fn live_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if id.starts_with("mail.account") {
+            let accounts = crate::actions::accounts_collection(&self.accounts_rows());
+            if id == "mail.accounts" {
+                return Some(live_row(accounts));
+            }
+            return accounts
+                .children
+                .into_iter()
+                .find(|account| account.id.as_str() == id)
+                .map(live_row);
+        }
+        if let Some(message_id) = id.strip_prefix("mail.message:") {
+            return self
+                .resource_message_row(message_id)
+                .map(|row| live_row(crate::actions::message_resource(&row)));
+        }
+        if let Some(rest) = id.strip_prefix("mail.attachment:")
+            && let Some((message_id, index)) = rest.rsplit_once(':')
+            && let Ok(index) = index.parse::<usize>()
+        {
+            let row = self.resource_message_row(message_id)?;
+            return crate::actions::message_resource(&row)
+                .children
+                .into_iter()
+                .nth(index)
+                .map(live_row);
+        }
+        if let Some(stable) = id.strip_prefix("mail.thread:") {
+            let (subject, messages) = self.resource_thread_rows(stable)?;
+            let mut thread = ui::framework::LiveRow::new(
+                id,
+                "mail.thread",
+                if subject.is_empty() {
+                    "(no subject)".into()
+                } else {
+                    subject
+                },
+            );
+            for message in &messages {
+                thread = thread.row(live_row(crate::actions::message_resource(message)));
+            }
+            return Some(thread);
+        }
+        crate::resource::live_extras(self)
+            .into_iter()
+            .find(|extra| extra.id.as_str() == id)
+            .map(live_row)
+    }
+
+    /// This device's accounts, `(id, label, active)`.
+    fn accounts_rows(&self) -> Vec<(String, String, bool)> {
+        let state = self.shared.borrow();
+        state
+            .accounts
+            .accounts
+            .iter()
+            .enumerate()
+            .map(|(index, account)| {
+                (
+                    account.id.clone(),
+                    account.label().to_string(),
+                    state.accounts.active == index,
+                )
+            })
+            .collect()
+    }
+}
+
+/// `resource`, an item this window has loaded, as the row it publishes: its
+/// view and effect operations. Its document actions are the mailbox's own,
+/// on the published message the row merges into.
+fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
+    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
+    for action in resource.actions {
+        if action.kind != tilo_actions::OperationKind::Document {
+            row = row.operation(action);
+        }
+    }
+    for child in resource.children {
+        row = row.row(live_row(child));
+    }
+    row
 }
 
 fn prepare_calendar_invitation_draft(
@@ -5673,7 +5702,7 @@ impl MailApp {
         &mut self,
         control: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if !self.compose.open {
             return false;
@@ -5690,7 +5719,7 @@ impl MailApp {
             None => return false,
         }
         if lifecycle_boundary || self.compose.format() != format_before {
-            self.persist_compose_format_if_changed();
+            self.store_preferences_if_changed();
         }
         true
     }
@@ -5699,7 +5728,7 @@ impl MailApp {
         &mut self,
         control: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use ui::a11y::Action;
 
@@ -5759,7 +5788,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -5787,9 +5816,7 @@ impl MailApp {
             if !downloadable {
                 return false;
             }
-            if let Err(error) = self.begin_attachment_save(message, index) {
-                self.shared.borrow_mut().status = Some(error);
-            }
+            self.request_attachment_save(message, index);
             return true;
         }
         let action = match control {
@@ -5811,7 +5838,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use ui::a11y::Action;
 
@@ -5846,7 +5873,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let Some((account_raw, folder_raw)) = raw.split_once(':') else {
             return false;
@@ -5878,7 +5905,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -5916,7 +5943,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -6025,7 +6052,7 @@ impl MailApp {
                     let order = self.setup_tab_order();
                     let is_last = self.setup_focus.is_some_and(|f| order.last() == Some(&f));
                     if is_last {
-                        self.save_setup(ctx.state);
+                        self.save_setup(&mut ctx.state);
                     } else {
                         self.focus_setup_step(1);
                     }
@@ -6043,7 +6070,7 @@ impl MailApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &ctx.modifiers,
-                        state: ctx.state,
+                        state: ctx.state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -6067,7 +6094,7 @@ impl MailApp {
         } = event
         {
             let pt = self.shared.borrow().last_mouse;
-            self.handle_setup_click(pt, ctx.state);
+            self.handle_setup_click(pt, &mut ctx.state);
             *ctx.handled = true;
         }
     }
@@ -6076,7 +6103,7 @@ impl MailApp {
     /// `pt` lands on a field / pill / toggle / button, or falls outside the
     /// panel and cancels the sheet. Every outcome counts as handled, which
     /// the caller sets unconditionally.
-    fn handle_setup_click(&mut self, pt: Point, state: &mut AutoCommit) {
+    fn handle_setup_click(&mut self, pt: Point, state: &mut ui::widget::Edits<'_>) {
         self.rebuild_overlay_hits();
         let panel = self.overlay_panel_rect();
         let hit = self
@@ -6138,7 +6165,7 @@ impl MailApp {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let search_focused = self.shared.borrow().search_focused;
@@ -6394,7 +6421,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -6408,7 +6435,10 @@ mod tests {
     fn app() -> (MailApp, AutoCommit) {
         let mut app = MailApp::new_sample();
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         (app, doc)
     }
 
@@ -6437,11 +6467,21 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             app.resource_refresh_invocation = Some((refresh_id, invocation));
             let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
-            app.pending_send = Some(PendingSend {
-                request_id: send_id,
-                message,
-                edited_draft: None,
-            });
+            let outgoing = Outgoing::new(
+                "me@example.test",
+                &crate::model::Draft {
+                    to: "you@example.test".into(),
+                    ..Default::default()
+                },
+            );
+            app.pending_send.insert(
+                send_id,
+                PendingSend {
+                    outgoing,
+                    message,
+                    done: Box::new(|_| {}),
+                },
+            );
             app.pending_engine_requests
                 .insert(refresh_id, EngineRequestKind::Fetch);
             app.pending_engine_requests
@@ -6465,8 +6505,120 @@ mod tests {
         }
 
         fn drain(&mut self) {
-            self.app.drain_engine(&mut self.doc);
+            self.app
+                .drain_engine(&mut ui::widget::Edits::lend(&mut self.doc));
         }
+    }
+
+    /// What the document still has to tell the server goes to the engine on
+    /// the account it belongs to, and the engine's acknowledgement records it
+    /// as applied; a refusal leaves it to tell, and an update for an account
+    /// this device does not have is left to a device that has it.
+    #[test]
+    fn server_updates_go_to_the_engine_and_its_acknowledgement_settles_them() {
+        type Outcome = Rc<RefCell<Option<Result<(), String>>>>;
+        fn push(app: &MailApp, update: ServerUpdate) -> Outcome {
+            let outcome: Outcome = Rc::default();
+            let seen = Rc::clone(&outcome);
+            app.server_outbox().borrow_mut().push(
+                update,
+                Box::new(move |result| *seen.borrow_mut() = Some(result)),
+            );
+            outcome
+        }
+
+        let (mut app, mut doc) = app();
+        let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
+        let (incoming, incoming_rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming_rx,
+        });
+        let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+        let message = {
+            let mut state = app.shared.borrow_mut();
+            let message = state.mailbox.get_mut(id).unwrap();
+            message.rfc_message_id = Some("launch@example.test".into());
+            message.clone()
+        };
+        app.shared.borrow().ingest_fetched(
+            &mut ui::widget::Edits::lend(&mut doc),
+            "you@example.test",
+            std::slice::from_ref(&message),
+        );
+        app.shared
+            .borrow_mut()
+            .set_read(&mut ui::widget::Edits::lend(&mut doc), id, !message.read);
+        let [update] = MailDoc::server_updates(&doc).try_into().unwrap();
+
+        let outcome = push(&app, update.clone());
+        app.flush_server_outbox();
+        let request = outgoing_rx
+            .try_recv()
+            .expect("the update went to the engine");
+        let EngineRequest::StoreFlag {
+            account,
+            message: located,
+            ..
+        } = &request
+        else {
+            panic!("a flag change is a flag store: {request:?}");
+        };
+        assert_eq!(account.email, "you@example.test");
+        assert_eq!(
+            located.rfc_message_id.as_deref(),
+            Some("launch@example.test")
+        );
+        assert_eq!(located.read, !message.read);
+        assert_eq!(located.folder, Folder::Inbox);
+
+        incoming
+            .send(EngineEvent::Error {
+                request_id: request.request_id(),
+                kind: EngineRequestKind::StoreFlag,
+                context: "flag".into(),
+                message: "connection reset".into(),
+            })
+            .unwrap();
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(matches!(outcome.borrow().as_ref(), Some(Err(_))));
+        assert_eq!(
+            MailDoc::server_updates(&doc),
+            std::slice::from_ref(&update),
+            "still to tell"
+        );
+
+        let outcome = push(&app, update);
+        app.flush_server_outbox();
+        let request = outgoing_rx.try_recv().expect("retried");
+        incoming
+            .send(EngineEvent::Completed {
+                request_id: request.request_id(),
+                kind: EngineRequestKind::StoreFlag,
+            })
+            .unwrap();
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(matches!(outcome.borrow().as_ref(), Some(Ok(()))));
+        assert!(
+            MailDoc::server_updates(&doc).is_empty(),
+            "the server has it"
+        );
+
+        let elsewhere = push(
+            &app,
+            ServerUpdate::Remove {
+                id: id.to_string(),
+                account: "nobody@example.test".into(),
+                locator: "launch@example.test".into(),
+                folder: Folder::Trash,
+            },
+        );
+        app.flush_server_outbox();
+        assert!(
+            outgoing_rx.try_recv().is_err(),
+            "nothing went to the engine"
+        );
+        assert!(matches!(elsewhere.borrow().as_ref(), Some(Err(_))));
     }
 
     #[test]
@@ -6487,7 +6639,7 @@ mod tests {
             .unwrap();
             let mut doc = AutoCommit::new();
             let mut state = MailState::new_sample(avatar_store_offline());
-            state.save_draft(&mut doc, &draft);
+            state.save_draft(&mut ui::widget::Edits::lend(&mut doc), &draft);
             let stored = MailDoc::load_draft(&doc);
             assert_eq!(stored.to, "guest@example.com");
             assert_eq!(stored.subject, "Invitation: Review");
@@ -6496,7 +6648,12 @@ mod tests {
                 stored.attachments.is_empty(),
                 "no host path crosses the action"
             );
-            assert!(state.take_committed_action().is_some());
+            let steps = ui::tilo_resource::history::versions(&mut doc.clone())
+                .into_iter()
+                .filter_map(|version| version.context)
+                .filter(|context| context.change.is_step())
+                .count();
+            assert_eq!(steps, 1, "saving the draft is one undo step");
         }
 
         // Phase `calendar_invitation_handoff_refuses_malformed_and_oversized_payloads`.
@@ -6707,7 +6864,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &message_target,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -6749,7 +6906,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &archive_target,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -6795,11 +6952,13 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
-            assert!(app.attachment_save_rx.is_some());
-            assert!(app.pending_attachment_save.is_some());
+            assert!(
+                app.shared.borrow().status.is_none(),
+                "the reader's button asks to save a downloaded attachment without a refusal"
+            );
         }
 
         // Phase `accessibility_routes_reader_and_modal_controls_to_existing_actions`.
@@ -6827,7 +6986,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &star_target,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(
@@ -6842,13 +7001,15 @@ mod tests {
                 .map(|(id, _)| id)
                 .find(|id| *id != selected)
                 .expect("second sample message");
-            app.shared.borrow_mut().select_message(&mut doc, other);
+            app.shared
+                .borrow_mut()
+                .select_message(&mut ui::widget::Edits::lend(&mut doc), other);
             app.process_intents();
             assert!(
                 !app.perform_semantic_action(
                     &star_target,
                     &Action::Activate,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ),
                 "a stale reader control cannot operate a newly selected message"
@@ -6867,7 +7028,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "mail.compose:discard",
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(
@@ -6886,7 +7047,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "mail.setup:cancel",
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(!app.setup_open, "semantic cancel closes account setup");
@@ -6913,13 +7074,13 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.context_menu.is_none());
@@ -6954,7 +7115,9 @@ mod tests {
                     .map(|m| m.id)
             }
             .expect("an unread message");
-            app.shared.borrow_mut().select_message(&mut doc, id);
+            app.shared
+                .borrow_mut()
+                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
             assert!(app.shared.borrow().mailbox.get(id).unwrap().read);
             let mut fresh = app.shared.borrow().mailbox.clone();
             for m in fresh.messages.values_mut() {
@@ -6979,53 +7142,32 @@ mod tests {
                 .find(|message| !message.read)
                 .map(|message| message.id)
                 .expect("sample contains an unread message");
-            let payload = serde_json::to_vec(&crate::actions::MailOperation::RevealMessage {
-                id: id.to_string(),
-            })
-            .unwrap();
+            let payload = crate::actions::effect_payload(&crate::actions::MailEffect::Open {
+                target: crate::actions::MailTarget::Message(id.to_string()),
+            });
             assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::default(),
-                        tilo_actions::OperationKind::View,
-                        crate::actions::MAIL_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
+                app.start_effect(tilo_actions::InvocationId::default(), &payload)
+                    .unwrap(),
+                ui::framework::Effected::Done(_)
             ));
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 app.shared.borrow().mailbox.get(id).unwrap().read,
-                "Open immediately dispatches the canonical mark-read action"
+                "Open dispatches the canonical mark-read action"
             );
-            let dispatched = app
-                .shared
-                .borrow()
-                .actions
-                .last_dispatched()
-                .cloned()
-                .expect("Open emitted an action");
-            let expected = crate::actions::encode(&crate::actions::set_read_action(
-                vec![id.to_string()],
-                true,
-            ));
-            assert_eq!(dispatched.type_id, expected.type_id);
             assert_eq!(
-                dispatched.payload, expected.payload,
-                "resource Open and every on-screen mark-read control use the same action payload"
+                MailDoc::get_read(&doc, &id.to_string()),
+                Some(true),
+                "resource Open writes the same mark-read every on-screen control does"
             );
             assert!(
                 doc.get(&automerge::ROOT, "ui")
                     .expect("document remains readable")
                     .is_none(),
                 "Open records no selection, folder, search, mode, or compose presentation state"
-            );
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_some(),
-                "mark-read remains a replayable collaborative action"
             );
         }
 
@@ -7045,25 +7187,19 @@ mod tests {
             assert_eq!(ids.len(), 2, "sample contains two unread inbox messages");
 
             for id in &ids {
-                let payload = serde_json::to_vec(&crate::actions::MailOperation::RevealMessage {
-                    id: id.to_string(),
-                })
-                .unwrap();
+                let payload = crate::actions::effect_payload(&crate::actions::MailEffect::Open {
+                    target: crate::actions::MailTarget::Message(id.to_string()),
+                });
                 assert!(matches!(
-                    app.start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            tilo_actions::InvocationId::default(),
-                            tilo_actions::OperationKind::View,
-                            crate::actions::MAIL_OPERATION_TYPE,
-                            &payload
-                        ),
-                        &mut doc,
-                        &automerge::ROOT
-                    )
-                    .unwrap(),
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
+                    app.start_effect(tilo_actions::InvocationId::default(), &payload)
+                        .unwrap(),
+                    ui::framework::Effected::Done(_)
                 ));
             }
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
 
             assert!(ids.iter().all(|id| {
                 app.shared
@@ -7072,66 +7208,6 @@ mod tests {
                     .get(*id)
                     .is_some_and(|message| message.read)
             }));
-        }
-
-        // Phase `legacy_read_only_open_route_refuses_without_changing_presentation_or_document`.
-        {
-            let (mut app, mut doc) = app();
-            let target = app
-                .shared
-                .borrow()
-                .mailbox
-                .messages_in(Folder::Inbox)
-                .first()
-                .map(|message| message.id)
-                .expect("sample contains an inbox message");
-            let (folder_before, selected_before, inspection_before, search_before, status_before) = {
-                let state = app.shared.borrow();
-                (
-                    state.folder,
-                    state.selected,
-                    state.inspection,
-                    state.search.clone(),
-                    state.status.clone(),
-                )
-            };
-            let target_read_before = app
-                .shared
-                .borrow()
-                .mailbox
-                .get(target)
-                .is_some_and(|message| message.read);
-            let heads_before = doc.get_heads();
-            let payload = serde_json::to_vec(&crate::actions::MailOperation::RevealMessage {
-                id: target.to_string(),
-            })
-            .unwrap();
-
-            let error = app
-                .answer_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MAIL_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
-                )
-                .expect_err("the read-only route cannot defer an Open mutation");
-
-            assert!(error.contains("admitted mutable operation"));
-            assert_eq!(doc.get_heads(), heads_before);
-            let state = app.shared.borrow();
-            assert_eq!(state.folder, folder_before);
-            assert_eq!(state.selected, selected_before);
-            assert_eq!(state.inspection, inspection_before);
-            assert_eq!(state.search, search_before);
-            assert_eq!(state.status, status_before);
-            assert_eq!(
-                state
-                    .mailbox
-                    .get(target)
-                    .is_some_and(|message| message.read),
-                target_read_before
-            );
         }
 
         // Phase `explicit_resource_preview_keeps_an_unread_message_unread_and_announces_that_fact`.
@@ -7146,24 +7222,14 @@ mod tests {
                 .find(|message| !message.read)
                 .map(|message| message.id)
                 .expect("sample contains an unread message");
-            let payload = serde_json::to_vec(&crate::actions::MailOperation::InspectMessage {
-                id: id.to_string(),
-            })
-            .unwrap();
+            let payload = crate::actions::effect_payload(&crate::actions::MailEffect::Inspect {
+                message: id.to_string(),
+            });
             let heads_before_preview = doc.get_heads();
             assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        crate::actions::MAIL_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
+                app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                    .unwrap(),
+                ui::framework::Effected::Done(_)
             ));
             assert_eq!(app.selected_message(), Some(id));
             assert!(
@@ -7171,14 +7237,18 @@ mod tests {
                 "preview is read-state neutral before sync"
             );
             assert_eq!(doc.get_heads(), heads_before_preview);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 !app.shared.borrow().mailbox.get(id).unwrap().read,
                 "unlike Open message, explicit preview never queues mark-read"
             );
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_none(),
-                "a read-state-neutral preview creates no collaborative action"
+            assert_ne!(
+                MailDoc::get_read(&doc, &id.to_string()),
+                Some(true),
+                "a read-state-neutral preview writes no read state"
             );
             let semantics = app.accessibility().expect("reader accessibility");
             let reader = semantics
@@ -7224,7 +7294,7 @@ mod tests {
                     .is_some_and(|mail| mail.read),
                 "Enter uses the normal Open boundary, rather than silently previewing"
             );
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(MailDoc::get_read(&doc, &unread.to_string()), Some(true));
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 
@@ -7281,20 +7351,11 @@ mod tests {
             };
             let heads_before = doc.get_heads();
 
-            let compose = serde_json::to_vec(&crate::actions::MailOperation::ComposeNew).unwrap();
+            let compose = crate::actions::effect_payload(&crate::actions::MailEffect::Compose);
             assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        crate::actions::MAIL_OPERATION_TYPE,
-                        &compose
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
+                app.start_effect(ui::tilo_actions::InvocationId::new(), &compose)
+                    .unwrap(),
+                ui::framework::Effected::Done(_)
             ));
             assert!(
                 app.compose.open,
@@ -7302,27 +7363,19 @@ mod tests {
             );
             app.compose.close();
 
-            let reply = serde_json::to_vec(&crate::actions::MailOperation::Reply {
-                id: message.id.to_string(),
-            })
-            .unwrap();
+            let reply = crate::actions::effect_payload(&crate::actions::MailEffect::Reply {
+                message: message.id.to_string(),
+            });
             assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        crate::actions::MAIL_OPERATION_TYPE,
-                        &reply
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
+                app.start_effect(ui::tilo_actions::InvocationId::new(), &reply)
+                    .unwrap(),
+                ui::framework::Effected::Done(_)
             ));
             assert!(app.compose.open, "message Reply opens the normal composer");
             assert_eq!(
-                app.compose.to_draft(&mut doc.clone()).to,
+                app.compose
+                    .to_draft(&mut ui::widget::Edits::lend(&mut doc.clone()))
+                    .to,
                 message.from.rfc5322()
             );
             assert_eq!(
@@ -7332,7 +7385,7 @@ mod tests {
             );
         }
 
-        // Phase `offline_preview_send_keeps_the_message_in_the_composer`.
+        // Phase `sending_queues_the_message_in_the_outbox_until_it_is_delivered`.
         {
             let (mut app, mut doc) = app();
             let before = app.shared.borrow().mailbox.count(Folder::Sent);
@@ -7346,19 +7399,65 @@ mod tests {
                 ..Default::default()
             };
             app.compose.reattach(&draft);
-            app.send_compose(&mut doc);
-            assert!(app.compose.open, "offline preview must preserve the draft");
+            app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+            let outbox = MailDoc::outbox(&doc);
+            let [(outgoing, None)] = outbox.as_slice() else {
+                panic!("one message waits in the outbox: {outbox:?}");
+            };
+            assert_eq!(outgoing.draft.to, "dest@there.example");
+            assert_eq!(outgoing.draft.subject, "Hi");
+            assert!(
+                !app.compose.open,
+                "the message left the composer for the outbox"
+            );
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Sent),
                 before,
-                "validating a MIME message locally is not delivery"
+                "a queued message is not delivered"
+            );
+
+            // The server refusing it leaves it in the outbox with the reason,
+            // and brings it back to the composer.
+            let (outgoing_tx, _outgoing_rx) = std::sync::mpsc::channel();
+            let (incoming, incoming_rx) = std::sync::mpsc::channel();
+            app.engine = Some(EngineHandle {
+                tx: outgoing_tx,
+                rx: incoming_rx,
+            });
+            app.server_outbox()
+                .borrow_mut()
+                .deliver(outgoing.clone(), Box::new(|_| {}));
+            app.flush_server_outbox();
+            let (&request_id, _) = app
+                .pending_send
+                .iter()
+                .next()
+                .expect("handed to the engine");
+            incoming
+                .send(EngineEvent::Error {
+                    request_id,
+                    kind: EngineRequestKind::Send,
+                    context: "send".into(),
+                    message: "relay denied".into(),
+                })
+                .unwrap();
+            app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+            let outbox = MailDoc::outbox(&doc);
+            assert!(
+                matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("relay denied")),
+                "{outbox:?}"
             );
             assert!(
-                app.shared
-                    .borrow()
-                    .status
-                    .as_deref()
-                    .is_some_and(|status| status.contains("offline preview"))
+                app.compose.open,
+                "a refused message comes back to the composer"
+            );
+
+            // Sending it again replaces the refused one.
+            app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+            let outbox = MailDoc::outbox(&doc);
+            assert!(
+                matches!(outbox.as_slice(), [(again, None)] if again.id != outgoing.id),
+                "{outbox:?}"
             );
         }
 
@@ -7375,12 +7474,14 @@ mod tests {
                     .expect("a multi-recipient message")
                     .id
             };
-            app.shared
-                .borrow_mut()
-                .apply_message_action(&mut doc, id, CtxAction::ReplyAll);
+            app.shared.borrow_mut().apply_message_action(
+                &mut ui::widget::Edits::lend(&mut doc),
+                id,
+                CtxAction::ReplyAll,
+            );
             app.process_intents();
             assert!(app.compose.open, "reply-all opens the composer");
-            let d = app.compose.to_draft(&mut doc);
+            let d = app.compose.to_draft(&mut ui::widget::Edits::lend(&mut doc));
             let sender = app
                 .shared
                 .borrow()
@@ -7424,7 +7525,7 @@ mod tests {
             app.compose
                 .add_attachment(attachment.clone())
                 .expect("attach to draft");
-            app.save_compose_draft(&mut doc);
+            app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
             assert!(!app.compose.open, "save closes the composer");
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Drafts),
@@ -7444,8 +7545,18 @@ mod tests {
             };
             app.open_draft(id);
             assert!(app.compose.open, "the draft reopens in the composer");
-            assert_eq!(app.compose.to_draft(&mut doc).subject, "WIP proposal");
-            assert_eq!(app.compose.to_draft(&mut doc).attachments, vec![attachment]);
+            assert_eq!(
+                app.compose
+                    .to_draft(&mut ui::widget::Edits::lend(&mut doc))
+                    .subject,
+                "WIP proposal"
+            );
+            assert_eq!(
+                app.compose
+                    .to_draft(&mut ui::widget::Edits::lend(&mut doc))
+                    .attachments,
+                vec![attachment]
+            );
             assert_eq!(app.editing_draft, Some(id));
         }
 
@@ -7459,12 +7570,12 @@ mod tests {
                 body: "one".into(),
                 ..Default::default()
             });
-            app.save_compose_draft(&mut doc);
+            app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
             let after_first = app.shared.borrow().mailbox.count(Folder::Drafts);
             // Re-open + re-save the same draft.
             let id = app.editing_draft.expect("editing the saved draft");
             app.open_draft(id);
-            app.save_compose_draft(&mut doc);
+            app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Drafts),
                 after_first,
@@ -7512,7 +7623,10 @@ mod tests {
                     .next_wake_deadline()
                     .expect("picker completion must wake");
                 assert_eq!(app.next_wake_deadline(), Some(deadline));
-                app.sync(&mut doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 assert!(app.compose_attachment_rx.is_none());
                 assert_eq!(app.shared.borrow().status.as_deref(), Some(expected));
                 assert_eq!(app.next_wake_deadline(), app.toast_deadline);
@@ -7570,7 +7684,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "mail.bulk-purge:confirm",
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -7702,7 +7816,7 @@ mod tests {
             fixture.drain();
             assert!(fixture.app.resource_refresh_invocation.is_some());
             assert!(fixture.app.resource_refresh_result.is_none());
-            assert!(fixture.app.pending_send.is_some());
+            assert!(!fixture.app.pending_send.is_empty());
             assert!(
                 fixture
                     .app
@@ -7740,7 +7854,7 @@ mod tests {
             });
             fixture.drain();
             assert!(
-                fixture.app.pending_send.is_some(),
+                !fixture.app.pending_send.is_empty(),
                 "wrong-kind results are inert"
             );
             assert!(
@@ -7767,16 +7881,11 @@ mod tests {
                 Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == fixture.invocation
             ));
             assert!(matches!(
-                fixture.app.poll_resource_operation(
-                    fixture.invocation,
-                    false,
-                    &fixture.doc,
-                    &automerge::ROOT,
-                ),
+                fixture.app.take_effect_result(fixture.invocation),
                 Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == fixture.invocation
             ));
             assert!(fixture.app.resource_refresh_invocation.is_none());
-            assert!(fixture.app.pending_send.is_some());
+            assert!(!fixture.app.pending_send.is_empty());
 
             fixture.send(EngineEvent::Sent {
                 request_id: fixture.send_id,
@@ -7787,14 +7896,14 @@ mod tests {
                 kind: EngineRequestKind::Send,
             });
             fixture.drain();
-            assert!(fixture.app.pending_send.is_none());
+            assert!(fixture.app.pending_send.is_empty());
             assert!(!fixture.app.awaiting_engine);
             assert_eq!(fixture.app.next_wake_deadline(), fixture.app.toast_deadline);
         }
 
         // Phase `completed_refresh_cannot_be_replaced_before_its_owner_polls`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, _doc) = app();
             let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
             let (_incoming_tx, incoming) = std::sync::mpsc::channel();
             app.engine = Some(EngineHandle {
@@ -7809,32 +7918,17 @@ mod tests {
                 output: tilo_actions::ActionOutput::default(),
             });
 
-            let payload =
-                serde_json::to_vec(&crate::actions::MailOperation::RefreshCurrentFolder).unwrap();
+            let payload = crate::actions::effect_payload(&crate::actions::MailEffect::Refresh);
             assert!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::MAIL_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .is_err()
+                app.start_effect(tilo_actions::InvocationId::new(), &payload)
+                    .is_err()
             );
             assert!(
-                app.poll_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    false,
-                    &doc,
-                    &automerge::ROOT
-                )
-                .is_none()
+                app.take_effect_result(tilo_actions::InvocationId::new())
+                    .is_none()
             );
             assert!(matches!(
-                app.poll_resource_operation(owner, false, &doc, &automerge::ROOT),
+                app.take_effect_result(owner),
                 Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == owner
             ));
             assert!(app.resource_refresh_invocation.is_none());
@@ -7861,7 +7955,10 @@ mod tests {
             // Drive the offline probe explicitly so this offline-save flow is
             // deterministic under both builds (the live probe's connect gating is
             // covered by the `validate` state-machine tests and the socket tests).
-            app.save_setup_with(&mut doc, &crate::validate::OfflineProbe);
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &crate::validate::OfflineProbe,
+            );
             assert!(!app.setup_open);
             assert_eq!(app.shared.borrow().accounts.len(), before + 1);
             assert_eq!(
@@ -7907,7 +8004,10 @@ mod tests {
             app.setup_inputs[2].set_text("guard@example.test");
             app.setup_inputs[4].set_text("imap.example.test");
             app.setup_inputs[6].set_text("smtp.example.test");
-            app.save_setup_with(&mut doc, &crate::validate::OfflineProbe);
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &crate::validate::OfflineProbe,
+            );
             assert_eq!(
                 app.shared.borrow().accounts.active_config().email,
                 "guard@example.test",
@@ -7934,14 +8034,35 @@ mod tests {
             );
         }
 
-        // Phase `live_mode_persists_to_the_real_config_root`.
+        // Phase `a_live_window_persists_into_its_hosts_profile`.
         {
-            // The live app is the ONLY constructor allowed to write the real store.
-            let app = MailApp::new_live();
+            // A session window keeps the person's accounts; a test, capture or
+            // `--data-dir` profile keeps its own beside its settings document.
+            let session = ui::storage::AppStorage::for_app("so.tilo.mail");
+            assert_eq!(profile_config_root(&session), accounts::config_root());
+            let profile = tempfile::tempdir().unwrap();
+            let storage = ui::storage::AppStorage::new(
+                "so.tilo.mail",
+                session.secrets(),
+                ui::storage::SettingsDocument::File(profile.path().join("settings.json")),
+            );
             assert_eq!(
-                app.accounts_persist_root(),
-                accounts::config_root(),
-                "the live app must persist to the real per-user config root"
+                profile_config_root(&storage).as_deref(),
+                Some(profile.path())
+            );
+            let app = MailApp::for_window(&storage, Some(ContentStore::memory()));
+            assert_eq!(
+                app.accounts_persist_root().as_deref(),
+                Some(profile.path()),
+                "the live app persists into its host's profile"
+            );
+            assert!(
+                app.shared.borrow().accounts.is_empty(),
+                "a fresh profile has no accounts"
+            );
+            assert!(
+                app.shared.borrow().mailbox.messages.is_empty(),
+                "no fabricated startup mail"
             );
         }
 
@@ -7960,16 +8081,6 @@ mod tests {
                 "the account-settings form is scoped to the clicked account"
             );
         }
-
-        // Phase `sample_compose_format_preference_never_uses_the_real_config_root`.
-        {
-            let mut app = MailApp::new_sample();
-            let sandbox = app.accounts_persist_root().expect("sample sandbox");
-            app.compose.set_format(ComposeFormat::Text);
-            app.persist_compose_format_if_changed();
-            assert!(sandbox.join("mail-local.json").is_file());
-            assert_ne!(Some(sandbox), accounts::config_root());
-        }
     }
 
     #[test]
@@ -7977,33 +8088,29 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn presentation_state_stays_local_and_the_live_app_starts_empty() {
-        // Phase `live_starts_without_fabricated_messages`.
-        {
-            // The live constructor must not seed a sample corpus.
-            let app = MailApp::new_live();
-            assert!(
-                app.shared.borrow().mailbox.messages.is_empty(),
-                "no fabricated startup mail"
-            );
-        }
-
+    fn presentation_state_stays_local() {
         // Phase `presentation_state_is_local_and_never_restored_from_a_peer_document`.
         {
             let mut doc = AutoCommit::new();
             {
                 let mut app = MailApp::new_sample();
-                app.sync(&mut doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 app.shared
                     .borrow_mut()
-                    .select_folder(&mut doc, Folder::Sent);
+                    .select_folder(&mut ui::widget::Edits::lend(&mut doc), Folder::Sent);
                 app.shared.borrow_mut().set_active_account(1);
                 app.shared.borrow_mut().search = "private query".into();
                 app.compose.set_format(ComposeFormat::Text);
             }
             // A second app sharing the document receives only domain state.
             let mut app2 = MailApp::new_sample();
-            app2.sync(&mut doc, &automerge::ROOT);
+            app2.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app2.sync(&doc, &automerge::ROOT);
+            app2.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app2.sync(&doc, &automerge::ROOT);
             assert_eq!(
                 app2.shared.borrow().folder,
                 Folder::Inbox,
@@ -8028,49 +8135,15 @@ mod tests {
             );
         }
 
-        // Phase `compose_format_restores_per_device_without_entering_the_shared_document`.
-        {
-            let persistence = AccountsPersist::sandbox();
-            let preference_path = persistence
-                .local_preferences_path()
-                .expect("sandbox has a local preference path");
-            let first_state = MailState::shared(MailState::new_sample(avatar_store_offline()));
-            let mut first = MailApp::assemble(
-                first_state,
-                ContentStore::memory(),
-                None,
-                persistence.clone(),
-            );
-            first.compose.set_format(ComposeFormat::Text);
-            first.persist_compose_format_if_changed();
-            assert!(preference_path.is_file(), "format is persisted locally");
-
-            let second_state = MailState::shared(MailState::new_sample(avatar_store_offline()));
-            let second = MailApp::assemble(second_state, ContentStore::memory(), None, persistence);
-            assert_eq!(
-                second.compose.format(),
-                ComposeFormat::Text,
-                "a later window on this device restores its local preference"
-            );
-
-            let mut doc = AutoCommit::new();
-            first.sync(&mut doc, &automerge::ROOT);
-            let mut peer = MailApp::new_sample();
-            peer.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                peer.compose.format(),
-                ComposeFormat::Html,
-                "a peer with a different local store never receives this preference"
-            );
-            assert!(doc.get(&automerge::ROOT, "ui").unwrap().is_none());
-        }
-
         // Phase `active_account_selection_persists_locally_without_touching_automerge`.
         {
             let (mut app, mut doc) = app();
             let selected_id = app.shared.borrow().accounts.accounts[1].id.clone();
             app.shared.borrow_mut().set_active_account(1);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
 
             let root = app
                 .accounts_persist_root()
@@ -8093,7 +8166,10 @@ mod tests {
         {
             let mut app = MailApp::new_first_run();
             let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             app.layout_for_test(1100.0, 780.0);
             assert!(
                 app.is_first_run(),
@@ -8107,12 +8183,15 @@ mod tests {
             assert!(
                 app.first_run.perform_action(
                     &ui::a11y::Action::Activate,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "assistive activation reaches Add account"
             );
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_open, "Add account opens the account setup sheet");
             assert!(
                 !app.is_first_run(),
@@ -8309,14 +8388,17 @@ mod tests {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
             let before = app.shared.borrow().mailbox.count(Folder::Archive);
-            assert!(app.shared.borrow().selected.is_some());
+            let id = app.shared.borrow().selected.expect("a selected message");
             dispatch(&mut app, &char_key("e"), &mut doc);
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Archive),
                 before + 1,
                 "'e' archived the selection"
             );
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(
+                MailDoc::get_folder_for(&doc, &id.to_string()),
+                Some(Folder::Archive)
+            );
         }
 
         // Phase `reader_shortcuts_reply_star_and_mark_unread_through_visible_paths`.
@@ -8335,11 +8417,14 @@ mod tests {
                 app.shared.borrow().mailbox.get(id).unwrap().starred,
                 !was_starred
             );
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(
+                MailDoc::get_starred(&doc, &id.to_string()),
+                Some(!was_starred)
+            );
 
             assert!(dispatch(&mut app, &char_key("u"), &mut doc));
             assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(false));
         }
 
         // Phase `shortcut_arrow_down_moves_selection`.
@@ -8360,13 +8445,17 @@ mod tests {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
             let before = app.shared.borrow().mailbox.count(Folder::Trash);
+            let id = app.shared.borrow().selected.expect("a selected message");
             dispatch(&mut app, &named_key(NamedKey::Delete), &mut doc);
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Trash),
                 before + 1,
                 "Delete moved the selection to Trash"
             );
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(
+                MailDoc::get_folder_for(&doc, &id.to_string()),
+                Some(Folder::Trash)
+            );
         }
     }
 
@@ -8639,212 +8728,82 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn attachment_save_waits_for_the_portal_and_settles_truthfully_once() {
-        // Phase `attachment_resource_save_waits_for_portal_and_real_write`.
-        {
-            let (mut app, mut doc) = app();
-            let (message_id, index, filename, bytes) = {
-                let state = app.shared.borrow();
-                let (message_id, attachment) = state
-                    .mailbox
-                    .messages
-                    .values()
-                    .find_map(|message| {
-                        message
-                            .attachments
-                            .iter()
-                            .enumerate()
-                            .find(|(_, attachment)| attachment.is_downloadable())
-                            .map(|(index, attachment)| (message.id, (index, attachment)))
-                    })
-                    .expect("sample has a hydrated attachment");
-                (
-                    message_id,
-                    attachment.0,
-                    attachment.1.filename.clone(),
-                    attachment.1.content.clone(),
-                )
-            };
-            let invocation = tilo_actions::InvocationId::new();
-            let payload = serde_json::to_vec(&crate::actions::MailOperation::SaveAttachment {
-                message_id: message_id.to_string(),
+    fn attachment_save_offers_only_the_downloaded_bytes_and_reports_truthfully() {
+        let (mut app, _doc) = app();
+        let (message_id, index, filename, bytes) = {
+            let state = app.shared.borrow();
+            let (message_id, (index, attachment)) = state
+                .mailbox
+                .messages
+                .values()
+                .find_map(|message| {
+                    message
+                        .attachments
+                        .iter()
+                        .enumerate()
+                        .find(|(_, attachment)| attachment.is_downloadable())
+                        .map(|found| (message.id, found))
+                })
+                .expect("sample has a hydrated attachment");
+            (
+                message_id,
                 index,
-            })
-            .unwrap();
-            let temp = tempfile::tempdir().unwrap();
-            let destination = temp.path().join(&filename);
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            recorder.respond_to_pick(PortalOutcome::Opened(destination.clone()));
-            assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::MAIL_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
-            ));
-            assert!(
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                    .is_none(),
-                "opening a picker cannot be reported as a completed save"
-            );
-            assert_eq!(recorder.pick_requests()[0].title(), "Save attachment");
+                attachment.filename.clone(),
+                attachment.content.clone(),
+            )
+        };
 
-            app.drain_attachment_save();
-            assert_eq!(std::fs::read(&destination).unwrap(), bytes);
-            assert!(matches!(
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-                Some(tilo_actions::InvocationUpdate::Succeeded { output, .. })
-                    if output.resources == vec![format!("mail.attachment:{message_id}:{index}")]
-            ));
-        }
+        // What the host is asked to save is exactly the downloaded bytes,
+        // under a name that cannot reach outside the chosen folder.
+        let (name, offered) = app
+            .attachment_to_save(&message_id.to_string(), index)
+            .expect("a downloaded attachment can be saved");
+        assert_eq!(offered, bytes);
+        assert_eq!(name, MailApp::attachment_save_name(&filename));
+        assert!(
+            app.attachment_to_save(&message_id.to_string(), index + 100)
+                .is_err(),
+            "an attachment that is not loaded cannot be saved"
+        );
+        assert!(
+            app.start_effect(
+                tilo_actions::InvocationId::new(),
+                &crate::actions::effect_payload(&crate::actions::MailEffect::Save {
+                    message: message_id.to_string(),
+                    index,
+                }),
+            )
+            .is_err(),
+            "only the surface, with the host's chooser, saves an attachment"
+        );
 
-        // Phase `attachment_save_cancellation_and_direct_path_bypass_are_truthful`.
-        {
-            let (mut app, mut doc) = app();
-            let (message_id, index) = {
-                let state = app.shared.borrow();
-                state
-                    .mailbox
-                    .messages
-                    .values()
-                    .find_map(|message| {
-                        message
-                            .attachments
-                            .iter()
-                            .enumerate()
-                            .find(|(_, attachment)| attachment.is_downloadable())
-                            .map(|(index, _)| (message.id, index))
-                    })
-                    .expect("sample has a hydrated attachment")
-            };
-            let payload = serde_json::to_vec(&crate::actions::MailOperation::SaveAttachment {
-                message_id: message_id.to_string(),
-                index,
-            })
-            .unwrap();
-            assert!(
-                app.answer_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MAIL_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT
-                )
-                .expect_err("only the admitted portal route may save an attachment")
-                .contains("admitted portal")
-            );
+        // A save is reported only once the host wrote it.
+        let resource = format!("mail.attachment:{message_id}:{index}");
+        let saved = app.finish_attachment_save(true, &name, resource.clone());
+        assert!(matches!(
+            saved,
+            ui::framework::Effected::Done(output) if output.resources == vec![resource.clone()]
+        ));
+        assert_eq!(
+            app.shared.borrow().status.as_deref(),
+            Some(format!("Saved {name}").as_str())
+        );
+        let cancelled = app.finish_attachment_save(false, &name, resource);
+        assert!(matches!(
+            cancelled,
+            ui::framework::Effected::Done(output) if output.resources.is_empty()
+        ));
+        assert_eq!(
+            app.shared.borrow().status.as_deref(),
+            Some("Attachment save cancelled")
+        );
 
-            let invocation = tilo_actions::InvocationId::new();
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            recorder.respond_to_pick(PortalOutcome::Cancelled);
-            app.begin_attachment_save(message_id, index).unwrap();
-            app.resource_attachment_save_invocation = Some(invocation);
-            let deadline = app
-                .next_wake_deadline()
-                .expect("native picker results wake independently of animation");
-            assert_eq!(app.next_wake_deadline(), Some(deadline));
-            app.sync(&mut doc, &automerge::ROOT);
-            assert!(app.attachment_save_rx.is_none());
-            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
-            assert!(matches!(
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
-        }
-
-        // Phase `attachment_save_disconnect_and_host_cancellation_settle_once`.
-        {
-            let (mut app, doc) = app();
-            let (message_id, index) = {
-                let state = app.shared.borrow();
-                state
-                    .mailbox
-                    .messages
-                    .values()
-                    .find_map(|message| {
-                        message
-                            .attachments
-                            .iter()
-                            .enumerate()
-                            .find(|(_, attachment)| attachment.is_downloadable())
-                            .map(|(index, _)| (message.id, index))
-                    })
-                    .expect("sample has a hydrated attachment")
-            };
-            let invocation = tilo_actions::InvocationId::new();
-            app.begin_attachment_save(message_id, index).unwrap();
-            app.resource_attachment_save_invocation = Some(invocation);
-            let (sender, receiver) = std::sync::mpsc::channel();
-            drop(sender);
-            app.attachment_save_rx = Some(receiver);
-            app.drain_attachment_save();
-            assert!(matches!(
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-                Some(tilo_actions::InvocationUpdate::Failed { .. })
-            ));
-            assert!(
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                    .is_none(),
-                "a disconnected picker cannot produce a second terminal update"
-            );
-
-            let cancellation = tilo_actions::InvocationId::new();
-            app.begin_attachment_save(message_id, index).unwrap();
-            app.resource_attachment_save_invocation = Some(cancellation);
-            assert!(matches!(
-                app.poll_resource_operation(cancellation, true, &doc, &automerge::ROOT),
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
-            assert!(app.attachment_save_rx.is_none());
-            assert!(app.pending_attachment_save.is_none());
-            assert!(
-                app.poll_resource_operation(cancellation, false, &doc, &automerge::ROOT)
-                    .is_none(),
-                "host cancellation is terminal exactly once"
-            );
-        }
-
-        // Phase `attachment_save_name_and_destination_stay_inside_portal_boundary`.
-        {
-            assert_eq!(
-                MailApp::attachment_save_name("../../secret.pdf"),
-                "secret.pdf"
-            );
-            assert_eq!(MailApp::attachment_save_name(".."), "attachment");
-            assert_eq!(MailApp::attachment_save_name("\0bad"), "bad");
-            let temp = tempfile::tempdir().unwrap();
-            let regular = temp.path().join("regular.txt");
-            std::fs::write(&regular, b"old contents").unwrap();
-            MailApp::write_portal_attachment(&regular, b"new").unwrap();
-            assert_eq!(std::fs::read(&regular).unwrap(), b"new");
-
-            #[cfg(unix)]
-            {
-                let target = temp.path().join("target.txt");
-                let link = temp.path().join("unsafe-link.txt");
-                std::fs::write(&target, b"unchanged").unwrap();
-                std::os::unix::fs::symlink(&target, &link).unwrap();
-                assert!(
-                    MailApp::write_portal_attachment(&link, b"must not follow")
-                        .expect_err("a portal target that became a symlink is rejected")
-                        .contains("symbolic-link")
-                );
-                assert_eq!(std::fs::read(&target).unwrap(), b"unchanged");
-            }
-        }
+        assert_eq!(
+            MailApp::attachment_save_name("../../secret.pdf"),
+            "secret.pdf"
+        );
+        assert_eq!(MailApp::attachment_save_name(".."), "attachment");
+        assert_eq!(MailApp::attachment_save_name("\0bad"), "bad");
     }
 
     // ---- test-before-save state machine (persist on success only) --------
@@ -8873,7 +8832,10 @@ mod tests {
             app.close_setup();
             assert!(cancellation.load(std::sync::atomic::Ordering::Relaxed));
             assert!(sender.send(crate::validate::ValidationState::Ok).is_err());
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.shared.borrow().accounts.accounts.len(), accounts_before);
             assert!(app.setup_validation.is_none());
             assert_eq!(app.next_wake_deadline(), app.toast_deadline);
@@ -8893,7 +8855,10 @@ mod tests {
             });
             app.set_setup_input(4, "changed-after-verification.example");
             sender.send(crate::validate::ValidationState::Ok).unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_open);
             assert!(
                 app.setup_error
@@ -8918,7 +8883,10 @@ mod tests {
                 cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             drop(sender);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_open);
             assert!(
                 app.setup_error
@@ -8945,7 +8913,10 @@ mod tests {
                 cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             sender.send(crate::validate::ValidationState::Ok).unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(!app.setup_open);
             assert!(app.setup_validation.is_none());
             assert!(app.setup_error.is_none());
@@ -8972,7 +8943,10 @@ mod tests {
             let before = app.shared.borrow().accounts.len();
 
             // Failing verification: no persist, sheet stays open, error surfaced.
-            app.save_setup_with(&mut doc, &FixedProbe { imap_ok: false });
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &FixedProbe { imap_ok: false },
+            );
             assert_eq!(
                 app.shared.borrow().accounts.len(),
                 before,
@@ -8988,7 +8962,10 @@ mod tests {
             );
 
             // Succeeding verification: account saved, sheet closes.
-            app.save_setup_with(&mut doc, &FixedProbe { imap_ok: true });
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &FixedProbe { imap_ok: true },
+            );
             assert_eq!(
                 app.shared.borrow().accounts.len(),
                 before + 1,
@@ -9006,7 +8983,10 @@ mod tests {
             app.set_setup_input(2, "new@host.example");
             app.set_setup_input(4, "imap.host.example");
             app.set_setup_input(6, "smtp.host.example");
-            app.save_setup_with(&mut doc, &FixedProbe { imap_ok: false });
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &FixedProbe { imap_ok: false },
+            );
             let dialog = app.accessibility().expect("setup dialog stays available");
             assert!(
                 dialog.children.iter().any(|node| {
@@ -9070,7 +9050,10 @@ mod tests {
             app.set_setup_input(3, "user-entered-secret");
             let discovered = crate::autoconfig::builtin_autoconfig("fastmail.com").unwrap();
             sender.send(Some(discovered.clone())).unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.setup_inputs[4].value(), "manual.imap.invalid");
             assert_eq!(app.setup_inputs[5].value(), "1993");
             assert_eq!(app.setup_inputs[3].value(), "user-entered-secret");
@@ -9089,7 +9072,10 @@ mod tests {
             sender
                 .send(crate::autoconfig::builtin_autoconfig("fastmail.com"))
                 .unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_inputs[4].value().is_empty());
             assert!(app.setup_inputs[6].value().is_empty());
             assert_eq!(app.setup_inputs[1].value(), "new@other.invalid");
@@ -9109,7 +9095,10 @@ mod tests {
                     .send(crate::autoconfig::builtin_autoconfig("fastmail.com"))
                     .is_err()
             );
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_inputs[4].value().is_empty());
             assert!(app.setup_discovery.is_none());
         }
@@ -9132,7 +9121,10 @@ mod tests {
             app.setup_inputs[2].set_text("new@host.example");
             app.setup_inputs[4].set_text("imap.host.example");
             app.setup_inputs[6].set_text("smtp.host.example");
-            app.save_setup_with(&mut doc, &FixedProbe { imap_ok: true });
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &FixedProbe { imap_ok: true },
+            );
             assert!(app.setup_open);
             assert!(
                 app.setup_error
@@ -9144,7 +9136,7 @@ mod tests {
             assert!(app.pending_engine_requests.is_empty());
 
             app.open_setup_edit(Some(0));
-            app.remove_editing_account(&mut doc);
+            app.remove_editing_account(&mut ui::widget::Edits::lend(&mut doc));
             assert!(app.setup_open);
             assert!(
                 app.setup_error

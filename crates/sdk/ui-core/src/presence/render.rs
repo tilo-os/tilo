@@ -1,4 +1,5 @@
 use super::PresenceCtx;
+use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::permissions::UserId;
@@ -7,7 +8,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use vello::{
     Scene,
-    kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke},
+    kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke},
     peniko::{Color, Fill},
 };
 
@@ -101,12 +102,18 @@ impl PresenceCtx {
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &rect);
         if self.is_agent(user) {
-            draw_agent_diamond(
+            draw_agent_identity_mark(
                 scene,
                 transform,
-                Point::new(rect.center().x, rect.y0 - 3.0),
-                4.5,
+                Rect::new(
+                    rect.center().x - 4.5,
+                    rect.y0 - 7.5,
+                    rect.center().x + 4.5,
+                    rect.y0 + 1.5,
+                ),
                 color,
+                theme,
+                AgentIdentityStyle::Solid,
             );
         }
     }
@@ -625,7 +632,7 @@ pub fn draw_peer_cursors(
     for p in peers {
         let bounds = Rect::from_center_size(p.pos, (FADE_DOT_BOUNDS, FADE_DOT_BOUNDS));
         faded(scene, transform, p.opacity, bounds, |scene| {
-            draw_peer_dot(scene, transform, p.pos, p.color, p.is_agent);
+            draw_peer_dot(scene, transform, theme, p.pos, p.color, p.is_agent);
         });
     }
 
@@ -715,6 +722,7 @@ fn faded(
 fn draw_peer_dot(
     scene: &mut Scene,
     transform: Affine,
+    theme: &Theme,
     pos: (f64, f64),
     peer: Color,
     is_agent: bool,
@@ -735,29 +743,20 @@ fn draw_peer_dot(
         &Circle::new(Point::ORIGIN, RING_R - 0.5),
     );
     if is_agent {
-        draw_agent_diamond(scene, t, Point::ORIGIN, DOT_R + 1.0, peer);
+        let radius = DOT_R + 1.0;
+        draw_agent_identity_mark(
+            scene,
+            t,
+            Rect::new(-radius, -radius, radius, radius),
+            peer,
+            theme,
+            AgentIdentityStyle::Solid,
+        );
     } else {
         let dot = Circle::new(Point::ORIGIN, DOT_R);
         scene.fill(Fill::NonZero, t, peer, None, &dot);
         scene.stroke(&Stroke::new(2.0), t, Color::WHITE, None, &dot);
     }
-}
-
-fn draw_agent_diamond(
-    scene: &mut Scene,
-    transform: Affine,
-    center: Point,
-    radius: f64,
-    color: Color,
-) {
-    let mut diamond = BezPath::new();
-    diamond.move_to((center.x, center.y - radius));
-    diamond.line_to((center.x + radius, center.y));
-    diamond.line_to((center.x, center.y + radius));
-    diamond.line_to((center.x - radius, center.y));
-    diamond.close_path();
-    scene.fill(Fill::NonZero, transform, color, None, &diamond);
-    scene.stroke(&Stroke::new(1.5), transform, Color::WHITE, None, &diamond);
 }
 
 #[allow(
@@ -795,31 +794,22 @@ fn draw_peer_pill_kind(
     let k = label_magnification(theme, text_renderer);
     let text_x = rect.x0 + (PILL_PAD_X + if is_agent { AGENT_GLYPH_W } else { 0.0 }) * k;
     if is_agent {
-        // A tiny processor glyph: outlined square, two status dots. Unlike an
-        // "agent" suffix, it remains recognizable when the name is elided.
+        // The same processor mark used by every agent identity surface.
+        // Unlike an "agent" suffix, it remains recognizable when elided.
         let badge = Rect::new(
             rect.x0 + 5.0 * k,
             rect.center().y - 4.5 * k,
             rect.x0 + 14.0 * k,
             rect.center().y + 4.5 * k,
         );
-        let ink = contrast_ink(peer);
-        scene.stroke(
-            &Stroke::new(1.2 * k),
+        draw_agent_identity_mark(
+            scene,
             transform,
-            ink,
-            None,
-            &RoundedRect::from_rect(badge, 2.0 * k),
+            badge,
+            peer,
+            theme,
+            AgentIdentityStyle::Solid,
         );
-        for y in [badge.y0 + 3.0 * k, badge.y1 - 3.0 * k] {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ink,
-                None,
-                &Circle::new((badge.center().x, y), 0.8 * k),
-            );
-        }
     }
     // Centre the measured line box in whatever rect the placer handed us,
     // rather than pinning it to the top pad: a caller-supplied rect may be
@@ -1373,7 +1363,7 @@ mod tests {
                 "expected charlie's emerald caret (G dominant), got ({red},{green},{blue})"
             );
         }
-        // phase: agent_caret_has_a_non_text_diamond_identity_marker
+        // phase: agent_caret_has_the_shared_non_text_identity_marker
         {
             let theme = Theme::default();
             let agent = UserId("peer@agent".to_string());
@@ -1392,7 +1382,7 @@ mod tests {
             let agent_pixels = render(&agent_ctx);
             let person_pixels = render(&person_ctx);
 
-            // Three pixels above the ordinary caret, only the agent's diamond
+            // Three pixels above the ordinary caret, only the agent's processor
             // marker occupies this point. This remains distinguishable without
             // colour perception and before any label is painted.
             let (ar, ag, ab, _) = OffscreenRenderer::sample(&agent_pixels, 80, 31, 37);

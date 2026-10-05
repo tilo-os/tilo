@@ -32,8 +32,9 @@ pub trait PeerPublishSink: Send + Sync {
     /// Republish typed presence independently of the local app transport.
     fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence);
 
-    /// Ask the room whether anyone still holds a range of history.
-    fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16);
+    /// Ask the room `cluster_id` whether anyone still holds a range of
+    /// history; only its members are asked, and only they may answer.
+    fn scrollback_request(&self, cluster_id: &str, artifact: ArtifactId, before_seq: u64, max: u16);
 
     /// Also show typed presence on the room's live plane, where browsers and
     /// agents draw it in `record_id` (empty when the app announced none).
@@ -222,7 +223,7 @@ impl PeerPublisher {
         let Some(sink) = self.ready(route, "scrollback request") else {
             return false;
         };
-        sink.scrollback_request(artifact, before_seq, max);
+        sink.scrollback_request(&route.cluster_id, artifact, before_seq, max);
         true
     }
 
@@ -305,6 +306,7 @@ pub mod recording {
             presence: PeerPresence,
         },
         Scrollback {
+            cluster_id: String,
             before_seq: u64,
             max: u16,
         },
@@ -356,8 +358,18 @@ pub mod recording {
             });
         }
 
-        fn scrollback_request(&self, _artifact: ArtifactId, before_seq: u64, max: u16) {
-            self.sent().push(Sent::Scrollback { before_seq, max });
+        fn scrollback_request(
+            &self,
+            cluster_id: &str,
+            _artifact: ArtifactId,
+            before_seq: u64,
+            max: u16,
+        ) {
+            self.sent().push(Sent::Scrollback {
+                cluster_id: cluster_id.to_owned(),
+                before_seq,
+                max,
+            });
         }
     }
 }
@@ -452,6 +464,7 @@ mod tests {
         assert_eq!(
             sink.drain(),
             vec![Sent::Scrollback {
+                cluster_id: route.cluster_id,
                 before_seq: 42,
                 max: 9
             }],

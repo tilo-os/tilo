@@ -59,6 +59,7 @@ fn contents(value: &JsValue) -> Result<Option<Vec<PickedContents>>, String> {
                 name: field("name")?.as_string().unwrap_or_default(),
                 media_type: field("type")?.as_string().filter(|t| !t.is_empty()),
                 bytes: Uint8Array::new(&field("bytes")?).to_vec(),
+                location: None,
             })
         })
         .collect::<Result<Vec<_>, String>>()

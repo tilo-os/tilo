@@ -1,5 +1,6 @@
-//! A bundled sample project. On first launch (and in `--shots` mode) the
-//! editor opens this to provide multi-file, syntax-highlighted content.
+//! A bundled sample project. `--shots` writes it to a scratch folder and opens
+//! it the way `code-editor FOLDER` opens a real one, so every capture shows
+//! multi-file, syntax-highlighted content.
 //!
 //! The files are deliberately idiomatic small programs that exercise the
 //! highlighter across several languages: keywords, types, functions, strings,
@@ -184,10 +185,37 @@ if __name__ == "__main__":
     print(primes_below(20))
 "#;
 
+/// The sample project's folder name.
+pub const NAME: &str = "ferris-cli";
+
+/// Write the sample project's files into a new folder at `root`.
+///
+/// # Errors
+/// Returns why a folder or file could not be written.
+pub fn write(root: &std::path::Path) -> std::io::Result<()> {
+    use crate::model::NodeKind;
+    let project = build();
+    for node in project.nodes.values() {
+        let NodeKind::File { seed, .. } = &node.kind else {
+            continue;
+        };
+        let relative = project.path_of(node.id);
+        let relative = relative
+            .split_once('/')
+            .map_or(relative.as_str(), |(_, rest)| rest);
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, seed)?;
+    }
+    Ok(())
+}
+
 /// Construct the bundled sample project tree. Returns a [`Project`] with the
 /// `src/main.rs` folder expanded so the first screenshot lands on real code.
 pub fn build() -> Project {
-    let mut p = Project::new("ferris-cli");
+    let mut p = Project::new(NAME);
     let root = p.root;
 
     let src = p.add_folder(root, "src");

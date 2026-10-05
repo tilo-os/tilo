@@ -11,13 +11,10 @@ name = "tilo_agent_participant"
 path = "src/lib.rs"
 
 [dependencies]
-# Apps run headless through the same component runtime a window or the
-# browser mounts; the resource tree (declared + semantic) is the door.
+# Each record is a framework participant of its app's resource kind; the
+# published tree is the door.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-actions = { path = "../../collab/actions" }
-# Installs a record that arrived from the session into the agent's profile.
-tilo-app-state = { path = "../../system/app-state" }
-durable-store = { path = "../../system/durable-store" }
 # `apps/agent`'s model planner: action discovery tools over a catalogue, and
 # the chooser that asks through tilo-model-gateway.
 agent = { path = "../../../apps/agent" }
@@ -59,7 +56,7 @@ word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
 # The certified relay session (iroh for a host-side agent) and its live
 # plane; the same code a browser page runs.
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer", features = ["toolkit"] }
 iroh-base.workspace = true
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
@@ -78,15 +75,12 @@ tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 tilo-model-gateway = { path = "../model-gateway" }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-tempfile.workspace = true
-percent-encoding = "2"
 tracing.workspace = true
-# Each agent's apps get a profile and secret store of their own.
-tilo-paths = { path = "../../platform/tilo-paths" }
-tilo-secrets = { path = "../../platform/tilo-secrets" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tempfile.workspace = true
+tilo-document = { path = "../../doc/tilo-document" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }

@@ -151,6 +151,13 @@ impl Palette {
         }
     }
 
+    /// The colour called `name` (any case).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|palette| palette.name().eq_ignore_ascii_case(name))
+    }
+
     pub fn from_index(i: usize) -> Self {
         // `i % Self::ALL.len()` is always in bounds since `ALL` is a fixed,
         // non-empty array; `Self::ALL[0]` is a compile-time-safe fallback.
@@ -551,6 +558,18 @@ pub struct Model {
     pub projects: Vec<Project>,
     pub events: Vec<Event>,
     pub tasks: Vec<Task>,
+    /// The plain text of each event's and task's notes that hold any, for
+    /// search.
+    pub notes: std::collections::BTreeMap<Id, String>,
+    /// Events on a remote calendar whose latest version still waits to be
+    /// uploaded to its server.
+    pub push_queue: Vec<Id>,
+    /// Deleted items whose server copy still waits to be deleted, with the
+    /// remote calendar it lives in.
+    pub delete_queue: Vec<(String, Id)>,
+    /// Where each queued item lives on its server: the calendar, the
+    /// resource's href and the version (`ETag`) last seen there.
+    pub bindings: std::collections::BTreeMap<Id, (String, String, Option<String>)>,
 }
 
 impl Model {
@@ -656,6 +675,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         projects: seed_demo_projects(pid_work, pid_personal, pid_health),
         events: seed_demo_events(today, pid_work, pid_personal, pid_health),
         tasks: seed_demo_tasks(today, pid_personal, pid_health, pid_work),
+        ..Model::default()
     }
 }
 
@@ -770,7 +790,7 @@ fn seed_demo_events_early(
                 email: "mina@example.com".into(),
                 status: InviteStatus::Accepted,
             }],
-            reminder_min: Some(15),
+            reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
         },
@@ -833,7 +853,7 @@ fn seed_demo_events_early(
             timezone: "floating".into(),
             organizer: None,
             attendees: Vec::new(),
-            reminder_min: Some(15),
+            reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
         },
@@ -949,7 +969,7 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             timezone: "floating".into(),
             organizer: None,
             attendees: Vec::new(),
-            reminder_min: Some(720),
+            reminder_min: Some(60),
             calendar_id: None,
             project: Some(pid_personal),
         },

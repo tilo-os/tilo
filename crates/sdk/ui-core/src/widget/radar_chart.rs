@@ -5,7 +5,7 @@
     reason = "polar projection is bounded floating-point geometry"
 )]
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
@@ -775,7 +775,7 @@ impl Widget for RadarChart {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
