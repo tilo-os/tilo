@@ -232,8 +232,8 @@ fn synthetic_text_run_node_id(parent: AkNodeId) -> AkNodeId {
     synthetic_node_id(parent, SYNTHETIC_TEXT_RUN_KEY)
 }
 
-/// What an editable node's text run carries: its value and the caret or
-/// selection in it, or `None` when the node exports no run.
+/// What a readable text node's run carries: its value and caret or selection,
+/// or `None` when the node exports no run.
 ///
 /// A protected (password) field still gets a run: AccessKit offers AT-SPI
 /// Text and EditableText only on a node with one, and without them a screen
@@ -251,6 +251,16 @@ fn text_run_content(access: &AccessNode) -> Option<(&str, AccessibleTextSelectio
     }
     match (&access.value, access.text_selection) {
         (Some(value), Some(selection)) => Some((value.as_str(), selection)),
+        // A terminal transcript is readable even before anyone selects it.
+        // AccessKit derives the platform Text interface from descendant runs,
+        // rather than from the terminal node's value alone.
+        (Some(value), None) if access.role == Role::Terminal => Some((
+            value.as_str(),
+            AccessibleTextSelection {
+                anchor: 0,
+                focus: 0,
+            },
+        )),
         _ => None,
     }
 }
@@ -2276,6 +2286,24 @@ mod tests {
             assert!(node.supports_action(AkAction::SetTextSelection));
             assert!(!node.supports_action(AkAction::SetValue));
             assert_eq!(node.value(), Some("$ cargo test"));
+            let run_id = *node
+                .children()
+                .first()
+                .expect("unselected terminal has a readable text run");
+            let run = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == run_id)
+                .expect("terminal text run reaches the platform tree");
+            assert_eq!(run.1.role(), AkRole::TextRun);
+            assert_eq!(run.1.value(), Some("$ cargo test"));
+            assert_eq!(run.1.character_lengths().len(), 12);
+            let selection = node
+                .text_selection()
+                .expect("unselected transcript has a collapsed caret");
+            assert_eq!(selection.anchor.node, run_id);
+            assert_eq!(selection.anchor.character_index, 0);
+            assert_eq!(selection.focus, selection.anchor);
         }
 
         // Case `protected_value_is_never_exposed`.
