@@ -132,7 +132,7 @@ impl Widget for Thumb {
         scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
         let (art, region, bare) = match &self.framing {
             Some(framing) => {
-                framing(&self.art).unwrap_or((Rc::clone(&self.art), Rect::ZERO, false))
+                framing(&self.art).unwrap_or_else(|| (Rc::clone(&self.art), Rect::ZERO, false))
             }
             None => (Rc::clone(&self.art), self.art.bounds(), false),
         };
@@ -215,6 +215,7 @@ impl Widget for Thumb {
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
     reason = "a few squares of float geometry across a small box"
 )]
 fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {

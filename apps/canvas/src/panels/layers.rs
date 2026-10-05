@@ -333,7 +333,7 @@ fn row_menu(
         let renaming = renaming.clone();
         let mut entries = vec![
             MenuEntry::new(lookup("canvas-context-rename-layer"), move || {
-                renaming.set(true)
+                renaming.set(true);
             }),
             MenuEntry::separator(),
             MenuEntry::new(
@@ -365,44 +365,7 @@ fn row_menu(
             ),
             MenuEntry::separator(),
         ];
-        if row.mask.is_some() {
-            entries.push(MenuEntry::new(
-                lookup("canvas-layer-mask-remove"),
-                invoke(|row| {
-                    ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "remove".into()))
-                }),
-            ));
-        } else {
-            entries.push(MenuEntry::new(
-                lookup("canvas-layer-mask-add"),
-                invoke(|row| {
-                    ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "reveal".into()))
-                }),
-            ));
-        }
-        // The selection as the layer's mask: what it shows of the layer.
-        let dispatch = dispatcher.clone();
-        let layer = row.id.clone();
-        entries.push(
-            MenuEntry::new(lookup("canvas-context-mask-selection"), move || {
-                dispatch.apply(&crate::actions::CanvasAction::UseSelection(
-                    crate::selection::UseSelection {
-                        what: "mask".into(),
-                        layer: Some(layer.clone()),
-                        ..crate::selection::UseSelection::default()
-                    },
-                ));
-            })
-            .with_enabled(has_selection),
-        );
-        entries.push(MenuEntry::new(
-            lookup(if row.clip {
-                "canvas-context-unclip"
-            } else {
-                "canvas-layer-clip"
-            }),
-            invoke(|row| ArtworkResource::SET_LAYER_CLIP.with((row.id.clone(), !row.clip))),
-        ));
+        masking(&row, &dispatcher, has_selection, &mut entries);
         entries.push(MenuEntry::separator());
         entries.push(MenuEntry::destructive(
             named("canvas-layer-remove-name"),
@@ -410,6 +373,56 @@ fn row_menu(
         ));
         entries
     }
+}
+
+/// A layer row's menu entries for its mask and clipping.
+fn masking(
+    row: &LayerRow,
+    dispatcher: &ui::framework::Dispatcher<ArtworkResource>,
+    has_selection: bool,
+    entries: &mut Vec<ui::widget::MenuEntry>,
+) {
+    use ui::widget::MenuEntry;
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let invoke = |make: fn(&LayerRow) -> Invoke<ArtworkResource>| {
+        let dispatcher = dispatcher.clone();
+        let row = row.clone();
+        move || dispatcher.invoke(make(&row))
+    };
+    if row.mask.is_some() {
+        entries.push(MenuEntry::new(
+            lookup("canvas-layer-mask-remove"),
+            invoke(|row| ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "remove".into()))),
+        ));
+    } else {
+        entries.push(MenuEntry::new(
+            lookup("canvas-layer-mask-add"),
+            invoke(|row| ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "reveal".into()))),
+        ));
+    }
+    // The selection as the layer's mask: what it shows of the layer.
+    let dispatch = dispatcher.clone();
+    let layer = row.id.clone();
+    entries.push(
+        MenuEntry::new(lookup("canvas-context-mask-selection"), move || {
+            dispatch.apply(&crate::actions::CanvasAction::UseSelection(
+                crate::selection::UseSelection {
+                    what: "mask".into(),
+                    layer: Some(layer.clone()),
+                    ..crate::selection::UseSelection::default()
+                },
+            ));
+        })
+        .with_enabled(has_selection),
+    );
+    entries.push(MenuEntry::new(
+        lookup(if row.clip {
+            "canvas-context-unclip"
+        } else {
+            "canvas-layer-clip"
+        }),
+        invoke(|row| ArtworkResource::SET_LAYER_CLIP.with((row.id.clone(), !row.clip))),
+    ));
 }
 
 /// The chosen layer's opacity, medium and place among the layers.
