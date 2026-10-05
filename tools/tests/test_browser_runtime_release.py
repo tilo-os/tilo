@@ -114,6 +114,86 @@ class BrowserRuntimeRelease(unittest.TestCase):
         self.assertIn('tools/apps/publish-runtime-package.sh', publisher)
         self.assertIn('GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main', publisher)
 
+    def test_snapshot_admission_matches_actual_git_tree_and_rejects_source_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            (root / 'source.rs').write_text('fn main() {}\n')
+            (root / 'a').mkdir()
+            (root / 'a/tool').write_text('#!/bin/sh\ntrue\n')
+            (root / 'a/tool').chmod(0o755)
+            (root / 'a.txt').write_text('directory ordering\n')
+            (root / 'alias').symlink_to('source.rs')
+            subprocess.run(['git', '-C', str(root), 'add', 'source.rs', 'a', 'a.txt', 'alias'], check=True)
+            subprocess.run(['git', '-C', str(root), '-c', 'user.name=Proof',
+                            '-c', 'user.email=proof@example.test', 'commit', '-qm', 'source proof'], check=True)
+            revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+            tree = subprocess.check_output(['git', '-C', str(root), 'write-tree'], text=True).strip()
+            commit = subprocess.check_output(['git', '-C', str(root), 'cat-file', 'commit', revision])
+            source = release.Source(revision, commit)
+            self.assertEqual(release.snapshot_tree(root).hex(), tree)
+            with patch.dict(os.environ, {'REQUESTED_PUBLISH': 'false'}, clear=True):
+                self.assertEqual(release.verify_source(source, root), revision)
+                (root / 'source.rs').write_text('changed\n')
+                with self.assertRaisesRegex(ValueError, 'source tree differs'):
+                    release.verify_source(source, root)
+                (root / 'source.rs').write_text('fn main() {}\n')
+                (root / 'a/tool').chmod(0o644)
+                with self.assertRaisesRegex(ValueError, 'source tree differs'):
+                    release.verify_source(source, root)
+                (root / 'a/tool').chmod(0o755)
+                (root / 'alias').unlink()
+                (root / 'alias').symlink_to('a/tool')
+                with self.assertRaisesRegex(ValueError, 'source tree differs'):
+                    release.verify_source(source, root)
+                (root / 'alias').unlink()
+                (root / 'alias').symlink_to('source.rs')
+                (root / 'a.txt').unlink()
+                with self.assertRaisesRegex(ValueError, 'source tree differs'):
+                    release.verify_source(source, root)
+                (root / 'a.txt').write_text('directory ordering\n')
+                (root / 'unexpected.rs').write_text('not in admitted commit\n')
+                with self.assertRaisesRegex(ValueError, 'source tree differs'):
+                    release.verify_source(source, root)
+                (root / 'unexpected.rs').unlink()
+                with self.assertRaisesRegex(ValueError, 'commit object differs'):
+                    release.verify_source(release.Source(revision, commit + b'tampered'), root)
+                with self.assertRaisesRegex(ValueError, 'commit object differs'):
+                    release.verify_source(release.Source('a' * 40, commit), root)
+                (root / 'target').mkdir()
+                (root / 'target/output').write_text('known generated build output\n')
+                self.assertEqual(release.verify_source(source, root), revision)
+
+    def test_snapshot_proof_refuses_publication_keys_and_ci_before_compiler_children(self):
+        source = release.Source('a' * 40, b'not admitted')
+        for variable in ('GITHUB_EVENT_NAME', 'GITEA_EVENT_NAME', 'FORGEJO_EVENT_NAME',
+                         'GITHUB_ACTIONS', 'GITEA_ACTIONS', 'FORGEJO_ACTIONS',
+                         'RUNTIME_BUNDLE_IDENTITY_FILE', 'TAPP_PUBLISHER_IDENTITY_FILE',
+                         'RUNTIME_BUNDLE_SIGNING_KEY', 'TAPP_PUBLISHER_IDENTITY',
+                         'TILO_ENGINE_VERIFIER_BIN_DIR'):
+            with self.subTest(variable=variable):
+                with patch.dict(os.environ, {'REQUESTED_PUBLISH': 'false', variable: 'true'}, clear=True):
+                    with patch.object(release.subprocess, 'run') as children:
+                        with self.assertRaisesRegex(ValueError, 'snapshot proof refuses'):
+                            release.compile_engine(ROOT / 'target/refused-engine-proof', 'aarch64', source)
+                        children.assert_not_called()
+        with patch.dict(os.environ, {'REQUESTED_PUBLISH': 'true'}, clear=True):
+            with self.assertRaisesRegex(ValueError, 'cannot publish'):
+                release.verify_source(source)
+        result = subprocess.run(['python3', str(SCRIPT), 'compile', '--source-commit', 'eA=='],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('exclusive to the nonpublishing native proof', result.stderr)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'refused'
+            result = subprocess.run(['python3', str(SCRIPT), 'native-proof', '--out', str(out),
+                                     '--arch', 'aarch64', '--source', 'a' * 40, '--source-commit', 'eA=='],
+                                    env=dict(os.environ, REQUESTED_PUBLISH='false'),
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('must stay inside target', result.stderr)
+            self.assertFalse(out.exists())
+
     def test_cross_architecture_verification_executes_only_host_tools(self):
         # The fake verifier isolates executable routing; the explicit native fixture
         # separately proves the actual signed archive and thin-object reconstruction.

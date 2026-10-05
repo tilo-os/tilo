@@ -6,40 +6,57 @@ use std::process::Command;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let source = String::from_utf8(
-        Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(&root)
-            .output()?
-            .stdout,
-    )?;
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let (source, commit) = match arguments.as_slice() {
+        [] => {
+            let result = Command::new("python3")
+                .args(["tools/apps/browser_runtime_release.py", "source-proof"])
+                .current_dir(&root)
+                .output()?;
+            if !result.status.success() {
+                return Err(format!(
+                    "source admission failed; use the maintained proof-rcargo launcher: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                )
+                .into());
+            }
+            let proof: serde_json::Value = serde_json::from_slice(&result.stdout)?;
+            (
+                proof
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("source proof has no commit identity")?
+                    .to_owned(),
+                proof
+                    .get("commit")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("source proof has no commit object")?
+                    .to_owned(),
+            )
+        }
+        [source, commit] => (source.clone(), commit.clone()),
+        _ => return Err("expected source revision and actual encoded commit object".into()),
+    };
     let architecture = std::env::consts::ARCH;
     let output = "target/browser-runtime-release-proof";
-    for mode in ["compile", "seal"] {
-        let mut command = Command::new("python3");
-        command
-            .current_dir(&root)
-            .args([
-                "tools/apps/browser_runtime_release.py",
-                mode,
-                "--out",
-                output,
-                "--arch",
-                architecture,
-                "--source",
-                source.trim(),
-            ])
-            .env("REQUESTED_PUBLISH", "false")
-            .env_remove("RUNTIME_BUNDLE_IDENTITY_FILE")
-            .env_remove("TAPP_PUBLISHER_IDENTITY_FILE")
-            .env_remove("TILO_ENGINE_VERIFIER_BIN_DIR");
-        if mode == "seal" {
-            command.args(["--sequence", "1"]);
-        }
-        let status = command.status()?;
-        if !status.success() {
-            return Err(format!("native engine release {mode} failed: {status}").into());
-        }
+    let status = Command::new("python3")
+        .current_dir(&root)
+        .args([
+            "tools/apps/browser_runtime_release.py",
+            "native-proof",
+            "--out",
+            output,
+            "--arch",
+            architecture,
+            "--source",
+            &source,
+            "--source-commit",
+            &commit,
+        ])
+        .env("REQUESTED_PUBLISH", "false")
+        .status()?;
+    if !status.success() {
+        return Err(format!("native engine release proof failed: {status}").into());
     }
     let package = root.join(output).join("package");
     let payload_blob = package
