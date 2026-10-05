@@ -164,7 +164,8 @@ pub struct WakeRoute {
     /// The MAC the network sees, which for Wi-Fi is the per-network one.
     pub mac: [u8; 6],
     pub kind: WakeInterfaceKind,
-    /// Whether the interface wakes the device on a magic packet.
+    /// Whether its driver reports supported and enabled magic-packet wake.
+    /// This observation does not certify that the machine physically resumes.
     pub magic_packet: bool,
     /// The IPv4 subnet the interface was last seen on.
     pub subnet: Option<Ipv4Subnet>,

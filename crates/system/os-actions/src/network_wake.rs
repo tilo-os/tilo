@@ -36,6 +36,36 @@ pub fn configure(profile: &str, enabled: bool) -> Result<NetworkWakeStatus, Stri
     change(profile, enabled, &system_command)
 }
 
+/// Observe supported and enabled magic-packet wake on a host interface.
+///
+/// Run this bounded hardware probe off the presentation thread. It reports
+/// configuration only; it does not certify that the machine resumes.
+///
+/// # Errors
+/// Refuses invalid interface names and unreadable driver observations.
+pub fn interface_magic_packet_enabled(interface: &str, wifi: bool) -> Result<bool, String> {
+    interface_magic_packet(interface, wifi, &system_command)
+}
+
+fn interface_magic_packet(interface: &str, wifi: bool, run: &Runner<'_>) -> Result<bool, String> {
+    validate_interface(interface)?;
+    let (supported, enabled) = driver(interface, wifi, run)?;
+    Ok(supported && enabled)
+}
+
+fn validate_interface(interface: &str) -> Result<(), String> {
+    if interface.is_empty()
+        || interface.len() > 15
+        || interface.starts_with('-')
+        || !interface
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        return Err("NetworkManager returned an invalid interface name".into());
+    }
+    Ok(())
+}
+
 // Host services can retain a PATH without sbin. Locate these two read-only
 // system tools at their fixed installed paths without widening PATH.
 fn system_command(tool: &str, args: &[&str]) -> Result<String, String> {
@@ -80,14 +110,7 @@ fn active_interface(profile: &str, run: &Runner<'_>) -> Result<Option<String>, S
             continue;
         };
         if uuid == profile && interface != "--" && !interface.is_empty() {
-            if interface.len() > 15
-                || interface.starts_with('-')
-                || !interface
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-            {
-                return Err("NetworkManager returned an invalid interface name".into());
-            }
+            validate_interface(interface)?;
             return Ok(Some(interface.into()));
         }
     }
@@ -284,6 +307,43 @@ mod tests {
                 _ => Err(format!("unexpected command: {tool} {args:?}")),
             }
         }
+    }
+
+    #[test]
+    fn network_wake_interface_advertises_only_supported_enabled_driver_state() {
+        let nm = NetworkManager::default();
+        let probe = || interface_magic_packet("wlan0", true, &|tool, args| nm.run(tool, args));
+        assert!(
+            !probe().unwrap(),
+            "support alone cannot advertise enabled wake"
+        );
+        nm.applied.set(true);
+        assert!(probe().unwrap());
+        nm.unsupported.set(true);
+        assert!(
+            !probe().unwrap(),
+            "enabled without driver support is not a wake route"
+        );
+        assert!(
+            interface_magic_packet("wlan0", true, &|_, _| Err("unreadable radio".into())).is_err()
+        );
+        let calls = Cell::new(0);
+        for invalid in [
+            "",
+            "--help",
+            "../../phy0",
+            "wlan0;evil",
+            "interface-name-is-too-long",
+        ] {
+            assert!(
+                interface_magic_packet(invalid, true, &|_, _| {
+                    calls.set(calls.get() + 1);
+                    Err("unexpected probe".into())
+                })
+                .is_err()
+            );
+        }
+        assert_eq!(calls.get(), 0, "invalid names never reach a host tool");
     }
 
     #[test]

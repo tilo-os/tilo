@@ -1,7 +1,7 @@
 //! Waking one of the person's sleeping devices.
 //!
 //! A device advertises its [`WakeRoute`]s in its certified presence: the MAC
-//! each interface shows the network, whether a magic packet wakes it, and the
+//! each interface shows the network, whether magic-packet wake is enabled, and the
 //! IPv4 subnet it was last seen on. `device.wake` picks a device that is
 //! awake on the target's last subnet, this one first. That device sends the
 //! magic packet (UDP broadcast, port 9) and probes the target until it
@@ -13,7 +13,7 @@
 //! that is not one of the person's own devices.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -59,7 +59,7 @@ pub enum WakeRefusal {
     AmbiguousDevice(String),
     #[error("this device is already awake")]
     LocalDevice,
-    #[error("{0} can't be woken over the network")]
+    #[error("{0} has no enabled network wake route")]
     NoWakeRoute(String),
     #[error("no awake device on {}", join_subnets(.0))]
     NoAwakeSibling(Vec<Ipv4Subnet>),
@@ -126,10 +126,9 @@ fn wakeable_subnets(fabric: &DeviceFabric, target: &DeviceId) -> Vec<Ipv4Subnet>
     subnets
 }
 
-/// Whether a magic packet wakes the device through `route`: only what the
-/// device reports enabled. Nothing assumes a kind wakes; a Wi-Fi chip may
-/// list `WoWLAN` while the machine around it does not wake from it, so the
-/// image enables it only where that is verified.
+/// Whether the device observed supported and enabled magic-packet wake on
+/// this route. Hardware configuration does not certify physical recovery;
+/// the wake job reports a rejoin only after the target actually answers.
 fn wakes(route: &WakeRoute) -> bool {
     route.magic_packet
 }
@@ -334,8 +333,7 @@ struct WakeState {
     /// Wakes this device asked another one to perform: target → (waker, asked at).
     requested: BTreeMap<DeviceId, (DeviceId, Instant)>,
     events: VecDeque<WakeEvent>,
-    routes: Vec<WakeRoute>,
-    scanned: Option<Instant>,
+    routes: RouteScanner,
 }
 
 fn wake_state() -> &'static Mutex<WakeState> {
@@ -381,21 +379,81 @@ fn push_event(
     });
 }
 
-/// This device's own wake routes, re-read from its interfaces at most every
-/// [`ROUTE_SCAN_INTERVAL`]. `previous` is what it last advertised.
-pub fn local_routes(previous: &[WakeRoute]) -> Vec<WakeRoute> {
-    let now = Instant::now();
-    let Ok(mut state) = wake_state().lock() else {
-        return previous.to_vec();
-    };
-    if state
-        .scanned
-        .is_none_or(|at| now.saturating_duration_since(at) >= ROUTE_SCAN_INTERVAL)
-    {
-        state.routes = remember_subnets(scan_interfaces(), previous);
-        state.scanned = Some(now);
+/// A single bounded background scan, polled without waiting by the frame path.
+#[derive(Default)]
+struct RouteScanner {
+    routes: Vec<WakeRoute>,
+    scanned: Option<Instant>,
+    observed: Option<Instant>,
+    pending: Option<(Instant, mpsc::Receiver<Vec<WakeRoute>>)>,
+}
+
+impl RouteScanner {
+    fn sample(
+        &mut self,
+        previous: &[WakeRoute],
+        now: Instant,
+        scan: impl FnOnce() -> Vec<WakeRoute> + Send + 'static,
+    ) -> Vec<WakeRoute> {
+        if let Some((started, receiver)) = &self.pending {
+            match receiver.try_recv() {
+                Ok(routes) => {
+                    self.routes = remember_subnets(routes, previous);
+                    self.observed = Some(*started);
+                    self.scanned = Some(now);
+                    self.pending = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.routes.clear();
+                    self.scanned = Some(now);
+                    self.pending = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.pending.is_none()
+            && self
+                .scanned
+                .is_none_or(|at| now.saturating_duration_since(at) >= ROUTE_SCAN_INTERVAL)
+        {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            match std::thread::Builder::new()
+                .name("tilo-wake-routes".into())
+                .spawn(move || {
+                    let _ = sender.send(scan());
+                }) {
+                Ok(_) => self.pending = Some((now, receiver)),
+                Err(error) => {
+                    tracing::warn!(%error, "wake route worker could not start");
+                    self.routes.clear();
+                    self.scanned = Some(now);
+                }
+            }
+        }
+        let mut routes = self.routes.clone();
+        if self.observed.is_none_or(|at| {
+            now.saturating_duration_since(at) >= ROUTE_SCAN_INTERVAL.saturating_mul(2)
+        }) {
+            for route in &mut routes {
+                route.magic_packet = false;
+            }
+        }
+        routes
     }
-    state.routes.clone()
+}
+
+/// Poll this device's own observed wake routes and schedule refreshes at most
+/// every [`ROUTE_SCAN_INTERVAL`]. Hardware probes never run under this mutex or
+/// on the caller's presentation thread. `previous` retains only known subnets.
+pub fn local_routes(previous: &[WakeRoute]) -> Vec<WakeRoute> {
+    wake_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            state
+                .routes
+                .sample(previous, Instant::now(), scan_interfaces)
+        },
+    )
 }
 
 fn awake(network: &ShellNetwork, local: &DeviceId, device: &DeviceId) -> bool {
@@ -643,6 +701,9 @@ fn scan_interfaces() -> Vec<WakeRoute> {
     let subnets = ipv4_subnets();
     let mut routes = Vec::new();
     for entry in entries.flatten() {
+        if routes.len() >= crate::shell::device_fabric::MAX_WAKE_ROUTES {
+            break;
+        }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         // Only hardware: bridges, tunnels, VPNs and loopback wake nothing.
@@ -664,7 +725,11 @@ fn scan_interfaces() -> Vec<WakeRoute> {
         let route = WakeRoute {
             mac,
             kind,
-            magic_packet: magic_packet_enabled(&name),
+            magic_packet: os_actions::network_wake::interface_magic_packet_enabled(
+                &name,
+                kind == WakeInterfaceKind::WiFi,
+            )
+            .unwrap_or(false),
             subnet: subnets.get(&name).copied(),
         };
         if routes.len() < crate::shell::device_fabric::MAX_WAKE_ROUTES
@@ -748,56 +813,6 @@ fn ipv4_subnets() -> BTreeMap<String, Ipv4Subnet> {
     subnets
 }
 
-/// Whether the driver reports magic-packet wake enabled (`ethtool` `g`).
-#[cfg(target_os = "linux")]
-fn magic_packet_enabled(interface: &str) -> bool {
-    const SIOCETHTOOL: libc::c_ulong = 0x8946;
-    const ETHTOOL_GWOL: u32 = 0x0000_0005;
-    const WAKE_MAGIC: u32 = 1 << 5;
-    #[repr(C)]
-    struct WolInfo {
-        cmd: u32,
-        supported: u32,
-        wolopts: u32,
-        sopass: [u8; 6],
-    }
-    #[repr(C)]
-    struct Request {
-        name: [libc::c_char; libc::IFNAMSIZ],
-        data: *mut libc::c_void,
-        _union_rest: [u8; 16],
-    }
-    let bytes = interface.as_bytes();
-    if bytes.len() >= libc::IFNAMSIZ {
-        return false;
-    }
-    let mut wol = WolInfo {
-        cmd: ETHTOOL_GWOL,
-        supported: 0,
-        wolopts: 0,
-        sopass: [0; 6],
-    };
-    let mut request = Request {
-        name: [0; libc::IFNAMSIZ],
-        data: (&raw mut wol).cast(),
-        _union_rest: [0; 16],
-    };
-    for (slot, byte) in request.name.iter_mut().zip(bytes) {
-        *slot = libc::c_char::from_ne_bytes([*byte]);
-    }
-    // SAFETY: a datagram socket only to carry the ioctl; closed below.
-    let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
-    if socket < 0 {
-        return false;
-    }
-    // SAFETY: `request` is an `ifreq` whose data points at a live
-    // `ethtool_wolinfo` for the duration of the call.
-    let answered = unsafe { libc::ioctl(socket, SIOCETHTOOL, &raw mut request) } == 0;
-    // SAFETY: `socket` is ours and closed once.
-    unsafe { libc::close(socket) };
-    answered && wol.wolopts & WAKE_MAGIC != 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,6 +873,111 @@ mod tests {
             fabric.upsert(snapshot).unwrap();
         }
         fabric
+    }
+
+    fn poll_route_scan(
+        scanner: &mut RouteScanner,
+        previous: &[WakeRoute],
+        at: Instant,
+    ) -> Vec<WakeRoute> {
+        let started = Instant::now();
+        loop {
+            let routes = scanner.sample(previous, at, Vec::new);
+            if scanner.pending.is_none() {
+                return routes;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "background route scan never completed"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn wake_route_scans_are_off_thread_single_flight_and_adopt_observed_wifi() {
+        let at = Instant::now();
+        let previous = vec![route(1, true, Some("192.168.1.0/24"))];
+        let mut scanner = RouteScanner::default();
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        assert!(
+            scanner
+                .sample(&previous, at, move || {
+                    entered_tx.send(std::thread::current().id()).unwrap();
+                    release_rx.recv().unwrap();
+                    let mut wifi = route(1, true, None);
+                    wifi.kind = WakeInterfaceKind::WiFi;
+                    vec![wifi]
+                })
+                .is_empty(),
+            "initial publication never invents enabled hardware"
+        );
+        assert_ne!(
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            std::thread::current().id()
+        );
+        assert!(scanner.sample(&previous, at, Vec::new).is_empty());
+        release_tx.send(()).unwrap();
+        let observed = poll_route_scan(&mut scanner, &previous, at);
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].kind, WakeInterfaceKind::WiFi);
+        assert!(observed[0].magic_packet);
+        assert_eq!(observed[0].subnet, previous[0].subnet);
+        let here = vec![route(2, false, Some("192.168.1.0/24"))];
+        let enabled_fabric = fabric(vec![device("wifi", "Wi-Fi device", observed)]);
+        assert!(plan_wake(&enabled_fabric, &id("here"), &here, &id("wifi"), |_| true).is_ok());
+        let refresh_at = at + ROUTE_SCAN_INTERVAL;
+        scanner.sample(&previous, refresh_at, || vec![route(1, false, None)]);
+        let disabled = poll_route_scan(&mut scanner, &previous, refresh_at);
+        assert!(
+            !disabled[0].magic_packet,
+            "previous enabled state is not remembered"
+        );
+        let disabled_fabric = fabric(vec![device("wifi", "Wi-Fi device", disabled)]);
+        assert!(matches!(
+            plan_wake(&disabled_fabric, &id("here"), &here, &id("wifi"), |_| true),
+            Err(WakeRefusal::NoWakeRoute(_))
+        ));
+    }
+
+    #[test]
+    fn wake_route_delayed_completion_keeps_its_observation_age() {
+        let at = Instant::now();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut scanner = RouteScanner {
+            pending: Some((at, receiver)),
+            ..Default::default()
+        };
+        sender
+            .send(vec![route(1, true, Some("192.168.1.0/24"))])
+            .unwrap();
+        let delayed = scanner.sample(&[], at + ROUTE_SCAN_INTERVAL.saturating_mul(2), Vec::new);
+        assert!(
+            !delayed[0].magic_packet,
+            "adoption cannot make an old observation fresh"
+        );
+    }
+
+    #[test]
+    fn wake_route_failed_or_stalled_scan_never_advertises_stale_enabled_state() {
+        let at = Instant::now();
+        let mut scanner = RouteScanner {
+            routes: vec![route(1, true, Some("192.168.1.0/24"))],
+            scanned: Some(at),
+            observed: Some(at),
+            pending: None,
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        scanner.pending = Some((at, receiver));
+        let stale = scanner.sample(&[], at + ROUTE_SCAN_INTERVAL.saturating_mul(2), Vec::new);
+        assert!(!stale[0].magic_packet);
+        drop(sender);
+        assert!(
+            scanner
+                .sample(&[], at + ROUTE_SCAN_INTERVAL.saturating_mul(2), Vec::new)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -966,7 +1086,7 @@ mod tests {
             })
             .unwrap_err()
             .to_string(),
-            "Tablet can't be woken over the network",
+            "Tablet has no enabled network wake route",
             "an interface without magic-packet wake enabled is no wake route"
         );
         wifi.magic_packet = true;
