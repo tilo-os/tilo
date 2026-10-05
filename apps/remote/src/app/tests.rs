@@ -6,10 +6,6 @@ use ui::headless::Framed;
 use ui::prelude::TestApp;
 use ui::tilo_resource::Invoke;
 
-fn doc() -> AutoCommit {
-    AutoCommit::new()
-}
-
 /// An app holding the sample connections and the legacy RDP profile, as
 /// the `session-rdp` scenario's actions leave it.
 fn demo() -> RemoteApp {

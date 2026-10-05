@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 
-use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

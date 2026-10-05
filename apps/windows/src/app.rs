@@ -13,7 +13,6 @@ use crate::model::{AppStatus, ApplianceState, Catalogue, Route, VmInstallConfirm
 use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider};
 use crate::strings;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
 use std::fs::File;
 use std::rc::Rc;
 use ui::a11y::Action as AccessibilityAction;

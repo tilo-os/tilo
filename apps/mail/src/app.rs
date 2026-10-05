@@ -7424,7 +7424,7 @@ mod tests {
 
         // Phase `edited_setup_cannot_persist_an_earlier_successful_verification`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(Some(0));
             let original = app.shared.borrow().accounts.accounts[0].config.clone();
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -7450,7 +7450,7 @@ mod tests {
 
         // Phase `disconnected_setup_worker_keeps_the_sheet_open_without_saving`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(Some(0));
             let original = app.shared.borrow().accounts.accounts[0].config.clone();
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -7475,7 +7475,7 @@ mod tests {
 
         // Phase `successful_setup_worker_persists_only_its_verified_snapshot`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(Some(0));
             app.set_setup_input(0, "Verified fixture account");
             let verified = app.read_setup_config();
@@ -7616,7 +7616,7 @@ mod tests {
     fn discovery_results_apply_only_to_the_current_sheet_and_custody_failures_keep_setup_open() {
         // Phase `discovery_applies_through_sync_without_overwriting_manual_server_edits`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(None);
             app.set_setup_input(1, "fixture@custom.invalid");
             let (sender, _) = pending_discovery(&mut app);
@@ -7638,7 +7638,7 @@ mod tests {
 
         // Phase `discovery_for_a_previous_address_cannot_fill_the_current_sheet`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(None);
             app.set_setup_input(1, "old@custom.invalid");
             let (sender, _) = pending_discovery(&mut app);
@@ -7654,7 +7654,7 @@ mod tests {
 
         // Phase `closing_discovery_cancels_worker_and_reopening_rejects_its_result`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(None);
             app.set_setup_input(1, "fixture@custom.invalid");
             let (sender, cancellation) = pending_discovery(&mut app);

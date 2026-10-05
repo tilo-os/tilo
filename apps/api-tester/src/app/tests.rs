@@ -7,6 +7,7 @@ use crate::actions::API_TESTER_ACTION_TYPE;
 use crate::doc::ApiDoc;
 use crate::resource::ApiTesterShell;
 use automerge::ROOT;
+use ui::Theme;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Invoke, Resource as _};
 const METHOD_PATH: &str = "method";

@@ -182,17 +182,6 @@ impl PdfApp {
         match hit {
             ToolbarHit::Tool(t) => self.set_tool(*t),
             ToolbarHit::MarkerColour => self.open_marker_colours(),
-            ToolbarHit::Swatch(s) => {
-                self.swatch = *s;
-                if let Some(id) = self.selected_anno.clone() {
-                    self.perform_action(
-                        state,
-                        &crate::actions::set_annotation_color_action(&id, *s),
-                    );
-                    self.reload(state);
-                }
-                self.dirty = true;
-            }
             ToolbarHit::ZoomIn => self.zoom_by(1.15),
             ToolbarHit::ZoomOut => self.zoom_by(1.0 / 1.15),
             ToolbarHit::Fit => {
@@ -1861,10 +1850,17 @@ mod event_tests {
             .clone();
         app.selected_anno = Some(hl.id.clone());
         app.tool = Tool::Highlight;
-        app.apply_toolbar(
-            &ToolbarHit::Swatch(Swatch::Green),
-            &mut Edits::lend(&mut st.doc),
+        assert!(
+            Widget::perform_semantic_action(
+                &mut app,
+                &format!("pdf.swatch:{}", Swatch::Green.key()),
+                &ui::a11y::Action::Activate,
+                &mut Edits::lend(&mut st.doc),
+                &automerge::ROOT,
+            ),
+            "the published marker-colour action recolours the selection"
         );
+        assert_eq!(app.swatch, Swatch::Green);
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
         assert!(

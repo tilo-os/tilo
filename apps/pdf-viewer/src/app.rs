@@ -312,7 +312,6 @@ enum ToolbarHit {
     /// The zoom stepper's value, edited in place.
     ZoomValue,
     Tool(Tool),
-    /// Choose the marker colour (from the colour popover).
     /// Open the marker-colour popover from its well.
     MarkerColour,
     ZoomIn,

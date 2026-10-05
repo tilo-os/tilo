@@ -1947,6 +1947,7 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
     use crate::widgets::{CardAction, CardDetails};
     use automerge::{AutoCommit, ReadDoc};
