@@ -269,7 +269,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         let encoded = next.build_json(&serde_json::Map::new()).unwrap();
         let started = app
             .start_operation(
-                &ui::widget::ResourceOperation::local(
+                &ui::host_operation::ResourceOperation::local(
                     tilo_actions::InvocationId::new(),
                     tilo_actions::OperationKind::Effect,
                     &encoded.type_id,
@@ -281,7 +281,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
             .unwrap();
         assert!(matches!(
             started,
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::host_operation::ResourceOperationStart::Completed(_))
         ));
         assert_eq!(app.step, Step::Network);
 
@@ -296,7 +296,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         })
         .unwrap();
         let refused = app.start_operation(
-            &ui::widget::ResourceOperation::local(
+            &ui::host_operation::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::Effect,
                 op::OPERATION_TYPE,

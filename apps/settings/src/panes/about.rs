@@ -222,7 +222,7 @@ pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
             Box::new(
                 Row::new()
                     .push(Box::new(cx.bind_invocation(
-                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label, None).content_sized(),
+                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label).content_sized(),
                         AboutEffect::BackUpIdentity,
                     )))
                     .push(Box::new(Spacer::new())),

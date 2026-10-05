@@ -33,8 +33,8 @@ use tilo_actions::{
 };
 use tilo_resource::{ActionRef, Effect, Invoke, Resource};
 use ui_core::WakeHandle;
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::portal::{ContentsOutcome, PickRequest, PickedContents, PortalOutcome, SaveOutcome};
-use ui_core::widget::{ResourceOperation, ResourceOperationStart};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -73,7 +73,7 @@ impl From<PickedContents> for ChosenFile {
 const CHOOSER_GONE: &str = "the file chooser closed without answering";
 
 /// What an effect handler (or a job's completion) answers.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Effected {
     /// Finished: the output goes back to whoever invoked the effect.
     Done(ActionOutput),

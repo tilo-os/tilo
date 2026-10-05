@@ -217,16 +217,12 @@ impl BrowserWindow {
             column = column.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("browser.download-exit.keep", "Keep downloading", None)
+                        Button::new("browser.download-exit.keep", "Keep downloading")
                             .on_effect(move || keep.set(Some(false))),
                     ))
                     .push(Box::new(
-                        Button::new(
-                            "browser.download-exit.cancel",
-                            "Cancel downloads and quit",
-                            None,
-                        )
-                        .on_effect(move || cancel.set(Some(true))),
+                        Button::new("browser.download-exit.cancel", "Cancel downloads and quit")
+                            .on_effect(move || cancel.set(Some(true))),
                     )),
             ));
         }
@@ -789,6 +785,7 @@ impl AppWidget for BrowserWindow {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use ui::framework::HostDelivery as _;
     use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
     /// A page engine that records commands and replays queued events and new
@@ -926,13 +923,10 @@ mod tests {
         assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
         assert!(
             window
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec(id).unwrap()
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap(),
                     doc,
                     &automerge::ROOT
                 )

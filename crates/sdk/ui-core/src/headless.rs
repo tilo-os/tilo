@@ -846,7 +846,7 @@ impl FrameHarness {
             return Err(component.setup_error(error));
         }
         let history = component.history.take();
-        let root = Box::new(crate::widget::BoundAppWidget { component });
+        let root = Box::new(crate::widget::BoundAppWidget::new(component));
         if let Some(registration) = &history
             && let Err(error) = registration.validate_root(root.as_ref())
         {
@@ -4176,10 +4176,6 @@ impl FrameHarness {
             }
             if !owns_document && self.state.doc.get_heads() != before {
                 self.state.record_committed_action(before, None, None);
-                crate::undo::on_commit(self.root.as_mut());
-            } else if !owns_document && crate::undo::needs_commit(self.root.as_ref()) {
-                self.state.commit_action(None, None);
-                crate::undo::on_commit(self.root.as_mut());
             }
             // Action-bound controls enqueue an intent instead of mutating the
             // document inside `perform_action`; drain it before presenting
@@ -5190,18 +5186,6 @@ impl FrameHarness {
 
     fn host_tick(&mut self) {
         self.idle_control_tick();
-        let author = self.author.clone();
-        if crate::undo::needs_commit(self.root.as_ref()) {
-            // Authored *and* carrying the widget's commit context. An
-            // anonymous entry is invisible to author-scoped undo, so a
-            // scenario that pressed Ctrl+Z would find nothing where the user
-            // finds their last edit; dropping the context loses the
-            // provenance the history explorer reads.
-            let context = crate::undo::take_commit_context(self.root.as_mut());
-            self.state
-                .commit_action_authored_with_context(None, None, Some(author), context);
-            crate::undo::on_commit(self.root.as_mut());
-        }
         // An Undo/Redo control the widget tree activated during that event.
         // Same route the live host takes: the widget asks, the host performs.
         self.drain_undo_requests();
@@ -7284,6 +7268,28 @@ impl FrameHarness {
         );
     }
 
+    /// What a whole-window capture draws of the root, as the desktop's
+    /// "full app" capture does: the size the root shows beyond its window
+    /// and its scene at that size. `None` when it shows nothing more than
+    /// the window. The next frame lays the root out again as it lives.
+    pub fn complete_content(&mut self) -> Option<(vello::kurbo::Size, Scene)> {
+        use crate::widget::CompleteContentWidgetExt as _;
+        let size = self.root.complete_content_size()?;
+        let origin = self.root.get_rect().origin();
+        let bounds = vello::kurbo::Rect::from_origin_size(origin, size);
+        let mut scene = Scene::new();
+        let drawn = self.root.draw_complete_content(
+            &mut scene,
+            bounds,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+        );
+        self.discard_layout_tree();
+        drawn.then_some((size, scene))
+    }
+
     /// The scene the last laid-out frame encoded: what [`Self::render_rgba`]
     /// rasterises. Its encoding is exact where pixels are not, so a capture's
     /// determinism is asserted on it.
@@ -8528,7 +8534,7 @@ mod tests {
             Box::new(
                 crate::widget::Column::new()
                     .push(Box::new(input))
-                    .push(Box::new(crate::widget::Button::new("done", "Done", None))),
+                    .push(Box::new(crate::widget::Button::new("done", "Done"))),
             ),
             (320, 180),
             Theme::dark(),
@@ -8632,7 +8638,7 @@ mod tests {
             Box::new(
                 crate::widget::Column::new()
                     .push(Box::new(input))
-                    .push(Box::new(crate::widget::Button::new("done", "Done", None))),
+                    .push(Box::new(crate::widget::Button::new("done", "Done"))),
             ),
             (320, 180),
             Theme::dark(),
@@ -8805,7 +8811,7 @@ mod tests {
 
             let form = Column::new()
                 .push(Box::new(TextInput::local().with_id("field")))
-                .push(Box::new(Button::new("next", "Next", None)));
+                .push(Box::new(Button::new("next", "Next")));
             let mut fields = Driver::new(State::new(), Box::new(form), (320, 160));
             fields.tab(false);
             let field = fields.focused().expect("first field has focus");
@@ -8822,7 +8828,7 @@ mod tests {
             let activations: std::rc::Rc<std::cell::Cell<usize>> =
                 std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = std::rc::Rc::clone(&activations);
-            let button = Button::new("save", "Save", None).on_click(move || {
+            let button = Button::new("save", "Save").on_click(move || {
                 observed.set(observed.get().saturating_add(1));
             });
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
@@ -9288,9 +9294,9 @@ mod tests {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let operation_calls = calls.clone();
             let root = crate::widget::resource_actions::immediate(
-                Box::new(Column::new().push(Box::new(
-                    Button::new("save", "Save", None).on_action(binding),
-                ))),
+                Box::new(
+                    Column::new().push(Box::new(Button::new("save", "Save").on_action(binding))),
+                ),
                 resource,
                 move |_| {
                     operation_calls.set(operation_calls.get() + 1);
@@ -9306,7 +9312,7 @@ mod tests {
 
             let legacy = Driver::new(
                 State::new(),
-                Box::new(Button::new("legacy", "Legacy", None).on_click(|| {})),
+                Box::new(Button::new("legacy", "Legacy").on_click(|| {})),
                 (320, 160),
             );
             let audit = legacy.native_app_audit();
@@ -9315,7 +9321,7 @@ mod tests {
 
             let omitted = Driver::new(
                 State::new(),
-                Box::new(Button::new("omitted", "Omitted", None)),
+                Box::new(Button::new("omitted", "Omitted")),
                 (320, 160),
             );
             assert!(
@@ -9329,7 +9335,7 @@ mod tests {
 
             let disabled = Driver::new(
                 State::new(),
-                Box::new(Button::new("unavailable", "Unavailable", None).with_enabled(false)),
+                Box::new(Button::new("unavailable", "Unavailable").with_enabled(false)),
                 (320, 160),
             );
             assert!(
@@ -9367,7 +9373,7 @@ mod tests {
         {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let invoked = calls.clone();
-            let button = Button::new("refresh", "Refresh", None).on_effect(move || {
+            let button = Button::new("refresh", "Refresh").on_effect(move || {
                 invoked.set(invoked.get() + 1);
             });
             let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
@@ -9381,31 +9387,6 @@ mod tests {
                 .perform_named("refresh", &crate::a11y::Action::Activate)
                 .expect("the visible control enters through its action");
             assert_eq!(calls.get(), 1);
-        }
-
-        // Case `collaborative_button_is_projected_for_search_and_agents`.
-        {
-            use automerge::ReadDoc as _;
-
-            let button = Button::new("complete", "Complete", Some("completed"));
-            let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
-
-            assert!(driver.native_app_audit().is_certified());
-            assert!(driver.resources().iter().any(|resource| {
-                resource.kind == "tilo.ui.control"
-                    && resource.label == "Complete"
-                    && resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "activate")
-            }));
-            driver
-                .perform_named("complete", &crate::a11y::Action::Activate)
-                .expect("semantic activation reaches the collaborative control");
-            assert!(matches!(
-                driver.state.doc.get(&automerge::ROOT, "completed"),
-                Ok(Some((automerge::Value::Scalar(value), _))) if value.as_ref() == &automerge::ScalarValue::Boolean(true)
-            ));
         }
 
         // Case `accessibility_audit_checks_controls_and_synthetic_identity_contracts`.
@@ -9457,7 +9438,7 @@ mod tests {
 
             let driver = Driver::new(
                 State::new(),
-                Box::new(Button::new("save", "Save", None)),
+                Box::new(Button::new("save", "Save")),
                 (400, 200),
             );
             assert!(driver.accessibility_audit().is_clean());
@@ -9605,7 +9586,7 @@ mod tests {
         // A button click must reach the widget through the same
         // `handle_event` the live app calls.
         {
-            let button = Button::new("btn", "Save", None);
+            let button = Button::new("btn", "Save");
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
             let targets = driver.targets();
             assert!(
@@ -9628,7 +9609,7 @@ mod tests {
 
             let fired = Rc::new(Cell::new(0));
             let fired_by_button = Rc::clone(&fired);
-            let button = Button::new("save", "Save", None)
+            let button = Button::new("save", "Save")
                 .fit_content(32.0)
                 .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
@@ -9707,7 +9688,7 @@ mod tests {
         {
             let mut driver = Driver::new(
                 State::new(),
-                Box::new(Button::new("save", "Save", None)),
+                Box::new(Button::new("save", "Save")),
                 (400, 200),
             );
             let initial = crate::InteractionEnvironment {
@@ -9734,11 +9715,7 @@ mod tests {
 
         // Case `clicking_a_missing_target_is_an_error`.
         {
-            let mut driver = Driver::new(
-                State::new(),
-                Box::new(Button::new("b", "B", None)),
-                (400, 200),
-            );
+            let mut driver = Driver::new(State::new(), Box::new(Button::new("b", "B")), (400, 200));
             let err = driver.click_named("no_such_widget").unwrap_err();
             assert!(err.contains("no_such_widget"), "{err}");
         }
@@ -9747,7 +9724,7 @@ mod tests {
         {
             let mut driver = Driver::new(
                 State::new(),
-                Box::new(Button::new("ready", "Ready", None)),
+                Box::new(Button::new("ready", "Ready")),
                 (400, 200),
             );
             driver
@@ -9854,40 +9831,6 @@ mod tests {
             assert!(semantics.state.focused);
         }
 
-        // Case `semantic_document_edit_is_immediately_undoable`.
-        {
-            let input = TextInput::local()
-                .with_id("title-input")
-                .with_on_change_path("title");
-            let mut driver = Driver::new_with_controlled_inputs(
-                State::new(),
-                Box::new(input),
-                (400, 200),
-                Theme::dark(),
-                crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("task-4-fixture-author".into()),
-            );
-
-            driver
-                .perform_named(
-                    "title-input",
-                    &crate::a11y::Action::SetValue("Project Atlas".to_owned()),
-                )
-                .expect("set durable value through semantic action");
-            driver
-                .state_mut()
-                .undo(None, None)
-                .expect("semantic mutation records one undo boundary");
-            driver.relayout();
-
-            let semantics = driver
-                .inspection()
-                .root
-                .semantics
-                .expect("text input semantics");
-            assert_eq!(semantics.value.as_deref(), Some(""));
-        }
-
         // Case `semantic_activate_uses_the_widget_action_path`.
         {
             use std::cell::Cell;
@@ -9895,7 +9838,7 @@ mod tests {
 
             let fired = Rc::new(Cell::new(0));
             let observed = Rc::clone(&fired);
-            let button = Button::new("save", "Save", None).on_click(move || {
+            let button = Button::new("save", "Save").on_click(move || {
                 observed.set(observed.get() + 1);
             });
             let mut driver = Driver::new_with_controlled_inputs(
@@ -9917,7 +9860,7 @@ mod tests {
         {
             let mut driver = Driver::new(
                 State::new(),
-                Box::new(Button::new("save", "Save", None)),
+                Box::new(Button::new("save", "Save")),
                 (400, 200),
             );
             let error = driver
@@ -10038,7 +9981,7 @@ mod tests {
                         .with_secret(true)
                         .with_accessible_name("Password"),
                 ))
-                .push(Box::new(Button::new("save", "Save", None)));
+                .push(Box::new(Button::new("save", "Save")));
             let driver = Driver::new(State::new(), Box::new(root), (640, 360));
             let json = driver.inspection_json().expect("inspection JSON");
             let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
@@ -10097,7 +10040,7 @@ mod tests {
                 .doc
                 .put(&automerge::ROOT, "greeting", "hello")
                 .unwrap();
-            let mut driver = Driver::new(state, Box::new(Button::new("b", "B", None)), (400, 200));
+            let mut driver = Driver::new(state, Box::new(Button::new("b", "B")), (400, 200));
             let json = driver.dump_json();
             assert!(json.contains("greeting"), "{json}");
             assert!(json.contains("hello"), "{json}");
@@ -10347,7 +10290,7 @@ mod tests {
             State::new(),
             Box::new(
                 Column::new()
-                    .push(Box::new(Button::new("toolbar", "Toolbar", None)))
+                    .push(Box::new(Button::new("toolbar", "Toolbar")))
                     .push(Box::new(ConsumingActivationControl {
                         activations: activations.clone(),
                         focused: false,
@@ -10373,9 +10316,9 @@ mod tests {
             State::new(),
             Box::new(
                 Column::new()
-                    .push(Box::new(Button::new("enabled", "Enabled", None)))
+                    .push(Box::new(Button::new("enabled", "Enabled")))
                     .push(Box::new(
-                        Button::new("disabled", "Disabled", None).with_enabled(false),
+                        Button::new("disabled", "Disabled").with_enabled(false),
                     )),
             ),
             (400, 200),
@@ -10621,7 +10564,7 @@ mod tests {
     fn semantic_token_focus_rejects_unpublished_targets() {
         let mut driver = Driver::new_with_controlled_inputs(
             State::new(),
-            Box::new(Button::new("save", "Save", None)),
+            Box::new(Button::new("save", "Save")),
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
@@ -10633,45 +10576,6 @@ mod tests {
                 .is_err()
         );
         assert!(driver.focused_access_node().is_none());
-    }
-
-    #[test]
-    fn semantic_empty_replacement_clears_bound_text_and_has_one_undo_boundary() {
-        let input = TextInput::local()
-            .with_id("draft")
-            .with_on_change_path("draft");
-        let mut driver = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(input),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
-        );
-        driver
-            .perform_named("draft", &crate::a11y::Action::SetValue("Draft 🦀".into()))
-            .unwrap();
-        driver
-            .perform_named("draft", &crate::a11y::Action::SetValue(String::new()))
-            .unwrap();
-        assert_eq!(
-            driver
-                .access_node_named("draft", None)
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("")
-        );
-        driver.state_mut().undo(None, None).unwrap();
-        driver.relayout();
-        assert_eq!(
-            driver
-                .access_node_named("draft", None)
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("Draft 🦀")
-        );
     }
 }
 
@@ -11028,19 +10932,25 @@ mod undo_driver_tests {
     use super::*;
     use crate::state::State;
 
-    /// A minimal editor: appends every typed character to `body` and asks for
-    /// a commit boundary straight away.
+    /// A minimal editor: appends every typed character to `body` and reports
+    /// the heads before that write as its committed action.
     ///
     /// Deliberately a widget rather than a direct write to the document —
-    /// the edit has to travel the driver's own `send` → `needs_commit` →
-    /// commit path, or a test cannot see how that path attributes the action.
+    /// the edit has to travel the driver's own `send` → owner bracket →
+    /// record path, or a test cannot see how that path attributes the action.
     struct Typer {
         rect: vello::kurbo::Rect,
-        pending: bool,
+        committed: Option<Vec<automerge::ChangeHash>>,
+    }
+
+    impl crate::undo::CommittedActions for Typer {
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            self.committed.take()
+        }
     }
 
     impl crate::widget::Widget for Typer {
-        crate::provides!(dyn crate::undo::UndoPoints);
+        crate::provides!(dyn crate::undo::CommittedActions);
 
         fn build_layout(
             &mut self,
@@ -11096,6 +11006,7 @@ mod undo_driver_tests {
             let winit::keyboard::Key::Character(c) = &ke.logical_key else {
                 return;
             };
+            let before = doc.get_heads();
             let obj = match doc.get(&automerge::ROOT, "body") {
                 Ok(Some((_, o))) => o,
                 _ => doc
@@ -11104,7 +11015,7 @@ mod undo_driver_tests {
             };
             let len = doc.length(&obj);
             doc.splice_text(&obj, len, 0, c.as_str()).unwrap();
-            self.pending = true;
+            self.committed.get_or_insert(before);
             *ctx.handled = true;
         }
 
@@ -11117,21 +11028,12 @@ mod undo_driver_tests {
         }
     }
 
-    impl crate::undo::UndoPoints for Typer {
-        fn needs_commit(&self) -> bool {
-            self.pending
-        }
-        fn on_commit(&mut self) {
-            self.pending = false;
-        }
-    }
-
     /// A typing surface plus history controls, and a driver over them.
     fn undo_driver() -> Driver {
         let row = crate::widget::Row::new()
             .push(Box::new(Typer {
                 rect: vello::kurbo::Rect::ZERO,
-                pending: false,
+                committed: None,
             }))
             .push(Box::new(crate::widget::UndoButton::undo()))
             .push(Box::new(crate::widget::UndoButton::redo()));
@@ -11244,12 +11146,12 @@ mod undo_driver_tests {
 /// Undo for an app whose edits are dispatched [`tilo_actions`] actions — the
 /// shape every migrated Tilo app has — driven headlessly.
 ///
-/// The module above drives the *other* editing path, `needs_commit` /
-/// `on_commit`, where the widget writes the document itself. An app built on
-/// [`ActionHost`](crate::action_host::ActionHost) never sets `needs_commit`:
-/// its boundary arrives through
+/// The module above drives a widget that writes the document itself and
+/// reports its own bracket. An app built on
+/// [`ActionHost`](crate::action_host::ActionHost) writes only through
+/// dispatched actions: its boundary arrives through
 /// [`take_committed_action`](crate::undo::CommittedActions::take_committed_action)
-/// instead. Until the driver drained that, a headless test of such an app could
+/// from the action host. Until the driver drained that, a headless test of such an app could
 /// deliver the input but could not observe the undo history the input produced,
 /// so undo behaviour was untestable for the majority of the fleet.
 #[cfg(test)]
@@ -11287,8 +11189,8 @@ mod dispatched_action_driver_tests {
 
     /// An editor in the migrated shape: every edit is dispatched through
     /// [`ActionHost`](crate::action_host::ActionHost), and the only thing it
-    /// tells the host is the bracket. It deliberately does **not** implement
-    /// `needs_commit` — that is the whole distinction under test.
+    /// tells the host is the bracket the action host captured — that is the
+    /// whole distinction under test.
     ///
     /// Two ways in, because a canvas app has two: a keystroke, and an
     /// accessibility verb routed to `perform_action_at` (how an assistive
@@ -11569,7 +11471,7 @@ mod dispatched_action_driver_tests {
 
         // Case `ctrl_z_and_the_control_undo_the_same_dispatched_action`:
         // The keyboard and the control must reach the same undo — for the action
-        // path too, not just the `needs_commit` one.
+        // path too, not just the widget-written one.
         {
             let mut via_key = action_driver();
             via_key.type_text("a");

@@ -290,7 +290,7 @@ impl SiteControls {
     }
     fn button(&self, id: &str, label: &str, pending: Pending) -> Button {
         let state = self.pending.clone();
-        Button::new(id, label, None)
+        Button::new(id, label)
             .with_size(
                 crate::browser_widget::labelled_width(160.0, self.text_scale),
                 32.0,
@@ -527,6 +527,7 @@ fn certificate_date(base_micros: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::framework::HostDelivery as _;
 
     struct NativeRecordingEngine(std::sync::Arc<ui::webview::test_engine::TestEngine>);
     impl ui::webview::WebViewEngine for NativeRecordingEngine {
@@ -726,13 +727,10 @@ mod tests {
                 .expect("pointer emits the Done operation");
             assert_eq!(intent.address.resource, "tilo.control:browser.site.close");
             let result = panel
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.site.close").unwrap(),
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.site.close").unwrap(),
                     &mut doc,
                     &automerge::ROOT,
                 )

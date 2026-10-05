@@ -825,6 +825,9 @@ pub enum DeviceEffect {
     /// Read the mail folder on this computer.
     #[effect(device_only)]
     ReadLocalFolder,
+    /// Empty the mail folder on this computer.
+    #[effect(device_only = true)]
+    EmptyLocalFolder,
     /// Count the messages.
     Count,
 }
@@ -846,12 +849,36 @@ fn a_device_only_effect_is_published_as_device_only() {
             .any(|tag| tag == tilo_app::tilo_actions::LOCAL_DEVICE_ONLY)
     };
     assert!(tagged("read-local-folder"));
+    assert!(tagged("empty-local-folder"));
     assert!(!tagged("count"));
     assert!(
         LocalFolders::declarations()
             .iter()
             .all(|decl| decl.device_only),
         "a vocabulary marked device-only marks every effect"
+    );
+    let exempt = |id: &str| {
+        FolderView::declarations()
+            .into_iter()
+            .find(|decl| decl.id == id)
+            .unwrap()
+            .spec("test.mailbox.folder-view")
+            .contract
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_app::tilo_actions::LOCAL_DEVICE_ONLY)
+    };
+    assert!(exempt("open-folder"), "the vocabulary's marking stands");
+    assert!(
+        !exempt("sort-by-date"),
+        "an effect exempted from its device-only vocabulary is not"
+    );
+    assert!(
+        !FolderView::declarations()
+            .iter()
+            .find(|decl| decl.id == "sort-by-date")
+            .unwrap()
+            .device_only
     );
 }
 
@@ -862,6 +889,16 @@ pub enum LocalFolders {
     Watch { path: String },
     /// Forget a folder.
     Forget { path: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.mailbox.folder-view", device_only)]
+pub enum FolderView {
+    /// Open a folder on this computer.
+    OpenFolder,
+    /// Sort by date, a preference of the person.
+    #[effect(device_only = false)]
+    SortByDate,
 }
 
 /// The mailbox, opened on a folder: `mailbox sent` shows the sent folder.

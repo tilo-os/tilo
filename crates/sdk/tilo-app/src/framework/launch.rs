@@ -167,6 +167,19 @@ pub struct Command {
     pub run: fn(&str) -> Result<(), String>,
 }
 
+/// A helper the app's binary is besides the app: a privileged writer, a
+/// staging step, a packaging probe. Asked first, with the process's whole
+/// command line, before anything of the app starts (no window, no session,
+/// no portal), it answers `None` for a command line that is not its own,
+/// else runs and answers the exit code the process ends with. A refused
+/// command line is an error, which ends the process with code 1.
+#[derive(Clone, Copy)]
+pub struct Helper {
+    /// Runs the helper if `args` (the whole command line, the binary's path
+    /// first) is its own.
+    pub run: fn(&[String]) -> Result<Option<i32>, String>,
+}
+
 /// Opens what a launch naming some arguments opens in the window an app runs
 /// in, in place of the record it shows: what
 /// [`ViewCx::open_here`](super::ViewCx::open_here) does, kept by a custom

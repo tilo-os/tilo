@@ -1965,7 +1965,7 @@ impl BrowserWidget {
             toolbar_control_height(self.text_scale),
         );
         let back = self.bind_button(
-            Button::new("browser.back", "", None)
+            Button::new("browser.back", "")
                 .with_icon(Icon::ArrowLeft)
                 .with_accessible_name("Back; hold or right-click for history")
                 .tooltip("Back (Alt+Left); hold or right-click for history")
@@ -1975,7 +1975,7 @@ impl BrowserWidget {
             "back",
         );
         let forward = self.bind_button(
-            Button::new("browser.forward", "", None)
+            Button::new("browser.forward", "")
                 .with_icon(Icon::ArrowRight)
                 .with_accessible_name("Forward; hold or right-click for history")
                 .tooltip("Forward (Alt+Right); hold or right-click for history")
@@ -1993,7 +1993,6 @@ impl BrowserWidget {
                     "browser.reload"
                 },
                 "",
-                None,
             )
             .with_icon(if loading { Icon::X } else { Icon::Refresh })
             .with_accessible_name(if loading { "Stop loading" } else { "Reload" })
@@ -2021,7 +2020,7 @@ impl BrowserWidget {
             ("browser.settings", "show-settings")
         };
         let settings_btn = self.bind_button(
-            Button::new("browser.settings", "", None)
+            Button::new("browser.settings", "")
                 .with_icon(Icon::Settings)
                 .with_accessible_name(if self.show_settings {
                     "Close browser settings"
@@ -2043,7 +2042,7 @@ impl BrowserWidget {
             "Picture in Picture"
         };
         let pip_btn = self.bind_button(
-            Button::new("browser.pip", "", None)
+            Button::new("browser.pip", "")
                 .with_icon(Icon::PictureInPicture2)
                 .with_accessible_name(pip_label)
                 .tooltip(pip_label)
@@ -2062,7 +2061,7 @@ impl BrowserWidget {
             "Pause history in this window"
         };
         let history_pause_btn = self.bind_button(
-            Button::new("browser.history-pause", "", None)
+            Button::new("browser.history-pause", "")
                 // Not a fourth shield: the row carried the same glyph for
                 // site information, protection, history pause and Private, so
                 // three icon-only controls were told apart by position alone.
@@ -2092,7 +2091,6 @@ impl BrowserWidget {
         let private_window_btn = Button::new(
             "browser.private-window",
             if self.compact_chrome { "" } else { "Private" },
-            None,
         )
         .with_icon(Icon::Shield)
         .with_accessible_name(if self.browsing_mode.is_private() {
@@ -2151,7 +2149,7 @@ impl BrowserWidget {
             "Bookmark this page"
         };
         let bookmark_btn = self.document_button(
-            Button::new("browser.bookmark", "", None)
+            Button::new("browser.bookmark", "")
                 .with_icon(Icon::Star)
                 .with_accessible_name(bookmark_label)
                 .tooltip(bookmark_label)
@@ -2165,7 +2163,7 @@ impl BrowserWidget {
             ("browser.history", "show-history")
         };
         let library_btn = self.bind_button(
-            Button::new("browser.library", "", None)
+            Button::new("browser.library", "")
                 .with_icon(Icon::History)
                 .with_accessible_name(if self.show_library {
                     "Close browser library"
@@ -2180,7 +2178,7 @@ impl BrowserWidget {
         let download_status_w: f32 = if self.compact_chrome { 72.0 } else { 152.0 };
         let download_status = self.capabilities.toolbar_status().map(|status| {
             self.bind_button(
-                Button::new("browser.download-status", &status, None)
+                Button::new("browser.download-status", &status)
                     .with_accessible_name(&format!("Downloads: {status}"))
                     .tooltip("Show downloads")
                     .with_size(
@@ -2227,7 +2225,7 @@ impl BrowserWidget {
         if !self.compact_chrome && self.chrome_width() >= DEVELOPER_CHROME_MIN_WIDTH {
             let developer_engine = self.engine.clone();
             toolbar = toolbar.push(Box::new(
-                Button::new("browser.devtools", "DevTools", None)
+                Button::new("browser.devtools", "DevTools")
                     .with_size(self.labelled_width(82.0), nav_btn.1)
                     .on_effect(move || developer_engine.send(WebViewCommand::ShowDeveloperTools)),
             ));
@@ -2398,7 +2396,7 @@ impl BrowserWidget {
             };
             heading = heading.push(Box::new(
                 self.bind_button(
-                    Button::new("browser.library.history-pause", label, None)
+                    Button::new("browser.library.history-pause", label)
                         .with_accessible_name(label)
                         .with_size(self.labelled_width(116.0), action_height),
                     "browser.session",
@@ -2408,7 +2406,7 @@ impl BrowserWidget {
         }
         heading = heading.push(Box::new(
             self.bind_button(
-                Button::new("browser.library.close", "Done", None)
+                Button::new("browser.library.close", "Done")
                     .with_size(self.labelled_width(96.0), action_height),
                 crate::resource::Browser::KIND,
                 "show-page",
@@ -2443,7 +2441,7 @@ impl BrowserWidget {
         let mut section_buttons = Vec::new();
         for (id, label, selected, resource) in section_definitions {
             let button = self.bind_button(
-                Button::new(id, label, None)
+                Button::new(id, label)
                     .with_accessible_name(&format!("Show {label}"))
                     .with_size(
                         self.labelled_width(132.0),
@@ -2468,18 +2466,18 @@ impl BrowserWidget {
             let first_row = Row::new()
                 .no_wrap()
                 .push(Box::new(first.unwrap_or_else(|| {
-                    Button::new("browser.library.history", "History", None)
+                    Button::new("browser.library.history", "History")
                 })))
                 .push(Box::new(second.unwrap_or_else(|| {
-                    Button::new("browser.library.bookmarks", "Bookmarks", None)
+                    Button::new("browser.library.bookmarks", "Bookmarks")
                 })));
             let second_row = Row::new()
                 .no_wrap()
                 .push(Box::new(third.unwrap_or_else(|| {
-                    Button::new("browser.library.downloads", "Downloads", None)
+                    Button::new("browser.library.downloads", "Downloads")
                 })))
                 .push(Box::new(fourth.unwrap_or_else(|| {
-                    Button::new("browser.library.extensions", "Extensions", None)
+                    Button::new("browser.library.extensions", "Extensions")
                 })));
             Box::new(
                 Column::new()
@@ -2507,7 +2505,7 @@ impl BrowserWidget {
             .with_accessible_name(format!("Filter {section_label}"))
             .with_placeholder(&format!("Filter {section_label}"));
         let clear_filter = self.bind_button(
-            Button::new("browser.library.clear-filter", "Clear", None)
+            Button::new("browser.library.clear-filter", "Clear")
                 .with_accessible_name("Clear library filter")
                 .tooltip("Clear filter")
                 .with_enabled(!filter_query.trim().is_empty())
@@ -2589,7 +2587,7 @@ impl BrowserWidget {
                             .push(Box::new(Text::new(&entry.url).with_size(12.0).dimmed())),
                     );
                     let open = self.bind_button(
-                        Button::new(&format!("{resource_id}.open"), "Open", None)
+                        Button::new(&format!("{resource_id}.open"), "Open")
                             .with_accessible_name(&format!("Open {title}"))
                             .tooltip("Open page")
                             .with_size(if large_text { 104.0 } else { 84.0 }, action_height),
@@ -2679,14 +2677,14 @@ impl BrowserWidget {
                             .push(Box::new(Text::new(&entry.url).with_size(12.0).dimmed())),
                     );
                     let open = self.bind_button(
-                        Button::new(&format!("{resource_id}.open"), "Open", None)
+                        Button::new(&format!("{resource_id}.open"), "Open")
                             .with_accessible_name(&format!("Open {}", entry.title))
                             .with_size(if large_text { 120.0 } else { 84.0 }, action_height),
                         &resource_id,
                         "open",
                     );
                     let remove = self.document_button(
-                        Button::new(&remove_control_id, "Remove", None)
+                        Button::new(&remove_control_id, "Remove")
                             .with_accessible_name(&format!("Remove bookmark {}", entry.title))
                             .tooltip("Remove bookmark")
                             .with_size(if large_text { 150.0 } else { 96.0 }, action_height),
@@ -2826,7 +2824,7 @@ impl BrowserWidget {
                         DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
                             Box::new(
                                 self.bind_button(
-                                    Button::new(&format!("{resource_id}.cancel"), "Cancel", None)
+                                    Button::new(&format!("{resource_id}.cancel"), "Cancel")
                                         .with_accessible_name(&format!(
                                             "Cancel download {}",
                                             entry.display_name()
@@ -2848,7 +2846,6 @@ impl BrowserWidget {
                                         Button::new(
                                             &format!("{resource_id}.reveal"),
                                             "Show in Files",
-                                            None,
                                         )
                                         .with_accessible_name(&format!(
                                             "Show {} in Files",
@@ -2864,7 +2861,7 @@ impl BrowserWidget {
                                 ))
                                 .push(Box::new(
                                     self.bind_button(
-                                        Button::new(&format!("{resource_id}.open"), "Open", None)
+                                        Button::new(&format!("{resource_id}.open"), "Open")
                                             .with_accessible_name(&format!(
                                                 "Open downloaded file {}",
                                                 entry.display_name()
@@ -2881,7 +2878,7 @@ impl BrowserWidget {
                         ),
                         DownloadStatus::Failed | DownloadStatus::Cancelled => Box::new(
                             self.bind_button(
-                                Button::new(&format!("{resource_id}.retry"), "Retry", None)
+                                Button::new(&format!("{resource_id}.retry"), "Retry")
                                     .with_accessible_name(&format!(
                                         "Retry download {}",
                                         entry.display_name()
@@ -3029,7 +3026,6 @@ impl BrowserWidget {
                                 } else {
                                     "Approve permissions; load on restart"
                                 },
-                                None,
                             )
                             .with_size(280.0, 36.0)
                             .on_effect(move || {
@@ -3055,7 +3051,6 @@ impl BrowserWidget {
                                 Button::new(
                                     &format!("browser.extension.action.{}", extension.id),
                                     "Open action page",
-                                    None,
                                 )
                                 .with_size(180.0, 36.0)
                                 .on_effect(move || {
@@ -3103,7 +3098,7 @@ impl BrowserWidget {
             content_column = content_column
                 .push(Box::new(
                     self.bind_button(
-                        Button::new("browser.library.history-pause", label, None)
+                        Button::new("browser.library.history-pause", label)
                             .with_accessible_name(label)
                             .fill_width(action_height),
                         "browser.session",
@@ -5688,10 +5683,10 @@ impl BrowserWidget {
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         operation: BrowserOperation,
-    ) -> Result<ui::widget::ResourceOperationStart, String> {
+    ) -> Result<ui::framework::Effected, String> {
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, request)?;
-            return Ok(ui::widget::ResourceOperationStart::Accepted);
+            return Ok(ui::framework::Effected::Pending);
         }
         let is_navigation = matches!(
             &operation,
@@ -5706,7 +5701,7 @@ impl BrowserWidget {
             }
             if self.active_pip {
                 self.begin_pip_probe();
-                return Ok(ui::widget::ResourceOperationStart::Completed(local_output(
+                return Ok(ui::framework::Effected::Done(local_output(
                     "Picture in Picture closed.",
                 )));
             }
@@ -5717,7 +5712,7 @@ impl BrowserWidget {
             self.resource_pip_invocation = Some(invocation);
             self.resource_pip_request = Some(request_id);
             self.resource_pip_deadline = Some(std::time::Instant::now() + PIP_OPERATION_TIMEOUT);
-            return Ok(ui::widget::ResourceOperationStart::Accepted);
+            return Ok(ui::framework::Effected::Pending);
         }
         if !is_navigation {
             let is_history_pause_toggle =
@@ -5760,7 +5755,7 @@ impl BrowserWidget {
             } else {
                 output
             };
-            return Ok(ui::widget::ResourceOperationStart::Completed(output));
+            return Ok(ui::framework::Effected::Done(output));
         }
         if self.resource_navigation_invocation.is_some()
             || self.resource_navigation_result.is_some()
@@ -5770,7 +5765,7 @@ impl BrowserWidget {
         self.perform_browser_operation(operation)?;
         self.resource_navigation_invocation = Some(invocation);
         self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
-        Ok(ui::widget::ResourceOperationStart::Accepted)
+        Ok(ui::framework::Effected::Pending)
     }
 }
 
@@ -5796,6 +5791,7 @@ impl AppWidget for BrowserWidget {
 #[cfg(test)]
 mod architecture_tests {
     use super::*;
+    use ui::framework::HostDelivery as _;
     use ui::tilo_actions::OperationKind;
 
     /// What the window does for the effect an encoded invocation names.
@@ -6099,7 +6095,7 @@ mod architecture_tests {
                 )
                 .map(Some)
                 .unwrap();
-            let Some(ui::widget::ResourceOperationStart::Completed(output)) = result else {
+            let Some(ui::framework::Effected::Done(output)) = result else {
                 panic!("Stop must complete immediately");
             };
             assert!(stop.contract.result.validate(&output).is_ok());
@@ -6229,13 +6225,10 @@ mod architecture_tests {
                 });
             compose(&mut widget);
             let result = widget
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
-                    ),
+                .start_encoded(
+                    OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
                     &mut AutoCommit::new(),
                     &automerge::ROOT,
                 )
@@ -6873,6 +6866,7 @@ mod architecture_tests {
 )]
 mod tests {
     use super::*;
+    use ui::framework::HostDelivery as _;
     use ui::tilo_actions::{ActionSpec, OperationKind};
     use ui::webview::PageKey;
 
@@ -6939,7 +6933,7 @@ mod tests {
                 .admit(invocation, effect_operation(&encoded.payload))
                 .map(Some)?
             {
-                Some(ui::widget::ResourceOperationStart::Accepted) => Ok(invocation),
+                Some(ui::framework::Effected::Pending) => Ok(invocation),
                 other => Err(format!("a page action must be accepted, got {other:?}")),
             }
         }
@@ -7933,13 +7927,10 @@ mod tests {
                 "browser.credentials.close",
             ] {
                 let result = widget
-                    .start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::Effect,
-                            "tilo.ui.control.invoke",
-                            &serde_json::to_vec(id).unwrap(),
-                        ),
+                    .start_encoded(
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec(id).unwrap(),
                         &mut doc,
                         &root,
                     )
@@ -7997,13 +7988,10 @@ mod tests {
             layout_at(&mut widget, 390.0, 700.0);
             for id in ["browser.credentials.open", "browser.credentials.close"] {
                 let result = widget
-                    .start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::Effect,
-                            "tilo.ui.control.invoke",
-                            &serde_json::to_vec(id).unwrap(),
-                        ),
+                    .start_encoded(
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec(id).unwrap(),
                         &mut doc,
                         &root,
                     )
@@ -8287,13 +8275,10 @@ mod tests {
                 if information {
                     assert!(
                         widget
-                            .start_operation(
-                                &ui::widget::ResourceOperation::local(
-                                    ui::tilo_actions::InvocationId::new(),
-                                    OperationKind::Effect,
-                                    "tilo.ui.control.invoke",
-                                    &serde_json::to_vec("browser.site.connection").unwrap()
-                                ),
+                            .start_encoded(
+                                OperationKind::Effect,
+                                "tilo.ui.control.invoke",
+                                &serde_json::to_vec("browser.site.connection").unwrap(),
                                 &mut doc,
                                 &root
                             )
@@ -8334,13 +8319,10 @@ mod tests {
             layout_at(&mut widget, 1000.0, 700.0);
             assert!(widget.site_panel.is_some());
             let result = widget
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.site.close").unwrap(),
-                    ),
+                .start_encoded(
+                    OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.site.close").unwrap(),
                     &mut doc,
                     &root,
                 )
@@ -8463,13 +8445,10 @@ mod tests {
             assert!(widget.site_panel.is_some());
             assert!(
                 widget
-                    .start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::Effect,
-                            "tilo.ui.control.invoke",
-                            &serde_json::to_vec("browser.site.toggle").unwrap()
-                        ),
+                    .start_encoded(
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.site.toggle").unwrap(),
                         &mut doc,
                         &root
                     )
@@ -8973,7 +8952,7 @@ mod tests {
                 w.admit(invocation, BrowserOperation::TogglePictureInPicture)
                     .map(Some)
                     .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
+                Some(ui::framework::Effected::Pending)
             );
             assert!(w.poll_invocation(invocation).is_none());
             w.sync(&mut doc, &root);
@@ -8991,7 +8970,7 @@ mod tests {
                     .admit(invocation, BrowserOperation::TogglePictureInPicture)
                     .map(Some)
                     .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
+                Some(ui::framework::Effected::Pending)
             ));
             unavailable.sync(&mut doc, &root);
             assert!(matches!(
@@ -9234,7 +9213,7 @@ mod tests {
                 w.admit(invocation, effect_operation(&encoded.payload))
                     .map(Some)
                     .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
+                Some(ui::framework::Effected::Pending)
             );
             assert_eq!(
                 engine.current_uri().as_deref(),
@@ -9256,10 +9235,7 @@ mod tests {
                 )
                 .map(Some)
                 .unwrap();
-            assert!(matches!(
-                started,
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
+            assert!(matches!(started, Some(ui::framework::Effected::Done(_))));
             assert_eq!(w.library_filter.get(), "tilo example");
         }
 
@@ -9372,7 +9348,7 @@ mod tests {
                 .admit(invocation, BrowserOperation::ClearHistory)
                 .map(Some)
                 .unwrap();
-            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            let Some(ui::framework::Effected::Done(output)) = started else {
                 panic!("clearing in-memory local history is synchronous");
             };
             assert!(clear_history.contract.result.validate(&output).is_ok());
@@ -9395,7 +9371,7 @@ mod tests {
                 )
                 .map(Some)
                 .unwrap();
-            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            let Some(ui::framework::Effected::Done(output)) = started else {
                 panic!("the engine accepted the site-data request synchronously");
             };
             assert!(clear_site_data.contract.result.validate(&output).is_ok());
@@ -9449,7 +9425,7 @@ mod tests {
                 )
                 .map(Some)
                 .unwrap();
-            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            let Some(ui::framework::Effected::Done(output)) = started else {
                 panic!("history pausing changes only this running browser");
             };
             assert!(toggle.contract.result.validate(&output).is_ok());

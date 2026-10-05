@@ -46,7 +46,6 @@ pub mod collab_presence;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
-pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
@@ -64,7 +63,6 @@ pub mod display_identify;
 pub mod doc_open;
 pub mod document_import;
 pub mod durable_writer;
-pub mod editor_app;
 pub mod emoji_recents;
 pub mod fabric_clock;
 mod file_picker_overlay;
@@ -99,7 +97,6 @@ pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;
 pub mod nearby_transfer;
 pub mod network;
-pub mod notes_app;
 pub mod notification;
 pub mod notification_history;
 pub mod now_playing;
@@ -183,8 +180,6 @@ use ui::widget::{
     WindowGroup as UiGroup, context_menu::ContextMenu,
 };
 
-use crate::shell::editor_app::EditorApp;
-use crate::shell::notes_app::NotesApp;
 pub use tilo_desktop::launchpad::{
     EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
     EMPTY_WORKSPACE_NOTES, EMPTY_WORKSPACE_TASKS,
@@ -379,7 +374,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         tab: &tab,
     };
     match mount_in_process(&request, &inputs) {
-        Some(tilo_desktop::resolver::TileResolution::Component(_)) => return "App",
+        Some(tilo_desktop::resolver::TileResolution::App(..)) => return "App",
         Some(_) => return "Notice",
         None => {}
     }
@@ -548,20 +543,8 @@ fn try_to_ui_tile_for_tab(
                     "in-process apps",
                 ));
             }
-            // Each opens on an empty document — prose the shell wrote would
-            // be indistinguishable from prose the user wrote.
-            ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
-                UiTile::App(Box::new(NotesApp::new()))
-            }
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Editor") => {
                 match tab.and_then(|tab| inputs.document(tab)) {
-                    Some(hosted_inputs::HostedDocumentState::Ready(document)) => {
-                        UiTile::App(Box::new(EditorApp::for_file(
-                            document.path,
-                            document.provider_id,
-                            document.text,
-                        )))
-                    }
                     Some(hosted_inputs::HostedDocumentState::Unavailable {
                         path, reason, ..
                     }) => UiTile::Notice {
@@ -576,8 +559,17 @@ fn try_to_ui_tile_for_tab(
                         ),
                         detail: reason,
                     },
-                    None => UiTile::App(Box::new(EditorApp::new())),
+                    _ => {
+                        return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
+                            "in-process apps",
+                        ));
+                    }
                 }
+            }
+            ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
+                return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
+                    "in-process apps",
+                ));
             }
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Word") => {
                 UiTile::App(Box::new(word_processor::WordProcessorWidget::new()))
@@ -999,10 +991,40 @@ pub fn mount_in_process(
             ui::record::RecordId::room_default(),
             |_| {},
         ),
+        // Every Notes tab is a notebook of its own, on the tab's record.
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
+            notes::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::for_tab(tab),
+            |_| {},
+        ),
+        // An Editor tab opened on a file is the editor's project of that
+        // file, which the editor reads from disk itself; one opened on
+        // nothing is a project of the tab's own.
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Editor") => {
+            let (record, arguments) = match inputs.document(tab) {
+                Some(hosted_inputs::HostedDocumentState::Ready(document)) => (
+                    code_editor::launch_record(&document.path)
+                        .unwrap_or_else(|| ui::record::RecordId::for_tab(tab)),
+                    vec![document.path.display().to_string()],
+                ),
+                // The tile says why the file is not there.
+                Some(hosted_inputs::HostedDocumentState::Unavailable { .. }) => return None,
+                None => (ui::record::RecordId::for_tab(tab), Vec::new()),
+            };
+            apps.borrow_mut()
+                .mount(code_editor::definition(), &room, tab, record, |context| {
+                    context.provide_launch_arguments(arguments);
+                })
+        }
         _ => return None,
     };
     Some(match mounted {
-        Ok(component) => TileResolution::Component(component),
+        Ok(component) => {
+            let collaboration = apps.borrow().collaboration(&component, &room);
+            TileResolution::App(component, collaboration)
+        }
         Err(error) => TileResolution::Failed(error),
     })
 }

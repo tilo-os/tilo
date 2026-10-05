@@ -707,8 +707,6 @@ impl Card {
 }
 
 impl Widget for Card {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -887,19 +885,6 @@ impl Widget for Card {
     }
 }
 
-impl ui::undo::UndoPoints for Card {
-    fn needs_commit(&self) -> bool {
-        self.children
-            .iter()
-            .any(|c| ui::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            ui::undo::on_commit(child.as_mut());
-        }
-    }
-}
-
 // ===================================================================
 // ViewportStage — centres short cards, then lets the spacers collapse before
 // a tall card overflows into the surrounding Scrollable. This keeps the
@@ -922,8 +907,6 @@ impl ViewportStage {
 }
 
 impl Widget for ViewportStage {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1069,19 +1052,6 @@ impl Widget for ViewportStage {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::undo::UndoPoints for ViewportStage {
-    fn needs_commit(&self) -> bool {
-        self.children
-            .iter()
-            .any(|child| ui::undo::needs_commit(child.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            ui::undo::on_commit(child.as_mut());
-        }
     }
 }
 
@@ -3940,10 +3910,7 @@ fn args_none() -> serde_json::Map<String, serde_json::Value> {
 }
 
 impl Widget for InstallerApp {
-    ui::provides!(
-        dyn ui::resources::PublishesResources,
-        dyn ui::undo::UndoPoints
-    );
+    ui::provides!(dyn ui::resources::PublishesResources);
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
@@ -4141,19 +4108,22 @@ impl Widget for InstallerApp {
     /// here, after its own resolution, permission and confirmation checks.
     fn start_operation(
         &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
+        op: &ui::host_operation::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
         let Some(request) = op.unscoped().filter(|r| r.type_id == op::OPERATION_TYPE) else {
-            return ui::widget::start_in_children(self, op, doc, path);
+            return ui::host_operation::start_in_children(self, op, doc, path);
         };
         let encoded = tilo_actions::EncodedAction {
             type_id: request.type_id.to_owned(),
             payload: request.payload.to_vec(),
         };
-        self.apply_encoded(&encoded, doc, path)
-            .map(|output| Some(ui::widget::ResourceOperationStart::Completed(output)))
+        self.apply_encoded(&encoded, doc, path).map(|output| {
+            Some(ui::host_operation::ResourceOperationStart::Completed(
+                output,
+            ))
+        })
     }
 
     fn take_focus_reset(&mut self) -> bool {
@@ -4198,19 +4168,6 @@ impl Widget for InstallerApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::undo::UndoPoints for InstallerApp {
-    fn needs_commit(&self) -> bool {
-        self.composed
-            .as_ref()
-            .is_some_and(|c| ui::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        if let Some(c) = &mut self.composed {
-            ui::undo::on_commit(c.as_mut());
-        }
     }
 }
 

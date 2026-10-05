@@ -5,7 +5,7 @@
 //! room, with the dispatcher, history and published actions the app has
 //! anywhere else. So the palette and agents reach the tab through the same
 //! door as the app's own window, and what the tab keeps (the terminal's
-//! last target) is in its record. What only the shell can give the app (a
+//! last target, a Notes tab's notebook) is in its record. What only the shell can give the app (a
 //! connection to the session's process supervisor) it lends
 //! ([`HostContext::lend`]).
 
@@ -29,7 +29,14 @@ pub struct InProcessApps {
     views: HashMap<String, Rc<InstanceViewStore>>,
     device_id: String,
     author: UserId,
+    /// How an app mounted here reaches the session's broker, as an app the
+    /// session launched; `None` keeps them off any broker.
+    broker: Option<SessionBroker>,
 }
+
+/// Connects an app the session shows in its own process to the session's
+/// broker for `(app, room)`.
+pub type SessionBroker = Rc<dyn Fn(&str, &str) -> ui::collaboration::HostSessionConnector>;
 
 impl InProcessApps {
     /// Apps keeping their records in `store`, mounted for `author` on
@@ -41,7 +48,28 @@ impl InProcessApps {
             views: HashMap::new(),
             device_id: device_id.to_owned(),
             author: UserId(author.to_owned()),
+            broker: None,
         }
+    }
+
+    /// Reach the session's broker through `broker` for every app mounted
+    /// from now on.
+    #[must_use]
+    pub fn reaching_broker(mut self, broker: SessionBroker) -> Self {
+        self.broker = Some(broker);
+        self
+    }
+
+    /// A collaboration manager for `component`, mounted in `room`, on the
+    /// session's broker: what the App showing it publishes and is invoked
+    /// through, as a launched app is.
+    pub fn collaboration(
+        &self,
+        component: &AppComponent,
+        room: &str,
+    ) -> Option<ui::collaboration::CollaborationManager> {
+        let broker = self.broker.as_ref()?;
+        component.collaborate_through(broker(component.app_id(), room))
     }
 
     /// The apps of a session whose state lives in `profile_root`: their
@@ -66,12 +94,20 @@ impl InProcessApps {
     /// # Errors
     /// As [`Self::at`].
     pub fn native(author: &str) -> Result<Self, LaunchError> {
-        Self::at(
+        Ok(Self::at(
             &cli::data_home()
                 .join(crate::shell::SHELL_RECORDS_PACKAGE)
                 .join("apps"),
             author,
-        )
+        )?
+        .reaching_broker(Rc::new(|app, room| {
+            session_connector(
+                launcher::services::collab_socket(),
+                launcher::services::identity_socket(),
+                app,
+                room,
+            )
+        })))
     }
 
     /// Mount `definition` for tab `tab` of `room` on `record` (the tab's
@@ -141,6 +177,32 @@ impl InProcessApps {
         lend(&mut context);
         definition.instantiate(context, target, RestoreInput::None)
     }
+}
+
+/// A connection for `app` in `room` to the broker at `collab` and the
+/// identity service at `identity`, made as the launcher makes an app's: the
+/// session records the launch, the connection names the app and room, and
+/// the broker attests it against that record before the app joins.
+pub fn session_connector(
+    collab: std::path::PathBuf,
+    identity: std::path::PathBuf,
+    app: &str,
+    room: &str,
+) -> ui::collaboration::HostSessionConnector {
+    let (app, room) = (app.to_owned(), room.to_owned());
+    ui::collaboration::HostSessionConnector::new(move |_route| async move {
+        let failed = |error: std::io::Error| runtime_portal::NotAvailable::ConnectionFailed(error);
+        crate::shell::launcher::register_in_process_launch(&app, &room);
+        let mut stream = std::os::unix::net::UnixStream::connect(&collab).map_err(failed)?;
+        launcher::services::write_collab_handoff(&mut stream, &app, &room).map_err(failed)?;
+        stream.set_nonblocking(true).map_err(failed)?;
+        let collaboration = tokio::net::UnixStream::from_std(stream).map_err(failed)?;
+        let mut identity = std::os::unix::net::UnixStream::connect(&identity).map_err(failed)?;
+        launcher::services::write_identity_handshake(&mut identity, &app, &room).map_err(failed)?;
+        identity.set_nonblocking(true).map_err(failed)?;
+        let identity = tokio::net::UnixStream::from_std(identity).map_err(failed)?;
+        Ok((collaboration, identity))
+    })
 }
 
 /// The in-process apps a host shares between the tiles it resolves.
@@ -315,6 +377,586 @@ mod tests {
             after.len(),
             before.len() + 1,
             "the pinned folder is in the room's places: {after:?}"
+        );
+    }
+
+    /// The shell's tab `tab` of `kind`, mounted as the shell's tile resolver
+    /// mounts it.
+    fn mount_tab(
+        inputs: &crate::shell::hosted_inputs::HostedTileInputs,
+        tab: u64,
+        kind: crate::shell::state::AppKind,
+    ) -> ui::headless::FrameHarness {
+        let tab = crate::shell::state::Tab {
+            id: tab,
+            title: "Tab".into(),
+            tile: crate::shell::state::TileContent::AppPlaceholder {
+                kind,
+                label: "Tab".into(),
+            },
+        };
+        let room = crate::shell::state::RoomId::new();
+        let request = tilo_desktop::resolver::TileRequest { room, tab: &tab };
+        let Some(tilo_desktop::resolver::TileResolution::App(component, _)) =
+            crate::shell::mount_in_process(&request, inputs)
+        else {
+            panic!("the tab mounts its app's own component");
+        };
+        let mut harness = ui::headless::FrameHarness::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs::from_native_process(),
+        )
+        .unwrap();
+        harness.relayout();
+        harness
+    }
+
+    fn notes_kind() -> crate::shell::state::AppKind {
+        crate::shell::state::AppKind::Other("Notes".into())
+    }
+
+    /// Every Notes tab is a notebook of its own, on the tab's record: a note
+    /// written into one is not in the other, and each is there again when
+    /// its tab is mounted again.
+    #[test]
+    fn each_notes_tab_is_a_notebook_of_its_own_kept_in_its_record() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let write = |apps: &mut InProcessApps, tab: u64, title: &str| {
+            let component = apps
+                .mount(
+                    notes::definition(),
+                    ROOM,
+                    tab,
+                    RecordId::for_tab(tab),
+                    |_| {},
+                )
+                .unwrap();
+            let mut harness = ui::headless::FrameHarness::from_component(
+                component,
+                (1000, 700),
+                ui::application::ComponentRunnerInputs::from_native_process(),
+            )
+            .unwrap();
+            harness.relayout();
+            let import = notes::actions::import_markdown_action(
+                uuid::Uuid::new_v4(),
+                title,
+                &format!("{title} body"),
+                Vec::new(),
+            );
+            harness
+                .invoke_bound_action(
+                    &ui::bound_dispatch::BoundActionAddress {
+                        instance_id: tab,
+                        address: tilo_actions::ActionAddress::new(
+                            notes::Notebook::KIND,
+                            tilo_resource::APPLY,
+                        ),
+                    },
+                    serde_json::json!({
+                        tilo_resource::APPLY_PARAM: serde_json::to_value(import).unwrap()
+                    })
+                    .as_object()
+                    .unwrap(),
+                )
+                .unwrap();
+            harness.relayout();
+            harness.flush_component_records().unwrap();
+            harness.close_components();
+        };
+        write(&mut apps, 61, "Alpha");
+        write(&mut apps, 62, "Beta");
+
+        let titles = |apps: &mut InProcessApps, tab: u64| -> Vec<String> {
+            let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+            records
+                .try_open_record(&RecordCheckout::new(
+                    RecordId::for_tab(tab),
+                    notes::definition().record_kind.clone(),
+                ))
+                .expect("the tab's record was kept");
+            records
+                .with(&RecordId::for_tab(tab), |doc| {
+                    notes::Notebook::read(doc).map(|state| {
+                        state
+                            .pages()
+                            .iter()
+                            .map(|page| page.title.clone())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .expect("the tab's notebook is in its record")
+                .unwrap()
+        };
+        assert_eq!(titles(&mut apps, 61), vec!["Alpha".to_owned()]);
+        assert_eq!(
+            titles(&mut apps, 62),
+            vec!["Beta".to_owned()],
+            "the second tab's notebook is its own"
+        );
+    }
+
+    /// The shell's tile resolver mounts Notes and Editor tabs as those apps'
+    /// own components; an Editor tab opened on a file is the editor's
+    /// project of that file.
+    #[test]
+    fn notes_and_editor_tabs_are_their_apps_own_components() {
+        let profile = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("harbour-plan.txt");
+        std::fs::write(&file, "moor at the east quay\n").unwrap();
+        let file = file.canonicalize().unwrap();
+        let mut inputs = crate::shell::hosted_inputs::HostedTileInputs::default();
+        inputs.mount_apps_in_process(InProcessApps::at(profile.path(), "test-person").unwrap());
+
+        let notes = mount_tab(&inputs, 71, notes_kind());
+        assert!(
+            notes
+                .resources()
+                .iter()
+                .any(|resource| resource.kind == notes::Notebook::KIND),
+            "a Notes tab publishes its notebook"
+        );
+
+        inputs.bind_document(
+            72,
+            crate::shell::hosted_inputs::HostedDocument {
+                provider_id: "org.nirios.Editor",
+                path: file,
+                text: "moor at the east quay\n".into(),
+            },
+        );
+        let editor = mount_tab(
+            &inputs,
+            72,
+            crate::shell::state::AppKind::Other("Editor".into()),
+        );
+        assert!(
+            editor
+                .resources()
+                .iter()
+                .any(|resource| resource.kind == code_editor::CodeEditor::KIND),
+            "an Editor tab publishes its project"
+        );
+        let mut editor = editor;
+        assert!(
+            editor.wait_until(ui::time::Duration::from_secs(10), |editor| {
+                editor
+                    .inspection_json()
+                    .is_ok_and(|inspection| inspection.contains("harbour-plan.txt"))
+            }),
+            "the Editor tab opened the file it was opened on"
+        );
+    }
+
+    /// A Notes tab shown as an app of its own runs what its launch queued:
+    /// a Markdown file it is opened on becomes a note in the tab's notebook.
+    #[test]
+    fn a_notes_tab_runs_its_launch_and_keeps_the_note_it_opened() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let (file, _receipt) = ui::application::OpenFile::new(
+            "Harbour plan.md",
+            "text/markdown",
+            b"Moor at the east quay.".to_vec(),
+        )
+        .unwrap();
+        let component = apps
+            .mount(
+                notes::definition(),
+                ROOM,
+                81,
+                RecordId::for_tab(81),
+                |context| {
+                    context.provide_open_file(file);
+                },
+            )
+            .unwrap();
+        let mut app = tilo_desktop::resolver::app_tile(component, None, |_| {}).unwrap();
+        let mut taffy = taffy::TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let theme = ui::theme::Theme::default();
+        let node = app.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(900.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
+        let mut text = ui::text_render::TextRenderer::new();
+        for _ in 0..3 {
+            let mut scene = vello::Scene::new();
+            app.draw(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ui::presence::PresenceCtx::empty(),
+            );
+        }
+        let _reports = ui::component_lifecycle::close_components(app.as_mut());
+
+        let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+        records
+            .try_open_record(&RecordCheckout::new(
+                RecordId::for_tab(81),
+                notes::definition().record_kind.clone(),
+            ))
+            .expect("the tab's record was kept");
+        let titles = records
+            .with(&RecordId::for_tab(81), |doc| {
+                notes::Notebook::read(doc).map(|state| {
+                    state
+                        .pages()
+                        .iter()
+                        .map(|page| page.title.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .expect("the tab's notebook is open")
+            .unwrap();
+        assert_eq!(titles, vec!["Harbour plan".to_owned()]);
+    }
+
+    /// The process the broker test runs in: a profile of its own, with the
+    /// identity environment its session provisions, so nothing of the test
+    /// process's environment changes. Returns the profile to run in, or
+    /// `None` in the parent once the child passed.
+    fn isolated_session_root(test: &str) -> Option<std::path::PathBuf> {
+        const ROOT: &str = "TILO_IN_PROCESS_TEST_ROOT";
+        if let Some(root) = std::env::var_os(ROOT) {
+            return Some(std::path::PathBuf::from(root));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let environment = dir.path().join("environment");
+        let log = dir.path().join("child.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(ROOT, dir.path().join("profile"))
+            .env("XDG_CONFIG_HOME", environment.join("config"))
+            .env("XDG_DATA_HOME", environment.join("data"))
+            .env("XDG_CACHE_HOME", environment.join("cache"))
+            .env("XDG_STATE_HOME", environment.join("state"))
+            .env("TILO_IDENTITY_ROOT", environment.join("identity"))
+            .stdout(std::fs::File::create(&log).unwrap())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .unwrap();
+        let output = std::fs::read_to_string(&log).unwrap();
+        assert!(status.success(), "{output}");
+        assert!(
+            output.contains("test result: ok. 1 passed"),
+            "the isolated child ran no test: {output}"
+        );
+        None
+    }
+
+    /// An app the session shows in-process, drawn frame after frame in a
+    /// tile of its own.
+    struct Shown {
+        tile: Box<dyn ui::widget::AppWidget>,
+        taffy: taffy::TaffyTree<()>,
+        text: ui::text_render::TextRenderer,
+    }
+
+    impl Shown {
+        fn mount(
+            apps: &mut InProcessApps,
+            definition: &'static ApplicationDefinition,
+            room: &str,
+            tab: u64,
+            lend: impl FnOnce(&mut HostContext),
+        ) -> Self {
+            let component = apps
+                .mount(definition, room, tab, RecordId::for_tab(tab), lend)
+                .unwrap();
+            let collaboration = apps.collaboration(&component, room);
+            assert!(
+                collaboration.is_some(),
+                "the app reaches the session's broker"
+            );
+            let mut tile =
+                tilo_desktop::resolver::app_tile(component, collaboration, |_| {}).unwrap();
+            let mut taffy = taffy::TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let node = tile.build_layout(&mut taffy, &ui::theme::Theme::default(), &mut nodes);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(900.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            tile.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
+            Self {
+                tile,
+                taffy,
+                text: ui::text_render::TextRenderer::new(),
+            }
+        }
+
+        fn frame(&mut self) {
+            let _ = &self.taffy;
+            self.tile.draw(
+                &mut vello::Scene::new(),
+                vello::kurbo::Affine::IDENTITY,
+                &mut self.text,
+                &ui::theme::Theme::default(),
+                &ui::presence::PresenceCtx::empty(),
+            );
+        }
+    }
+
+    /// Frames of `shown` until `done`, bounded.
+    fn until(shown: &mut [&mut Shown], what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            for app in shown.iter_mut() {
+                app.frame();
+            }
+            if done() {
+                return;
+            }
+            let states: Vec<String> = shown
+                .iter()
+                .map(|app| {
+                    app.tile
+                        .as_any()
+                        .and_then(|any| any.downcast_ref::<ui::app::EmbeddedApp>())
+                        .map_or_else(String::new, |embedded| {
+                            format!("{:?}", embedded.app().collaboration_state())
+                        })
+                })
+                .collect();
+            assert!(std::time::Instant::now() < deadline, "{what}: {states:?}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Apps the session shows in its own process publish through the
+    /// session's broker as launched apps do: an agent finds a Notes tab's
+    /// note by a word of its body and invokes the notebook's actions there,
+    /// and a Terminal tab is reachable the same way.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "one end-to-end walk through a live session, which owns its services for the whole test"
+    )]
+    fn agents_reach_in_process_apps_through_the_session_broker() {
+        const TEST: &str =
+            "shell::in_process::tests::agents_reach_in_process_apps_through_the_session_broker";
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        std::fs::create_dir_all(&profile).unwrap();
+        let session = crate::runtime_host::Session::start(&profile).unwrap();
+        let collab = session.broker.capnp_socket().to_path_buf();
+        let identity = session.identity_socket().to_path_buf();
+        let mut apps = InProcessApps::at(&profile.join("apps"), &session.actor)
+            .unwrap()
+            .reaching_broker(Rc::new(move |app, room| {
+                session_connector(collab.clone(), identity.clone(), app, room)
+            }));
+        let room = session.room.clone();
+        // The Notes tab is opened on a note whose body has a word no title has.
+        let (file, _receipt) = ui::application::OpenFile::new(
+            "Harbour plan.md",
+            "text/markdown",
+            b"Moor at the quayside before the tide turns.".to_vec(),
+        )
+        .unwrap();
+        let mut notes = Shown::mount(&mut apps, notes::definition(), &room, 91, |context| {
+            context.provide_open_file(file);
+        });
+        let mut terminal = Shown::mount(&mut apps, terminal::definition(), &room, 92, |context| {
+            context.lend(terminal::HostedProcessServices::unavailable());
+        });
+
+        let broker = session.broker.app_action_broker().unwrap();
+        let host = crate::shell::remote_actions::BrokerActionHost::new(broker.clone());
+        let caller = tilo_actions::remote::Caller::local_person(&session.actor).in_room(&room);
+        let provider_of = |app: &str| {
+            broker
+                .state()
+                .action_directory_root_page(None, 16)
+                .roots
+                .into_iter()
+                .find(|root| root.app_id == app)
+                .map(|root| root.peer_id.to_string())
+        };
+        until(
+            &mut [&mut notes, &mut terminal],
+            "both apps publish",
+            || {
+                provider_of(notes::definition().app_id).is_some()
+                    && provider_of(terminal::definition().app_id).is_some()
+            },
+        );
+        let notes_provider = provider_of(notes::definition().app_id).unwrap();
+        let terminal_provider = provider_of(terminal::definition().app_id).unwrap();
+
+        let query = |provider: &str, needle: &str| {
+            tilo_actions::remote::ActionHost::query(
+                &host,
+                &caller,
+                tilo_actions::remote::CatalogueQuery {
+                    provider: Some(provider.to_owned()),
+                    needle: needle.to_owned(),
+                    ..Default::default()
+                },
+            )
+        };
+        let wait_page = |shown: &mut [&mut Shown],
+                         pending: tilo_actions::remote::Pending<
+            Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        >| {
+            let mut pending = pending;
+            let mut page = None;
+            until(shown, "the directory answers", || {
+                match pending.poll_ready() {
+                    tilo_actions::remote::PendingPoll::Ready(result) => {
+                        page = Some(result.unwrap());
+                        true
+                    }
+                    tilo_actions::remote::PendingPoll::Waiting => false,
+                    tilo_actions::remote::PendingPoll::Abandoned => panic!("the query was dropped"),
+                }
+            });
+            page.unwrap()
+        };
+
+        // An agent adds a note to the Notes tab through the broker.
+        // As an agent does: find the action in the notebook's directory,
+        // then invoke it at that listing's revision, listing again when the
+        // directory moved on in between.
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let listed = wait_page(
+                &mut [&mut notes, &mut terminal],
+                query(&notes_provider, "new"),
+            );
+            let address = listed
+                .rows
+                .iter()
+                .filter_map(|row| row.action.as_ref())
+                .find(|action| action.address.action == "new-page")
+                .map(|action| action.address.clone())
+                .expect("the notebook offers a new note");
+            let mut started = tilo_actions::remote::ActionHost::invoke(
+                &host,
+                &caller,
+                tilo_actions::remote::InvokeRequest {
+                    on_behalf_of: None,
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: notes_provider.clone(),
+                        address,
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::Json(
+                        serde_json::json!({ tilo_actions::PROMPTED_PARAM: "Tide table" })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: Some(listed.revision),
+                },
+            );
+            let mut outcome = None;
+            until(
+                &mut [&mut notes, &mut terminal],
+                "the new note is answered",
+                || match started.poll_ready() {
+                    tilo_actions::remote::PendingPoll::Ready(result) => {
+                        outcome = Some(result);
+                        true
+                    }
+                    tilo_actions::remote::PendingPoll::Waiting => false,
+                    tilo_actions::remote::PendingPoll::Abandoned => {
+                        panic!("the invocation was dropped")
+                    }
+                },
+            );
+            match outcome.unwrap() {
+                Ok(receipt) => {
+                    // Accepted is admission; the note is made when the
+                    // invocation succeeds.
+                    let mut state = None;
+                    until(
+                        &mut [&mut notes, &mut terminal],
+                        "the new note is made",
+                        || {
+                            state = tilo_actions::remote::ActionHost::observe(
+                                &host,
+                                &caller,
+                                &receipt.invocation,
+                            );
+                            state
+                                .as_ref()
+                                .is_some_and(|state| state.update.is_terminal())
+                        },
+                    );
+                    let update = state.map(|state| state.update);
+                    assert!(
+                        matches!(
+                            update,
+                            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+                        ),
+                        "the new note is made: {update:?}"
+                    );
+                    break;
+                }
+                Err(tilo_actions::remote::ActionHostError::InvalidRequest { reason })
+                    if reason.contains("list it again") && std::time::Instant::now() < deadline => {
+                }
+                Err(error) => panic!("the new note was refused: {error:?}"),
+            }
+        }
+
+        // The palette's search finds the note by a word only in its body.
+        let found = {
+            let mut found = false;
+            let deadline = tilo_test_env::hang_deadline();
+            while !found {
+                let page = wait_page(
+                    &mut [&mut notes, &mut terminal],
+                    query(&notes_provider, "quayside"),
+                );
+                found = !page.rows.is_empty();
+                assert!(
+                    found || std::time::Instant::now() < deadline,
+                    "no row for the note's body"
+                );
+            }
+            found
+        };
+        assert!(found);
+
+        // The Terminal tab answers its directory through the same broker.
+        let page = wait_page(
+            &mut [&mut notes, &mut terminal],
+            query(&terminal_provider, "run"),
+        );
+        assert!(
+            page.rows.iter().any(|row| row
+                .action
+                .as_ref()
+                .is_some_and(|action| action.address.action == "run")),
+            "the terminal's actions reach agents: {:?}",
+            page.rows
+                .iter()
+                .filter_map(|row| row.action.as_ref().map(|a| a.address.clone()))
+                .collect::<Vec<_>>()
         );
     }
 }

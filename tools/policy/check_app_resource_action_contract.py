@@ -76,6 +76,16 @@ LEGACY_ENTRY_POINTS = {
     ),
 }
 
+# The raw operation protocol between the host and the toolkit's own widgets.
+# An app answers operations as a typed effect vocabulary and, in a test that
+# drives a widget without a host, delivers one through
+# `ui::framework::HostDelivery`; it never
+# builds, routes or answers a raw operation, in its sources or its tests.
+RAW_OPERATION_PROTOCOL = re.compile(
+    r"\b(?:ResourceOperation|ResourceOperationStart|OperationRequest|start_in_children|host_operation)\b"
+    r"|(?:\.|::)\s*(?:start_operation|poll_resource_operation)\s*\("
+)
+
 SEARCH_PROVIDER_IMPL = re.compile(
     r"\bimpl(?:\s*<[^>{}]*>)?\s+SearchProvider\s+for\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
@@ -922,6 +932,22 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         main_path if main_path.is_file() else manifest_path,
                         1,
                         "document action registry is not wired into the production app launch",
+                    )
+                )
+
+        app_dir = manifest_path.parent
+        for source in sorted(
+            [*(app_dir / "src").rglob("*.rs"), *(app_dir / "tests").rglob("*.rs")]
+        ):
+            raw = source.read_text(encoding="utf-8")
+            for match in RAW_OPERATION_PROTOCOL.finditer(rust_code_only(raw)):
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, match.start()),
+                        "the host's raw operation protocol is the toolkit's, not an app's: "
+                        "answer a typed effect vocabulary, and in a test deliver an "
+                        "operation through ui::framework::HostDelivery",
                     )
                 )
 

@@ -386,8 +386,6 @@ impl Router {
 }
 
 impl Widget for Router {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
@@ -545,15 +543,6 @@ impl Widget for Router {
     }
 }
 
-impl crate::undo::UndoPoints for Router {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.child.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.child.as_mut());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,7 +661,7 @@ mod tests {
             let theme = Theme::default();
             let mut router =
                 Router::new("settings", ["home", "settings"], &theme, |route, _, _| {
-                    Ok(Box::new(super::super::Button::new(route, route, None)))
+                    Ok(Box::new(super::super::Button::new(route, route)))
                 })
                 .unwrap();
             assert_eq!(router.handle().current(), "settings");

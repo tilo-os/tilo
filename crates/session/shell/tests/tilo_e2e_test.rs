@@ -4,7 +4,7 @@
 //! together in one pass (no live compositor; plain crate APIs only).
 //!
 //! Complements the per-widget unit tests in `tests/shell_chrome_test.rs`,
-//! `crates/sdk/ui-core/src/widget/tabs.rs`, and `src/shell/notes_app.rs`.
+//! and `crates/sdk/ui-core/src/widget/tabs.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,7 +17,6 @@
 )]
 
 use shell::shell::chrome_state::{Chrome, ChromeState, QuickSettingsState, SearchScope};
-use shell::shell::notes_app::{BODY_KEY, NotesApp};
 use shell::shell::state::{Collaborator, WorkspaceTree};
 use shell::shell::topbar_chrome::{CenterWidget, TopBarChrome};
 use shell::shell::{build_tilo_root, build_tilo_root_with_chrome, state::TileContent};
@@ -367,67 +366,6 @@ fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
 }
 
 #[test]
-fn notes_and_editor_apps_round_trip_through_the_crdt() {
-    // Phase `notes_app_roundtrips_through_crdt`.
-    {
-        use automerge::{AutoCommit, ObjType, ReadDoc, Value, transaction::Transactable};
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let tile = doc
-            .put_object(&root, "tile", ObjType::Map)
-            .expect("tile obj");
-
-        let mut a = NotesApp::with_seed("hello");
-        a.sync(&mut doc, &tile);
-        assert_eq!(
-            doc.text(&doc.get(&tile, BODY_KEY).unwrap().unwrap().1)
-                .unwrap(),
-            "hello"
-        );
-
-        // A second Notes widget on the same tile picks up the existing body on
-        // sync — the CRDT-backed "join the session" path.
-        let mut b = NotesApp::new();
-        b.sync(&mut doc, &tile);
-        // `NotesApp::text` is private, so the read-through is proved by an insert
-        // growing the CRDT from the attached state, not the widget's own buffer.
-        let (Value::Object(ObjType::Text), body) = doc.get(&tile, BODY_KEY).unwrap().unwrap()
-        else {
-            panic!("expected Text body");
-        };
-        let text = doc.text(&body).expect("read body");
-        assert_eq!(text, "hello");
-    }
-
-    // Phase `editor_app_persists_edits_through_crdt`.
-    {
-        use automerge::{AutoCommit, ObjType, ReadDoc, Value, transaction::Transactable};
-        use shell::shell::editor_app::{BODY_KEY as EDITOR_BODY_KEY, EditorApp};
-        use ui::widget::Widget;
-
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let tile = doc
-            .put_object(&root, "tile", ObjType::Map)
-            .expect("tile obj");
-
-        let mut a = EditorApp::with_seed("let x = 1;\n");
-        a.sync(&mut doc, &tile);
-        let (Value::Object(ObjType::Text), body) =
-            doc.get(&tile, EDITOR_BODY_KEY).unwrap().unwrap()
-        else {
-            panic!("expected Text body under editor_body");
-        };
-        assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
-
-        // A second Editor on the same doc picks up the existing body, as Notes does.
-        let mut b = EditorApp::new();
-        b.sync(&mut doc, &tile);
-        assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
-    }
-}
-
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -526,50 +464,6 @@ fn tab_presence_seeds_per_tab_peers_and_colours_without_phantom_carets() {
             ctx.color_for(&UserId("b".into())),
             ui::presence::user_color("b"),
             "no-override peer must still use palette fallback",
-        );
-    }
-
-    // Phase `an_editor_body_has_no_peer_caret_without_peers`.
-    // An Editor tab with no peers has no peer caret — presence on the body
-    // comes from peers or not at all. The key is built the way `EditorApp`
-    // builds it (tab record + body field), so a false publish fails this.
-    {
-        use shell::shell::state::{AppKind, TileContent, WorkspaceTree};
-        use shell::shell::tab_documents::scratch_tab_record;
-        use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
-
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let editor_tab = {
-            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-            let id = group.tabs[0].id ^ 0xed;
-            group.tabs.push(shell::shell::state::Tab {
-                id,
-                title: "Editor".into(),
-                tile: TileContent::AppPlaceholder {
-                    kind: AppKind::Other("Editor".into()),
-                    label: "Editor".into(),
-                },
-            });
-            id
-        };
-
-        // The seeding the shell actually does at startup: per-tab presence from
-        // the workspace's real roster, nothing else.
-        let mut ctx = PresenceCtx::empty();
-        shell::shell::sync_tab_presence_from_tree(&tree, &mut ctx);
-
-        let key = PresenceKey::Widget {
-            path: vec![
-                PathSegment::Field(scratch_tab_record(editor_tab).id.as_str().into()),
-                PathSegment::Field("editor_body".into()),
-            ],
-        };
-
-        let peers = ctx.peers_on(&key);
-        assert!(
-            peers.is_empty(),
-            "nothing may publish presence into an editor body on the strength \
-             of the tab merely existing; found {peers:?}"
         );
     }
 }

@@ -524,7 +524,7 @@ impl SelectedAction<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::search::providers::{ActionsProvider, NotesProvider};
+    use crate::shell::search::providers::{ActionsProvider, ApplicationsProvider};
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use parking_lot::RwLock;
@@ -614,7 +614,7 @@ mod tests {
         // The permission seam gates enumeration and selection uniformly.
         {
             let mut reg = registry_with_actions();
-            reg.register(Rc::new(NotesProvider::new()));
+            reg.register(Rc::new(ApplicationsProvider::new()));
             let chrome = chrome_rc();
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -651,7 +651,7 @@ mod tests {
         // `ActiveApp` scope narrows the survey to the focused app's provider.
         {
             let mut reg = registry_with_actions();
-            reg.register(Rc::new(NotesProvider::new()));
+            reg.register(Rc::new(ApplicationsProvider::new()));
             let chrome = chrome_rc();
             let doc = AutoCommit::new();
             let root = automerge::ROOT;

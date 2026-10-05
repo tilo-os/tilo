@@ -2284,7 +2284,7 @@ impl UpdatesModel {
     /// A button running `effect`.
     fn button(&self, control_id: &str, label: &str, effect: UpdatesEffect) -> Button {
         self.cx
-            .bind_invocation(Button::new(control_id, label, None).content_sized(), effect)
+            .bind_invocation(Button::new(control_id, label).content_sized(), effect)
     }
 }
 

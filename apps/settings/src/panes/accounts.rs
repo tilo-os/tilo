@@ -876,7 +876,7 @@ impl AccountsPane {
         let title = kind_shown(AccountKind::Mail);
         let add = t("accounts-add");
         let add_btn: El = Box::new(self.bound(
-            Button::new("settings.accounts.add.mail", &add, None).content_sized(),
+            Button::new("settings.accounts.add.mail", &add).content_sized(),
             AccountsEffect::AddAccount {
                 kind: "mail".into(),
             },
@@ -893,12 +893,8 @@ impl AccountsPane {
             &kind_shown(kind),
             Box::new(
                 self.bound(
-                    Button::new(
-                        &format!("settings.accounts.add.{}", kind.slug()),
-                        &add,
-                        None,
-                    )
-                    .content_sized(),
+                    Button::new(&format!("settings.accounts.add.{}", kind.slug()), &add)
+                        .content_sized(),
                     AccountsEffect::AddAccount {
                         kind: kind.slug().into(),
                     },
@@ -1000,7 +996,7 @@ impl AccountsPane {
             if !view.kind.is_cloud_storage() {
                 primary_actions = primary_actions.push(Box::new(
                     self.bound(
-                        Button::new(&format!("settings.accounts.edit.{}", view.id), &edit, None)
+                        Button::new(&format!("settings.accounts.edit.{}", view.id), &edit)
                             .content_sized(),
                         AccountsEffect::EditAccount {
                             account: view.id.clone(),
@@ -1014,7 +1010,6 @@ impl AccountsPane {
                         Button::new(
                             &format!("settings.accounts.reauth.{}", view.id),
                             &reauth_label,
-                            None,
                         )
                         .content_sized(),
                         AccountsEffect::SignInAgain {
@@ -1026,7 +1021,7 @@ impl AccountsPane {
             let secondary_actions = Row::new()
                 .push(Box::new(
                     self.bound(
-                        Button::new(&format!("settings.accounts.test.{}", view.id), &check, None)
+                        Button::new(&format!("settings.accounts.test.{}", view.id), &check)
                             .content_sized(),
                         AccountsEffect::TestAccount {
                             account: view.id.clone(),
@@ -1036,13 +1031,9 @@ impl AccountsPane {
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
                     self.bound(
-                        Button::new(
-                            &format!("settings.accounts.remove.{}", view.id),
-                            &remove,
-                            None,
-                        )
-                        .danger()
-                        .content_sized(),
+                        Button::new(&format!("settings.accounts.remove.{}", view.id), &remove)
+                            .danger()
+                            .content_sized(),
                         AccountsEffect::RemoveAccount {
                             account: view.id.clone(),
                         },
@@ -1134,11 +1125,11 @@ impl AccountsPane {
             .with_font_size(13.0);
         let buttons = Row::new()
             .push(Box::new(self.bound(
-                Button::new("settings.accounts.form.save", &save, None).content_sized(),
+                Button::new("settings.accounts.form.save", &save).content_sized(),
                 AccountsEffect::SaveAccountForm,
             )))
             .push(Box::new(self.bound(
-                Button::new("settings.accounts.form.cancel", &cancel, None).content_sized(),
+                Button::new("settings.accounts.form.cancel", &cancel).content_sized(),
                 AccountsEffect::CancelAccountForm,
             )))
             .push(Box::new(Spacer::new()));
@@ -1203,11 +1194,11 @@ impl AccountsPane {
         fields.push(Box::new(
             Row::new()
                 .push(Box::new(self.bound(
-                    Button::new("settings.accounts.reauth.save", &save, None).content_sized(),
+                    Button::new("settings.accounts.reauth.save", &save).content_sized(),
                     AccountsEffect::SaveNewPassword,
                 )))
                 .push(Box::new(self.bound(
-                    Button::new("settings.accounts.reauth.cancel", &cancel, None).content_sized(),
+                    Button::new("settings.accounts.reauth.cancel", &cancel).content_sized(),
                     AccountsEffect::CancelNewPassword,
                 )))
                 .push(Box::new(Spacer::new())),

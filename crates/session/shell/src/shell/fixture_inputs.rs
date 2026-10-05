@@ -123,7 +123,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "notes", "editor", "records"]
+                vec!["actions", "records"]
             );
             assert_eq!(frame.chrome().active_local_user(), "shell-fixture");
             assert!(!frame.paint().encoding().is_empty());
@@ -279,7 +279,7 @@ mod tests {
             assert!(frame.chrome().records().open_records().is_empty());
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "notes", "editor", "records"]
+                vec!["actions", "records"]
             );
             assert!(!frame.paint().encoding().is_empty());
             click(&mut frame, "topbar_tray_pill", &mut document);
@@ -290,9 +290,6 @@ mod tests {
         }
 
         fn fixture_rebuild_keeps_explicit_actor_records_and_services() {
-            use crate::shell::{
-                crdt_text::CrdtTextBody, notes_app::BODY_KEY, tab_documents::tab_body,
-            };
             let parent = tempfile::tempdir().unwrap();
             let inputs = inputs(parent.path());
             let child = inputs.hosted.files.as_ref().unwrap().initial_dir.clone();
@@ -304,27 +301,6 @@ mod tests {
             let mut frame = FrameBuilder::with_fixture_inputs(tree, (3840, 2160), inputs).unwrap();
             let mut document = automerge::AutoCommit::new();
             frame.pump_apps(&mut document, &automerge::ROOT);
-            let store = frame.chrome().records().clone();
-            // A fixture may describe existing tabs, but constructing it must not
-            // fabricate document authority for every persisted sibling. Seed the
-            // one record this test explicitly owns before exercising its Notes
-            // operation and rebuild custody.
-            store
-                .create_record(&crate::shell::tab_documents::scratch_tab_record(note))
-                .expect("fixture explicitly creates its Notes record");
-            // The actual Notes CRDT operation edits the actual tab-bound record.
-            store
-                .with(&ui::record::RecordId::for_tab(note), |doc| {
-                    let mut body = CrdtTextBody::new(BODY_KEY);
-                    body.sync(doc, &automerge::ROOT);
-                    body.splice(doc, &automerge::ROOT, 0..0, "Retained fixture note");
-                })
-                .expect("actual Notes tab record bound");
-            frame.pump_apps(&mut document, &automerge::ROOT);
-            assert_eq!(
-                tab_body(&store, note, BODY_KEY).as_deref(),
-                Some("Retained fixture note")
-            );
             let room_index = frame.host().room_records();
             let home = frame
                 .chrome()
@@ -367,14 +343,10 @@ mod tests {
                 &frame.host().room_records()
             ));
             assert!(room_index.borrow().holds(home, &record.id));
-            assert_eq!(
-                tab_body(frame.chrome().records(), note, BODY_KEY).as_deref(),
-                Some("Retained fixture note")
-            );
             assert_rebuilt_files(&mut frame, strip, files, &child, &mut document);
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "notes", "editor", "records"]
+                vec!["actions", "records"]
             );
             assert_eq!(guard.attempts(), 0);
         }

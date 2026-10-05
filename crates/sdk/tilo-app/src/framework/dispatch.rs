@@ -74,7 +74,7 @@ pub struct Dispatcher<R: Resource> {
     /// [`Resource::permission`], or for a child its parent's action's.
     permission_of: PermissionOf<R>,
     refused: LocalState<Option<Refused>>,
-    host: Rc<RefCell<ui_core::ActionHost>>,
+    host: Rc<RefCell<ui_core::action_host::ActionHost>>,
     /// Applies one immediate action: the resource's own, or for a child
     /// resource its parent's action carrying it.
     submit_now: SubmitNow<R>,
@@ -107,7 +107,7 @@ type Serialed<R> = (u64, <R as Resource>::Action);
 /// Applies one typed action to a document through the host.
 type SubmitNow<R> = Rc<
     dyn Fn(
-        &mut ui_core::ActionHost,
+        &mut ui_core::action_host::ActionHost,
         &mut Doc,
         &<R as Resource>::Action,
         ActionContext,

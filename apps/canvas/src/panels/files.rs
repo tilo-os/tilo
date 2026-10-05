@@ -312,7 +312,7 @@ impl FileDesk {
     /// Save the artwork to `path`; keep working there when `follow`.
     fn save_to(&self, path: &Path, follow: bool) {
         let file = ArtworkFile::of(&self.live.get());
-        let packed = document::pack(&file, &tilo_content::ContentStore::for_app())
+        let packed = document::pack(&file, &crate::content::store())
             .and_then(|(bytes, _missing)| document::write(path, &bytes));
         match packed {
             Ok(()) => {

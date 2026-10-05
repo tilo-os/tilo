@@ -66,7 +66,8 @@ impl Widget for LocalEffectProbe {
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+        let Some(crate::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
+        else {
             return Ok(None);
         };
         assert!(matches!(

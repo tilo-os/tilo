@@ -228,7 +228,9 @@ mod tests {
                 Card::composed(Box::new(Text::new("Short description")))
                     .with_title("Terminal")
                     .with_footer(Box::new(Actions::new(
-                        Button::new("open", "Open", Some("opened")).primary(),
+                        Button::new("open", "Open")
+                            .on_click(crate::testing::record_click("opened"))
+                            .primary(),
                     ))),
             ),
             Box::new(
@@ -237,7 +239,7 @@ mod tests {
                 )))
                 .with_title("Workspace")
                 .with_footer(Box::new(Actions::new(
-                    Button::new("install", "Install", None).primary(),
+                    Button::new("install", "Install").primary(),
                 ))),
             ),
         ]))
@@ -297,7 +299,6 @@ mod tests {
             .with_footer(Box::new(Actions::new(Button::new(
                 &format!("details-{index}"),
                 "View details",
-                None,
             )))),
         )
     }
@@ -315,7 +316,7 @@ mod tests {
                 Text::new("All applications").with_id("trailing-heading"),
             ))
             .push(Box::new(
-                Button::new("final-action", "Open all applications", None).on_click(move || {
+                Button::new("final-action", "Open all applications").on_click(move || {
                     invocations.set(invocations.get() + 1);
                 }),
             ));
@@ -393,16 +394,11 @@ mod tests {
                                 Button::new(
                                     &format!("primary-{index}"),
                                     "Refresh all remote connections",
-                                    None,
                                 )
                                 .with_icon(crate::icons::Icon::Search)
                                 .primary(),
                             )
-                            .secondary(Button::new(
-                                &format!("secondary-{index}"),
-                                "View details",
-                                None,
-                            )),
+                            .secondary(Button::new(&format!("secondary-{index}"), "View details")),
                         )),
                     ) as Element
                 })
@@ -489,8 +485,6 @@ mod tests {
         }
 
         fn retained_regions_align_footers_before_paint() {
-            use automerge::ReadDoc;
-
             let mut harness = FrameHarness::new_with_theme(
                 crate::State::new(),
                 fixture(),
@@ -514,14 +508,7 @@ mod tests {
             );
             let action = rect(&cards[0].children[2].children[0]);
             harness.click_at(action.center().x, action.center().y);
-            assert!(
-                harness
-                    .state_mut()
-                    .doc
-                    .get(automerge::ROOT, "opened")
-                    .unwrap()
-                    .is_some()
-            );
+            assert!(crate::testing::clicks("opened") > 0);
         }
 
         narrow_scaled_regions_contain_content_and_resize_matches_fresh();
@@ -535,11 +522,7 @@ mod tests {
             let root = crate::widget::Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .push(Box::new(Actions::new(Button::new(
-                    "save",
-                    "Save changes",
-                    None,
-                ))));
+                .push(Box::new(Actions::new(Button::new("save", "Save changes"))));
             let harness = FrameHarness::new_with_theme(
                 crate::State::new(),
                 Box::new(root),
@@ -576,9 +559,8 @@ mod tests {
         }
 
         fn actions_keep_manual_sizes_and_secondary_then_primary_order() {
-            let actions =
-                Actions::new(Button::new("primary", "Primary", None).with_size(97.0, 35.0))
-                    .secondary(Button::new("secondary", "Secondary", None).fit_content(33.0));
+            let actions = Actions::new(Button::new("primary", "Primary").with_size(97.0, 35.0))
+                .secondary(Button::new("secondary", "Secondary").fit_content(33.0));
             let harness = FrameHarness::new_with_theme(
                 crate::State::new(),
                 Box::new(actions),

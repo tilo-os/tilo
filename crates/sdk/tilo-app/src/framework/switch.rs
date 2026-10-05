@@ -109,11 +109,11 @@ impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
 
     fn start_operation(
         &mut self,
-        op: &ui_core::widget::ResourceOperation<'_>,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
-        ui_core::widget::start_in_children(self, op, doc, path)
+    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        ui_core::host_operation::start_in_children(self, op, doc, path)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

@@ -315,17 +315,11 @@ impl ResourceApp for ChatShell {
         crate::i18n::ensure();
         let me = cx.me().unwrap_or_default().to_owned();
         let live = cx.mode().is_live();
-        // Only a live window reaches the shell's voice service and the
-        // device's attachment store; a capture and a past version read
-        // what the record and the lent content hold.
+        // Only a live window reaches the shell's voice service. Attachments
+        // are in the store the host lends the window, which carries them on
+        // the conversation's route.
         let native = live && crate::app::native_services();
-        let content = cx.content().unwrap_or_else(|| {
-            if native {
-                ContentStore::for_app()
-            } else {
-                ContentStore::memory()
-            }
-        });
+        let content = cx.content().unwrap_or_else(ContentStore::memory);
         // A capture shows the app as a device with its services draws it;
         // nothing it stages reaches them.
         let runtime = if native || cx.mode() == RunMode::Capture {

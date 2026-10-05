@@ -402,10 +402,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion() {
         .harness()
         .start_bound_job(&address, &serde_json::Map::new(), false)
         .unwrap();
-    assert!(matches!(
-        started,
-        ui::widget::ResourceOperationStart::Accepted
-    ));
+    assert!(started.completed().is_none(), "the fetch runs as a job");
     let request_deadline = tilo_test_env::hang_deadline();
     while !root.path().join("request-started").exists() {
         assert!(

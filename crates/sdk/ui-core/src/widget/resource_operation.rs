@@ -1,9 +1,32 @@
 //! The one entry through which the retained tree admits an exported effect or
 //! view operation: [`Widget::start_operation`].
 
-use super::{ResourceOperationStart, Widget};
+use super::Widget;
 use crate::invocation_scope::ResourceInvocationScope;
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
+
+/// Result of admitting an effect/view operation into a widget.
+///
+/// `Accepted` is deliberately distinct from success: the widget must later
+/// report progress and exactly one terminal [`tilo_actions::InvocationUpdate`]
+/// from [`Widget::poll_resource_operation`]. This keeps queued and streaming
+/// work from being reported as completed merely because it entered a queue.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResourceOperationStart {
+    Completed(tilo_actions::ActionOutput),
+    Accepted,
+}
+
+impl ResourceOperationStart {
+    /// The output of an operation that finished on return; `None` while it
+    /// is still pending.
+    pub fn completed(self) -> Option<tilo_actions::ActionOutput> {
+        match self {
+            Self::Completed(output) => Some(output),
+            Self::Accepted => None,
+        }
+    }
+}
 
 /// What a handler matches on. Reachable only through
 /// [`ResourceOperation::unscoped`] or [`ResourceOperation::with_custody`], so a
@@ -231,7 +254,7 @@ mod tests {
     #[test]
     fn a_read_only_caller_keeps_its_open_edits_and_refuses_a_writing_handler() {
         let mut widget = Writer {
-            inner: Button::new("probe", "Probe", None),
+            inner: Button::new("probe", "Probe"),
         };
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, "typing", "pending").unwrap();

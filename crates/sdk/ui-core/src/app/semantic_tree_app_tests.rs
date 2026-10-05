@@ -250,7 +250,7 @@ impl CounterCard {
         let resource = counter_resource(destructive);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
         Self {
-            button: Button::new("bump", "Bump", None).on_action(binding),
+            button: Button::new("bump", "Bump").on_action(binding),
             destructive,
             lazy_resource: None,
             directory_provider: None,
@@ -280,7 +280,7 @@ impl CounterCard {
 
     fn with_lazy_resource(resource: Resource) -> Self {
         Self {
-            button: Button::new("lazy-resource", "Lazy resource", None),
+            button: Button::new("lazy-resource", "Lazy resource"),
             destructive: false,
             lazy_resource: Some(resource),
             directory_provider: None,
@@ -1646,7 +1646,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             let button_id = format!("action-{id}");
             let captured = std::rc::Rc::clone(&captured);
             Box::new(
-                crate::widget::Button::new(&button_id, "Action", None).on_click(move || {
+                crate::widget::Button::new(&button_id, "Action").on_click(move || {
                     captured.set(captured.get().saturating_add(1));
                 }),
             )
@@ -1734,7 +1734,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
     {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let captured = std::rc::Rc::clone(&presses);
-        let button = Button::new("drive-me", "Drive me", None).on_click(move || {
+        let button = Button::new("drive-me", "Drive me").on_click(move || {
             captured.set(captured.get().saturating_add(1));
         });
         let mut app = App::new(State::new(), Box::new(button));

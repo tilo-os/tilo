@@ -532,7 +532,7 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let button = |id: &str, icon: Icon, then: Box<dyn Fn()>| -> Element {
         let name = lookup(id);
-        Box::new(Button::new(id, &name, None).with_icon(icon).on_view(then))
+        Box::new(Button::new(id, &name).with_icon(icon).on_view(then))
     };
     let new = {
         let sheet = tools.sheet.clone();
@@ -554,7 +554,7 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let welcomed = tools.welcomed.clone();
         let name = lookup("canvas-welcome-close");
         Box::new(
-            Button::new("canvas-welcome-close", "", None)
+            Button::new("canvas-welcome-close", "")
                 .with_icon(Icon::X)
                 .ghost()
                 .with_accessible_name(&name)

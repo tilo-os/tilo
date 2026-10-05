@@ -1071,7 +1071,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         ));
         let source = std::fs::read_to_string(app.join("src/components/profile_form.rs")).unwrap();
         assert!(source.contains("// tilo-app:graph-props=form-v2"));
-        assert!(source.contains("TextInput::from_document_string(value_path)"));
+        assert!(source.contains("TextInput::from_state(&values.text(value_path))"));
         assert!(source.contains("pub fn register_ui_graph("));
         let report = doctor_app(&app).unwrap();
         assert!(report.is_ready(), "{}", report.summary());

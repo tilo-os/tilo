@@ -31,10 +31,13 @@ use super::launch::LaunchInput;
 use super::root::ResourceRoot;
 
 const INSTANCE: u64 = 7;
+/// The room a test opens the app in unless it names one.
+const TEST_ROOM: &str = "test-workspace";
 
 enum Profile {
-    /// A private temporary profile, removed with the app.
-    Temporary(Rc<tempfile::TempDir>),
+    /// A private temporary profile, removed with the app, and the room the
+    /// app opens in.
+    Temporary(Rc<tempfile::TempDir>, String),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
 }
@@ -82,7 +85,7 @@ impl Profile {
     /// The directory the profile keeps everything in.
     fn root(&self) -> PathBuf {
         match self {
-            Self::Temporary(directory) => directory.path().to_path_buf(),
+            Self::Temporary(directory, _) => directory.path().to_path_buf(),
             Self::DataDir(directory) => data_dir_root(directory),
         }
     }
@@ -91,7 +94,7 @@ impl Profile {
     /// other bytes its record names in, instead of the person's.
     fn content(&self) -> tilo_content::ContentStore {
         match self {
-            Self::Temporary(directory) => super::app::profile_content(directory.path()),
+            Self::Temporary(directory, _) => super::app::profile_content(directory.path()),
             Self::DataDir(directory) => data_dir_content(directory),
         }
     }
@@ -125,12 +128,38 @@ fn operation(error: impl std::fmt::Display) -> LaunchError {
 }
 
 impl<A: ResourceApp> HeadlessApp<A> {
+    /// The content store the app's profile keeps the bytes its record names
+    /// in: what `cx.content()` reads and writes on this device.
+    #[must_use]
+    pub fn content(&self) -> tilo_content::ContentStore {
+        self.profile.content()
+    }
+
     /// The app as its owner opens it on a fresh private profile.
     ///
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn new() -> Result<Self, LaunchError> {
         Self::with_role(Role::Owner)
+    }
+
+    /// The app as its owner opens it on a fresh private profile, in `room`:
+    /// one of several windows of the app in one process, each in a room of
+    /// its own.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure.
+    pub fn in_room(room: &str) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        Self::open(
+            Profile::Temporary(profile, room.to_owned()),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            None,
+            None,
+            None,
+        )
     }
 
     /// The app as a participant with `role` opens it on a fresh profile.
@@ -140,7 +169,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile),
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
             role,
             AUTHOR,
             &[],
@@ -159,7 +188,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile),
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
             Role::Owner,
             person,
             &[],
@@ -229,7 +258,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let mut app = Self::open(
-            Profile::Temporary(profile),
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
             Role::Owner,
             AUTHOR,
             arguments,
@@ -253,7 +282,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
-            Profile::Temporary(profile),
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
             Role::Owner,
             AUTHOR,
             &arguments,
@@ -272,7 +301,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
-            Profile::Temporary(profile),
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
             Role::Owner,
             AUTHOR,
             &arguments,
@@ -291,7 +320,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn handed(file: OpenFile) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile),
+            Profile::Temporary(profile, TEST_ROOM.to_owned()),
             Role::Owner,
             AUTHOR,
             &[],
@@ -334,11 +363,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let author = UserId(person.clone());
         let permissions = role_permissions(&person, role);
         let (mut host, instance) = match &profile {
-            Profile::Temporary(directory) => (
+            Profile::Temporary(directory, room) => (
                 ApplicationHost::new_with_profile_lifetime(
                     directory.path().join("state"),
                     "test-device".into(),
-                    "test-workspace",
+                    room,
                     author,
                     Rc::clone(&permissions),
                     tilo_actions::ActionContext::default(),
@@ -462,7 +491,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn relaunch(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
         self.close()?;
         let profile = match &self.profile {
-            Profile::Temporary(directory) => Profile::Temporary(Rc::clone(directory)),
+            Profile::Temporary(directory, room) => {
+                Profile::Temporary(Rc::clone(directory), room.clone())
+            }
             Profile::DataDir(directory) => Profile::DataDir(directory.clone()),
         };
         let role = self.role;

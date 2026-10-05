@@ -3588,7 +3588,7 @@ mod tests {
                     .with_render(Box::new(|_, _, _, _, _| {}))
                     .with_accessible_value(|row: &R| format!("custom {}", row.name)),
                 ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0))
-                    .with_widget(|_, _| Box::new(Button::new("edit", "Edit", None))),
+                    .with_widget(|_, _| Box::new(Button::new("edit", "Edit"))),
             ];
             let mut table = DataTable::new(columns);
             table.set_rows(vec![R { name: "Ada".into() }]);
@@ -3668,7 +3668,7 @@ mod tests {
                     let clicks = Rc::clone(&clicks);
                     let id = format!("action-{index}");
                     Box::new(
-                        Button::new(&id, &row.name, None)
+                        Button::new(&id, &row.name)
                             .on_click(move || clicks.set(clicks.get().saturating_add(1))),
                     )
                 },

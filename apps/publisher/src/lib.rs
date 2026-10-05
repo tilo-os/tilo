@@ -289,7 +289,7 @@ fn unavailable(pane: &Pane) -> Vec<EffectStatus> {
 
 fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
     let button = |id: &str, label: &str, effect: &KeyEffect| {
-        actions.bind_effect_invocation(Button::new(id, label, None), effect)
+        actions.bind_effect_invocation(Button::new(id, label), effect)
     };
     let mut column = Column::new().with_no_padding().push(Box::new(
         Text::new("publisher-key-heading").with_role(TextRole::Heading),
@@ -476,7 +476,7 @@ impl ResourceApp for App {
 
         let actions = cx.actions();
         let apply_button = actions.bind_effect_invocation(
-            Button::new("apply", "publisher-apply", None),
+            Button::new("apply", "publisher-apply"),
             &KeyEffect::ApplyForNamespaces,
         );
         let key =

@@ -88,8 +88,16 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 /// launcher reports it as a failed launch rather than a clean exit.
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
+#[cfg(feature = "native")]
+mod surface;
 #[cfg(all(windows, feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
+#[cfg(feature = "native")]
+pub use surface::AppSurface;
+#[cfg(feature = "native")]
+mod embedded;
+#[cfg(feature = "native")]
+pub use embedded::EmbeddedApp;
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
@@ -887,7 +895,7 @@ impl App {
                 "component assembly no longer owns its component".to_owned(),
             ));
         };
-        let mut root = Box::new(crate::widget::BoundAppWidget { component });
+        let mut root = Box::new(crate::widget::BoundAppWidget::new(component));
         let mut root_custody = retirement_assembly::AppAssemblyCustody {
             retirement: assembly.retirement.take(),
             root: None,
@@ -3488,8 +3496,7 @@ pub(crate) mod ordinary_confirmation_tests {
         let ledger = Rc::new(RefCell::new(vec![]));
         let widget = Fixture {
             child: Box::new(
-                crate::widget::Button::new("ordinary-emitter", "Emit request", None)
-                    .on_action(binding),
+                crate::widget::Button::new("ordinary-emitter", "Emit request").on_action(binding),
             ),
             resources: resources.clone(),
             ledger: ledger.clone(),
@@ -3607,9 +3614,7 @@ pub(crate) mod ordinary_confirmation_tests {
             instance.mount(|_| {}).unwrap();
             let binding = instance.callback_binding();
             (
-                Box::new(crate::widget::BoundAppWidget {
-                    component: instance,
-                }),
+                Box::new(crate::widget::BoundAppWidget::new(instance)),
                 OwnerGuard::Component(binding, host),
             )
         } else {

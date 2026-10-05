@@ -27,7 +27,6 @@ pub trait EditsText: Widget {
 impl EditsText for TextInput {
     fn show_text(&mut self, obj: ObjId) {
         self.bind_text(obj);
-        self.set_direct_crdt_writes(false);
     }
     fn hide_text(&mut self) {
         self.clear_text_binding();
@@ -46,7 +45,6 @@ impl EditsText for TextInput {
 impl EditsText for CodeEditor {
     fn show_text(&mut self, obj: ObjId) {
         self.bind_text(obj);
-        self.set_direct_crdt_writes(false);
     }
     fn hide_text(&mut self) {
         self.clear_text_binding();

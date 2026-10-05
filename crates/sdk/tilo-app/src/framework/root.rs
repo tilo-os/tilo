@@ -66,6 +66,10 @@ pub(crate) struct ResourceRoot<R: Resource> {
     effects: Effects<R>,
     /// The app's view: the custom surface itself when the view is one.
     pub(crate) content: Element,
+    /// The store the view keeps the bytes its record names in, where
+    /// `render` keeps its picture.
+    #[allow(dead_code, reason = "read only by render, which is native-only")]
+    store: Option<tilo_content::ContentStore>,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
@@ -221,10 +225,12 @@ impl<R: Resource> ResourceRoot<R> {
         alive: Rc<()>,
         content: Element,
     ) -> Self {
+        let store = cx.content();
         Self {
             title,
             icon,
             label,
+            store,
             live: cx.live,
             updaters: cx.updaters,
             followed: std::cell::Cell::new(0),
@@ -551,7 +557,10 @@ impl<R: Resource> ResourceRoot<R> {
         let rgba = offscreen.try_render_resilient(&scene, theme.bg_app)?;
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
-        let hash = tilo_content::ContentStore::for_app()
+        let hash = self
+            .store
+            .clone()
+            .unwrap_or_else(tilo_content::ContentStore::memory)
             .put(&png)
             .map_err(|error| format!("the picture could not be stored: {error}"))?;
         let address = tilo_actions::content_resource(&hash)
@@ -973,18 +982,18 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     fn start_operation(
         &mut self,
-        op: &ui_core::widget::ResourceOperation<'_>,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ui_core::automerge::ObjId,
-    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
         #[cfg(not(target_family = "wasm"))]
         if let Some(request) = op.unscoped()
             && request.type_id == RENDER_TYPE
         {
             let output = self.render(request.payload, doc)?;
-            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                output,
-            )));
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
         }
         if R::READABLE
             && let Some(request) = op.unscoped()
@@ -999,17 +1008,17 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             && request.type_id == super::history::VIEW_TYPE
         {
             let output = super::history::answer(doc, request.payload)?;
-            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                output,
-            )));
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
         }
         if let Some(request) = op.unscoped()
             && request.type_id == super::person::HISTORY_TYPE
         {
             let output = self.storage.person_history(request.payload)?;
-            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                output,
-            )));
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
         }
         // An effect reads the resource as the document stands, though no
         // frame has run since a collaborator's change arrived.
@@ -1038,9 +1047,11 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
             || self.nested_views().contains(request.type_id);
         if known {
-            Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
+            Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            ))
         } else {
             Ok(None)
         }
@@ -1256,7 +1267,7 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
     ) {
         // The resource itself, or a child its dispatcher edits through it.
         let ours = address.resource == self.dispatch.resource_id()

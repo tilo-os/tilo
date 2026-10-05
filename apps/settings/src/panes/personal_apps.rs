@@ -356,7 +356,6 @@ impl PersonalAppsPane {
                     Button::new(
                         "open-workspace-app-defaults",
                         &t("settings-personal-apps-open-workspace"),
-                        None,
                     )
                     .on_effect(|| {
                         let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
