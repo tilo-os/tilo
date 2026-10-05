@@ -813,9 +813,14 @@ impl CanvasSurface {
                     .map(crate::model::Selection::region)
             })
             .flatten();
-        // Sampling one layer, the chosen one (the top one when none is).
-        let layers = (self.tools.sampling.with(|sampling| *sampling)
-            == crate::tools::Sampling::Layer)
+        // Sampling one layer, the chosen one (the top one when none is):
+        // the bucket's own choice, or the wand's.
+        let sampling = if fill {
+            &self.tools.fill_sampling
+        } else {
+            &self.tools.sampling
+        };
+        let layers = (sampling.with(|sampling| *sampling) == crate::tools::Sampling::Layer)
             .then(|| {
                 self.ink()
                     .layer
@@ -3061,6 +3066,30 @@ impl Widget for CanvasSurface {
                     self.press(self.cursor);
                     *ctx.handled = true;
                 }
+                // A right-click is about what is under it: with the
+                // selecting tool it picks that mark first, as a left click
+                // would, and the menu over the canvas offers what to do
+                // with it. It leaves the press to that menu.
+                (ElementState::Pressed, MouseButton::Right)
+                    if self.rect.contains(self.cursor) && self.drag.is_none() =>
+                {
+                    if !self.focused {
+                        self.pressed_into_focus = true;
+                    }
+                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.current_tool() == Tool::Select && self.points.is_none() {
+                        let at = self.content_point(self.cursor);
+                        let hit = edit::pick_near(&self.art, at, self.pick_slop(), false);
+                        if hit.is_empty() {
+                            if !self.frame().is_some_and(|frame| frame.contains(at)) {
+                                self.select(Vec::new());
+                            }
+                        } else if !hit.iter().all(|id| self.selection.contains(id)) {
+                            self.select(hit);
+                        }
+                        self.tools.selection.set(self.selection.clone());
+                    }
+                }
                 (ElementState::Pressed, MouseButton::Middle) if self.rect.contains(self.cursor) => {
                     self.viewport.begin_pan(self.cursor);
                     self.drag = Some(Drag::Pan);
@@ -3260,6 +3289,16 @@ impl Widget for CanvasSurface {
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.follow_keys();
         self.follow_view();
+        // How large a brush can be follows the artwork's size.
+        let extent = self.art.width.max(self.art.height);
+        if extent > 0.0
+            && self
+                .tools
+                .extent
+                .with(|known| (*known - extent).abs() > f64::EPSILON)
+        {
+            self.tools.extent.set(extent);
+        }
         // The panels show what is selected.
         if self.tools.selection.with(|shown| *shown != self.selection) {
             self.tools.selection.set(self.selection.clone());
