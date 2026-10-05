@@ -452,6 +452,7 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         using(Icon::SquareDashed, "stroke"),
         using(Icon::Layers, "mask"),
         using(Icon::Eraser, "clear"),
+        refine(tools, Icon::Brush, "canvas-area-refine", Refine::Edge(EDGE)),
         refine(tools, Icon::Plus, "canvas-area-grow", Refine::Grow(GROW)),
         refine(
             tools,
@@ -492,6 +493,9 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
 
 /// How far, in screen pixels, a click grows or shrinks the selection.
 const GROW: f64 = 4.0; // a step a person sees at the zoom they work at, not spacing
+/// How far, in screen pixels, a click fits the selection's edge to the
+/// picture.
+const EDGE: f64 = 8.0; // a reach a person sees at the zoom they work at, not spacing
 /// How wide, in screen pixels, a click softens the selection's edge.
 const FEATHER: f64 = 8.0; // a step a person sees at the zoom they work at, not spacing
 
@@ -500,6 +504,7 @@ const FEATHER: f64 = 8.0; // a step a person sees at the zoom they work at, not 
 enum Refine {
     Grow(f64),
     Feather(f64),
+    Edge(f64),
 }
 
 /// Grow, shrink or feather the selection by a step seen at the zoom the
@@ -509,11 +514,13 @@ fn refine(tools: &Tools, icon: Icon, id: &str, change: Refine) -> Command {
     let units = move |pixels: f64| pixels / zoom.with(|zoom| zoom.max(1e-6));
     let reads = units.clone();
     let edit = std::sync::Arc::new(move || {
-        let (grow, feather) = match change {
-            Refine::Grow(pixels) => (Some(reads(pixels)), None),
-            Refine::Feather(pixels) => (None, Some(reads(pixels))),
+        let (grow, feather, refine) = match change {
+            Refine::Grow(pixels) => (Some(reads(pixels)), None, None),
+            Refine::Feather(pixels) => (None, Some(reads(pixels)), None),
+            Refine::Edge(pixels) => (None, None, Some(reads(pixels))),
         };
         CanvasAction::Select(Box::new(Select {
+            refine,
             feather,
             grow,
             ..Select::default()
@@ -530,6 +537,12 @@ fn refine(tools: &Tools, icon: Icon, id: &str, change: Refine) -> Command {
             icon,
             id,
             ArtworkResource::SELECT_FEATHER.map(move |()| units(pixels)),
+            edit,
+        ),
+        Refine::Edge(pixels) => Command::new(
+            icon,
+            id,
+            ArtworkResource::SELECT_REFINE.map(move |()| units(pixels)),
             edit,
         ),
     }
