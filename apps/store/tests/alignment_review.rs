@@ -185,6 +185,23 @@ fn secondary_pages_share_one_header_composition() {
         safety_title.y0,
         "titles start on one line",
     );
+    let explanation = first_named(
+        &*remotes,
+        "Browse software from your configured repositories. Repositories supplied by this device stay available; repositories you add belong to your account.",
+    );
+    let form_title = first_named(&*remotes, "Add a remote");
+    assert!(
+        explanation.y0 >= remotes_title.y1,
+        "repository scope explanation follows the shared header"
+    );
+    assert!(
+        explanation.y1 < form_title.y0,
+        "the complete explanation fits before the add form"
+    );
+    assert!(
+        explanation.width() > 0.0 && explanation.height() > 0.0,
+        "repository scope guidance is visible"
+    );
 }
 
 /// The details page stacks its identity at the token gap and aligns its facts with the hero.

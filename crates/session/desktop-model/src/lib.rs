@@ -54,8 +54,11 @@ pub use layout::{MissingApp, Strip, Tab, TileContent, WindowGroup};
 pub use partition::{Display, OutputPartition};
 pub use shared_surfaces::SharedSurfaces;
 pub use task::{
-    WorkspaceEffectReceipt, WorkspaceTask, WorkspaceTaskAuditEvent, WorkspaceTaskResource,
-    WorkspaceTaskRoute, WorkspaceTaskStatus,
+    MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
+    MAX_WORKSPACE_TASK_SUMMARY_BYTES, WorkspaceAgentRequest, WorkspaceEffectReceipt, WorkspaceTask,
+    WorkspaceTaskActiveRun, WorkspaceTaskAuditEvent, WorkspaceTaskControl, WorkspaceTaskDirection,
+    WorkspaceTaskDirectionApplied, WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult,
+    WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};

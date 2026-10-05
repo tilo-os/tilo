@@ -25,7 +25,7 @@
 //! the Store's worker ([`crate::worker`]), in a screenshot from its fixture,
 //! and every change — a package job, a filter, a report edit — goes through
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
@@ -33,7 +33,7 @@ use ui::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
-use ui::tilo_actions::{ActionSpec, ControlInvocation, ResourcePresentation};
+use ui::tilo_actions::{ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
 use ui::widget::Widget;
 use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
@@ -110,7 +110,9 @@ fn action_code(action: ActionKind) -> &'static str {
 fn short_publisher(item: &StoreItem) -> String {
     item.publisher_pubkey_hex.as_deref().map_or_else(
         || match item.source {
-            crate::StoreSource::Flathub => "Flathub upstream metadata".into(),
+            crate::StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
+                format!("{} / upstream metadata", item.source.distribution_name())
+            }
             crate::StoreSource::Tilo { .. } => "Not disclosed".into(),
         },
         |key| {
@@ -123,7 +125,9 @@ fn short_publisher(item: &StoreItem) -> String {
 fn full_publisher(item: &StoreItem) -> String {
     item.publisher_pubkey_hex.as_deref().map_or_else(
         || match item.source {
-            crate::StoreSource::Flathub => "Flathub upstream metadata".into(),
+            crate::StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
+                format!("{} / upstream metadata", item.source.distribution_name())
+            }
             crate::StoreSource::Tilo { .. } => "Not disclosed".into(),
         },
         |key| format!("ed25519:{key}"),
@@ -226,7 +230,7 @@ fn report_envelope(report: &ReportProjection, item: Option<&StoreItem>) -> Repor
         publisher_fingerprint: item.and_then(|item| item.publisher_pubkey_hex.clone()),
         catalogue_trust_claim: item.map_or_else(
             || "Catalogue item no longer available".into(),
-            |item| item.trust.label().into(),
+            |item| item.trust.label(),
         ),
         evidence_note: report.note.chars().take(16_384).collect(),
     }
@@ -280,7 +284,7 @@ fn needing_flatpak(spec: ActionSpec, action: ActionKind, flatpak_available: bool
 fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
     let source = match &item.source {
         StoreSource::Tilo { .. } => "Tilo verified",
-        StoreSource::Flathub => "Flathub",
+        StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => item.source.distribution_name(),
     };
     // The row feeds system search, history and assistive clients, which do
     // not see the card layout. Keep its summary short rather than exporting
@@ -306,7 +310,12 @@ fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
         .chain(item.remove_action());
     for action in actions {
         let spec = StoreEffect::package(action, item.id.clone()).bound();
-        row = row.operation(needing_flatpak(spec, action, flatpak_available));
+        let spec = if let Some((code, reason)) = item.unavailable_action(action) {
+            spec.unavailable(code, reason)
+        } else {
+            needing_flatpak(spec, action, flatpak_available)
+        };
+        row = row.operation(spec);
     }
     for version in item.versions.iter().take(32) {
         let label = if version.version.is_empty() {
@@ -327,17 +336,29 @@ fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
     ))
 }
 
-fn review_label(item: &StoreItem) -> &'static str {
+fn review_label(item: &StoreItem) -> String {
     match item.trust {
-        crate::StoreTrust::PublisherSigned => "Signature verified, no independent review",
-        crate::StoreTrust::Flathub => "Flathub distribution, no Tilo review",
+        crate::StoreTrust::PublisherSigned => {
+            "Signature verified, no independent review".to_string()
+        }
+        crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
+        crate::StoreTrust::Flathub => "Flathub distribution, no Tilo review".to_string(),
     }
 }
 
 /// The publisher an app's row is grouped under: its key, or Flathub.
 fn publisher_of(item: &StoreItem) -> (String, String) {
     item.publisher_pubkey_hex.as_ref().map_or_else(
-        || ("flathub".to_owned(), "Flathub distribution".to_owned()),
+        || {
+            (
+                match &item.source {
+                    StoreSource::Flathub => "flathub".to_string(),
+                    StoreSource::FlatpakRemote { name, .. } => format!("flatpak:{name}"),
+                    StoreSource::Tilo { registry_name } => format!("registry:{registry_name}"),
+                },
+                format!("{} distribution", item.source.distribution_name()),
+            )
+        },
         |key| (key.clone(), format!("Publisher {}", short_publisher(item))),
     )
 }
@@ -433,9 +454,6 @@ pub struct StoreApp {
     last_cursor: Point,
     /// Shared async, bounded decoded-artwork cache. `None` for hermetic shots.
     images: Option<ui::ImageStore>,
-    /// Actions a list row asked for (its closure cannot reach the host),
-    /// handed to the host as control invocations.
-    queued_invocations: Rc<RefCell<Vec<ControlInvocation>>>,
 }
 
 impl Default for StoreApp {
@@ -481,7 +499,6 @@ impl StoreApp {
             status_bubble: ui::StatusBubble::new(),
             last_cursor: Point::ZERO,
             images: None,
-            queued_invocations: Rc::default(),
         }
     }
 
@@ -581,6 +598,7 @@ impl StoreApp {
                     url: "https://dl.flathub.org/repo/".into(),
                     title: "Flathub".into(),
                     disabled: false,
+                    user_managed: true,
                 }]);
             }
             Some("progress") => {
@@ -877,6 +895,20 @@ impl StoreApp {
 }
 
 impl Widget for StoreApp {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let changed = self
+            .root
+            .as_mut()
+            .is_some_and(|root| root.update(state, path));
+        if self.back_requested.take() {
+            self.show_catalogue();
+            self.structure_dirty = true;
+            true
+        } else {
+            changed
+        }
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_worker();
         if let Some(root) = self.root.as_mut() {
@@ -1213,6 +1245,34 @@ impl StoreApp {
                     .open(ui::search::SearchRequest::this_app().with_query(query.clone()));
                 self.set_query(query);
             }
+            StoreEffect::BrowseRemote { remote } => {
+                let source = self
+                    .remotes
+                    .iter()
+                    .find(|source| source.resource_id() == remote && !source.disabled)
+                    .ok_or_else(|| "Unknown or disabled Flatpak repository.".to_string())?;
+                let title = source.title.clone();
+                self.reserve_job()?;
+                self.status_line = ui::i18n::I18nManager::format(
+                    "store-remote-loading",
+                    &[("name", ui::i18n::ArgValue::Text(title))],
+                );
+                self.operation_error = None;
+                self.focused_detail = None;
+                self.remotes_open = false;
+                self.safety_open = false;
+                self.set_query(String::new());
+                // This job supplies the repository result itself. An empty
+                // global search queued here would replace it immediately.
+                self.pending_search = None;
+                self.pending_detail = None;
+                self.catalog_page = 0;
+                self.scroll_offset.set((0.0, 0.0));
+                self.set_active_filter(SourceFilter::All);
+                self.set_active_category(None);
+                self.structure_dirty = true;
+                return Ok(Job::admitted(Request::BrowseRemote(remote), Finish::Status));
+            }
             StoreEffect::SetSource { source } => {
                 self.set_active_filter_from_local(&source);
                 if self.active_filter.label() != source {
@@ -1309,6 +1369,16 @@ impl StoreApp {
             }
             StoreEffect::RemoveRemote { name } => {
                 validate_remote_name(&name)?;
+                if !self
+                    .remotes
+                    .iter()
+                    .any(|remote| remote.name == name && remote.user_managed)
+                {
+                    return Err(
+                        "This repository is provided by the device and cannot be removed here."
+                            .into(),
+                    );
+                }
                 self.reserve_job()?;
                 return Ok(Job::admitted(Request::RemoteRemove(name), Finish::Status));
             }
@@ -1676,11 +1746,11 @@ impl StoreApp {
             let item = self.items.iter().find(|item| publisher_of(item).0 == key)?;
             return Some(LiveRow::new(id, "store.publisher", publisher_of(item).1));
         }
-        if let Some(name) = id.strip_prefix("remote:") {
+        if id.starts_with("remote:") {
             return self
                 .remotes
                 .iter()
-                .find(|remote| remote.name == name)
+                .find(|remote| remote.resource_id() == id)
                 .map(remote_row);
         }
         match id {
@@ -1786,14 +1856,12 @@ const REMOTES_ID: &str = "store:remotes";
 const LATEST_JOB_ID: &str = "store:latest-job";
 const CATALOGUE_SNAPSHOT_ID: &str = "store:catalogue-snapshot";
 
-fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
-    LiveRow::new(
-        format!("remote:{}", remote.name),
-        "store.remote",
-        remote.title.clone(),
-    )
-    .effect(&StoreEffect::RemoveRemote {
-        name: remote.name.clone(),
+fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
+    crate::resource::STORE_CATALOG.ensure();
+    ui::i18n!(if remote.user_managed {
+        "store-remote-user"
+    } else {
+        "store-remote-system"
     })
 }
 
@@ -1824,10 +1892,55 @@ impl StoreApp {
             .filter(|item| item.installed.update_available())
             .filter_map(|item| {
                 let action = item.action_kind(self.flatpak_available);
-                matches!(action, ActionKind::Update | ActionKind::FlatpakUpdate)
-                    .then_some((item, action))
+                (matches!(action, ActionKind::Update | ActionKind::FlatpakUpdate)
+                    && item.allows_action(action, self.flatpak_available))
+                .then_some((item, action))
             })
             .collect()
+    }
+}
+
+fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
+    ui::i18n::I18nManager::format(
+        "store-remote-state",
+        &[
+            (
+                "scope",
+                ui::i18n::ArgValue::Text(remote_scope_label(remote)),
+            ),
+            (
+                "state",
+                ui::i18n::ArgValue::Text(ui::i18n!(if remote.disabled {
+                    "store-remote-disabled"
+                } else {
+                    "store-remote-enabled"
+                })),
+            ),
+        ],
+    )
+}
+
+fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
+    let scope = remote_scope_label(remote);
+    let title = ui::i18n::I18nManager::format(
+        "store-remote-title",
+        &[
+            ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
+            ("scope", ui::i18n::ArgValue::Text(scope)),
+        ],
+    );
+    let mut row = LiveRow::new(remote.resource_id(), "store.remote", title);
+    if !remote.disabled {
+        row = row.effect(&StoreEffect::BrowseRemote {
+            remote: remote.resource_id(),
+        });
+    }
+    if remote.user_managed {
+        row.effect(&StoreEffect::RemoveRemote {
+            name: remote.name.clone(),
+        })
+    } else {
+        row
     }
 }
 
@@ -1844,6 +1957,7 @@ mod tests {
         let trust = match &source {
             StoreSource::Tilo { .. } => StoreTrust::PublisherSigned,
             StoreSource::Flathub => StoreTrust::Flathub,
+            StoreSource::FlatpakRemote { .. } => StoreTrust::ConfiguredRemote,
         };
         StoreItem {
             id: format!("id.{}", name.to_ascii_lowercase()),
@@ -1902,6 +2016,165 @@ mod tests {
     }
 
     #[test]
+    fn system_remotes_have_distinct_resources_and_no_user_remove_action() {
+        let mut app = seeded_app();
+        let system = crate::flathub_client::Remote {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            title: "Flathub".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        app.set_remotes(vec![system.clone()]);
+        let resource = app
+            .live_row("remote:system:flathub")
+            .unwrap()
+            .into_resource();
+        assert!(
+            !resource
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        assert!(
+            app.admit(StoreEffect::RemoveRemote {
+                name: "flathub".into()
+            })
+            .is_err()
+        );
+        let mut user = system;
+        user.user_managed = true;
+        app.set_remotes(vec![
+            user.clone(),
+            crate::flathub_client::Remote {
+                user_managed: false,
+                ..user
+            },
+        ]);
+        assert!(
+            app.live_row("remote:flathub")
+                .unwrap()
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        assert!(app.live_row("remote:system:flathub").is_some());
+    }
+
+    #[test]
+    fn configured_remote_resources_offer_read_browse_and_honest_mutations() {
+        let mut app = seeded_app();
+        app.set_flatpak_available(true);
+        let remote = crate::flathub_client::Remote {
+            name: "tools".into(),
+            title: "Example tools".into(),
+            url: "https://tools.example/repo".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        app.set_remotes(vec![remote.clone()]);
+        let row = app.live_row("remote:system:tools").unwrap().into_resource();
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.id == "browse-remote")
+        );
+        assert!(
+            !row.actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        app.set_query("old search".into());
+        app.catalog_page = 4;
+        let job = admitted_job(
+            &mut app,
+            StoreEffect::BrowseRemote {
+                remote: remote.resource_id(),
+            },
+        );
+        assert!(
+            matches!(job.request, Request::BrowseRemote(ref id) if id == "remote:system:tools")
+        );
+        assert!(!app.remotes_open);
+        assert_eq!(app.query(), "");
+        assert_eq!(app.catalog_page, 0);
+        assert!(
+            app.pending_search.is_none(),
+            "a global empty search must not overwrite repository browsing"
+        );
+
+        let remote_item = crate::sources::remote_catalogue_items(
+            "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\ttools\n",
+            &remote,
+            &[],
+        )
+        .remove(0);
+        app.set_items(vec![remote_item]);
+        let row = app
+            .live_row("app:org.example.Editor")
+            .unwrap()
+            .into_resource();
+        let install = row
+            .actions
+            .iter()
+            .find(|action| action.id == "flatpak-install")
+            .unwrap();
+        assert!(
+            matches!(&install.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_managed_repository")
+        );
+        assert!(
+            app.admit(StoreEffect::FlatpakInstall {
+                app: "org.example.Editor".into()
+            })
+            .is_err()
+        );
+        let mut disabled = remote;
+        disabled.disabled = true;
+        app.set_remotes(vec![disabled]);
+        assert!(
+            !app.live_row("remote:system:tools")
+                .unwrap()
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == "browse-remote")
+        );
+        assert!(
+            app.admit(StoreEffect::BrowseRemote {
+                remote: "remote:system:tools".into()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unsupported_device_version_has_no_invocable_open_offer() {
+        let mut app = seeded_app();
+        let mut unsupported = item(
+            "Foreign",
+            StoreSource::Tilo {
+                registry_name: "Tilo".into(),
+            },
+            "Tools",
+            InstalledState::Not,
+        );
+        unsupported.versions.clear();
+        let id = unsupported.id.clone();
+        app.set_items(vec![unsupported]);
+        let row = app.live_row(&format!("app:{id}")).unwrap().into_resource();
+        let open = row
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .unwrap();
+        assert!(
+            matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
+        );
+        assert!(app.admit(StoreEffect::Open { app: id }).is_err());
+    }
+
+    #[test]
     fn update_all_queues_every_app_with_an_update() {
         let mut app = seeded_app();
         let installed = |version: &str, available: &str, user_managed| InstalledState::Installed {
@@ -1953,6 +2226,46 @@ mod tests {
             current.admit(StoreEffect::UpdateAll).is_err(),
             "nothing to update"
         );
+    }
+
+    #[test]
+    fn declared_search_finds_categories_publishers_and_configured_repositories() {
+        let mut app = seeded_app();
+        let mut items = app.items().to_vec();
+        let native = items.iter_mut().find(|item| item.name == "Notes").unwrap();
+        native.categories = vec!["Research".into()];
+        native.tagline = "Chalkboard projects".into();
+        native.publisher_pubkey_hex = Some(format!("{}a1b2", "a1b2c3d4e5f6".repeat(5)));
+        let native_id = native.id.clone();
+        let remote = items.iter_mut().find(|item| item.name == "Chess").unwrap();
+        remote.source = StoreSource::FlatpakRemote {
+            name: "community-tools".into(),
+            title: "Community repository".into(),
+            branch: "stable".into(),
+            user_managed: true,
+        };
+        let remote_id = remote.id.clone();
+        app.set_items(items);
+        for (query, expected) in [
+            ("Research", native_id.as_str()),
+            ("Chalkboard", native_id.as_str()),
+            ("a1b2c3d4e5f6", native_id.as_str()),
+            (native_id.as_str(), native_id.as_str()),
+            ("Community repository", remote_id.as_str()),
+            ("community-tools", remote_id.as_str()),
+        ] {
+            app.admit(StoreEffect::SetSearch {
+                query: query.into(),
+            })
+            .unwrap();
+            let hits: Vec<_> = app
+                .visible_items()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect();
+            assert_eq!(hits, vec![expected], "declared search query {query}");
+            assert!(app.live_row(&format!("app:{expected}")).is_some());
+        }
     }
 
     /// Source, installed and category filters, search ranking and the category list.
@@ -2149,6 +2462,7 @@ mod tests {
                 url: "https://dl.flathub.org/repo/".into(),
                 title: "Flathub".into(),
                 disabled: false,
+                user_managed: true,
             }]);
             for id in [REMOTES_ID, "remote:flathub", crate::resource::MODERATION_ID] {
                 assert!(app.live_row(id).is_some(), "{id} resolves");

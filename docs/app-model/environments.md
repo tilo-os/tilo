@@ -63,12 +63,17 @@ the system app store (`/usr/share/tilo-apps`) with Tilo OS and the
 
 ```rust
 /// crates/packaging/package-store
-pub fn materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError>;
+pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError>;
 ```
 
-`materialized_tree` fetches (from the registry when missing), verifies and
-materialises an image and returns its read-only root. It is the only way the
-supervisor turns an image ref into a path.
+`local_materialized_tree` resolves and admits the signed image, then returns
+its read-only root in the per-user package store. System images are rebuilt
+there from verified bytes through the content store, so bootc and system
+extensions beneath `/usr` do not consume the guest overlay's stacking depth.
+Cached bytes, links, executable modes and publisher trust are checked again
+before use. The guest mounts this local tree read-only; its confinement stays
+the same. Other image readers can use `materialized_tree` without relocating
+the system tree.
 
 ## The environment record
 

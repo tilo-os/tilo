@@ -468,6 +468,66 @@ impl NativeWorkspaceOwner {
         self.publish_room(room, candidate, None)?;
         Ok(receipt)
     }
+
+    /// Commit one typed Task Center command in the room owner's serialized
+    /// turn. Unlike an app document, this mutates the admitted room task
+    /// projection itself; it never creates a hidden application record.
+    ///
+    /// # Errors
+    /// The authority is no longer current, the command is stale or malformed,
+    /// or the durable owner cannot publish the resulting room generation.
+    pub fn commit_workspace_task_command(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        now: SystemTime,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
+        let binding = request.binding()?;
+        let room = RoomId::parse(&request.room).ok_or("invalid native task room")?;
+        let CommitOperation::WorkspaceTaskCommand {
+            invocation,
+            authority,
+            command,
+        } = request.operation
+        else {
+            return Err("unsupported native task owner commit family".into());
+        };
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        if let tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Host { attestor }
+        | tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Agent { attestor, .. } =
+            &authority
+        {
+            let admitted = match candidate.host() {
+                Some(host) => host == attestor && attestor.capabilities.can_act_as_host,
+                None => candidate.governor() == attestor,
+            };
+            if !admitted {
+                return Err("task command attestor is not the exact pinned workspace host".into());
+            }
+        }
+        let (changed, _) = candidate.peer.apply_workspace_task_command(
+            invocation,
+            binding.request_digest,
+            &authority,
+            &command,
+            now,
+        )?;
+        if changed {
+            candidate.record.peer = candidate.peer.durable()?;
+            candidate.record.generation = candidate
+                .record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            self.publish_room(room, candidate.clone(), None)?;
+        }
+        Ok(OwnerCommitReceipt {
+            binding,
+            generation: candidate.generation(),
+            aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
+        })
+    }
 }
 pub(crate) fn ns(now: SystemTime) -> Result<u64, String> {
     u64::try_from(

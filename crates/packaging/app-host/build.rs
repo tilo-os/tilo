@@ -3,8 +3,8 @@
 // `tools/regenerate-capnp.sh crates/packaging/app-host schema schema/app-host.capnp`;
 // a schema edited without regenerating, or bindings edited by hand, fail here.
 
-const EXPECTED_SCHEMA_FNV1A: u64 = 0x9e77_5029_9c21_ca04;
-const EXPECTED_BINDINGS_FNV1A: u64 = 0x5023_d697_630c_efee;
+const EXPECTED_SCHEMA_FNV1A: u64 = 0x7a86_e924_c557_0ca3;
+const EXPECTED_BINDINGS_FNV1A: u64 = 0x9f5c_b1f7_5385_8f13;
 const SCHEMAS: [&str; 1] = ["schema/app-host.capnp"];
 const GENERATED: [&str; 1] = ["src/generated/app_host_capnp.rs"];
 

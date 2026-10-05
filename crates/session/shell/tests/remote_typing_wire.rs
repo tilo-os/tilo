@@ -66,6 +66,8 @@ fn character(code: u32, shift: bool) -> Option<char> {
 #[derive(Default)]
 struct Client {
     globals: Vec<(u32, String, u32)>,
+    presentation_clock: Option<u32>,
+    presentation_seen: std::collections::HashMap<u32, PresentationSeen>,
     shift: bool,
     text: String,
     repeat_rate: Option<i32>,
@@ -554,6 +556,285 @@ fn assert_host_focus_permissions(
     );
     h.pump();
     assert_eq!(h.client.focus.as_ref(), Some(expected_focus));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PresentationSeen {
+    Discarded,
+    Presented(std::time::Duration, u64, u32, u32),
+}
+
+impl Dispatch<wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation, ()>
+    for Client
+{
+    fn event(
+        state: &mut Self,
+        _: &wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation,
+        event: wayland_protocols::wp::presentation_time::client::wp_presentation::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wayland_protocols::wp::presentation_time::client::wp_presentation::Event::ClockId {
+            clk_id,
+        } = event
+        {
+            state.presentation_clock = Some(clk_id);
+        }
+    }
+}
+
+impl Dispatch<wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::WpPresentationFeedback, u32> for Client {
+    fn event(state: &mut Self, _: &wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::WpPresentationFeedback,
+        event: wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::Event,
+        tag: &u32, _: &Connection, _: &QueueHandle<Self>) {
+        use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback::Event;
+        let outcome = match event {
+            Event::Discarded => PresentationSeen::Discarded,
+            Event::Presented { tv_sec_hi, tv_sec_lo, tv_nsec, seq_hi, seq_lo, flags, refresh, .. } => {
+                let seconds = u64::from(tv_sec_hi).wrapping_shl(32) | u64::from(tv_sec_lo);
+                let sequence = u64::from(seq_hi).wrapping_shl(32) | u64::from(seq_lo);
+                PresentationSeen::Presented(std::time::Duration::new(seconds, tv_nsec), sequence, match flags { wayland_client::WEnum::Value(flags) => flags.bits(), wayland_client::WEnum::Unknown(_) => panic!("known standard hardware presentation flags") }, refresh)
+            }
+            _ => return,
+        };
+        assert!(state.presentation_seen.insert(*tag, outcome).is_none(), "feedback is one-shot");
+    }
+}
+
+delegate_noop!(Client: ignore wayland_client::protocol::wl_shm::WlShm);
+delegate_noop!(Client: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
+delegate_noop!(Client: ignore wayland_client::protocol::wl_buffer::WlBuffer);
+
+fn draw_presentation_pixels(id: u64) -> vello::Scene {
+    use ui::widget::Widget;
+    let theme = ui::Theme::dark();
+    let mut widget =
+        shell::shell::foreign::ForeignSurfaceWidget::new(id, "org.example.Presentation".into());
+    let mut layout = taffy::TaffyTree::<()>::new();
+    let node = widget.build_layout(&mut layout, &theme, &mut std::collections::HashMap::new());
+    layout
+        .compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(32.0),
+                height: taffy::AvailableSpace::Definite(32.0),
+            },
+        )
+        .unwrap();
+    widget.apply_layout(&layout, node, vello::kurbo::Point::ZERO);
+    let mut scene = vello::Scene::new();
+    shell::shell::foreign::store().begin_presentation_frame(Rect::new(0.0, 0.0, 32.0, 32.0));
+    widget.draw(
+        &mut scene,
+        vello::kurbo::Affine::IDENTITY,
+        &mut ui::TextRenderer::new(),
+        &theme,
+        &ui::presence::PresenceCtx::empty(),
+    );
+    scene
+}
+
+fn presentation_output() -> smithay::output::Output {
+    smithay::output::Output::new(
+        "fixture-panel".into(),
+        smithay::output::PhysicalProperties {
+            size: (1, 1).into(),
+            subpixel: smithay::output::Subpixel::Unknown,
+            make: "fixture".into(),
+            model: "fixture".into(),
+        },
+    )
+}
+
+fn wait_for_presentation_pixels(h: &mut Harness, id: u64) {
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(5))
+        .expect("capture observation deadline fits the monotonic clock");
+    loop {
+        h.pump();
+        if shell::shell::foreign::store()
+            .presentation_pixels(id)
+            .is_some()
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual committed capture must complete"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+fn presentation_fixture() -> (
+    Harness,
+    wl_surface::WlSurface,
+    wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation,
+    wayland_client::protocol::wl_buffer::WlBuffer,
+    wayland_client::protocol::wl_buffer::WlBuffer,
+    u64,
+) {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation;
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let shm = h.bind::<wayland_client::protocol::wl_shm::WlShm>("wl_shm", 1);
+    let presentation = h.bind::<WpPresentation>("wp_presentation", 1);
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let top = xdg.get_toplevel(&qh, ());
+    top.set_app_id("org.example.Presentation".into());
+    surface.commit();
+    h.pump();
+    let id = foreign_id(&h.state, "org.example.Presentation");
+    let mut pixels = tempfile::tempfile().unwrap();
+    pixels.write_all(&[0, 0, 255, 255, 0, 255, 0, 255]).unwrap();
+    let pool = shm.create_pool(pixels.as_fd(), 8, &qh, ());
+    let old = pool.create_buffer(
+        0,
+        1,
+        1,
+        4,
+        wayland_client::protocol::wl_shm::Format::Argb8888,
+        &qh,
+        (),
+    );
+    let new = pool.create_buffer(
+        4,
+        1,
+        1,
+        4,
+        wayland_client::protocol::wl_shm::Format::Argb8888,
+        &qh,
+        (),
+    );
+    (h, surface, presentation, old, new, id)
+}
+
+#[test]
+fn presentation_feedback_belongs_to_committed_pixels_and_exact_submitted_frames() {
+    let (mut h, surface, presentation, old, new, id) = presentation_fixture();
+    let qh = h.queue.handle();
+    let _old_feedback = presentation.feedback(&surface, &qh, 0);
+    surface.attach(Some(&old), 0, 0);
+    surface.commit();
+    wait_for_presentation_pixels(&mut h, id);
+    let _empty_feedback = presentation.feedback(&surface, &qh, 1);
+    surface.commit();
+    h.pump();
+    let _new_feedback = presentation.feedback(&surface, &qh, 2);
+    surface.attach(Some(&new), 0, 0);
+    surface.commit();
+    wait_for_presentation_pixels(&mut h, id);
+    assert_eq!(
+        h.client.presentation_clock,
+        Some(u32::try_from(libc::CLOCK_MONOTONIC).unwrap())
+    );
+    let scene = draw_presentation_pixels(id);
+    assert!(
+        !scene.encoding().is_empty(),
+        "production widget composed the committed buffer"
+    );
+    let frame = h
+        .state
+        .presentation_feedback
+        .composed(shell::shell::foreign::store(), Some(presentation_output()));
+    h.state.presentation_feedback.submitted(42, frame);
+    let proof = shell::shell::present::PhysicalPresentation {
+        timestamp: std::time::Duration::new(987, 123_456_000),
+        sequence: 1234,
+        refresh: None,
+    };
+    h.state.presentation_feedback.completed(41, Some(proof));
+    h.pump();
+    assert_eq!(
+        h.client.presentation_seen.get(&0),
+        Some(&PresentationSeen::Discarded)
+    );
+    assert_eq!(
+        h.client.presentation_seen.get(&1),
+        Some(&PresentationSeen::Discarded)
+    );
+    assert!(
+        !h.client.presentation_seen.contains_key(&2),
+        "another frame cannot credit these pixels"
+    );
+    h.state.presentation_feedback.completed(42, Some(proof));
+    h.pump();
+    assert_eq!(
+        h.client.presentation_seen.get(&2),
+        Some(&PresentationSeen::Presented(
+            proof.timestamp,
+            proof.sequence,
+            7,
+            0
+        ))
+    );
+    shell::shell::foreign::store().forget(id);
+}
+
+#[test]
+fn presentation_failures_missing_output_and_timeouts_are_discarded_on_the_wire() {
+    for mode in 0..4 {
+        let (mut h, surface, presentation, buffer, _, id) = presentation_fixture();
+        let _feedback = presentation.feedback(&surface, &h.queue.handle(), 99);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.commit();
+        wait_for_presentation_pixels(&mut h, id);
+        if mode == 3 {
+            // The client changed an attached buffer without attaching a newly
+            // captured one. Feedback must not certify our older cached pixels.
+            let _damaged_feedback = presentation.feedback(&surface, &h.queue.handle(), 100);
+            surface.damage_buffer(0, 0, 1, 1);
+            surface.commit();
+            h.pump();
+        }
+        let _scene = draw_presentation_pixels(id);
+        let output = (mode != 1).then(presentation_output);
+        let frame = h
+            .state
+            .presentation_feedback
+            .composed(shell::shell::foreign::store(), output);
+        h.state.presentation_feedback.submitted(7, frame);
+        match mode {
+            0 => h.state.presentation_feedback.completed(7, None),
+            1 => h.state.presentation_feedback.completed(
+                7,
+                Some(shell::shell::present::PhysicalPresentation {
+                    timestamp: std::time::Duration::from_secs(123),
+                    sequence: 987,
+                    refresh: None,
+                }),
+            ),
+            _ => {
+                let deadline = h
+                    .state
+                    .presentation_feedback
+                    .next_deadline()
+                    .expect("timeout participates in the real idle park");
+                h.state.presentation_feedback.expire(deadline);
+            }
+        }
+        h.pump();
+        assert_eq!(
+            h.client.presentation_seen.get(&99),
+            Some(&PresentationSeen::Discarded),
+            "failure mode {mode} cannot claim photons"
+        );
+        if mode == 3 {
+            assert_eq!(
+                h.client.presentation_seen.get(&100),
+                Some(&PresentationSeen::Discarded)
+            );
+        }
+        shell::shell::foreign::store().forget(id);
+    }
 }
 
 /// Focus diagnostics observe the protocol seat, including differences from
