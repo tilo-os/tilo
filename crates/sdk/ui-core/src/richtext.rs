@@ -287,12 +287,44 @@ impl RichTextLayout {
         max_width: Option<f32>,
         browser_emoji: bool,
     ) -> Self {
+        let prep = StyledPrep {
+            browser_emoji,
+            extra: &[],
+        };
+        let mut layout = Self::shape_plain_with(fs, text, style, max_width, prep);
+        if Self::hangs_wrapped_rows(style, max_width) {
+            let mut extra = Vec::new();
+            for _ in 0..WRAP_INDENT_PASSES {
+                let wanted = layout.wrap_indent_insertions(text);
+                if wanted == extra {
+                    break;
+                }
+                extra = wanted;
+                let prep = StyledPrep {
+                    browser_emoji,
+                    extra: &extra,
+                };
+                layout = Self::shape_plain_with(fs, text, style, max_width, prep);
+            }
+        }
+        layout
+    }
+
+    fn shape_plain_with(
+        fs: &mut FontSystem,
+        text: &str,
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        prep: StyledPrep<'_>,
+    ) -> Self {
+        let browser_emoji = prep.browser_emoji;
         let line_height = style.line_height_px();
         let offset_map = if max_width.is_some() {
             let mut map = style.hyphenation.offset_map(text);
             if text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES {
                 map.add_paragraph_chunks(text);
             }
+            map.add_insertions(prep.extra);
             map
         } else {
             OffsetMap::default()
@@ -450,7 +482,7 @@ impl RichTextLayout {
                 retained.strikes.clear();
                 return retained;
             }
-            return Self::build_styled_reusing_browser(
+            return Self::build_styled_indented(
                 fs,
                 spans,
                 style,
@@ -460,7 +492,52 @@ impl RichTextLayout {
                 browser_emoji,
             );
         }
-        Self::build_styled_reusing_browser(fs, spans, style, max_width, align, None, browser_emoji)
+        Self::build_styled_indented(fs, spans, style, max_width, align, None, browser_emoji)
+    }
+
+    /// Build, then (for [`crate::text_render::TextWrapMode::Indented`]) hang
+    /// each wrapped row under its line's indentation and build again until
+    /// the rows stop moving.
+    fn build_styled_indented(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        align: TextAlign,
+        previous: Option<Self>,
+        browser_emoji: bool,
+    ) -> Self {
+        let prep = StyledPrep {
+            browser_emoji,
+            extra: &[],
+        };
+        let mut layout =
+            Self::build_styled_reusing_browser(fs, spans, style, max_width, align, previous, prep);
+        if Self::hangs_wrapped_rows(style, max_width) {
+            let full_text: String = spans.iter().map(|span| span.text.as_str()).collect();
+            let mut extra = Vec::new();
+            for _ in 0..WRAP_INDENT_PASSES {
+                let wanted = layout.wrap_indent_insertions(&full_text);
+                if wanted == extra {
+                    break;
+                }
+                extra = wanted;
+                let prep = StyledPrep {
+                    browser_emoji,
+                    extra: &extra,
+                };
+                layout = Self::build_styled_reusing_browser(
+                    fs,
+                    spans,
+                    style,
+                    max_width,
+                    align,
+                    Some(layout),
+                    prep,
+                );
+            }
+        }
+        layout
     }
 
     fn build_styled_reusing_browser(
@@ -470,8 +547,9 @@ impl RichTextLayout {
         max_width: Option<f32>,
         align: TextAlign,
         previous: Option<Self>,
-        browser_emoji: bool,
+        prep: StyledPrep<'_>,
     ) -> Self {
+        let browser_emoji = prep.browser_emoji;
         let full_text: String = spans.iter().map(|span| span.text.as_str()).collect();
         let offset_map = if max_width.is_some() {
             let mut map = style.hyphenation.offset_map(&full_text);
@@ -480,6 +558,7 @@ impl RichTextLayout {
             if full_text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES {
                 map.add_paragraph_chunks(&full_text);
             }
+            map.add_insertions(prep.extra);
             map
         } else {
             OffsetMap::default()
@@ -1040,7 +1119,15 @@ impl RichTextLayout {
         #[cfg(test)]
         tests::CARET_STOP_RUNS.with(|count| count.set(count.get() + 1));
         let mut stops = Vec::new();
+        let line_start = self.line_starts.get(run.line_i).copied().unwrap_or(0);
         for glyph in run.glyphs {
+            // A wrapped row's hanging indent is not text: no caret stands in it.
+            if self
+                .offset_map
+                .is_virtual(line_start.saturating_add(glyph.start), WRAP_INDENT)
+            {
+                continue;
+            }
             let cluster = run.text.get(glyph.start..glyph.end).unwrap_or("");
             let mut boundaries: Vec<usize> = crate::text_break::grapheme_indices(cluster)
                 .map(|(at, _)| at)
@@ -1275,7 +1362,87 @@ impl RichTextLayout {
     fn shaped_global(&self, cursor: Cursor) -> usize {
         self.line_starts.get(cursor.line).copied().unwrap_or(0) + cursor.index
     }
+
+    fn hangs_wrapped_rows(style: &crate::text_render::TextStyle, max_width: Option<f32>) -> bool {
+        style.wrap_mode == crate::text_render::TextWrapMode::Indented && max_width.is_some()
+    }
+
+    /// The virtual indent each wrapped row of this layout hangs under: one
+    /// [`WRAP_INDENT`] per column of its line's leading whitespace (a tab to
+    /// the next multiple of the buffer's tab width), at the row's start.
+    fn wrap_indent_insertions(&self, source: &str) -> Vec<crate::text_break::VirtualInsertion> {
+        let tab = usize::from(self.buffer.tab_width()).max(1);
+        let room = self.buffer.size().0.unwrap_or(f32::INFINITY);
+        let mut extra = Vec::new();
+        let mut previous_line = None;
+        for run in self.buffer.layout_runs() {
+            let continuation = previous_line == Some(run.line_i);
+            previous_line = Some(run.line_i);
+            if !continuation {
+                continue;
+            }
+            let Some(start) = run.glyphs.iter().map(|glyph| glyph.start).min() else {
+                continue;
+            };
+            let at = self.glyph_global_byte(run.line_i, start);
+            let line_start = source
+                .get(..at)
+                .and_then(|head| head.rfind('\n'))
+                .map_or(0, |newline| newline + 1);
+            let mut columns = 0usize;
+            let mut indent_end = line_start;
+            for ch in source.get(line_start..).unwrap_or("").chars() {
+                match ch {
+                    ' ' => columns += 1,
+                    '\t' => columns += tab - columns % tab,
+                    _ => break,
+                }
+                indent_end += ch.len_utf8();
+            }
+            // A row that starts inside the indentation itself keeps the edge,
+            // and so does a line indented past half the measure.
+            let indent_w = run
+                .glyphs
+                .iter()
+                .find(|glyph| run.text.get(glyph.start..glyph.end) == Some(" "))
+                .map_or(self.line_height / 2.0, |glyph| glyph.w);
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "a column count of one line's indentation"
+            )]
+            let too_deep = columns as f32 * indent_w > room / 2.0;
+            if at <= indent_end || columns == 0 || too_deep {
+                continue;
+            }
+            extra.extend(std::iter::repeat_n(
+                crate::text_break::VirtualInsertion {
+                    source: at,
+                    ch: WRAP_INDENT,
+                },
+                columns,
+            ));
+        }
+        extra
+    }
 }
+
+/// What a styled build adds to its spans: whether colour emoji come from the
+/// browser's font, and the virtual insertions of a wrapped row's indent.
+#[derive(Clone, Copy)]
+struct StyledPrep<'a> {
+    browser_emoji: bool,
+    extra: &'a [crate::text_break::VirtualInsertion],
+}
+
+/// The virtual character a wrapped row's hanging indent is set in: a no-break
+/// space, a space's width that binds to the text after it, so the row breaks
+/// before it, not after.
+const WRAP_INDENT: char = '\u{a0}';
+
+/// How many times an [`crate::text_render::TextWrapMode::Indented`] layout is
+/// built again while its rows still move; indenting a row can only push text
+/// onto later rows, which settles in a pass or two.
+const WRAP_INDENT_PASSES: usize = 3;
 
 #[cfg(test)]
 #[path = "richtext/retained_layout_tests.rs"]
@@ -1284,6 +1451,54 @@ mod retained_layout_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indented_wrap_hangs_continuation_rows_under_the_line_indent() {
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let style = crate::text_render::TextStyle::new(14.0)
+            .with_family(crate::text_render::FontChoice::Monospace)
+            .with_wrap_mode(crate::text_render::TextWrapMode::Indented);
+        let text = "    let total = first_value + second_value + third_value + fourth_value;\nend";
+        let plain = RichTextLayout::shape_plain(
+            &mut fs,
+            text,
+            &crate::text_render::TextStyle::new(14.0)
+                .with_family(crate::text_render::FontChoice::Monospace),
+            Some(220.0),
+        );
+        let indented = RichTextLayout::shape_plain(&mut fs, text, &style, Some(220.0));
+        let indent_x = indented.caret_geometry(4).0;
+        assert!(indent_x > 20.0, "the line's own indent: {indent_x}");
+        let rows: Vec<(usize, f32)> = indented
+            .buffer
+            .layout_runs()
+            .filter(|run| run.line_i == 0)
+            .skip(1)
+            .map(|run| {
+                let start = run.glyphs.iter().map(|glyph| glyph.start).min().unwrap();
+                let byte = indented.glyph_global_byte(0, start);
+                (byte, run.line_top)
+            })
+            .collect();
+        assert!(!rows.is_empty(), "the first line wraps");
+        for (byte, top) in rows {
+            let (x, caret_top, _) =
+                indented.caret_geometry_at(TextPosition::with_affinity(byte, TextAffinity::After));
+            assert!(
+                (x - indent_x).abs() < 0.5,
+                "a wrapped row starts under the indent: {x} vs {indent_x}"
+            );
+            assert!((caret_top - top).abs() < 0.5);
+            assert_eq!(
+                indented.hit(1.0, top + 1.0),
+                byte,
+                "a click in the hanging indent lands at the row's start"
+            );
+        }
+        // The text itself is unchanged: the same bytes, end to end.
+        assert_eq!(indented.hit(1.0e4, 1.0e4), text.len());
+        assert_eq!(plain.caret_geometry(4).0, indent_x);
+    }
 
     #[test]
     fn huge_paragraph_chunks_keep_source_offsets_and_reuse_shaping() {

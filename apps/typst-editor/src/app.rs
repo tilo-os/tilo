@@ -116,7 +116,7 @@ enum CompactPane {
 /// source editor wraps it with the caret at the end of the line. The long line
 /// is last (no trailing newline) so placing the caret at the document end lands
 /// it there.
-const LONG_LINE_DEMO: &str = "= Meeting notes\n\nA paragraph in Typst is just lines of text, so this one is written as a single long line of source that runs well past the right edge of the editor pane. The editor wraps it onto continuation rows and keeps the caret in view as you type toward the end.";
+const LONG_LINE_DEMO: &str = "= Meeting notes\n\nA paragraph in Typst is just lines of text, so this one is written as a single long line of source that runs well past the right edge of the editor pane. The editor wraps it onto continuation rows and keeps the caret in view as you type toward the end.\n\n- Agenda\n  - A nested point long enough to wrap: its continuation rows hang under the point's own indentation, not at the margin.";
 
 /// A document the picker can switch to: either a bundled sample or a `.typ`
 /// file discovered on disk.
