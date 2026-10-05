@@ -341,6 +341,7 @@ suites = [
   "scripts/browser/test_build_host.py",
   "scripts/browser/test_engine_runtime.py",
   "scripts/browser/test_frame_presentation.py",
+  "scripts/browser/test_native_fixture.py",
   "scripts/browser/test_package.py",
   "scripts/browser/test_scroll_presentation.py",
 ]

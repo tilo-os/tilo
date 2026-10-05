@@ -23,11 +23,11 @@ use std::path::{Path, PathBuf};
 /// The engine runtime's version: the directory name of its bundle and of its
 /// mount. Bump it whenever the host's protocol or its pinned CEF build
 /// changes, so an app never drives a host it was not built against.
-pub const RUNTIME_VERSION: &str = "2026.10.0-chromium";
+pub const RUNTIME_VERSION: &str = "2026.10.1-chromium";
 
 /// The runtime reference an app manifest lists in
 /// `[package].optional-runtimes`.
-pub const RUNTIME_REF: &str = "tilo-runtime/2026.10.0-chromium";
+pub const RUNTIME_REF: &str = "tilo-runtime/2026.10.1-chromium";
 
 /// The host executable, relative to the bundle root.
 pub const HOST_IN_BUNDLE: &str = "lib/chromium/tilo-chromium-host";
