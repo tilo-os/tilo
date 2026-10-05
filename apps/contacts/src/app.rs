@@ -297,7 +297,7 @@ fn find_mut<'w>(root: &'w mut dyn Widget, id: &str) -> Option<&'w mut dyn Widget
 
 impl ContactsApp {
     fn try_perform_action(
-        &mut self,
+        &self,
         _doc: &mut ui::widget::Edits<'_>,
         action: &crate::actions::ContactsAction,
     ) -> Result<(), ui::tilo_actions::ActionError> {
@@ -750,19 +750,6 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Attempt the canonical action route shared with the Ctrl+K palette.
-    /// Unlike the compatibility dispatch wrapper, this exposes a rejected
-    /// operation so local projection updates cannot falsely claim success.
-
-    /// Show the address book the framework resource already holds.
-    /// An empty projection does not wipe contacts that have not been published yet.
-
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-
-    /// Restore the local projection from the durable source after a rejected
-    /// collaborative operation, and tell both sighted and assistive users what
-    /// actually happened.
-
     /// Toggle the favourite flag through the sole published action route.
     /// Every header, semantic, keyboard, and menu affordance calls this so a
     /// stale local contact cannot mutate the projection after a refusal.
@@ -830,10 +817,6 @@ impl ContactsApp {
     pub(crate) fn export_is_busy(&self) -> bool {
         self.export.is_some() || self.portal_in_flight()
     }
-
-    /// Exact resources read one validated contact/group from the authoritative
-    /// store via stable-id indices. A stale position is refused instead of
-    /// redirecting an action to whatever shifted into that vector slot.
 
     /// Whether the open edit form holds changes not yet written to the
     /// store: for a new contact, any content at all; otherwise any
@@ -1639,10 +1622,10 @@ impl Widget for ContactsApp {
         }
     }
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        if let Some((token, import_as_new)) = self.pending_conflict_resolution.take() {
-            if let Err(reason) = self.resolve_import_conflict(edits, &token, import_as_new) {
-                self.show_toast(reason);
-            }
+        if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
+            && let Err(reason) = self.resolve_import_conflict(edits, &token, import_as_new)
+        {
+            self.show_toast(reason);
         }
         self.shell.settle(edits, path);
         if let Some((_, dialog)) = &mut self.dialog {

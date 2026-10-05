@@ -23,7 +23,7 @@ pub enum ThemesEffect {
 
 fn document(studio: &Studio, id: &str) -> Result<ThemeDocument, String> {
     Preset::find(id)
-        .map(|preset| preset.document())
+        .map(Preset::document)
         .or_else(|| {
             studio
                 .themes
@@ -47,7 +47,7 @@ pub(crate) fn install(cx: &ViewCx<Studio>, notice: &LocalState<String>) {
                 let name = document.name.clone();
                 Ok(cx.thread(
                     move |_| crate::apply::apply(&document),
-                    move |_, result, _| match result {
+                    move |(), result, _| match result {
                         Ok(()) => {
                             notice.set(format!("{name} is now your theme."));
                             Ok(Effected::done())

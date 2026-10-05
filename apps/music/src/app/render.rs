@@ -1713,12 +1713,10 @@ impl MusicApp {
                 self.search_query = query;
                 self.request_live_search();
                 if self.active_search_request.is_none() {
-                    return Err(self
-                        .search_error
-                        .as_ref()
-                        .map_or("Catalogue worker unavailable".into(), |(_, error)| {
-                            error.clone()
-                        }));
+                    return Err(self.search_error.as_ref().map_or_else(
+                        || "Catalogue worker unavailable".into(),
+                        |(_, error)| error.clone(),
+                    ));
                 }
                 self.catalogue_invocation = Some(invocation);
                 Ok(ui::framework::Effected::Pending)
@@ -1743,27 +1741,7 @@ impl MusicApp {
                 };
                 self.register_playback_start(invocation, request, 0, false)
             }
-            MusicEffect::KeepOffline { tracks } => {
-                if self.offline_invocation.is_some() {
-                    return Err("another offline download operation is running".into());
-                }
-                let pending = tracks
-                    .iter()
-                    .cloned()
-                    .collect::<std::collections::BTreeSet<_>>();
-                if pending.is_empty() {
-                    return Err("offline download requires at least one track".into());
-                }
-                if pending.iter().any(|id| !self.lib.tracks.contains_key(id)) {
-                    return Err("offline-cache target is no longer in the library".into());
-                }
-                for track_id in &pending {
-                    self.request_offline_download(track_id)?;
-                }
-                self.offline_invocation = Some((invocation, pending));
-                self.dirty = true;
-                Ok(ui::framework::Effected::Pending)
-            }
+            MusicEffect::KeepOffline { tracks } => self.begin_offline_downloads(invocation, tracks),
             MusicEffect::RemoveOffline { tracks } => {
                 if tracks.iter().any(|id| !self.lib.tracks.contains_key(id)) {
                     return Err("offline-cache target is no longer in the library".into());
@@ -1820,6 +1798,31 @@ impl MusicApp {
                 }
             }
         }
+    }
+
+    fn begin_offline_downloads(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        tracks: Vec<String>,
+    ) -> Result<ui::framework::Effected, String> {
+        if self.offline_invocation.is_some() {
+            return Err("another offline download operation is running".into());
+        }
+        let pending = tracks
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if pending.is_empty() {
+            return Err("offline download requires at least one track".into());
+        }
+        if pending.iter().any(|id| !self.lib.tracks.contains_key(id)) {
+            return Err("offline-cache target is no longer in the library".into());
+        }
+        for track_id in &pending {
+            self.request_offline_download(track_id)?;
+        }
+        self.offline_invocation = Some((invocation, pending));
+        self.dirty = true;
+        Ok(ui::framework::Effected::Pending)
     }
 
     /// Start the effect a published operation's `payload` names, as the
@@ -2063,12 +2066,6 @@ impl MusicApp {
         }
         None
     }
-
-    /// Forward a raw window event to the header search `TextInput` on its real
-    /// `handle_event` path (so it runs the same selection / clipboard / caret
-    /// logic as any other field). The field is local-mode, so the doc handle it
-    /// receives is inert; a throwaway taffy node satisfies the trait signature.
-    /// Returns whether the widget consumed the event.
 
     /// Route an event to the open context menu; returns whether `handle_event`
     /// should return immediately (the menu consumed it, or an outside click

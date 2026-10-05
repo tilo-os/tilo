@@ -153,8 +153,6 @@ const DEMO_QUEUE: &[(&str, &str)] = &[
     ("https://demo.local/night-train.mp4", "Night train"),
 ];
 
-/// The opaque reference a shared bookmark on the demo clip carries.
-
 impl LibraryTab {
     /// The tab's name in the show-library effect.
     fn name(self) -> &'static str {
@@ -826,7 +824,6 @@ impl PlayerApp {
     /// playback another device handed over when it says where that stood.
     /// The handoff's position and play state land after the open, so local
     /// autoplay preferences cannot override them.
-
     pub fn open_launch(&mut self, launch: &LaunchInput<'_>) {
         let Some(argument) = launch.argument() else {
             return;

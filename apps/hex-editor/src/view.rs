@@ -830,7 +830,6 @@ impl Widget for HexView {
 
     /// The editor's views — the find bar, the go-to form — opened by the
     /// palette, an agent or a script.
-
     fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {
         // Drain a closed file chooser first, so a freshly opened buffer is
         // submitted before this frame lays out.

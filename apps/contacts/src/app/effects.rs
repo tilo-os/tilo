@@ -1,5 +1,5 @@
 use super::files::contacts_import_request;
-use super::*;
+use super::{ContactId, ContactsApp, FAVORITES_FILTER, FileWork, VCardVersion};
 impl ContactsApp {
     pub(crate) fn answer_effect(
         &mut self,

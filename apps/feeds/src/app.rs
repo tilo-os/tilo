@@ -2584,7 +2584,7 @@ impl Core {
 }
 
 impl FeedsApp {
-    pub(crate) fn present_library(&mut self, store: Store) {
+    pub(crate) fn present_library(&self, store: Store) {
         let mut core = self.core.borrow_mut();
         let first = !core.synced;
         core.store = store;
@@ -2595,16 +2595,16 @@ impl FeedsApp {
         core.synced = true;
     }
     pub(crate) fn attach_dispatcher(
-        &mut self,
+        &self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
     ) {
         self.attach_framework(dispatcher);
     }
-    pub(crate) fn follow_read_settings(&mut self, setting: ui::framework::Setting<ReadSettings>) {
+    pub(crate) fn follow_read_settings(&self, setting: ui::framework::Setting<ReadSettings>) {
         self.core.borrow_mut().follow_read_settings(setting);
     }
     pub(crate) fn change_read_settings(
-        &mut self,
+        &self,
         change: impl FnOnce(&mut ReadSettings),
     ) -> Result<(), String> {
         self.core.borrow_mut().change_read_settings(change)
@@ -2618,7 +2618,7 @@ impl FeedsApp {
             self.stage(name);
         }
     }
-    pub(crate) fn refresh_for(&mut self, reply: ui::framework::EffectReply) {
+    pub(crate) fn refresh_for(&self, reply: ui::framework::EffectReply) {
         let mut core = self.core.borrow_mut();
         core.refresh_all();
         core.refresh_reply = Some(reply);
@@ -2633,13 +2633,13 @@ impl FeedsApp {
             None
         }
     }
-    pub(crate) fn request_import(&mut self) {
+    pub(crate) fn request_import(&self) {
         self.core.borrow_mut().request_import();
     }
-    pub(crate) fn export_opml(&mut self) {
+    pub(crate) fn export_opml(&self) {
         self.core.borrow_mut().export_opml();
     }
-    pub(crate) fn reveal(&mut self, item: &str) -> Result<(), String> {
+    pub(crate) fn reveal(&self, item: &str) -> Result<(), String> {
         let mut core = self.core.borrow_mut();
         if let Some(raw) = item.strip_prefix("feeds.subscription:") {
             let id = raw.parse::<Id>().map_err(|_| "invalid feed id")?;

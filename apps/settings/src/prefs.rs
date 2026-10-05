@@ -481,7 +481,7 @@ impl Default for UpdatePrefs {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppearancePrefs {
-    /// Legacy preset selector retained for imported settings and the published SetTheme action.
+    /// Legacy preset selector retained for imported settings and the published `SetTheme` action.
     #[serde(default = "default_legacy_theme")]
     pub theme: String,
     /// `"light"`, `"dark"` or `"automatic"` (light by day, dark by night).
@@ -809,7 +809,6 @@ impl AppearancePrefs {
         "Dark soft",
     ];
     pub fn choose_legacy_theme(&mut self, name: String) {
-        self.theme = name.clone();
         if settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()) {
             self.mode = "automatic".into();
         } else if let Some(preset) = ui::theme::Preset::find(&name) {
@@ -821,6 +820,7 @@ impl AppearancePrefs {
                 self.light_theme = preset.id().into();
             }
         }
+        self.theme = name;
     }
 }
 /// Overwrite `known`'s fields in the `section` object, keeping any other key

@@ -2978,10 +2978,12 @@ mod tests {
 }
 
 impl FileView {
+    #[must_use]
     pub fn with_workspace_roots(mut self, roots: Rc<[PathBuf]>) -> Self {
         self.workspace_roots = roots;
         self
     }
+    #[must_use]
     pub fn with_hover(mut self, index: Option<usize>) -> Self {
         self.hover = index;
         self

@@ -584,7 +584,13 @@ impl PrintersModel {
         };
         cards.push(card(&t("settings-printers-activity"), jobs));
 
-        let scanners = if let Some(error) = &self.read_errors.scanners {
+        let scanners = self.scanner_rows();
+        cards.push(card(&t("settings-printers-scanners"), scanners));
+        crate::widgets::cards(cards)
+    }
+
+    fn scanner_rows(&self) -> El {
+        if let Some(error) = &self.read_errors.scanners {
             rows(vec![error_caption(&t_args(
                 "settings-printers-scanners-read-error",
                 &[("error", error.as_str().into())],
@@ -612,9 +618,7 @@ impl PrintersModel {
                     })
                     .collect(),
             )
-        };
-        cards.push(card(&t("settings-printers-scanners"), scanners));
-        crate::widgets::cards(cards)
+        }
     }
 
     #[expect(

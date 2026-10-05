@@ -423,9 +423,9 @@ impl Action for ApiTesterAction {
                         if let Some(enabled) = enabled {
                             row.enabled = enabled;
                         } else if field == "key" {
-                            row.key = value.clone();
+                            row.key.clone_from(value);
                         } else {
-                            row.value = value.clone();
+                            row.value.clone_from(value);
                         }
                     }
                 });

@@ -175,7 +175,6 @@ impl Model {
                 upload: Some(upload),
                 location: Some(server),
                 bytes,
-                ..Readings::default()
             },
             None => Readings {
                 location: Some(server),

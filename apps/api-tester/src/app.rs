@@ -675,7 +675,6 @@ impl ApiTesterApp {
     // -----------------------------------------------------------------------
 
     /// The active environment's variable map (for `{{var}}` substitution).
-
     fn env_vars(&self) -> HashMap<String, String> {
         match self
             .active_env
@@ -702,14 +701,9 @@ impl ApiTesterApp {
     }
 
     /// Resolve the request being composed against the active environment.
-
     fn outgoing(&self) -> Outgoing {
         http::build_outgoing(&self.request, &self.env_vars())
     }
-
-    /// Kick off a real request on the app runtime.
-
-    /// Drain any finished send result from the worker.
 
     // -----------------------------------------------------------------------
     // The saved workspace
@@ -736,7 +730,6 @@ impl ApiTesterApp {
 
     /// Load a saved request from a collection into the builder and the
     /// document.
-
     fn load_request(&mut self, _state: &AutoCommit, _path: &ObjId, ci: usize, ri: usize) {
         if let Some(request) = self
             .collections
@@ -756,13 +749,6 @@ impl ApiTesterApp {
         }
     }
 
-    /// Mirror the composed request's method, URL and body into the document.
-
-    /// Seed a previously empty document through the native per-resource
-    /// writers. Normal interactions use precise actions and never call this.
-
-    /// Adopt a peer's workspace from the shared CRDT.
-
     /// The collections, environments or history changed: rebuild what shows
     /// them.
     fn workspace_changed(&mut self) {
@@ -773,25 +759,10 @@ impl ApiTesterApp {
         self.refresh_env_vars();
     }
 
-    /// Show collection and environment names the framework resource holds.
-    /// An empty projection does not wipe a workspace that has not been published yet.
-    /// Requests stay on the document; `sync` reads those full records.
-
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-
-    /// Dispatch one canonical action against the document's current projection.
-    /// Presentation commands never flush the in-memory workspace first; the
-    /// action owns the precise durable record it mutates, then we re-adopt the
-    /// authoritative result.
-
-    fn perform(&mut self, _state: &AutoCommit, _path: &ObjId, action: &ApiTesterAction) {
+    /// Submit a canonical action; the resource host publishes its authoritative result.
+    fn perform(&self, _state: &AutoCommit, _path: &ObjId, action: &ApiTesterAction) {
         self.submit(action);
     }
-
-    /// Re-read the collaborative workspace snapshots (collections, environments,
-    /// the selected environment) from the document after an action mutated them.
-    /// Deliberately leaves the request being composed and per-peer view state
-    /// untouched — those are not what an action changed.
 
     /// Where the saved request `id` sits in the collections.
     fn position_of(&self, id: uuid::Uuid) -> Option<(usize, usize)> {
@@ -848,7 +819,7 @@ impl ApiTesterApp {
                 Cmd::SetAuthKind(i) => self.set_auth_kind(i),
                 Cmd::LoadRequest(ci, ri) => self.load_request(state, path, ci, ri),
                 Cmd::ReplayHistory(hi) => self.replay_history(state, path, hi),
-                Cmd::Edit { table, row, edit } => self.edit_rows(table, &row, edit),
+                Cmd::Edit { table, row, edit } => self.edit_rows(table, &row, &edit),
                 Cmd::PickEnvironment(choice) => self.pick_environment(state, path, &choice),
                 Cmd::OpenForm(mode, target) => self.open_form(mode, target),
                 Cmd::CancelForm => self.close_form(),
@@ -910,11 +881,11 @@ impl ApiTesterApp {
             AuthField::Token | AuthField::Password | AuthField::Value
         );
         match (&mut self.request.auth, field) {
-            (Auth::Bearer { token }, AuthField::Token) => *token = text.clone(),
-            (Auth::Basic { username, .. }, AuthField::Username) => *username = text.clone(),
-            (Auth::Basic { password, .. }, AuthField::Password) => *password = text.clone(),
-            (Auth::ApiKey { header, .. }, AuthField::Header) => *header = text.clone(),
-            (Auth::ApiKey { value, .. }, AuthField::Value) => *value = text.clone(),
+            (Auth::Bearer { token }, AuthField::Token) => token.clone_from(&text),
+            (Auth::Basic { username, .. }, AuthField::Username) => username.clone_from(&text),
+            (Auth::Basic { password, .. }, AuthField::Password) => password.clone_from(&text),
+            (Auth::ApiKey { header, .. }, AuthField::Header) => header.clone_from(&text),
+            (Auth::ApiKey { value, .. }, AuthField::Value) => value.clone_from(&text),
             _ => return,
         }
         if secret {
@@ -938,7 +909,7 @@ impl ApiTesterApp {
 
     /// Apply one edit to a row of a table. Typing in the blank row makes it a
     /// real pair and gives the table a new blank row.
-    fn edit_rows(&mut self, table: Table, row: &str, edit: RowEdit) {
+    fn edit_rows(&mut self, table: Table, row: &str, edit: &RowEdit) {
         if row == self.blanks.of(table) {
             return;
         }
@@ -1231,11 +1202,6 @@ impl ApiTesterApp {
         }
         self.dirty = true;
     }
-
-    /// Reconcile the model from the CRDT-bound method picker after it may
-    /// have changed the document. The method feeds the *request being
-    /// composed* (presentation until a whole-request save), so it updates the
-    /// model directly.
 
     /// The person chose from the environment picker: an environment, or one
     /// of the commands that manage them. Selecting the active environment is

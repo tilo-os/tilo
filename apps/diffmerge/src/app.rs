@@ -106,6 +106,12 @@ impl From<Command> for Action {
     }
 }
 
+/// Pending paint and layout work for the retained views.
+struct ViewInvalidation {
+    paint: bool,
+    structure: bool,
+}
+
 pub struct DiffMergeApp {
     mode: Mode,
     diff: DiffView,
@@ -130,10 +136,8 @@ pub struct DiffMergeApp {
     /// A human-readable reason the last open failed, surfaced in the status
     /// bubble. `None` in the normal (success / cancel) case.
     load_error: Option<String>,
-    dirty: bool,
-    /// One-shot flag: set when the active mode changed so the host rebuilds the
-    /// taffy tree (the flex content child swaps between the two views).
-    structure_dirty: bool,
+    /// Paint changes and one-shot layout rebuilds when the active view changes.
+    invalidation: ViewInvalidation,
     /// Where edits and effects go; `None` until the framework attaches the
     /// surface, when every edit is dropped.
     dispatcher: Option<Dispatcher<Diffmerge>>,
@@ -249,8 +253,10 @@ impl DiffMergeApp {
             pending_left: None,
             open_reply: None,
             load_error: None,
-            dirty: true,
-            structure_dirty: false,
+            invalidation: ViewInvalidation {
+                paint: true,
+                structure: false,
+            },
             dispatcher: None,
             presented: None,
             shots_status: false,
@@ -295,7 +301,7 @@ impl DiffMergeApp {
             self.show(mode);
         }
         self.presented = Some((state.comparison.clone(), state.merge.clone()));
-        self.dirty = true;
+        self.invalidation.paint = true;
     }
 
     /// Submit edits and effects through `dispatcher`.
@@ -330,9 +336,9 @@ impl DiffMergeApp {
     fn show(&mut self, mode: Mode) {
         if self.mode != mode {
             self.mode = mode;
-            self.structure_dirty = true;
+            self.invalidation.structure = true;
         }
-        self.dirty = true;
+        self.invalidation.paint = true;
         self.publish_header();
     }
 
@@ -361,7 +367,7 @@ impl DiffMergeApp {
                 });
                 self.pending_left = None;
                 self.load_error = None;
-                self.dirty = true;
+                self.invalidation.paint = true;
                 Ok(Effected::done())
             }
             DiffmergeEffect::OpenFiles {
@@ -387,7 +393,7 @@ impl DiffMergeApp {
                     }
                     Err(reason) => {
                         app.load_error = Some(reason.clone());
-                        app.dirty = true;
+                        app.invalidation.paint = true;
                         Err(reason)
                     }
                 },
@@ -438,9 +444,6 @@ impl DiffMergeApp {
         self.merge.place(content);
     }
 
-    /// `(control_h, toolbar_h)` measured from the label sizes the controls
-    /// paint with, floored at the design minimums.
-
     fn act(&mut self, action: Action) {
         match action {
             Action::ModeDiff => self.show(Mode::Diff),
@@ -455,7 +458,7 @@ impl DiffMergeApp {
                         self.merge.navigate(forward);
                     }
                 }
-                self.dirty = true;
+                self.invalidation.paint = true;
             }
             Action::Open => self.effect(&DiffmergeEffect::OpenFiles {
                 left: None,
@@ -470,7 +473,7 @@ impl DiffMergeApp {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
         }
-        self.dirty = true;
+        self.invalidation.paint = true;
     }
 
     /// Submit the resolution a chip, a key or an accessibility action just
@@ -501,7 +504,7 @@ impl DiffMergeApp {
         } else {
             self.portal_contents_rx = Some(diff_open_request().send_contents());
         }
-        self.dirty = true;
+        self.invalidation.paint = true;
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
@@ -519,7 +522,7 @@ impl DiffMergeApp {
             self.portal_contents_rx = None;
             self.pending_left = None;
             self.open_reply = None;
-            self.dirty = true;
+            self.invalidation.paint = true;
             return;
         }
         if let Some(rx) = self.portal_contents_rx.as_ref() {
@@ -604,7 +607,7 @@ impl DiffMergeApp {
                 self.finish_open(Err(reason));
             }
         }
-        self.dirty = true;
+        self.invalidation.paint = true;
     }
 
     /// Consume one chosen file. The first file of a pair is stashed and
@@ -631,11 +634,6 @@ impl DiffMergeApp {
             }
         }
     }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "toolbar geometry, paint, focus ring, and matching hit targets stay together"
-    )]
 
     /// The one-line summary the status bubble shows: a host-portal load error
     /// takes over until the next successful open clears it, otherwise the
@@ -672,14 +670,6 @@ impl DiffMergeApp {
             }
         }
     }
-
-    /// A deliberately compact status for a phone-width viewport. The full
-    /// detail remains in the accessible status description; this label is only
-    /// the painted transient pill and must never escape its viewport.
-
-    /// Surfaces on a real change to the summary (poked only when the string
-    /// differs) or while the pointer hovers the bottom-right reveal band, then
-    /// fades.
 
     /// Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
     /// Returns `true` if the event was consumed.
@@ -874,7 +864,7 @@ impl Widget for DiffMergeApp {
             let (left, right) = self.status_readouts();
             status_bar::draw(scene, transform, tr, theme, bar, &left, &right);
         }
-        self.dirty = false;
+        self.invalidation.paint = false;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -987,7 +977,7 @@ impl Widget for DiffMergeApp {
             if self.mode != Mode::Diff || !self.diff.show_block(block, fingerprint) {
                 return false;
             }
-            self.dirty = true;
+            self.invalidation.paint = true;
             return true;
         }
         if let Some(show_right) = match target {
@@ -999,7 +989,7 @@ impl Widget for DiffMergeApp {
                 return false;
             }
             self.diff.select_compact_side(show_right);
-            self.dirty = true;
+            self.invalidation.paint = true;
             return true;
         }
         if let Some((hunk, choice)) = target
@@ -1023,7 +1013,7 @@ impl Widget for DiffMergeApp {
                 self.merge.resolve(hunk, choice);
                 self.submit_resolution();
             }
-            self.dirty = true;
+            self.invalidation.paint = true;
             return true;
         }
         false
@@ -1040,11 +1030,11 @@ impl Widget for DiffMergeApp {
     fn take_structure_dirty(&mut self) -> bool {
         // Mode switches swap which child is in the flex content, so signal a
         // rebuild when the mode flips. We detect this by tracking a one-shot.
-        std::mem::take(&mut self.structure_dirty)
+        std::mem::take(&mut self.invalidation.structure)
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.diff.needs_redraw() || self.merge.needs_redraw()
+        self.invalidation.paint || self.diff.needs_redraw() || self.merge.needs_redraw()
     }
 
     /// Keep ticking while a host-portal open is in flight so the off-thread
@@ -1056,7 +1046,7 @@ impl Widget for DiffMergeApp {
     }
 
     fn mark_drawn(&mut self) {
-        self.dirty = false;
+        self.invalidation.paint = false;
         self.diff.mark_drawn();
         self.merge.mark_drawn();
     }
@@ -1093,7 +1083,7 @@ impl DiffMergeApp {
                             .into(),
                     );
                 }
-                self.dirty = true;
+                self.invalidation.paint = true;
                 return Ok(());
             }
             DiffmergeEffect::OpenFiles { .. } | DiffmergeEffect::LoadSample => {

@@ -10204,7 +10204,6 @@ fn build_directory_import_buttons(
 /// Shared retained controls placed over the custom timeline geometry.  The
 /// timeline owns placement, while Button owns its visual states, names and
 /// minimum target treatment.
-
 fn build_library_analysis_buttons(
     actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Vec<(LibraryAnalysisHit, Button)> {
@@ -10991,9 +10990,6 @@ impl Widget for PhotosApp {
     fn needs_redraw(&self) -> bool {
         true
     }
-
-    /// Previews still decoding for what is on screen: a capture waits for
-    /// them instead of photographing placeholders.
 
     #[allow(
         clippy::too_many_lines,
@@ -12586,7 +12582,7 @@ impl PhotosApp {
                 self.people_controller.set_recognition_enabled(true);
                 self.people_controller
                     .discover_face_capability(&agent_provider_config::ProviderConfig::load());
-                self.notice = Some(self.people_controller.capability().summary().to_owned());
+                self.notice = Some(self.people_controller.capability().summary());
             }
             PhotosEffect::ViewFavorites => self.view_favorites(library)?,
             PhotosEffect::ViewPlaces => {
