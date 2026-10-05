@@ -5298,8 +5298,9 @@ impl MusicApp {
         Slider::paint(ctx.scene, ctx.transform, ctx.theme, &face);
     }
 
-    /// The collapsed-volume popover: a floating panel with the mute toggle,
-    /// a slider and the level, anchored above the volume button.
+    /// The collapsed-volume popover: the shared anchored floating Panel
+    /// (placed and painted as every popover is) with the mute toggle, a
+    /// slider and the level, opening above the volume button.
     fn draw_volume_popover(&mut self, ctx: &mut PaintCtx<'_>, look: &Look) {
         if !self.volume_popover_open || self.volume_btn_rect.width() <= 0.0 {
             self.volume_popover_rect = Rect::ZERO;
@@ -5317,21 +5318,16 @@ impl MusicApp {
             + 2.0 * look.sibling
             + 2.0 * look.related;
         let ph = control + 2.0 * look.related;
-        let x0 = (btn.center().x - pw / 2.0)
-            .max(self.rect.x0 + look.related)
-            .min(self.rect.x1 - pw - look.related);
-        let y1 = btn.y0 - look.related;
-        let panel = Rect::new(x0, y1 - ph, x0 + pw, y1);
-        self.volume_popover_rect = panel;
-        let radius = f64::from(theme.tokens.radii.panel);
-        surface::shadow(
-            ctx.scene,
-            ctx.transform,
-            panel,
-            radius,
-            &theme.tokens.elevation.floating,
+        let (panel, _) = ui::widget::floating_surface::place_aligned(
+            btn,
+            (pw, ph),
+            ui::widget::PopoverSide::Above,
+            ui::widget::PanelAlign::Trailing,
+            f64::from(theme.tokens.spacing.s1),
+            ui::widget::floating_surface::panel_room(self.rect, theme),
         );
-        surface::panel(ctx.scene, ctx.transform, panel, radius, theme);
+        self.volume_popover_rect = panel;
+        ui::widget::floating_surface::paint(ctx.scene, ctx.transform, panel, theme);
         // Block clicks inside the panel from falling through.
         self.push_hit(panel, Action::None);
 

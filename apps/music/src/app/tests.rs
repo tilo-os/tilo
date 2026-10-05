@@ -3875,6 +3875,15 @@ fn queue_view_and_volume_controls_are_responsive() {
             app.volume_popover_slider.width() > 0.0,
             "the popover hosts a volume slider"
         );
+        let (panel, button) = (app.volume_popover_rect, app.volume_btn_rect);
+        assert!(
+            panel.y1 < button.y0 && (panel.x1 - button.x1).abs() < 0.5,
+            "the popover opens above the button, on its trailing edge ({panel:?} over {button:?})"
+        );
+        assert!(
+            panel.x0 >= 0.0 && panel.x1 <= 1000.0,
+            "the popover stays in the window: {panel:?}"
+        );
         let (track, slider) = (app.volume_rect, app.volume_popover_slider);
         assert!(
             track.width() > 0.0
