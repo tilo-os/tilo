@@ -1,6 +1,6 @@
 //! Full-size action-presence captures through the production retained host.
-//! Run remotely with rcargo --on-builder --fetch agent-marker run --locked
-//! -p tilo-ui --example action-presence -- target/agent-marker.
+//! Run with $CARGO run --locked -p tilo-ui --example action-presence
+//! -- target/agent-marker, using any cargo drop-in appropriate for the builder.
 
 use std::{cell::Cell, path::Path, rc::Rc};
 use tilo_ui::widget::{Button, Column, resource_actions};
