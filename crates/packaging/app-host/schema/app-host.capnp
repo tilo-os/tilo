@@ -24,6 +24,8 @@ enum FlatpakAction {
 enum RemoteAction {
     add    @0;
     remove @1;
+    enable @2;
+    disable @3;
 }
 
 struct PackageEntry {
