@@ -5399,7 +5399,14 @@ pub fn choose_builder(
 pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError> {
     let action = match command {
         InputCommand::Key { combos } => InputAction::Key { combos },
-        InputCommand::Type { text } => InputAction::Type { text },
+        InputCommand::Type { text, stdin } => {
+            if stdin {
+                return stdin_input_actions(std::io::stdin().lock());
+            }
+            InputAction::Type {
+                text: text.ok_or_else(|| CliError::InvalidInput("no text source given".into()))?,
+            }
+        }
         InputCommand::Move { x, y } => InputAction::Move { x, y },
         InputCommand::Click { button, at } => InputAction::Click {
             button: Button::parse(&button).ok_or_else(|| {
@@ -5431,6 +5438,29 @@ pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError
     };
     let actions = vec![action];
     tilo_vm_protocol::input::validate(&actions).map_err(CliError::InvalidInput)?;
+    Ok(actions)
+}
+
+/// Stdin is deliberately bounded and its failures never quote supplied bytes.
+fn stdin_input_actions(reader: impl std::io::Read) -> Result<Vec<InputAction>, CliError> {
+    use std::io::Read as _;
+    const LIMIT: u64 = 65_536;
+    let mut bytes = Vec::new();
+    reader
+        .take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| CliError::InvalidInput("could not read input text from stdin".into()))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(CliError::InvalidInput(
+            "stdin input exceeds 65536 bytes".into(),
+        ));
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| CliError::InvalidInput("stdin input must be valid UTF-8".into()))?;
+    let actions = vec![InputAction::Type { text }];
+    tilo_vm_protocol::input::validate(&actions).map_err(|_| {
+        CliError::InvalidInput("stdin input cannot be typed on a US keyboard layout".into())
+    })?;
     Ok(actions)
 }
 
@@ -7204,6 +7234,72 @@ mod tests {
     /// Input arguments become validated actions and a direct-boot bundle resolves files and requires a
     /// root binding.
     #[test]
+    fn stdin_input_preserves_bytes_and_redacts_failures_and_receipts() {
+        use crate::cli::Cli;
+        use clap::Parser as _;
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("private-reader-error"))
+            }
+        }
+        let argv = ["tilo-vm", "input", "type", "--stdin"];
+        let cli = Cli::try_parse_from(argv).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Input {
+                action: InputCommand::Type {
+                    text: None,
+                    stdin: true
+                },
+                ..
+            })
+        ));
+        for words in [
+            vec!["tilo-vm", "input", "type"],
+            vec!["tilo-vm", "input", "type", "value", "--stdin"],
+        ] {
+            assert!(Cli::try_parse_from(words).is_err());
+        }
+        let marker = "synthetic-private-input\n";
+        let actions = stdin_input_actions(marker.as_bytes()).unwrap();
+        assert_eq!(
+            actions,
+            vec![InputAction::Type {
+                text: marker.into()
+            }]
+        );
+        assert_eq!(describe_input(&actions[0]), "typed 24 characters");
+        let oversized = vec![b'a'; 65_537];
+        assert!(
+            stdin_input_actions(&oversized[..])
+                .unwrap_err()
+                .to_string()
+                .contains("65536")
+        );
+        assert!(stdin_input_actions(&vec![b'a'; 65_536][..]).is_ok());
+        for invalid in [b"private-\xff".as_slice(), "private-é".as_bytes()] {
+            let error = stdin_input_actions(invalid).unwrap_err().to_string();
+            assert!(!error.contains("private"));
+            assert!(!error.contains('é'));
+        }
+        assert!(
+            !stdin_input_actions(Broken)
+                .unwrap_err()
+                .to_string()
+                .contains("private")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = Receipt::new(dir.path(), argv.iter().map(|s| (*s).into()).collect());
+        let path = receipt
+            .finish(Ok(&json!({"description": describe_input(&actions[0])})))
+            .unwrap();
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(!saved.contains("synthetic-private-input"));
+        assert!(saved.contains("--stdin"));
+    }
+
+    #[test]
     fn inputs_and_boot_bundles_are_validated_before_use() {
         // Phase: input_arguments_become_validated_actions.
         {
@@ -7228,7 +7324,8 @@ mod tests {
                 Err(CliError::InvalidInput(_))
             ));
             let error = input_actions(InputCommand::Type {
-                text: "naïve".into(),
+                text: Some("naïve".into()),
+                stdin: false,
             })
             .unwrap_err();
             assert!(error.to_string().contains('ï'));
