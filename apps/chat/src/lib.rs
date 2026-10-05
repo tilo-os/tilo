@@ -101,6 +101,7 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"compact"` — medium window: channels docked, members summoned on demand.
 /// * `"starter"` — the real first-run empty workspace (no demo content).
 /// * `"people"` — the workspace People roster.
+/// * `"agent-work"` — a canonical agent reply with intent, rationale and action evidence.
 /// * `"thread-narrow"` — a thread as a phone-width pushed detail view.
 /// * `"collaboration"` — the desktop thread plus active huddle state.
 /// * `"context"` — open a channel context menu.

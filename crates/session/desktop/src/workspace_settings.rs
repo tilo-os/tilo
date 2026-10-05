@@ -2937,6 +2937,25 @@ fn service_member_detail(service: &ServiceMember) -> String {
     )
 }
 
+fn draw_agent_avatar(scene: &mut Scene, transform: Affine, row: &AgentRow, theme: &Theme) -> Rect {
+    let avatar_size = 28.0;
+    let avatar = Rect::new(
+        row.row_rect.x0 + 12.0,
+        row.row_rect.center().y - avatar_size / 2.0,
+        row.row_rect.x0 + 12.0 + avatar_size,
+        row.row_rect.center().y + avatar_size / 2.0,
+    );
+    ui::agent_identity::draw_agent_identity_mark(
+        scene,
+        transform,
+        avatar,
+        subject_tint(&row.agent, theme),
+        theme,
+        ui::agent_identity::AgentIdentityStyle::Solid,
+    );
+    avatar
+}
+
 fn draw_agent_row(
     scene: &mut Scene,
     transform: Affine,
@@ -2948,18 +2967,11 @@ fn draw_agent_row(
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     draw_row_card(scene, transform, row.row_rect, theme);
-    let avatar_size = 28.0;
-    let avatar = Rect::new(
-        row.row_rect.x0 + 12.0,
-        row.row_rect.center().y - avatar_size / 2.0,
-        row.row_rect.x0 + 12.0 + avatar_size,
-        row.row_rect.center().y + avatar_size / 2.0,
-    );
+    let avatar = draw_agent_avatar(scene, transform, row, theme);
     let name = match &row.service {
         Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
         _ => short_id(&row.agent),
     };
-    draw_avatar(scene, transform, avatar, &name, true, text_renderer, theme);
     let badge = draw_pill(
         scene,
         transform,

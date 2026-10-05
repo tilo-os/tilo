@@ -129,6 +129,8 @@ pub struct GuestPlan {
     pub grant_root: Option<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
+    /// Private loader closure for a dynamically linked runtime.
+    pub helper_runtime: Option<crate::helper_runtime::HelperRuntime>,
     /// Installed legacy apps' commands: shims that ask the broker for a
     /// `LegacyLaunch`.
     pub legacy_commands: Vec<String>,
@@ -170,6 +172,10 @@ impl GuestPlan {
     ///
     /// Returns an error if a directory or file can't be created.
     pub fn prepare(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.session_dir)?;
+        if let Some(helper) = &self.helper_runtime {
+            helper.write_wrapper(&self.session_dir.join("helper-shim"))?;
+        }
         std::fs::create_dir_all(&self.guest_home)?;
         for dir in ENVIRONMENT_VAR_DIRS {
             std::fs::create_dir_all(self.var_dir.join(dir))?;
@@ -413,7 +419,33 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
     a.push(plan.runtime_bin.clone().into_os_string());
-    a.push(format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into());
+    a.push(if plan.helper_runtime.is_some() {
+        crate::helper_runtime::EXECUTABLE.into()
+    } else {
+        format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into()
+    });
+    if let Some(helper) = &plan.helper_runtime {
+        a.extend(["--dir".into(), crate::helper_runtime::LIB_DIR.into()]);
+        for (name, path) in &helper.libraries {
+            a.extend([
+                "--ro-bind".into(),
+                path.clone().into_os_string(),
+                Path::new(crate::helper_runtime::LIB_DIR)
+                    .join(name)
+                    .into_os_string(),
+            ]);
+        }
+        a.extend([
+            "--ro-bind".into(),
+            helper.loader.clone().into_os_string(),
+            crate::helper_runtime::LOADER.into(),
+        ]);
+        a.extend([
+            "--ro-bind".into(),
+            plan.session_dir.join("helper-shim").into_os_string(),
+            format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into(),
+        ]);
+    }
     for cmd in crate::GUEST_COMMANDS {
         if !crate::guest_command_available(&plan.host_root, cmd) {
             continue;
@@ -608,6 +640,10 @@ pub fn spawn(
     };
     let mut cmd = std::process::Command::new(program);
     cmd.args(rest);
+    // Direct `ush -c` must expose its command output and startup errors;
+    // served sessions inherit the supervisor's already-attached pty here.
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
     if let Some(netns) = netns {
         netns.enter(&mut cmd);
     }
@@ -648,6 +684,7 @@ mod tests {
             readable_dirs: Vec::new(),
             grant_root: None,
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
+            helper_runtime: None,
             legacy_commands: vec!["code".into()],
             broker_socket: dir.join("store/sessions/s1/broker.sock"),
             seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),

@@ -75,6 +75,7 @@ pub fn main() {
                 "compact",
                 "starter",
                 "people",
+                "agent-work",
                 "thread-narrow",
                 "collaboration",
                 "context",

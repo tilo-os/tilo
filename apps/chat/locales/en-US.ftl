@@ -66,3 +66,28 @@ chat-call-stream-status = { $count } audio streams · { $status }
 chat-start-call = Start a call
 chat-start-video-call = Start a video call
 chat-start-video-call-unavailable = Calls are voice-only for now; video is not supported yet
+
+# Durable evidence attached to an agent's reply; availability comes from presence.
+chat-agent-work-taken = Request accepted
+chat-agent-work-waiting = Last reported: waiting for app state: { $app }
+chat-agent-work-intent = Latest intent: { $action }
+chat-agent-work-intent-about = Latest intent: { $action }: { $about }
+chat-agent-work-done = Completed: { $action }
+chat-agent-work-refused = Could not complete this request
+chat-agent-work-model-rationale = Model rationale
+chat-agent-work-rule-match = Rule match
+chat-agent-work-model-choice = Chosen by the configured model
+chat-agent-work-rule-choice = Matched against exported action vocabulary
+chat-agent-work-rationale = { $route }: { $why }
+chat-agent-work-step-requested = Requested: { $target }
+chat-agent-work-step-applied = Applied: { $target }
+chat-agent-work-step-no-change = No change: { $target }
+chat-agent-work-step-refused = Refused: { $target }
+chat-agent-work-step-refused-why = Refused: { $target }: { $why }
+chat-thread-title = Thread
+chat-thread-back = Back
+chat-thread-close = Close thread
+chat-thread-replies = { $count ->
+    [one] 1 reply
+   *[other] { $count } replies
+    }

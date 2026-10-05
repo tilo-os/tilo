@@ -32,6 +32,7 @@ impl AuxiliaryCaptureFrames {
 )]
 pub(super) struct FloatingRuntime {
     pub client: Option<FloatingSurfaceServiceClient>,
+    host_shell_allow: Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>>,
     pub presentations: HashMap<String, FloatingSurfacePresentation>,
     pub active_ids: HashSet<String>,
     pub prepared_ids: HashSet<String>,
@@ -64,6 +65,7 @@ impl FloatingRuntime {
         Self {
             capture_host_required: client.is_some(),
             client,
+            host_shell_allow: None,
             presentations: HashMap::new(),
             active_ids: HashSet::new(),
             prepared_ids: HashSet::new(),
@@ -254,11 +256,31 @@ impl App {
     }
 
     #[cfg(feature = "native")]
+    fn take_native_host_shell_allow(
+        &mut self,
+    ) -> Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>> {
+        let widget = crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
+            &mut *self.root_widget,
+        )?;
+        match widget.take_host_intent()? {
+            crate::widget::AppHostIntent::AllowHostShell { reply } => Some(reply),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(reply) = self
+            .take_native_host_shell_allow()
+            .and_then(|reply| reply.upgrade())
+        {
+            reply.borrow_mut().answer = Some(false);
+            changed = true;
+        }
         // Outside a Tilo session there is no trusted shell chooser to open.
         // Drain the edge so reconnecting later cannot replay a stale gesture.
         while self.root_widget.take_capture_studio_request().is_some() {}
-        let mut changed = false;
         for request in crate::shell_tabs::take_requests() {
             self.apply_unhosted_tab_request(request);
             changed = true;
@@ -285,6 +307,11 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
+        if let Some(reply) = self.take_native_host_shell_allow() {
+            self.floating.host_shell_allow = Some(reply);
+            *changed = true;
+            client.send(&crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell)?;
+        }
         let protected = self.wants_capture_protection();
         if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
             client.send(&crate::floating_surface::FloatingSurfaceClientMessage::PaintCapable)?;
@@ -503,6 +530,16 @@ impl App {
                         self.floating.capture_acknowledged = Some(*generation);
                     }
                 }
+                FloatingSurfaceHostMessage::HostShellAllowed { allowed } => {
+                    if let Some(reply) = self
+                        .floating
+                        .host_shell_allow
+                        .take()
+                        .and_then(|reply| reply.upgrade())
+                    {
+                        reply.borrow_mut().answer = Some(*allowed);
+                    }
+                }
                 FloatingSurfaceHostMessage::PrepareSurface {
                     id,
                     coordinate_offset,
@@ -563,6 +600,14 @@ impl App {
     }
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
+        if let Some(reply) = self
+            .floating
+            .host_shell_allow
+            .take()
+            .and_then(|reply| reply.upgrade())
+        {
+            reply.borrow_mut().answer = Some(false);
+        }
         // Without the shell nobody can be watching the shared page.
         crate::webview::paint::set_share_watched(false);
         let ids = self
@@ -707,4 +752,34 @@ fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[cfg(all(test, feature = "native"))]
+mod host_shell_allow_tests {
+    use super::*;
+    #[test]
+    fn desktop_reply_resolves_native_permission_and_service_loss_refuses_it() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        for allowed in [false, true] {
+            let reply = std::rc::Rc::new(std::cell::RefCell::new(
+                crate::widget::HostShellAllow::default(),
+            ));
+            app.floating.host_shell_allow = Some(std::rc::Rc::downgrade(&reply));
+            let wire =
+                serde_json::to_vec(&FloatingSurfaceHostMessage::HostShellAllowed { allowed })
+                    .unwrap();
+            app.apply_floating_host_messages(vec![serde_json::from_slice(&wire).unwrap()]);
+            assert_eq!(reply.borrow().answer, Some(allowed));
+            assert!(app.floating.host_shell_allow.is_none());
+        }
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::widget::HostShellAllow::default(),
+        ));
+        app.floating.host_shell_allow = Some(std::rc::Rc::downgrade(&reply));
+        app.reattach_after_floating_service_loss();
+        assert_eq!(reply.borrow().answer, Some(false));
+    }
 }
