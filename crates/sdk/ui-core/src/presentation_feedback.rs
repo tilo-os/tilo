@@ -181,7 +181,7 @@ impl Observer {
         use tilo_presentation::Feedback;
         let worker_id = self.worker_id;
         let process_id = std::process::id();
-        let observer_session = crate::physical_input_trace::session_id();
+        let observer_session = crate::native_scenario::observer_session_id();
         let Some(window) = self.window.as_ref() else {
             eprintln!("tilo-display-error native window missing for Wayland presentation feedback");
             present();
