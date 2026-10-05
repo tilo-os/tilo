@@ -302,6 +302,27 @@ fn is_closing_punctuation(text: &str) -> bool {
     })
 }
 
+/// The CSS width keyword nearest a `wdth` axis value: the width a run is
+/// shaped at (cosmic-text takes widths as keywords).
+pub(crate) fn stretch_for_width(width: f32) -> cosmic_text::Stretch {
+    use cosmic_text::Stretch;
+    const WIDTHS: [(f32, Stretch); 9] = [
+        (50.0, Stretch::UltraCondensed),
+        (62.5, Stretch::ExtraCondensed),
+        (75.0, Stretch::Condensed),
+        (87.5, Stretch::SemiCondensed),
+        (100.0, Stretch::Normal),
+        (112.5, Stretch::SemiExpanded),
+        (125.0, Stretch::Expanded),
+        (150.0, Stretch::ExtraExpanded),
+        (200.0, Stretch::UltraExpanded),
+    ];
+    WIDTHS
+        .iter()
+        .min_by(|a, b| (a.0 - width).abs().total_cmp(&(b.0 - width).abs()))
+        .map_or(Stretch::Normal, |&(_, stretch)| stretch)
+}
+
 /// Where a laid-out glyph is painted: its pen position (`pen_x`, already
 /// moved for hanging punctuation) and baseline plus the shaper's GPOS offset.
 ///
@@ -1094,6 +1115,16 @@ impl TextStyle {
         }
         if self.italic {
             attrs = attrs.style(FontStyle::Italic);
+        }
+        // Shaping, measuring and kerning follow the width the glyphs are
+        // drawn at (the draw applies `wdth` exactly; shaping takes the
+        // nearest CSS width keyword).
+        if let Some(width) = self
+            .font_variations
+            .iter()
+            .find(|axis| axis.tag == OpenTypeTag::WIDTH)
+        {
+            attrs = attrs.stretch(stretch_for_width(width.value));
         }
         attrs
     }
