@@ -95,4 +95,10 @@ interface AppHost {
     installOffer @14 (registry :Text, appId :Text, version :Text,
                       expectedRoot :Data, expectedPublisher :Data,
                       expectedSizeBytes :UInt64) -> (id :Data);
+    # Cached AppStream rows from one configured repository, isolated from failures
+    # in other remotes. Queries have fixed arguments and bounded output/time.
+    flatpakCatalogue @15 (remote :Text, userManaged :Bool) -> (rows :Text);
+    # Install only from an existing repository in this account's Flatpak scope.
+    flatpakInstallRemote @16 (remote :Text, appId :Text, branch :Text) -> (status :Text);
+
 }
