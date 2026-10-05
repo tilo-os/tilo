@@ -18,6 +18,7 @@
 //! - `handle_event` — route clicks against the hit-map, keyboard
 //!   shortcuts, and forward to the editor when notes are active.
 
+use automerge::transaction::Transactable;
 use std::collections::{HashMap, HashSet};
 
 /// The files the calendar imports and exports.
@@ -551,7 +552,7 @@ pub struct CalendarApp {
     /// document moves past this out of band — a Ctrl+K palette action, a peer's
     /// change merged in — the next `sync` re-reads the model so those mutations
     /// show up in the views, exactly as an on-screen edit already does.
-    model_heads: Vec<ChangeHash>,
+    model_heads: (Vec<ChangeHash>, usize),
 }
 
 impl CalendarApp {
@@ -681,7 +682,7 @@ impl CalendarApp {
             dispatcher: None,
             #[cfg(test)]
             last_dispatched: std::cell::RefCell::default(),
-            model_heads: Vec::new(),
+            model_heads: (Vec::new(), 0),
         }
     }
 
@@ -835,7 +836,7 @@ impl CalendarApp {
         clippy::too_many_lines,
         reason = "sync orchestration keeps worker admission and failure contracts together"
     )]
-    fn start_sync(&mut self, doc: &mut AutoCommit) {
+    fn start_sync(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if self.syncing {
             return;
         }
@@ -982,7 +983,7 @@ impl CalendarApp {
     /// Drain a finished background sync, if any. Called every `sync` pass; a
     /// no-op until the worker delivers. Keeping this off the click path is why
     /// a slow or unreachable server never freezes the window.
-    fn poll_sync(&mut self, doc: &mut AutoCommit) {
+    fn poll_sync(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(rx) = self.sync_rx.as_ref() else {
             return;
         };
@@ -1029,7 +1030,7 @@ impl CalendarApp {
         &mut self,
         result: caldav::SyncResult,
         outcome: SyncOutcome,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         let mut added = 0usize;
         let mut updated = 0usize;
@@ -1320,7 +1321,7 @@ impl CalendarApp {
     /// Pull any pending text edits out of the title/location fields and mirror
     /// them into the selected event (model + CRDT). Called after routing an
     /// event to the inputs so a keystroke persists like every other edit.
-    fn flush_form_edits(&mut self, doc: &mut AutoCommit) {
+    fn flush_form_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Event(id)) = self.selection else {
             return;
         };
@@ -1351,7 +1352,7 @@ impl CalendarApp {
         }
     }
 
-    fn submit_invite(&mut self, doc: &mut AutoCommit) {
+    fn submit_invite(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if !self.invite_input.take_submit() {
             return;
         }
@@ -1425,7 +1426,11 @@ impl CalendarApp {
     /// permissions, attributed and recorded in history. The in-memory model
     /// is updated by the caller for immediate feedback and reconciled from
     /// the document on the next `sync`.
-    fn dispatch_action(&self, doc: &mut AutoCommit, action: &crate::actions::CalendarAction) {
+    fn dispatch_action(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        action: &crate::actions::CalendarAction,
+    ) {
         if let Err(error) = self.try_dispatch_action(doc, action) {
             tracing::debug!(%error, "calendar: an edit was refused");
         }
@@ -1434,7 +1439,7 @@ impl CalendarApp {
     /// [`Self::dispatch_action`], reporting a refusal.
     fn try_dispatch_action(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         action: &crate::actions::CalendarAction,
     ) -> Result<(), tilo_actions::ActionError> {
         #[cfg(test)]
@@ -1446,16 +1451,12 @@ impl CalendarApp {
                 "the calendar is not attached to a window".into(),
             ));
         };
-        dispatcher.apply_now_with(
-            &mut ui::widget::Edits::lend(doc),
-            action,
-            crate::actions::history_context(action),
-        )
+        dispatcher.apply_now_with(doc, action, crate::actions::history_context(action))
     }
 
     fn record_remote_binding(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         id: Id,
         calendar_id: &str,
         href: &str,
@@ -1569,7 +1570,7 @@ impl CalendarApp {
     /// and — for an event synced from a configured remote calendar — queue a
     /// `CalDAV` delete so the server copy is removed on the next sync. Closes the
     /// editor if the deleted event was the one on screen.
-    fn delete_event(&mut self, id: Id, doc: &mut AutoCommit) {
+    fn delete_event(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         // Resolve the CalDAV delete target (a synced event on a still-configured
         // calendar) before the row leaves the model. The action removes the
         // event, clears any queued upload, and — given a target — queues the
@@ -1589,7 +1590,7 @@ impl CalendarApp {
 
     /// Delete a task (and any subtasks) from the model + CRDT. Closes the editor
     /// if the deleted task was the one on screen.
-    fn delete_task(&mut self, id: Id, doc: &mut AutoCommit) {
+    fn delete_task(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         let subtasks: Vec<Id> = self
             .model
             .tasks
@@ -1638,7 +1639,7 @@ impl CalendarApp {
         self.blur_editor();
     }
 
-    fn toggle_task(&mut self, id: Id, doc: &mut AutoCommit) {
+    fn toggle_task(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         let done = if let Some(t) = self.model.task_mut(id) {
             t.done = !t.done;
             Some(t.done)
@@ -1654,7 +1655,7 @@ impl CalendarApp {
         }
     }
 
-    fn set_selected_task_due(&mut self, due: Option<NaiveDate>, doc: &mut AutoCommit) {
+    fn set_selected_task_due(&mut self, due: Option<NaiveDate>, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Task(id)) = self.selection else {
             return;
         };
@@ -1674,7 +1675,7 @@ impl CalendarApp {
         self.task_popover = None;
     }
 
-    fn set_selected_task_priority(&mut self, priority: Priority, doc: &mut AutoCommit) {
+    fn set_selected_task_priority(&mut self, priority: Priority, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Task(id)) = self.selection else {
             return;
         };
@@ -1694,7 +1695,7 @@ impl CalendarApp {
         self.task_popover = None;
     }
 
-    fn set_selected_task_project(&mut self, project: Option<Id>, doc: &mut AutoCommit) {
+    fn set_selected_task_project(&mut self, project: Option<Id>, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Task(id)) = self.selection else {
             return;
         };
@@ -1750,8 +1751,8 @@ impl CalendarApp {
         self.task_project_dropdown.open_menu();
     }
 
-    fn commit_task_project_dropdown(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        self.task_project_dropdown.sync(doc, path);
+    fn commit_task_project_dropdown(&mut self, doc: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.task_project_dropdown.sync(doc.doc(), path);
         let choice = self.task_project_choice.get();
         if self.task_popover != Some(TaskPopover::Project)
             || choice == self.task_project_last_choice
@@ -1792,8 +1793,8 @@ impl CalendarApp {
         self.task_priority_dropdown.open_menu();
     }
 
-    fn commit_task_priority_dropdown(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        self.task_priority_dropdown.sync(doc, path);
+    fn commit_task_priority_dropdown(&mut self, doc: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.task_priority_dropdown.sync(doc.doc(), path);
         let value = self.task_priority_choice.get();
         if self.task_popover != Some(TaskPopover::Priority)
             || value == self.task_priority_last_choice
@@ -1813,7 +1814,7 @@ impl CalendarApp {
         }
     }
 
-    fn new_event(&mut self, doc: &mut AutoCommit) {
+    fn new_event(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let start = self
             .anchor
             // 12:00:00 is always a valid `NaiveTime`; the fallback never runs.
@@ -1853,7 +1854,7 @@ impl CalendarApp {
     /// the next keystroke names it. Shared by the New button and the timeline's
     /// drag-to-create. Notes are left EMPTY on purpose — the editor paints its
     /// placeholder until the user types.
-    fn spawn_event(&mut self, ev: Event, doc: &mut AutoCommit) {
+    fn spawn_event(&mut self, ev: Event, doc: &mut ui::widget::Edits<'_>) {
         let id = ev.id;
         self.dispatch_action(doc, &crate::actions::upsert_event_action(&ev));
         self.fresh_draft = Some(ev.clone());
@@ -1872,7 +1873,7 @@ impl CalendarApp {
     /// title, any changed field, or notes is already useful work and remains
     /// autosaved. The delete travels through the normal replayable action path,
     /// so collaborators and history see the same discard.
-    fn discard_pristine_draft(&mut self, doc: &mut AutoCommit) -> bool {
+    fn discard_pristine_draft(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let Some(initial) = self.fresh_draft.take() else {
             return false;
         };
@@ -1897,7 +1898,7 @@ impl CalendarApp {
         day: NaiveDate,
         start_min: i64,
         end_min: i64,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         let dur = (end_min - start_min).max(TIMELINE_SNAP_MIN);
         // `dur` has no upper bound (a pathological drag could exceed a full
@@ -1941,7 +1942,7 @@ impl CalendarApp {
         day: NaiveDate,
         start_min: i64,
         dur_min: i64,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         let start = day.and_time(min_to_time(start_min));
         let end = start + Duration::minutes(dur_min.max(TIMELINE_SNAP_MIN));
@@ -1997,7 +1998,7 @@ impl CalendarApp {
         let spans = self.timeline_spans(&days);
         let outcome = self.timeline.handle_event(input, area, &days, &spans);
         if let Some(effect) = outcome.effect {
-            self.apply_timeline_effect(effect, input.state);
+            self.apply_timeline_effect(effect, &mut input.state);
         }
         if outcome.handled {
             *input.handled = true;
@@ -2006,7 +2007,7 @@ impl CalendarApp {
         outcome.handled
     }
 
-    fn apply_timeline_effect(&mut self, effect: TimelineEffect, doc: &mut AutoCommit) {
+    fn apply_timeline_effect(&mut self, effect: TimelineEffect, doc: &mut ui::widget::Edits<'_>) {
         match effect {
             TimelineEffect::Create {
                 day,
@@ -2231,7 +2232,7 @@ impl CalendarApp {
     /// File the selected event on `target`. A remote target tags the event
     /// with the calendar id, adopts that calendar's colour, and queues it for
     /// upload; the local target clears the tag and drops it from the queue.
-    fn set_event_calendar(&mut self, target: &CalTarget, doc: &mut AutoCommit) {
+    fn set_event_calendar(&mut self, target: &CalTarget, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Event(id)) = self.selection else {
             return;
         };
@@ -2365,20 +2366,20 @@ impl CalendarApp {
         let edit = self.event_popovers.handle_event(input, self.last_mouse);
         match edit {
             Some(PopoverEdit::Date(which, date)) => {
-                self.set_event_date(which, date, input.state);
+                self.set_event_date(which, date, &mut input.state);
             }
             Some(PopoverEdit::Time(which, hour, minute)) => {
-                self.set_event_time(which, hour, minute, input.state);
+                self.set_event_time(which, hour, minute, &mut input.state);
             }
             Some(PopoverEdit::Calendar(target)) => {
-                self.set_event_calendar(&target, input.state);
+                self.set_event_calendar(&target, &mut input.state);
             }
             None => {}
         }
     }
 
     /// Flip the selected event's all-day flag.
-    fn toggle_all_day(&mut self, doc: &mut AutoCommit) {
+    fn toggle_all_day(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.cycle_event(doc, |e| {
             if e.all_day {
                 // Preserve the date range when returning to a timed event.
@@ -2412,7 +2413,12 @@ impl CalendarApp {
     /// Apply the date grid's current selection to the start or end of the
     /// event, keeping the clock time and preserving a sane ordering (a start
     /// past the end drags the end along; an end before the start is clamped).
-    fn set_event_date(&mut self, which: FormPopover, date: NaiveDate, doc: &mut AutoCommit) {
+    fn set_event_date(
+        &mut self,
+        which: FormPopover,
+        date: NaiveDate,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         self.cycle_event(doc, |e| match which {
             FormPopover::StartDate => {
                 if e.all_day {
@@ -2443,7 +2449,13 @@ impl CalendarApp {
     }
 
     /// Apply a clock spinner's current value to the start or end time.
-    fn set_event_time(&mut self, which: FormPopover, h: u8, m: u8, doc: &mut AutoCommit) {
+    fn set_event_time(
+        &mut self,
+        which: FormPopover,
+        h: u8,
+        m: u8,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         let time = NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0).unwrap_or(NaiveTime::MIN);
         self.cycle_event(doc, |e| match which {
             FormPopover::StartTime => {
@@ -2525,7 +2537,7 @@ impl CalendarApp {
         })
     }
 
-    fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut AutoCommit, f: F) {
+    fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut ui::widget::Edits<'_>, f: F) {
         if let Some(Sel::Event(id)) = self.selection {
             let patch = if let Some(e) = self.model.event_mut(id) {
                 let before = e.clone();
@@ -3015,7 +3027,7 @@ impl CalendarApp {
         clippy::too_many_lines,
         reason = "the complete local action routing table remains intentionally centralized so every hit and semantic action shares one persistence boundary"
     )]
-    fn apply_action(&mut self, action: Action, doc: &mut AutoCommit) {
+    fn apply_action(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
             Action::View(v) => {
                 self.view = v;
@@ -5481,7 +5493,7 @@ impl CalendarApp {
         } = input.event
             && let Some(a) = self.hit_action_at(self.last_mouse)
         {
-            self.apply_action(a, input.state);
+            self.apply_action(a, &mut input.state);
             *input.handled = true;
         }
         self.dirty = true;
@@ -5496,7 +5508,7 @@ impl CalendarApp {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let WindowEvent::KeyboardInput {
@@ -5590,7 +5602,7 @@ impl CalendarApp {
     /// `handle_keyboard` to keep that under the line cap.
     fn handle_keyboard_escape(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         field_focused: bool,
         notes_focused: bool,
         handled: &mut bool,
@@ -5644,7 +5656,7 @@ impl CalendarApp {
     /// of `handle_keyboard` to keep that under the line cap.
     fn handle_keyboard_delete(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         editor_active: bool,
         field_focused: bool,
         notes_focused: bool,
@@ -5673,7 +5685,7 @@ impl CalendarApp {
     fn handle_keyboard_shortcut(
         &mut self,
         logical_key: &Key,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if let Key::Character(ch) = logical_key {
@@ -5747,7 +5759,7 @@ impl CalendarApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: input.scale_factor,
                     modifiers: &input.modifiers,
-                    state: input.state,
+                    state: input.state.reborrow(),
                     path: input.path,
                     handled: input.handled,
                     focus_target: input.focus_target,
@@ -5769,7 +5781,7 @@ impl CalendarApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: input.scale_factor,
                     modifiers: &input.modifiers,
-                    state: input.state,
+                    state: input.state.reborrow(),
                     path: input.path,
                     handled: input.handled,
                     focus_target: input.focus_target,
@@ -5791,7 +5803,7 @@ impl CalendarApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: input.scale_factor,
                     modifiers: &input.modifiers,
-                    state: input.state,
+                    state: input.state.reborrow(),
                     path: input.path,
                     handled: input.handled,
                     focus_target: input.focus_target,
@@ -5814,7 +5826,7 @@ impl CalendarApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: input.scale_factor,
                         modifiers: &input.modifiers,
-                        state: input.state,
+                        state: input.state.reborrow(),
                         path: input.path,
                         handled: input.handled,
                         focus_target: input.focus_target,
@@ -5832,7 +5844,7 @@ impl CalendarApp {
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
-            self.apply_action(a, input.state);
+            self.apply_action(a, &mut input.state);
             *input.handled = true;
             return true;
         }
@@ -5850,7 +5862,7 @@ impl CalendarApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: input.scale_factor,
                     modifiers: &input.modifiers,
-                    state: input.state,
+                    state: input.state.reborrow(),
                     path: input.path,
                     handled: input.handled,
                     focus_target: input.focus_target,
@@ -5858,7 +5870,7 @@ impl CalendarApp {
                     taffy: input.taffy,
                 },
             );
-            self.flush_form_edits(input.state);
+            self.flush_form_edits(&mut input.state);
             self.dirty = true;
             return *input.handled;
         } else if self.location_input.is_focused() {
@@ -5867,7 +5879,7 @@ impl CalendarApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: input.scale_factor,
                     modifiers: &input.modifiers,
-                    state: input.state,
+                    state: input.state.reborrow(),
                     path: input.path,
                     handled: input.handled,
                     focus_target: input.focus_target,
@@ -5875,7 +5887,7 @@ impl CalendarApp {
                     taffy: input.taffy,
                 },
             );
-            self.flush_form_edits(input.state);
+            self.flush_form_edits(&mut input.state);
             self.dirty = true;
             return *input.handled;
         } else if self.invite_input.is_focused() {
@@ -5884,7 +5896,7 @@ impl CalendarApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: input.scale_factor,
                     modifiers: &input.modifiers,
-                    state: input.state,
+                    state: input.state.reborrow(),
                     path: input.path,
                     handled: input.handled,
                     focus_target: input.focus_target,
@@ -5892,7 +5904,7 @@ impl CalendarApp {
                     taffy: input.taffy,
                 },
             );
-            self.submit_invite(input.state);
+            self.submit_invite(&mut input.state);
             self.dirty = true;
             return *input.handled;
         }
@@ -5930,7 +5942,7 @@ impl Widget for CalendarApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+        let (state, path) = ui::doc::document_ref(state, path);
         self.adopt_person_accounts();
         if !self.seeded {
             // Whatever the document holds is now authoritative for the UI.
@@ -5940,11 +5952,36 @@ impl Widget for CalendarApp {
                 self.model = CalDoc::read_model(state);
             }
             self.revalidate_selection();
-            self.model_heads = state.get_heads();
+            self.model_heads = (state.base_heads(), state.pending_ops());
             self.seeded = true;
         }
+        self.refresh_display();
+        // Reconcile the in-memory model with the document when it moved out of
+        // band — a Ctrl+K palette action mutated the CRDT, or a peer's change
+        // merged in — so those events/tasks show up in the views just like an
+        // on-screen edit does. Cheap and idempotent: only when the heads differ
+        // from what the model was last derived from, and events/tasks re-read to
+        // the same values a handler would have set. (Notes live in the document
+        // and are read by the editor directly, so this never disturbs them.)
+        let heads = (state.base_heads(), state.pending_ops());
+        if heads != self.model_heads {
+            self.model = CalDoc::read_model(state);
+            self.revalidate_selection();
+            self.model_heads.clone_from(&heads);
+        }
+        self.ensure_bound(state);
+        // Seed the form's title/location/time widgets from the current event
+        // whenever the selection changes.
+        self.ensure_form_bound();
+        if let Some(which) = self.staged_popover.take() {
+            self.open_popover(which);
+        }
+        self.notes_editor.sync(state, path);
+    }
+
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         if std::mem::take(&mut self.sync_requested) {
-            self.start_sync(state);
+            self.start_sync(edits);
             if !self.syncing
                 && let Some(reply) = self.sync_reply.take()
             {
@@ -5957,42 +5994,12 @@ impl Widget for CalendarApp {
         // A scenario's fresh event, to capture the New-Event form without the
         // toast an interactive creation shows.
         if std::mem::take(&mut self.staged_new_event) {
-            self.new_event(state);
+            self.new_event(edits);
             self.status = None;
         }
-        self.poll_sync(state);
-        self.refresh_display();
-        // Reconcile the in-memory model with the document when it moved out of
-        // band — a Ctrl+K palette action mutated the CRDT, or a peer's change
-        // merged in — so those events/tasks show up in the views just like an
-        // on-screen edit does. Cheap and idempotent: only when the heads differ
-        // from what the model was last derived from, and events/tasks re-read to
-        // the same values a handler would have set. (Notes live in the document
-        // and are read by the editor directly, so this never disturbs them.)
-        let heads = state.get_heads();
-        if heads != self.model_heads {
-            self.model = CalDoc::read_model(state);
-            self.revalidate_selection();
-            self.model_heads.clone_from(&heads);
-        }
-        self.ensure_bound(state);
-        // Seed the form's title/location/time widgets from the current event
-        // whenever the selection changes.
-        self.ensure_form_bound();
-        self.commit_task_project_dropdown(state, path);
-        self.commit_task_priority_dropdown(state, path);
-        if let Some(which) = self.staged_popover.take() {
-            self.open_popover(which);
-        }
-        self.notes_editor.sync(state, path);
-        // Binding an editor, applying a dropdown selection, or accepting a
-        // note delta can change the document during this same frame.
-        let post_hydration_heads = state.get_heads();
-        if post_hydration_heads != self.model_heads {
-            self.model = CalDoc::read_model(state);
-            self.revalidate_selection();
-            self.model_heads.clone_from(&post_hydration_heads);
-        }
+        self.poll_sync(edits);
+        self.commit_task_project_dropdown(edits, path);
+        self.commit_task_priority_dropdown(edits, path);
     }
 
     fn build_layout(
@@ -6309,7 +6316,7 @@ impl Widget for CalendarApp {
                 event,
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: ctx.handled,
                 focus_target: ctx.focus_target,
@@ -6321,7 +6328,7 @@ impl Widget for CalendarApp {
 
         if self.task_popover == Some(TaskPopover::Project) {
             Widget::handle_event(&mut self.task_project_dropdown, event, ctx);
-            self.commit_task_project_dropdown(ctx.state, ctx.path);
+            self.commit_task_project_dropdown(&mut ctx.state, ctx.path);
             if *ctx.handled {
                 self.dirty = true;
                 return;
@@ -6330,7 +6337,7 @@ impl Widget for CalendarApp {
 
         if self.task_popover == Some(TaskPopover::Priority) {
             Widget::handle_event(&mut self.task_priority_dropdown, event, ctx);
-            self.commit_task_priority_dropdown(ctx.state, ctx.path);
+            self.commit_task_priority_dropdown(&mut ctx.state, ctx.path);
             if *ctx.handled {
                 self.dirty = true;
                 return;
@@ -6349,7 +6356,7 @@ impl Widget for CalendarApp {
             event,
             scale_factor: ctx.scale_factor,
             modifiers: *ctx.modifiers,
-            state: ctx.state,
+            state: ctx.state.reborrow(),
             path: ctx.path,
             handled: ctx.handled,
             focus_target: ctx.focus_target,
@@ -6361,7 +6368,7 @@ impl Widget for CalendarApp {
             return;
         }
 
-        if self.handle_keyboard(event, *ctx.modifiers, ctx.state, ctx.handled) {
+        if self.handle_keyboard(event, *ctx.modifiers, &mut ctx.state, ctx.handled) {
             return;
         }
 
@@ -6370,7 +6377,7 @@ impl Widget for CalendarApp {
                 event,
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: ctx.handled,
                 focus_target: ctx.focus_target,
@@ -6389,7 +6396,7 @@ impl Widget for CalendarApp {
             event,
             scale_factor: ctx.scale_factor,
             modifiers: *ctx.modifiers,
-            state: ctx.state,
+            state: ctx.state.reborrow(),
             path: ctx.path,
             handled: ctx.handled,
             focus_target: ctx.focus_target,
@@ -6471,10 +6478,10 @@ impl Widget for CalendarApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
+        let _ = path;
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
         }

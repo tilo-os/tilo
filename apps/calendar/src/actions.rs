@@ -1784,8 +1784,8 @@ mod tests {
     /// A demo calendar synced into a fresh document, plus the app that owns it.
     fn seeded() -> (CalendarApp, AutoCommit) {
         let mut app = CalendarApp::new_demo();
-        let mut doc = crate::app::demo_document(&app);
-        app.sync(&mut doc, &ROOT);
+        let doc = crate::app::demo_document(&app);
+        app.sync(&doc, &ROOT);
         (app, doc)
     }
 
