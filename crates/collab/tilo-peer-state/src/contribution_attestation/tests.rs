@@ -1,8 +1,9 @@
 use super::*;
 use neighbour_wire::contribution::{
     ContributionAttestorV1, ContributionCheckpointBodyV1, ContributionContractV1,
-    ContributionConversationReplyV1, ContributionDocumentBasisV1, ContributionOperationV1,
-    ContributionPurposeV1, ContributionReceiptV1, ContributionTaskFrontierV1,
+    ContributionConversationReplyV1, ContributionOperationV1, ContributionOriginalPolicyV1,
+    ContributionPurposeV1, ContributionReceiptV1, ContributionRoomBasisV1,
+    ContributionTaskFrontierV1,
 };
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
@@ -33,13 +34,9 @@ fn checkpoint_body(original: DeviceCert) -> ContributionCheckpointBodyV1 {
         generation: 1,
         previous_digest: None,
         authored_at_ns: 10,
-        governance_heads: vec![[2; 32]],
-        task_bases: vec![ContributionDocumentBasisV1 {
-            app: "so.tilo.desktop".into(),
-            record: "tasks".into(),
-            artifact: [3; 16],
-            heads: vec![[4; 32]],
-            digest: [5; 32],
+        room_bases: vec![ContributionRoomBasisV1 {
+            heads: vec![[2; 32]],
+            digest: contribution_room_basis_digest(ROOM, &[[2; 32]]).unwrap(),
         }],
         certificates: vec![original],
         contracts: vec![ContributionContractV1 {
@@ -52,9 +49,11 @@ fn checkpoint_body(original: DeviceCert) -> ContributionCheckpointBodyV1 {
             artifact: [7; 16],
             operation_id: [8; 32],
             outer_signer: [9; 32],
+            room_basis: 0,
             receipts: vec![ContributionReceiptV1 {
                 change_hash: [10; 32],
                 original_certificate: 0,
+                original_policy: ContributionOriginalPolicyV1::ManagedAgent,
                 actor: "scribe".into(),
                 participant: Some("scribe".into()),
                 source_invocation: [11; 16],
@@ -65,7 +64,6 @@ fn checkpoint_body(original: DeviceCert) -> ContributionCheckpointBodyV1 {
                     agent: "scribe".into(),
                     run_epoch: 1,
                     direction_revision: 2,
-                    task_basis: 0,
                 })),
             }],
         }],
@@ -79,6 +77,127 @@ struct Authorities {
     host_root: ed25519_dalek::SigningKey,
     host_key: ed25519_dalek::SigningKey,
     host: DeviceCert,
+}
+
+#[test]
+fn room_basis_digest_binds_the_canonical_room_and_exact_head_set() {
+    let heads = [[2; 32], [4; 32]];
+    let digest = contribution_room_basis_digest(ROOM, &heads).unwrap();
+    assert_eq!(
+        digest,
+        contribution_room_basis_digest(ROOM, &heads).unwrap()
+    );
+    assert_ne!(
+        digest,
+        contribution_room_basis_digest(ROOM, &[[2; 32]]).unwrap()
+    );
+    assert_ne!(
+        digest,
+        contribution_room_basis_digest("6b3f9a10-0000-4000-8000-00000000000d", &heads).unwrap()
+    );
+    for malformed in [
+        Vec::new(),
+        vec![[0; 32]],
+        vec![[2; 32], [2; 32]],
+        vec![[4; 32], [2; 32]],
+    ] {
+        assert!(contribution_room_basis_digest(ROOM, &malformed).is_err());
+    }
+    assert!(contribution_room_basis_digest(&ROOM.to_uppercase(), &heads).is_err());
+    let oversized = (1..=257_u16)
+        .map(|index| {
+            let mut head = [0; 32];
+            head[..2].copy_from_slice(&index.to_be_bytes());
+            head
+        })
+        .collect::<Vec<_>>();
+    assert!(contribution_room_basis_digest(ROOM, &oversized).is_err());
+}
+
+#[test]
+fn each_operation_retains_its_own_original_governed_room_basis() {
+    let fixture = authorities();
+    let mut body = checkpoint_body(fixture.host.clone());
+    body.room_bases.push(ContributionRoomBasisV1 {
+        heads: vec![[4; 32]],
+        digest: contribution_room_basis_digest(ROOM, &[[4; 32]]).unwrap(),
+    });
+    let mut second = body.operations[0].clone();
+    second.operation_id = [12; 32];
+    second.room_basis = 1;
+    second.receipts[0].change_hash = [13; 32];
+    let Some(ContributionPurposeV1::Task(task)) = second.receipts[0].purpose.as_mut() else {
+        panic!("an exact Task receipt")
+    };
+    task.run_epoch = 2;
+    body.operations.push(second);
+    let signed = sign_contribution_checkpoint(
+        body.clone(),
+        ContributionAttestorV1::Governor {
+            certificate: Box::new(fixture.governor.clone()),
+        },
+        &fixture.governor,
+        &RevocationList::new(),
+        &fixture.governor_key,
+    )
+    .unwrap();
+    verify_contribution_checkpoint_signature(
+        &signed,
+        &fixture.governor,
+        &RevocationList::new(),
+        10,
+    )
+    .unwrap();
+    let encoded = postcard::to_allocvec(&signed).unwrap();
+    let decoded: neighbour_wire::contribution::DocumentContributionCheckpointV1 =
+        postcard::from_bytes(&encoded).unwrap();
+    assert_eq!(decoded.body, body);
+    assert_eq!(decoded.body.operations[0].room_basis, 0);
+    assert_eq!(decoded.body.operations[1].room_basis, 1);
+    let mut substituted = signed;
+    substituted.body.operations[0].room_basis = 1;
+    assert!(
+        verify_contribution_checkpoint_signature(
+            &substituted,
+            &fixture.governor,
+            &RevocationList::new(),
+            10
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn signer_refuses_unbound_unused_or_mismatched_governed_room_bases() {
+    let fixture = authorities();
+    for mutation in 0..5 {
+        let mut body = checkpoint_body(fixture.host.clone());
+        match mutation {
+            0 => body.operations[0].room_basis = 1,
+            1 => body.room_bases[0].digest = [5; 32],
+            2 => body.room_bases[0].heads.push([2; 32]),
+            3 => body.room_bases.push(ContributionRoomBasisV1 {
+                heads: vec![[4; 32]],
+                digest: contribution_room_basis_digest(ROOM, &[[4; 32]]).unwrap(),
+            }),
+            _ => {
+                assert_eq!(mutation, 4);
+                body.room_bases.clear();
+            }
+        }
+        assert!(
+            sign_contribution_checkpoint(
+                body,
+                ContributionAttestorV1::Governor {
+                    certificate: Box::new(fixture.governor.clone())
+                },
+                &fixture.governor,
+                &RevocationList::new(),
+                &fixture.governor_key,
+            )
+            .is_err()
+        );
+    }
 }
 
 fn authorities() -> Authorities {
@@ -99,6 +218,87 @@ fn authorities() -> Authorities {
 }
 
 #[test]
+fn certified_person_original_policy_preserves_foreign_restriction() {
+    let fixture = authorities();
+    for restricted in [false, true] {
+        let mut body = checkpoint_body(fixture.host.clone());
+        let receipt = &mut body.operations[0].receipts[0];
+        receipt.purpose = None;
+        receipt.original_policy = ContributionOriginalPolicyV1::CertifiedPerson {
+            foreign_restriction: restricted,
+        };
+        let signed = sign_contribution_checkpoint(
+            body,
+            ContributionAttestorV1::Governor {
+                certificate: Box::new(fixture.governor.clone()),
+            },
+            &fixture.governor,
+            &RevocationList::new(),
+            &fixture.governor_key,
+        )
+        .unwrap();
+        verify_contribution_checkpoint_signature(
+            &signed,
+            &fixture.governor,
+            &RevocationList::new(),
+            10,
+        )
+        .unwrap();
+        let bytes = postcard::to_allocvec(&signed).unwrap();
+        let decoded: neighbour_wire::contribution::DocumentContributionCheckpointV1 =
+            postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            decoded.body.operations[0].receipts[0].original_policy,
+            ContributionOriginalPolicyV1::CertifiedPerson {
+                foreign_restriction: restricted
+            }
+        );
+        let mut substituted = signed;
+        substituted.body.operations[0].receipts[0].original_policy =
+            ContributionOriginalPolicyV1::CertifiedPerson {
+                foreign_restriction: !restricted,
+            };
+        assert!(
+            verify_contribution_checkpoint_signature(
+                &substituted,
+                &fixture.governor,
+                &RevocationList::new(),
+                10
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn closed_original_policy_refuses_person_task_and_unbound_agent_receipts() {
+    let fixture = authorities();
+    for person in [false, true] {
+        let mut body = checkpoint_body(fixture.host.clone());
+        let receipt = &mut body.operations[0].receipts[0];
+        if person {
+            receipt.original_policy = ContributionOriginalPolicyV1::CertifiedPerson {
+                foreign_restriction: true,
+            };
+        } else {
+            receipt.purpose = None;
+        }
+        assert!(
+            sign_contribution_checkpoint(
+                body,
+                ContributionAttestorV1::Governor {
+                    certificate: Box::new(fixture.governor.clone())
+                },
+                &fixture.governor,
+                &RevocationList::new(),
+                &fixture.governor_key,
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn governor_and_explicit_delegate_sign_only_canonical_exact_basis_checkpoints() {
     let fixture = authorities();
     let revocations = RevocationList::new();
@@ -113,10 +313,12 @@ fn governor_and_explicit_delegate_sign_only_canonical_exact_basis_checkpoints() 
     )
     .unwrap();
     let first =
-        verify_contribution_checkpoint(&direct, &fixture.governor, &revocations, 10).unwrap();
+        verify_contribution_checkpoint_signature(&direct, &fixture.governor, &revocations, 10)
+            .unwrap();
     assert_eq!(
         first,
-        verify_contribution_checkpoint(&direct, &fixture.governor, &revocations, 10).unwrap()
+        verify_contribution_checkpoint_signature(&direct, &fixture.governor, &revocations, 10)
+            .unwrap()
     );
 
     let delegation = sign_contribution_delegation(
@@ -140,7 +342,8 @@ fn governor_and_explicit_delegate_sign_only_canonical_exact_basis_checkpoints() 
         &fixture.host_key,
     )
     .unwrap();
-    verify_contribution_checkpoint(&delegated, &fixture.governor, &revocations, 10).unwrap();
+    verify_contribution_checkpoint_signature(&delegated, &fixture.governor, &revocations, 10)
+        .unwrap();
 
     let mut changed = delegated.clone();
     let Some(ContributionPurposeV1::Task(task)) =
@@ -149,12 +352,20 @@ fn governor_and_explicit_delegate_sign_only_canonical_exact_basis_checkpoints() 
         panic!("an exact Task receipt")
     };
     task.run_epoch = 2;
-    assert!(verify_contribution_checkpoint(&changed, &fixture.governor, &revocations, 10).is_err());
-    let mut missing_basis = delegated;
-    missing_basis.body.task_bases.clear();
     assert!(
-        verify_contribution_checkpoint(&missing_basis, &fixture.governor, &revocations, 10)
+        verify_contribution_checkpoint_signature(&changed, &fixture.governor, &revocations, 10)
             .is_err()
+    );
+    let mut missing_basis = delegated;
+    missing_basis.body.room_bases.clear();
+    assert!(
+        verify_contribution_checkpoint_signature(
+            &missing_basis,
+            &fixture.governor,
+            &revocations,
+            10
+        )
+        .is_err()
     );
 }
 
@@ -193,7 +404,8 @@ fn revoked_delegate_cannot_backdate_a_newly_observed_checkpoint() {
     let mut revoked = RevocationList::new();
     revoked.insert(revocation).unwrap();
     assert!(
-        verify_contribution_checkpoint(&checkpoint, &fixture.governor, &revoked, 30).is_err(),
+        verify_contribution_checkpoint_signature(&checkpoint, &fixture.governor, &revoked, 30)
+            .is_err(),
         "a host's self-claimed old authored time cannot bootstrap trust after revocation"
     );
 }
@@ -226,7 +438,6 @@ fn delegation_is_distinct_from_invitation_and_exactly_governor_bound() {
 
 fn conversation_body(original: DeviceCert, delivery: uuid::Uuid) -> ContributionCheckpointBodyV1 {
     let mut body = checkpoint_body(original);
-    body.task_bases.clear();
     let request = uuid::Uuid::from_u128(101);
     let operation = &mut body.operations[0];
     operation.record = "chat-record-a".into();
@@ -262,13 +473,22 @@ fn conversation_checkpoints_preserve_parent_delivery_and_completion_without_a_ta
             &fixture.governor_key,
         )
         .unwrap();
-        verify_contribution_checkpoint(&signed, &fixture.governor, &RevocationList::new(), 10)
-            .unwrap();
+        verify_contribution_checkpoint_signature(
+            &signed,
+            &fixture.governor,
+            &RevocationList::new(),
+            10,
+        )
+        .unwrap();
         let encoded = postcard::to_allocvec(&signed).unwrap();
         let decoded: neighbour_wire::contribution::DocumentContributionCheckpointV1 =
             postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.body, body);
-        assert!(decoded.body.task_bases.is_empty());
+        assert_eq!(decoded.body.room_bases.len(), 1);
+        assert!(matches!(
+            decoded.body.operations[0].receipts[0].purpose,
+            Some(ContributionPurposeV1::ConversationReply(_))
+        ));
         assert_eq!(
             decoded.body.operations[0].receipts[0].source_invocation,
             *uuid::Uuid::from_u128(303).as_bytes()

@@ -2,7 +2,7 @@
 //!
 //! These values carry evidence; none grants authority merely by decoding.
 //! Receivers verify the enrolled governor or an explicit room-scoped
-//! delegation, the signed policy/task bases, and the referenced operation.
+//! delegation, the exact governed-room bases, and the referenced operation.
 
 use collab_types::Signature;
 use serde::{Deserialize, Serialize};
@@ -48,10 +48,9 @@ pub struct ContributionContractV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct ContributionDocumentBasisV1 {
-    pub app: String,
-    pub record: String,
-    pub artifact: [u8; 16],
+pub struct ContributionRoomBasisV1 {
+    /// Exact governed workspace graph at the operation's original admission.
+    /// Task Center lives in this graph, not in a synthetic app document.
     pub heads: Vec<[u8; 32]>,
     pub digest: [u8; 32],
 }
@@ -62,8 +61,6 @@ pub struct ContributionTaskFrontierV1 {
     pub agent: String,
     pub run_epoch: u64,
     pub direction_revision: u64,
-    /// Index into the checkpoint's exact signed task-document bases.
-    pub task_basis: u32,
 }
 
 /// A Conversation reply is bound to its canonical parent and delivery attempt,
@@ -86,10 +83,19 @@ pub enum ContributionPurposeV1 {
     ConversationReply(ContributionConversationReplyV1),
 }
 
+/// Closed original invocation policy retained by the owner at admission.
+/// This is evidence, not a capability granted to the receiving application.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ContributionOriginalPolicyV1 {
+    CertifiedPerson { foreign_restriction: bool },
+    ManagedAgent,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ContributionReceiptV1 {
     pub change_hash: [u8; 32],
     pub original_certificate: u32,
+    pub original_policy: ContributionOriginalPolicyV1,
     pub actor: String,
     pub participant: Option<String>,
     pub source_invocation: [u8; 16],
@@ -106,6 +112,8 @@ pub struct ContributionOperationV1 {
     /// BLAKE3 digest of the exact canonical Person-signed `SignedOp`.
     pub operation_id: [u8; 32],
     pub outer_signer: [u8; 32],
+    /// Index into the exact original owner-turn governed-room bases.
+    pub room_basis: u32,
     pub receipts: Vec<ContributionReceiptV1>,
 }
 
@@ -117,10 +125,9 @@ pub struct ContributionCheckpointBodyV1 {
     pub generation: u64,
     pub previous_digest: Option<[u8; 32]>,
     pub authored_at_ns: u64,
-    /// Exact retained governed room graph used for membership/certificate policy.
-    pub governance_heads: Vec<[u8; 32]>,
-    /// Exact retained task CRDT graphs referenced by Agent receipts.
-    pub task_bases: Vec<ContributionDocumentBasisV1>,
+    /// Membership, application authority and Task frontiers are evaluated at
+    /// each operation's original governed-room basis, never today's graph.
+    pub room_bases: Vec<ContributionRoomBasisV1>,
     pub certificates: Vec<DeviceCert>,
     pub contracts: Vec<ContributionContractV1>,
     pub operations: Vec<ContributionOperationV1>,
