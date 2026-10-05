@@ -430,6 +430,10 @@ pub struct MusicApp {
     /// The page's cover grids, in the order this frame drew them.
     media_grids: Vec<media_grid::MediaGridHost>,
     media_grids_drawn: usize,
+    /// The page's other embedded parts (a detail page's actions, the genre
+    /// cards), in the order this frame drew them.
+    page_parts: Vec<page_part::PagePart>,
+    page_parts_drawn: usize,
     /// The name of the row control under the pointer, for its tooltip.
     table_tooltip: Option<String>,
     drag: Option<Drag>,
@@ -775,6 +779,8 @@ impl MusicApp {
             track_tables_drawn: 0,
             media_grids: Vec::new(),
             media_grids_drawn: 0,
+            page_parts: Vec::new(),
+            page_parts_drawn: 0,
             table_tooltip: None,
             drag: None,
             bar_press: None,
@@ -4914,6 +4920,7 @@ fn image_fetcher() -> ui::Fetcher {
 
 mod local_files;
 mod media_grid;
+mod page_part;
 mod render;
 mod track_table;
 
