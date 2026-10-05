@@ -1740,7 +1740,7 @@ impl GreeterApp {
             ) {
                 Ok(()) => {} // never reached — success exits the process
                 Err(e) => {
-                    tracing::warn!(detail = ?e.detail(), "sign-in did not start a session");
+                    tracing::warn!(failure = ?Failure::from(&e), "sign-in did not start a session");
                     self.finish_failure(Failure::from(&e));
                 }
             }
@@ -1875,7 +1875,10 @@ impl ui::widget::FullscreenProvider for GreeterApp {
 }
 
 impl Widget for GreeterApp {
-    ui::provides!(dyn ui::widget::FullscreenProvider);
+    ui::provides!(
+        dyn ui::widget::FullscreenProvider,
+        dyn ui::resources::PublishesResources
+    );
 
     /// Take what the controls reported since the last pass. The document is
     /// only lent on to the composed controls; the greeter itself neither
