@@ -10,11 +10,11 @@
 //! `[min, max]`, and reverting invalid text to the last good value.
 //!
 //! [`take_changed`](NumberInput::take_changed) polls a committed user
-//! change; [`set_value`](NumberInput::set_value) pushes one in silently;
-//! [`with_on_change_path`](NumberInput::with_on_change_path) optionally
-//! binds the value to a CRDT `F64`, while
-//! [`from_state`](NumberInput::from_state) supplies typed process-local
-//! two-way binding.
+//! change for the owner to submit; [`set_value`](NumberInput::set_value)
+//! pushes one in silently; [`on_action`](NumberInput::on_action) routes each
+//! commit through an action, and [`from_state`](NumberInput::from_state)
+//! supplies typed process-local two-way binding. The field never writes the
+//! document.
 //!
 //! Automatic dimensions use a text-scaled compact minimum and grow horizontally
 //! to fit the formatted value, field padding and steppers. [`NumberInput::with_size`]
@@ -136,7 +136,7 @@ pub struct NumberInput {
     accessible_name: Option<String>,
     /// Canonical value — the single source of truth. The embedded field's
     /// text is a *view* of this (re-synced on every commit); `value` is
-    /// what [`value`](NumberInput::value) and the CRDT reflect.
+    /// what [`value`](NumberInput::value) reports.
     value: f64,
     min: f64,
     max: f64,
@@ -166,11 +166,7 @@ pub struct NumberInput {
     /// One-shot record of the last *committed user change*, drained by
     /// [`take_changed`](NumberInput::take_changed).
     changed: Option<f64>,
-    /// A committed value awaiting a CRDT write. Set when a commit happens
-    /// where we lack the `state` handle (blur via `set_focus(false)`);
-    /// flushed on the next `sync`.
-    pending_write: Option<f64>,
-    /// Where the committed value lives: a document key or process-local state.
+    /// Process-local state the committed value is kept in.
     binding: Option<BoxedBinding<f64>>,
     action: Option<ActionEmitter<f64>>,
     enabled: bool,
@@ -208,7 +204,6 @@ impl NumberInput {
             minus_hover: false,
             plus_hover: false,
             changed: None,
-            pending_write: None,
             binding: None,
             action: None,
             enabled: true,
@@ -297,21 +292,11 @@ impl NumberInput {
         self
     }
 
-    /// Bind the committed value to a CRDT `F64` at `path` under the widget's
-    /// root — read on `sync`, written on every commit. Empty path leaves the
-    /// widget self-contained (poll [`take_changed`](NumberInput::take_changed)).
-    #[must_use]
-    pub fn with_on_change_path(mut self, path: &str) -> Self {
-        self.binding = (!path.is_empty()).then(|| crate::doc_binding::number_key(path));
-        self
-    }
-
     /// Route every committed numeric value through an exported action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<f64>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.changed = None;
-        self.pending_write = None;
         self
     }
 
@@ -336,7 +321,7 @@ impl NumberInput {
 
     /// Push a value in programmatically. Clamps and re-formats the
     /// display, but does NOT report a change through
-    /// [`take_changed`](NumberInput::take_changed) or write the CRDT. A bound
+    /// [`take_changed`](NumberInput::take_changed). A bound
     /// [`crate::LocalState`] is updated immediately.
     /// Mirrors [`TextInput::set_text`](crate::widget::TextInput::set_text).
     pub fn set_value(&mut self, v: f64) {
@@ -437,11 +422,10 @@ impl NumberInput {
     }
 
     /// Commit whatever is typed: parse the leading number, clamp, adopt
-    /// it. Records a change (and pending CRDT write) only when the value
+    /// it. Records a change for the owner
+    /// ([`take_changed`](NumberInput::take_changed)) only when the value
     /// actually moved; always re-syncs the display so invalid/out-of-range
-    /// text snaps back. Does not touch the CRDT itself (no `state` here)
-    /// — the caller flushes via [`flush_crdt`](NumberInput::flush_crdt) or
-    /// the next `sync`.
+    /// text snaps back.
     fn commit_local(&mut self) {
         if let Some(parsed) = parse_leading_number(self.field.value()) {
             let clamped = parsed.clamp(self.min, self.max);
@@ -479,15 +463,6 @@ impl NumberInput {
         self.field.apply_layout_external(self.field_rect);
     }
 
-    /// Flush a pending committed value to the bound CRDT field, if any.
-    fn flush_crdt(&mut self, state: &mut AppModel, root: &ModelPath) {
-        if let Some(v) = self.pending_write.take()
-            && let Some(binding) = &mut self.binding
-        {
-            binding.push(state, root, &v);
-        }
-    }
-
     fn publish_local_state(&mut self) {
         if let Some(binding) = &mut self.binding {
             binding.publish(&self.value);
@@ -499,7 +474,6 @@ impl NumberInput {
             let _ = action.emit(value);
         } else {
             self.changed = Some(value);
-            self.pending_write = Some(value);
             self.publish_local_state();
         }
     }
@@ -519,8 +493,6 @@ impl Widget for NumberInput {
     }
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        // Flush a value committed while we lacked the state handle (blur).
-        self.flush_crdt(state, root);
         // Don't clobber the field while the user is mid-edit; the model is
         // adopted as soon as editing ends.
         if self.field.is_focused() {
@@ -704,7 +676,6 @@ impl Widget for NumberInput {
                         self.field.set_focus(false);
                     }
                     self.step_by(-self.step);
-                    self.flush_crdt(ctx.state, ctx.path);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 } else if self.plus_rect.contains(self.last_cursor) {
@@ -713,14 +684,12 @@ impl Widget for NumberInput {
                         self.field.set_focus(false);
                     }
                     self.step_by(self.step);
-                    self.flush_crdt(ctx.state, ctx.path);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 } else if !self.field_rect.contains(self.last_cursor) && self.field.is_focused() {
                     // Press landed outside the field while it was focused —
                     // commit the typed value and release focus.
                     self.commit_local();
-                    self.flush_crdt(ctx.state, ctx.path);
                     self.field.set_focus(false);
                 }
             }
@@ -730,19 +699,16 @@ impl Widget for NumberInput {
                 match &key_event.logical_key {
                     Key::Named(NamedKey::Enter) => {
                         self.commit_local();
-                        self.flush_crdt(ctx.state, ctx.path);
                         *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.commit_local();
                         self.step_by(self.step);
-                        self.flush_crdt(ctx.state, ctx.path);
                         *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         self.commit_local();
                         self.step_by(-self.step);
-                        self.flush_crdt(ctx.state, ctx.path);
                         *ctx.handled = true;
                     }
                     _ => {}
@@ -808,8 +774,7 @@ impl Widget for NumberInput {
         } else {
             self.is_focused = false;
             if self.field.is_focused() {
-                // Blur commits the typed value; the CRDT write is deferred to
-                // the next `sync` (we have no `state` handle here).
+                // Blur commits the typed value for the owner to take.
                 self.commit_local();
                 self.field.set_focus(false);
             }
@@ -854,8 +819,8 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
-        root: &ModelPath,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if !self.effectively_enabled() {
@@ -864,12 +829,10 @@ impl Widget for NumberInput {
         match action {
             Action::Increment => {
                 self.step_by(self.step);
-                self.flush_crdt(state, root);
                 true
             }
             Action::Decrement => {
                 self.step_by(-self.step);
-                self.flush_crdt(state, root);
                 true
             }
             Action::SetValue(v) => {
@@ -880,7 +843,6 @@ impl Widget for NumberInput {
                 if (clamped - self.value).abs() > f64::EPSILON {
                     self.value = clamped;
                     self.record_user_value(clamped);
-                    self.flush_crdt(state, root);
                 }
                 self.sync_field();
                 true
@@ -907,11 +869,6 @@ impl crate::widget::controls::ActionControls for NumberInput {
         let control_id = self.test_id().unwrap_or("number_input");
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
-        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
-            }]
         } else {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
@@ -932,7 +889,7 @@ impl crate::widget::controls::ActionControls for NumberInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::{AutoCommit, ReadDoc, Value, transaction::Transactable};
+    use automerge::AutoCommit;
     use winit::event::{KeyEvent, Modifiers};
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
@@ -1258,13 +1215,9 @@ mod tests {
             assert_eq!(n.take_changed(), None, "no change to report");
         }
 
-        // Case `blur_commits_and_flushes_to_crdt_on_sync`.
-        // Blur (focus lost) commits the typed value; the CRDT write is deferred
-        // and flushed on the next `sync`.
+        // Case `blur_commits_the_typed_value_for_the_owner`.
         {
-            let mut n = NumberInput::new(16.0)
-                .with_range(8.0, 72.0)
-                .with_on_change_path("font_size");
+            let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
             layout_at(&mut n, 0.0, 0.0);
             n.field.set_focus(true);
             n.field.set_text("40");
@@ -1273,19 +1226,6 @@ mod tests {
             Widget::set_focus(&mut n, false);
             assert_eq!(n.value(), 40.0, "blur committed the typed value");
             assert_eq!(n.take_changed(), Some(40.0));
-
-            // The CRDT write was deferred; sync flushes it.
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            n.sync(&mut doc, &root);
-            let stored = doc.get(&root, "font_size").unwrap().unwrap().0;
-            match stored {
-                Value::Scalar(s) => match s.as_ref() {
-                    automerge::ScalarValue::F64(f) => assert_eq!(*f, 40.0),
-                    other => panic!("expected F64, got {other:?}"),
-                },
-                Value::Object(o) => panic!("expected scalar, got object: {o:?}"),
-            }
         }
     }
 
@@ -1371,20 +1311,6 @@ mod tests {
 
     #[test]
     fn value_bindings_sync_silently_from_models() {
-        // Case `sync_reads_value_from_crdt`.
-        // A CRDT-bound field reads its value back on `sync` (the Slider pattern).
-        {
-            let mut n = NumberInput::new(16.0)
-                .with_range(0.0, 100.0)
-                .with_on_change_path("opacity_pct");
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let _ = doc.put(&root, "opacity_pct", automerge::ScalarValue::F64(80.0));
-            n.sync(&mut doc, &root);
-            assert_eq!(n.value(), 80.0);
-            assert_eq!(n.field.value(), "80");
-        }
-
         // Case `set_value_is_silent`.
         // `set_value` is programmatic: it clamps + updates the display but does
         // NOT report a user change.
@@ -1473,9 +1399,8 @@ mod tests {
 
         // Case `action_binding_owns_accessibility_value_changes`.
         {
-            let mut number = NumberInput::new(10.0)
-                .with_on_change_path("legacy")
-                .on_action(crate::widget::test_number_action_binding());
+            let mut number =
+                NumberInput::new(10.0).on_action(crate::widget::test_number_action_binding());
             let mut doc = AutoCommit::new();
             crate::widget::controls::refresh_control_action_availability(
                 &mut number,
@@ -1496,7 +1421,7 @@ mod tests {
                 &mut doc,
                 &automerge::ROOT
             ));
-            assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+            assert!(doc.get_heads().is_empty(), "the field writes nothing");
             assert_eq!(number.take_changed(), None);
             assert_eq!(
                 crate::widget::controls::take_control_invocation(&mut number)
