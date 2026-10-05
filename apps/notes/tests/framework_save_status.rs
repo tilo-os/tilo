@@ -21,8 +21,16 @@ fn save_labels(app: &mut TestApp<NotesShell>) -> Vec<String> {
 fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.invoke(Invoke::apply(&new_page_action(PageId::new_v4(), None, 0, "Groceries")).unwrap())
-        .unwrap();
+    app.invoke(
+        Invoke::apply(&new_page_action(
+            PageId::new_v4(),
+            None,
+            "a".into(),
+            "Groceries",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
     app.flush().unwrap();
     app.settle();
     assert_eq!(
