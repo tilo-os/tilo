@@ -113,7 +113,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             })
             .unwrap();
         assert!(store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_none());
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_some(),
             "normal update must finish this exact action-owned creation after the loan ends"
@@ -168,7 +168,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                 ids
             })
             .unwrap();
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         let ready_after_first = ids
             .iter()
             .filter(|id| store.is_ready(&ui::RecordId::for_tab(**id)))
@@ -178,7 +178,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             "one ordinary update has a bounded creation budget"
         );
         for _ in 0..3 {
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
         }
         for (index, id) in ids.iter().enumerate() {
             assert_eq!(
@@ -224,7 +224,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                     .push(Strip::new(StripId::new(), "Rebuild"));
                 state.bump();
             }
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
             let group = host.group_at_for_tests(strip, 0).unwrap();
             group.bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
             let tile = group.host_for_tab_mut(new_id).unwrap();
@@ -246,7 +246,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             false,
             store,
         );
-        reopened.update(&mut AutoCommit::new(), &automerge::ROOT);
+        reopened.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             reopened
                 .group_at_for_tests(strip, 0)
@@ -333,7 +333,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                     }
                 }
             }
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(
                 store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_some(),
                 cancellation == "none",
@@ -371,11 +371,11 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .unwrap();
         let replacement = ui::record::RecordStore::in_memory();
         chrome.borrow_mut().set_records(replacement.clone());
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         old_store
             .create_record(&crate::shell::tab_documents::scratch_tab_record(new_id))
             .unwrap();
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             host.group_at_for_tests(strip, 0)
                 .unwrap()

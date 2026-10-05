@@ -4325,7 +4325,7 @@ mod tests {
             assert!(!backup.identity_ready_page);
             let mut blocked_finish = AutoCommit::new();
             press(&backup, &mut blocked_finish, KEY_FINISH);
-            backup.sync(&mut blocked_finish, &automerge::ROOT);
+            backup.sync(&blocked_finish, &automerge::ROOT);
             assert!(!backup.finished(), "backup choice cannot be bypassed");
 
             store_progress(directory.path(), PersistedStage::IdentityReadyBackedUp)
@@ -5650,7 +5650,7 @@ mod tests {
                 let mut connect_doc = AutoCommit::new();
                 for key in keys {
                     press(&connect, &mut connect_doc, key);
-                    connect.sync(&mut connect_doc, &automerge::ROOT);
+                    connect.sync(&connect_doc, &automerge::ROOT);
                 }
                 let theme = Theme::dark();
                 let mut taffy: TaffyTree<()> = TaffyTree::new();

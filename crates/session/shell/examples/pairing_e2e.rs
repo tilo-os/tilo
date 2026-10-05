@@ -156,9 +156,9 @@ async fn run() -> Result<(), String> {
     println!("render   wrote {}", out.display());
 
     // 5. Answer as a click on the primary action would.
-    let mut state = State::new();
+    let state = State::new();
     view.press_accept();
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
     let reply = view
         .take_answer()
         .ok_or("clicking the primary action produced no answer")?;

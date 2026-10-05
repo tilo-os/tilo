@@ -438,9 +438,9 @@ impl ShellDriver {
     pub fn step_frames(&mut self, frames: u32) {
         for _ in 0..frames {
             std::thread::sleep(Duration::from_millis(FRAME_MS));
-            // Drive the per-frame update + redraw so animation state
-            // advances. `update` runs the per-tick reconciler too.
-            self.fb.host_mut().update(&mut self.state, &self.root_obj);
+            // Run the same readonly sync, typed settlement and update
+            // as the native compositor before painting animations.
+            self.fb.pump_apps(&mut self.state, &self.root_obj);
             // Re-draw into a throwaway scene so tick functions inside
             // `draw` (overview crossfade tick, etc.) see elapsed time.
             let _ = self.paint();

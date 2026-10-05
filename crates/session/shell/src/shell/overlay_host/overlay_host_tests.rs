@@ -718,7 +718,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.desktop_tour = true;
 
-        host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        host.sync(&AutoCommit::new(), &automerge::ROOT);
 
         assert!(host.onboarding_active());
         assert!(
@@ -1692,7 +1692,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     fn print_screen_preserves_oobe_and_returns_to_the_same_step() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.desktop_tour = true;
-        h.host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        h.host.sync(&AutoCommit::new(), &automerge::ROOT);
         let before = h
             .host
             .onboarding

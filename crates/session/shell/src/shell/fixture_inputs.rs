@@ -343,7 +343,7 @@ mod tests {
                 &frame.host().room_records()
             ));
             assert!(room_index.borrow().holds(home, &record.id));
-            assert_rebuilt_files(&mut frame, strip, files, &child, &mut document);
+            assert_rebuilt_files(&mut frame, strip, files, &child, &document);
             assert_eq!(
                 frame.host().fixture_provider_ids(),
                 vec!["actions", "records"]
@@ -478,7 +478,7 @@ mod tests {
         strip: crate::shell::state::StripId,
         files_tab: u64,
         child: &std::path::Path,
-        document: &mut automerge::AutoCommit,
+        document: &automerge::AutoCommit,
     ) {
         use ui::widget::Widget;
         let group = frame.host_mut().group_at_for_tests(strip, 0).unwrap();

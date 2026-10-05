@@ -104,9 +104,9 @@ fn shoot_in_context(
         } else {
             view.press(key);
         }
-        view.sync(&mut state.doc, &state.root);
+        view.sync(&state.doc, &state.root);
     }
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
 
     let mut tr = TextRenderer::new();
     let mut taffy = TaffyTree::<()>::new();
@@ -132,7 +132,7 @@ fn shoot_in_context(
     // their own state out of the CRDT yet — a freshly built Checkbox does not
     // know it is ticked until it syncs. The live loop syncs once per frame,
     // so this captures the settled state after the tree was rebuilt.
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
     view.settle_motion_for_snapshot();
 
     let mut scene = Scene::new();
@@ -158,12 +158,12 @@ fn shoot_visual(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    let mut state = State::new();
+    let state = State::new();
     let mut view = OnboardingView::with_minter(Box::new(|| {
         Err("identity creation is not part of this snapshot".to_string())
     }));
     view.set_visual_state_for_snapshot(visual);
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
 
     let mut tr = TextRenderer::new();
     let mut taffy = TaffyTree::<()>::new();
@@ -184,7 +184,7 @@ fn shoot_visual(
         )
         .map_err(|e| format!("compute_layout_with_measure: {e}"))?;
     view.apply_layout(&taffy, node, Point::ZERO);
-    view.sync(&mut state.doc, &state.root);
+    view.sync(&state.doc, &state.root);
     view.settle_motion_for_snapshot();
 
     let mut scene = Scene::new();

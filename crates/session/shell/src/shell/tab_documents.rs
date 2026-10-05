@@ -117,11 +117,11 @@ mod tests {
                 TAB_A,
                 ui::widget::WindowWidth::Normal,
             );
-            let mut parent = AutoCommit::new();
+            let parent = AutoCommit::new();
             bind_group_records(&mut group, &store);
-            group.sync(&mut parent, &automerge::ROOT);
+            group.sync(&parent, &automerge::ROOT);
             bind_group_records(&mut group, &store);
-            group.sync(&mut parent, &automerge::ROOT);
+            group.sync(&parent, &automerge::ROOT);
             assert!(
                 store.open_records().is_empty(),
                 "rebuilds cannot create a missing saved record"
@@ -130,7 +130,7 @@ mod tests {
             // Simulate the existing record arriving from its storage/replication owner.
             store.open_record(&scratch_tab_record(TAB_A));
             write(&store, TAB_A, "hydrated content");
-            group.sync(&mut parent, &automerge::ROOT);
+            group.sync(&parent, &automerge::ROOT);
             assert_eq!(written(&store, TAB_A).as_deref(), Some("hydrated content"));
             assert!(group.active_host().unwrap().history_owner().is_some());
             assert!(
@@ -160,8 +160,8 @@ mod tests {
             // What a tab's app writes when the user types into it.
             write(&store, TAB_A, "written by a frame");
 
-            let mut shell_doc = AutoCommit::new();
-            host.update(&mut shell_doc, &automerge::ROOT);
+            let shell_doc = AutoCommit::new();
+            host.update(&shell_doc, &automerge::ROOT);
             // Nothing but the frame offers the edit to the debounced writer, and
             // awaiting the writer submits nothing, so the record reaches
             // `Saved` only if the frame did.

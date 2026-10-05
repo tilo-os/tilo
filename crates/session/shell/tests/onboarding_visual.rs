@@ -73,12 +73,12 @@ fn state_view(label: &str) -> OnboardingView {
         "intro" => {}
         "protect" => {
             press(&view, &mut document, KEY_BEGIN);
-            view.sync(&mut document, &automerge::ROOT);
+            view.sync(&document, &automerge::ROOT);
         }
         "backup" => {
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
                 press(&view, &mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                view.sync(&document, &automerge::ROOT);
             }
             assert_eq!(view.flow().screen(), Screen::Done);
         }
@@ -91,7 +91,7 @@ fn state_view(label: &str) -> OnboardingView {
                 KEY_BACKUP_CONTINUE,
             ] {
                 press(&view, &mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                view.sync(&document, &automerge::ROOT);
             }
             assert_eq!(view.flow().screen(), Screen::Done);
         }
