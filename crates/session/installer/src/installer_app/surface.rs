@@ -17,10 +17,10 @@ use tilo_actions::{
 use zeroize::Zeroizing;
 
 use super::{
-    FILESYSTEMS, InstallMethod, InstallState, InstallerApp, KEYMAP_PATH, LOCALE_PATH, STEP_LABELS,
-    Step, TIMEZONE_PATH, VerifiedBootState, clear_secret_buffer, local_text, prev_step,
-    secret_copy, step_index, valid_full_name, valid_hostname, valid_locale, valid_timezone_name,
-    valid_username, validate_passwords, validate_startup_secret_for,
+    FILESYSTEMS, InstallMethod, InstallState, InstallerApp, STEP_LABELS, Step, VerifiedBootState,
+    clear_secret_buffer, local_text, prev_step, secret_copy, step_index, valid_full_name,
+    valid_hostname, valid_locale, valid_timezone_name, valid_username, validate_passwords,
+    validate_startup_secret_for,
 };
 use crate::install::PowerAction;
 use crate::layouts;
@@ -28,7 +28,6 @@ use crate::operation::{
     ACCOUNT, KEYBOARD, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, RECOVERY, REVIEW,
     SESSION, STORAGE, disk_resource, region_resource,
 };
-use automerge::{AutoCommit, ObjId};
 
 /// A reason an action cannot run now: a stable code and the sentence the
 /// wizard would show.
@@ -275,7 +274,7 @@ impl InstallerApp {
     fn keyboard_resource(&self) -> Resource {
         Resource::new(KEYBOARD, "installer.keyboard", "Keyboard layout")
             .with_presentation(ResourcePresentation {
-                detail: Some(self.keymap.trim().to_owned()),
+                detail: Some(self.keymap().trim().to_owned()),
                 ..ResourcePresentation::default()
             })
             .with_action(gate(
@@ -581,8 +580,8 @@ impl InstallerApp {
                         "{} · {} · {} · {}",
                         self.filesystem(),
                         local_text(&self.hostname).trim(),
-                        self.locale.trim(),
-                        self.timezone.trim()
+                        self.locale().trim(),
+                        self.timezone().trim()
                     ),
                     160,
                 )),
@@ -816,8 +815,6 @@ impl InstallerApp {
     /// sentence an external caller receives.
     pub(super) fn invoke_control(
         &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
         resource: &str,
         action: &str,
         mut args: Map<String, Value>,
@@ -855,24 +852,19 @@ impl InstallerApp {
             // Handlers set the status or notice the wizard shows; the
             // returned error only matters to a caller that cannot see it.
             Ok(admitted) => {
-                let _ = self.apply_encoded(&admitted.encoded, state, root);
+                let _ = self.apply_encoded(&admitted.encoded);
             }
             Err(refusal) => self.set_status(&refusal.message),
         }
     }
 
     /// Decode and apply one encoded installer operation.
-    pub(super) fn apply_encoded(
-        &mut self,
-        encoded: &EncodedAction,
-        state: &mut AutoCommit,
-        root: &ObjId,
-    ) -> Applied {
+    pub(super) fn apply_encoded(&mut self, encoded: &EncodedAction) -> Applied {
         if encoded.type_id != OPERATION_TYPE {
             return Err(format!("not an installer operation: {}", encoded.type_id));
         }
         let operation = Operation::decode(&encoded.payload)?;
-        self.apply(operation, state, root)
+        self.apply(operation)
     }
 
     /// Apply one operation. Every door ends here, after resolution,
@@ -888,7 +880,7 @@ impl InstallerApp {
         clippy::too_many_lines,
         reason = "one match arm per operation keeps each handler next to its siblings"
     )]
-    pub fn apply(&mut self, operation: Operation, state: &mut AutoCommit, root: &ObjId) -> Applied {
+    pub fn apply(&mut self, operation: Operation) -> Applied {
         let done = || Ok(ActionOutput::default());
         match operation {
             Operation::Status => Ok(ActionOutput {
@@ -921,8 +913,7 @@ impl InstallerApp {
                 if layouts::by_display_name(layout.trim()).is_none() {
                     return Err(format!("Unknown keyboard layout {layout:?}"));
                 }
-                ui::put_text_diffed(state, root, KEYMAP_PATH, layout.trim());
-                layout.trim().clone_into(&mut self.keymap);
+                self.keymap.set(layout.trim().to_owned());
                 self.dirty_structure = true;
                 done()
             }
@@ -1002,7 +993,6 @@ impl InstallerApp {
                 self.require_step(Step::Disk)?;
                 let disks = self.backend.read_disks();
                 self.refresh_disks_with(disks);
-                self.ensure_disk_paths(state, root);
                 done()
             }
             Operation::SelectDisk { device } => {
@@ -1174,8 +1164,7 @@ impl InstallerApp {
                 if !valid_locale(locale.trim()) {
                     return Err("Choose a supported language and locale from the list".into());
                 }
-                ui::put_text_diffed(state, root, LOCALE_PATH, locale.trim());
-                locale.trim().clone_into(&mut self.locale);
+                self.locale.set(locale.trim().to_owned());
                 self.dirty_structure = true;
                 done()
             }
@@ -1185,8 +1174,7 @@ impl InstallerApp {
                 if !valid_timezone_name(&timezone) || !self.timezones.contains(&timezone) {
                     return Err("Choose a valid time zone from the list".into());
                 }
-                ui::put_text_diffed(state, root, TIMEZONE_PATH, &timezone);
-                self.timezone = timezone;
+                self.timezone.set(timezone);
                 self.dirty_structure = true;
                 done()
             }
