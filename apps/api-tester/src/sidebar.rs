@@ -276,11 +276,11 @@ impl ui::widget::Decorator for RequestsNav {
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         self.apply_pending();
-        self.list.settle(edits, path);
+        Widget::settle(&mut self.list, edits, path);
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.pending.borrow().is_some() || self.list.needs_idle_sync()
+        self.pending.borrow().is_some() || Widget::needs_idle_sync(&self.list)
     }
 
     fn name(&self) -> &'static str {
