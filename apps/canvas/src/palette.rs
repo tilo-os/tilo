@@ -65,6 +65,9 @@ pub fn swatches(art: &Artwork) -> Vec<String> {
         .into_iter()
         .map(|colour| colour.colour)
         .collect();
+    if colours.is_empty() {
+        return Vec::new();
+    }
     colours.extend(literal(&art.ground.colour));
     colours.into_iter().take(32).collect()
 }

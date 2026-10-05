@@ -61,9 +61,12 @@ fn artwork_palette(
 ) -> Element {
     let colours = cx.value(crate::palette::swatches);
     cx.switch(&colours, move |_, colours| {
-        if colours.is_empty() {
-            return Box::new(Spacer::fixed(0.0)) as Element;
-        }
+        let authored = !colours.is_empty();
+        let colours = if authored {
+            colours.clone()
+        } else {
+            INKS.iter().map(|rgb| hex(*rgb)).collect()
+        };
         let loaded = current().to_lowercase();
         let selected = colours.iter().position(|colour| colour == &loaded);
         let values = colours.clone();
@@ -81,15 +84,17 @@ fn artwork_palette(
                 choose(colour.clone());
             }
         });
-        section(vec![
-            heading("canvas-artwork-colours"),
-            Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_id(id.clone())
-                    .with_child(Box::new(picker)),
-            ),
-        ])
+        let mut parts: Vec<Element> = Vec::new();
+        if authored {
+            parts.push(heading("canvas-artwork-colours"));
+        }
+        parts.push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_id(id.clone())
+                .with_child(Box::new(picker)),
+        ));
+        section(parts)
     })
 }
 
@@ -315,8 +320,9 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str, tool: Tool) -
         parts.push(preset_picker(tools));
     }
     let palette = brush_palette(tools, &pigments);
-    parts.push(Box::new(palette.with_cell(SWATCH).bare()));
-    if medium.is_none() {
+    if medium.is_some() {
+        parts.push(Box::new(palette.with_cell(SWATCH).bare()));
+    } else {
         let chosen = tools.colour.clone();
         let loaded = tools.clone();
         parts.push(artwork_palette(
@@ -1055,7 +1061,7 @@ fn paints(
             }),
         )),
     };
-    let mut parts: Vec<Element> = vec![Box::new(swatches)];
+    let mut parts: Vec<Element> = Vec::new();
     if palette.is_empty() {
         let dispatch = cx.dispatcher();
         let ids = ids.to_vec();
@@ -1069,6 +1075,8 @@ fn paints(
                 dispatch.invoke(paint.invoke(&ids, value));
             },
         ));
+    } else {
+        parts.push(Box::new(swatches));
     }
     parts.push(field);
     section(parts)
