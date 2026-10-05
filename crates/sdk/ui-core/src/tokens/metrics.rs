@@ -24,6 +24,9 @@ pub struct Metrics {
     pub panel_row_height: f32,
     /// One row of a menu (context menu, dropdown list).
     pub menu_row_height: f32,
+    /// The narrowest a menu stands, however short its labels: a menu of one
+    /// short item still reads as a menu, not as a button.
+    pub menu_min_width: f32,
     /// Room a scroll view keeps on its trailing edge for its scroll bar
     /// while its content overflows, so the bar never covers content: the
     /// thumb ([`Metrics::scroll_thumb`]) plus `s1` on each side.
@@ -114,6 +117,7 @@ impl Metrics {
         bar_control_height: 28.0,
         panel_row_height: 44.0,
         menu_row_height: 32.0,
+        menu_min_width: 160.0,
         scrollbar_gutter: 16.0,
         selector_height: 28.0,
         min_pointer_target: 32.0,
@@ -196,6 +200,7 @@ impl Metrics {
             bar_control_height: self.bar_control_height * factor,
             panel_row_height: self.panel_row_height * factor,
             menu_row_height: self.menu_row_height * factor,
+            menu_min_width: self.menu_min_width * factor,
             scrollbar_gutter: self.scrollbar_gutter * factor,
             selector_height: self.selector_height * factor,
             min_pointer_target: self.min_pointer_target * factor,
@@ -251,6 +256,7 @@ mod tests {
             (base.wheel_line, scaled.wheel_line),
             (base.scroll_thumb, scaled.scroll_thumb),
             (base.swipe_commit, scaled.swipe_commit),
+            (base.menu_min_width, scaled.menu_min_width),
         ] {
             assert!((one * 1.5 - scaled).abs() < 1e-3);
         }
