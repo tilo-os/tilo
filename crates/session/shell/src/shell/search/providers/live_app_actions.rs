@@ -542,11 +542,10 @@ impl LiveAppActionsProvider {
                 // memory, cloning before this map turns a large source into
                 // quadratic worker work.
                 let actions = std::mem::take(&mut surface.actions);
-                // Programmatic actions (a generic typed edit) are for agents
-                // and scripts, never a row a person picks.
+                // Retain every address, including actions used by accessibility
+                // and automation. Only the palette's search index hides them.
                 actions
                     .into_iter()
-                    .filter(|action| !action.contract.is_programmatic())
                     .map(move |action| (surface.clone(), action))
             })
             .collect::<Vec<_>>();
@@ -2409,14 +2408,20 @@ fn index_actions(entries: &[(PublishedSurface, PublishedAction)]) -> SearchIndex
         spanning: true,
         typos: false,
     });
-    index.replace_all(entries.iter().enumerate().map(|(at, (surface, action))| {
-        Document::new(at as u64)
-            .field(action.action_label.as_str(), FieldWeight::TITLE)
-            .field(action.resource_label.as_str(), FieldWeight::SUBTITLE)
-            .field(action.action.as_str(), FieldWeight::IDENTITY)
-            .field(action.resource.as_str(), FieldWeight::IDENTITY)
-            .field(surface.app_id.as_str(), FieldWeight::METADATA)
-    }));
+    index.replace_all(
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, action))| !action.contract.is_programmatic())
+            .map(|(at, (surface, action))| {
+                Document::new(at as u64)
+                    .field(action.action_label.as_str(), FieldWeight::TITLE)
+                    .field(action.resource_label.as_str(), FieldWeight::SUBTITLE)
+                    .field(action.action.as_str(), FieldWeight::IDENTITY)
+                    .field(action.resource.as_str(), FieldWeight::IDENTITY)
+                    .field(surface.app_id.as_str(), FieldWeight::METADATA)
+            }),
+    );
     if let Err(error) = index.commit() {
         tracing::error!(%error, "could not index live app actions");
     }
@@ -2985,6 +2990,73 @@ mod tests {
         {
             assert!(LiveAppActionsProvider::decode_auxiliary_resume("not;a,cursor").is_none());
         }
+    }
+
+    #[test]
+    fn programmatic_actions_resolve_by_address_without_entering_palette_search() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let mut programmatic = local_action("Read page content", "read");
+        programmatic
+            .contract
+            .tags
+            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", &room),
+            actions: vec![local_action("Open address", "navigate"), programmatic],
+            live: true,
+        };
+        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[1]);
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        let provider = Rc::new(LiveAppActionsProvider::new(broker.clone()));
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = context("", &state, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let page = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(page.results.len(), 1);
+        assert!(page.results.iter().all(|row| row.id != id));
+        assert!(
+            provider
+                .query_page(
+                    context("Read page content", &state, &doc),
+                    None,
+                    SearchBudget::PALETTE
+                )
+                .results
+                .is_empty()
+        );
+        drop(state);
+        let mut registry = SearchRegistry::new();
+        registry.register(provider);
+        let resource = ResourceRef::new(PROVIDER_ID, id);
+        let catalog = ActionCatalog::build_for_resource(
+            &registry,
+            &resource,
+            crate::shell::chrome_state::SearchScope::Workspace,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(
+            catalog.select(&resource).is_some(),
+            "the published programmatic action must be addressable"
+        );
     }
 
     #[test]
