@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use accounts::SecretItemKind;
+use accounts::{SecretId, SecretItemKind};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -29,6 +29,7 @@ use crate::vault::{Core, Dialog, Request, Requests, Screen, Shared, VaultFilter}
 /// The `--shots --scenario` names this app stages.
 pub const SCENARIOS: &[&str] = &[
     "detail",
+    "api-key",
     "editor",
     "new-item",
     "favorites",
@@ -336,6 +337,9 @@ impl PasswordsSurface {
             core.load_demo();
             match scenario {
                 Some("editor") => core.begin_edit(),
+                Some("api-key") => {
+                    core.open(&SecretId("demo-console".into()));
+                }
                 Some("new-item") => core.begin_add(),
                 Some("favorites") => core.select_filter(VaultFilter::Favorites),
                 Some("review") => core.navigate("review"),
@@ -374,7 +378,9 @@ impl PasswordsSurface {
             core.show_pane = None;
         }
         self.pending = match scenario {
-            Some(name @ ("detail" | "sidebar" | "editor" | "new-item")) => Some(name.to_owned()),
+            Some(name @ ("detail" | "api-key" | "sidebar" | "editor" | "new-item")) => {
+                Some(name.to_owned())
+            }
             _ => None,
         };
         self.settle();

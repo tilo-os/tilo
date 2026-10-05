@@ -842,6 +842,7 @@ impl FrameHarness {
         Point::new(position.x / self.input_scale, position.y / self.input_scale)
     }
     pub(super) fn draw_system_search(&mut self) {
+        let transform = self.capture_draw_transform();
         let Some(overlay) = self.system_search.overlay.as_mut() else {
             return;
         };
@@ -879,7 +880,7 @@ impl FrameHarness {
         }
         overlay.draw(
             &mut self.scene,
-            Affine::IDENTITY,
+            transform,
             &mut self.text,
             &self.theme,
             &self.presence,

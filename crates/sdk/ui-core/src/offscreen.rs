@@ -34,6 +34,33 @@ use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, RendererOptions, Scene};
 
+/// Device pixels per logical pixel a capture draws its frames at
+/// (`--device-scale`); 1 is the size people see on a standard display.
+static CAPTURE_DEVICE_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// The largest device scale a capture draws at: a glyph sheet enlarged
+/// from the outlines (16x); `--device-scale` itself stops at 4.
+pub const MAX_CAPTURE_DEVICE_SCALE: u32 = 16;
+
+/// Draw every following capture frame at `scale` device pixels per
+/// logical pixel, as a HiDPI display draws it: the frame is laid out at its
+/// logical size and drawn with the window scale transform the live host
+/// uses, so text is rasterised from the glyph outlines at that size rather
+/// than enlarged afterwards ([`crate::headless::FrameHarness`]). Clamped to
+/// `1..=MAX_CAPTURE_DEVICE_SCALE`.
+pub fn set_capture_device_scale(scale: u32) {
+    CAPTURE_DEVICE_SCALE.store(
+        scale.clamp(1, MAX_CAPTURE_DEVICE_SCALE),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// The device scale captures draw at ([`set_capture_device_scale`]).
+#[must_use]
+pub fn capture_device_scale() -> u32 {
+    CAPTURE_DEVICE_SCALE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Ensures only ONE `wgpu::Instance` per process — constructing several in
 /// parallel (the default `cargo test` pattern) races inside
 /// `vkCreateInstance` on at least radv + intel-iris and SIGSEGVs. `Arc` lets

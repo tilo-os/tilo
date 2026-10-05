@@ -51,7 +51,9 @@ const FIXTURES: [Fixture; 8] = [
         id: "demo-console",
         kind: SecretItemKind::ApiKey,
         title: "Cloud console",
-        username: "ada.lovelace",
+        // Cloud account IDs mix 0 and O, 1, I and l: the case the
+        // Identifier text kind sets apart.
+        username: "lovelace-prod-0Il1O",
         password: "ck_live_5bT9wQ2mXc8LrV4n",
         origins: &["https://console.cloud.example"],
         favorite: false,
