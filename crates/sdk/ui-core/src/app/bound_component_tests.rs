@@ -390,7 +390,7 @@ impl Widget for Probe {
     fn perform_action(
         &mut self,
         _: &crate::a11y::Action,
-        doc: &mut AppModel,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = crate::doc::document(doc, path);
@@ -413,7 +413,12 @@ impl crate::search::capability::SearchSource for Probe {
             strict: self.strict,
         })]
     }
-    fn activate_search_result(&mut self, id: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(id, "opaque");
         doc.put(ROOT, "navigation", true).unwrap();

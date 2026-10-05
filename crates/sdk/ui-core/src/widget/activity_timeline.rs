@@ -16,7 +16,7 @@
 //! the reader.
 
 use crate::time::SystemTime;
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::{HashMap, HashSet};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -3243,7 +3243,7 @@ impl Widget for ActivityTimeline {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -4278,7 +4278,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -4944,7 +4944,7 @@ mod group_tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,

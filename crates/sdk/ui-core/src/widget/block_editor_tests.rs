@@ -416,7 +416,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut None,
@@ -446,7 +446,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut false,
                 focus_target: &mut None,
@@ -640,7 +640,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -698,7 +698,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &ctrl_shift,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -765,7 +765,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -2422,7 +2422,7 @@ fn focused_block_ime_repaints_after_an_idle_paint() {
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut AutoCommit::new(),
+            state: crate::widget::Edits::lend(&mut AutoCommit::new()),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut None,

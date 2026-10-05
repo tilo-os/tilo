@@ -1126,7 +1126,11 @@ impl FrameHarness {
         };
         let activated = self
             .dispatch_node(focused, |widget, doc, root| {
-                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+                widget.perform_action(
+                    &crate::a11y::Action::Activate,
+                    &mut crate::widget::Edits::lend(doc),
+                    root,
+                )
             })
             .unwrap_or(false);
         if activated {
@@ -1647,7 +1651,7 @@ impl FrameHarness {
             &mut EventCtx {
                 scale_factor: self.input_scale,
                 modifiers,
-                state: &mut self.state.doc,
+                state: crate::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -3438,7 +3442,7 @@ impl FrameHarness {
                         &mut EventCtx {
                             scale_factor: self.input_scale,
                             modifiers: &self.modifiers,
-                            state: doc,
+                            state: crate::widget::Edits::lend(doc),
                             path,
                             handled: &mut handled,
                             focus_target: &mut focus,
@@ -3904,9 +3908,19 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(target, action, doc, root)
+                    widget.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_action_at(action, &key_path, doc, root)
+                    widget.perform_action_at(
+                        action,
+                        &key_path,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -4148,9 +4162,14 @@ impl FrameHarness {
             let handled = self
                 .dispatch_node(node, |widget, doc, root| {
                     if let Some(target) = semantic_target {
-                        widget.perform_semantic_action(target, action, doc, root)
+                        widget.perform_semantic_action(
+                            target,
+                            action,
+                            &mut crate::widget::Edits::lend(doc),
+                            root,
+                        )
                     } else {
-                        widget.perform_action(action, doc, root)
+                        widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
                     }
                 })
                 .map_err(|error| format!("History input refused: {error:?}"))?;
@@ -4179,9 +4198,14 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(node, action, |widget, doc, root| {
                 if let Some(target) = semantic_target {
-                    widget.perform_semantic_action(target, action, doc, root)
+                    widget.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_action(action, doc, root)
+                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -4907,7 +4931,7 @@ impl FrameHarness {
                     &mut EventCtx {
                         scale_factor: self.input_scale,
                         modifiers: &self.modifiers,
-                        state: &mut self.state.doc,
+                        state: crate::widget::Edits::lend(&mut self.state.doc),
                         path: &self.state.root,
                         handled: &mut false,
                         focus_target: &mut None,
@@ -5006,7 +5030,7 @@ impl FrameHarness {
                 &mut EventCtx {
                     scale_factor: self.input_scale,
                     modifiers: &self.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5020,7 +5044,7 @@ impl FrameHarness {
                 &mut EventCtx {
                     scale_factor: self.input_scale,
                     modifiers: &self.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5683,7 +5707,12 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         let handled = self.action_palette.as_deref_mut().is_some_and(|palette| {
-            palette.perform_semantic_action(target, action, &mut self.state.doc, &self.state.root)
+            palette.perform_semantic_action(
+                target,
+                action,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
+                &self.state.root,
+            )
         });
         self.finish_action_palette_input();
         self.relayout();
@@ -7353,8 +7382,11 @@ impl FrameHarness {
     /// wake-up for requests the app queued itself — then run the host tick.
     pub fn deliver_external(&mut self, payload: &str) {
         self.pump_component_wakes();
-        self.root
-            .on_external_event(payload, &mut self.state.doc, &self.state.root);
+        self.root.on_external_event(
+            payload,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
         self.host_tick();
         self.relayout();
     }
@@ -9208,7 +9240,7 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            _state: &mut crate::widget::AppModel,
+            _state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
             if matches!(action, crate::a11y::Action::Activate) {
@@ -10780,7 +10812,7 @@ mod a11y_driver_tests {
             &mut self,
             action: &Action,
             key_path: &[u64],
-            _s: &mut crate::widget::AppModel,
+            _s: &mut crate::widget::Edits<'_>,
             _p: &crate::widget::ModelPath,
         ) -> bool {
             let Some(&key) = key_path.first() else {
@@ -11111,7 +11143,7 @@ mod undo_driver_tests {
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
 
-            let doc = &mut *ctx.state;
+            let doc = ctx.state.doc();
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
@@ -11385,7 +11417,7 @@ mod dispatched_action_driver_tests {
         }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-            let doc = &mut *ctx.state;
+            let doc = ctx.state.doc();
             let handled = &mut *ctx.handled;
             let text = match event {
                 WindowEvent::KeyboardInput { event: ke, .. }
@@ -11427,7 +11459,7 @@ mod dispatched_action_driver_tests {
             &mut self,
             action: &crate::a11y::Action,
             _key_path: &[u64],
-            doc: &mut crate::widget::AppModel,
+            doc: &mut crate::widget::Edits<'_>,
             path: &crate::widget::ModelPath,
         ) -> bool {
             let (doc, _) = crate::doc::document(doc, path);
@@ -11847,6 +11879,7 @@ mod prepared_driver_tests {
                     .unwrap()
                     .to_owned();
                 ctx.state
+                    .doc()
                     .put(ROOT, "body", format!("{before}{text}"))
                     .unwrap();
                 *ctx.handled = true;

@@ -560,7 +560,7 @@ impl Widget for Leaf {
             Some(ctx.node_id),
             "adapter shifted event topology"
         );
-        self.edit(ctx.state, "event");
+        self.edit(ctx.state.doc(), "event");
     }
     fn name(&self) -> &'static str {
         "Leaf"
@@ -601,7 +601,7 @@ impl Widget for Leaf {
     fn perform_action(
         &mut self,
         _: &tilo_ui::a11y::Action,
-        doc: &mut AppModel,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = tilo_ui::doc::document(doc, path);
@@ -612,7 +612,7 @@ impl Widget for Leaf {
         &mut self,
         action: &tilo_ui::a11y::Action,
         path: &[u64],
-        doc: &mut AppModel,
+        doc: &mut crate::widget::Edits<'_>,
         doc_path: &ModelPath,
     ) -> bool {
         let (doc, _) = tilo_ui::doc::document(doc, doc_path);
@@ -628,7 +628,7 @@ impl Widget for Leaf {
     fn start_operation(
         &mut self,
         op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         if op.unscoped().is_none() {
@@ -735,7 +735,7 @@ impl Widget for Root {
     fn start_operation(
         &mut self,
         op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         if op.unscoped().is_none() {
@@ -823,7 +823,7 @@ impl Widget for Root {
         self.mark("draw-permissions");
         self.0.draw(scene, transform, text, theme, presence);
     }
-    fn on_external_event(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn on_external_event(&mut self, _: &str, doc: &mut crate::widget::Edits<'_>, path: &ModelPath) {
         let (doc, _) = tilo_ui::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),

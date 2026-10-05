@@ -492,7 +492,7 @@ impl App {
                 for _ in 0..times {
                     any |= app
                         .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(&act, doc, root)
+                            widget.perform_action(&act, &mut crate::widget::Edits::lend(doc), root)
                         })
                         .unwrap_or(false);
                 }
@@ -994,7 +994,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 2.0,
                     modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -1094,7 +1094,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

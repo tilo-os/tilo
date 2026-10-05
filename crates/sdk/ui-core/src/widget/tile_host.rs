@@ -1477,7 +1477,7 @@ impl Continuable for TileHost {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &crate::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         match &mut self.content {
@@ -1596,7 +1596,7 @@ impl AudiencePresentationProvider for TileHost {
     fn handle_audience_presentation_event(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         match &mut self.content {
@@ -1782,7 +1782,12 @@ impl Widget for TileHost {
             live.native_view_frame_start();
         }
     }
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
+    ) {
         let _running = self.running();
         if let TileContent::App(app) = &mut self.content {
             app.on_external_event(payload, state, root);
@@ -1805,7 +1810,7 @@ impl Widget for TileHost {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let _running = self.running();
@@ -1829,9 +1834,9 @@ impl Widget for TileHost {
         };
         let mut start = |document: &mut AutoCommit, root: &ObjId| match scope {
             Some(scope) => scope.with_document_mutation(document, |document| {
-                app.start_operation(op, document, root)
+                app.start_operation(op, &mut crate::widget::Edits::lend(document), root)
             }),
-            None => app.start_operation(op, document, root),
+            None => app.start_operation(op, &mut crate::widget::Edits::lend(document), root),
         };
         let started = match live.zip(self.binding.as_ref()) {
             Some((live, binding)) => binding
@@ -1841,7 +1846,7 @@ impl Widget for TileHost {
             // Unbound local work is polled straight from the app rather than
             // through retained owner custody.
             None if scope.is_none() => {
-                let started = start(doc, path)?;
+                let started = start(doc.document_mut(), path)?;
                 if matches!(
                     started,
                     Some(crate::widget::ResourceOperationStart::Accepted)
@@ -1851,7 +1856,7 @@ impl Widget for TileHost {
                 }
                 return Ok(started);
             }
-            None => start(doc, path)?,
+            None => start(doc.document_mut(), path)?,
         };
         if matches!(
             started,
@@ -2385,7 +2390,7 @@ impl Widget for TileHost {
                 &mut crate::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state: doc,
+                    state: crate::widget::Edits::lend(doc),
                     path: &ROOT,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -2600,7 +2605,12 @@ impl crate::search::capability::SearchSource for TileHost {
             _ => Vec::new(),
         }
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         if let TileContent::App(app) = &mut self.content {
             crate::search::capability::activate_search_result(app.as_mut(), action_id, doc, path);
         }
@@ -3580,7 +3590,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut AutoCommit::new(),
+                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                     path: &ROOT,
                     handled: &mut handled,
                     focus_target: &mut None,
@@ -5059,7 +5069,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: scale,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &ROOT,
                         handled: &mut handled,
                         focus_target: &mut None,

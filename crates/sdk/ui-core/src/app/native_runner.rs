@@ -1447,7 +1447,7 @@ impl AppHandler {
             &mut crate::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &app.input.modifiers,
-                state: &mut app.state.doc,
+                state: crate::widget::Edits::lend(&mut app.state.doc),
                 path: &app.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2409,8 +2409,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             UserEvent::External(payload) => {
                 let app = &mut self.app;
-                app.root_widget
-                    .on_external_event(&payload, &mut app.state.doc, &app.state.root);
+                app.root_widget.on_external_event(
+                    &payload,
+                    &mut crate::widget::Edits::lend(&mut app.state.doc),
+                    &app.state.root,
+                );
                 app.needs_sync = true;
                 window.request_redraw();
             }
@@ -3133,7 +3136,7 @@ impl AppHandler {
             other => {
                 let handled = self.app.root_widget.handle_audience_presentation_event(
                     &other,
-                    &mut self.app.state.doc,
+                    &mut crate::widget::Edits::lend(&mut self.app.state.doc),
                     &self.app.state.root,
                 );
                 if handled {

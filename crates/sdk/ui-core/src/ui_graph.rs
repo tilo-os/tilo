@@ -1616,7 +1616,7 @@ impl Widget for LiveUi {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {

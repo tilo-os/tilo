@@ -286,7 +286,7 @@ fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &app.input.modifiers,
-            state: &mut app.state.doc,
+            state: crate::widget::Edits::lend(&mut app.state.doc),
             path: &app.state.root,
             handled: &mut handled,
             focus_target: &mut focus_target,

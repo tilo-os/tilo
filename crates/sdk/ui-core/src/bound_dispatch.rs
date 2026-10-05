@@ -682,7 +682,12 @@ pub(crate) fn activate_bound_search(
             current
                 .with_document(doc, |doc, path| {
                     current.finish_action_boundary(doc)?;
-                    crate::search::capability::activate_search_result(widget, id, doc, path);
+                    crate::search::capability::activate_search_result(
+                        widget,
+                        id,
+                        &mut crate::widget::Edits::lend(doc),
+                        path,
+                    );
                     current.drain_owned_tree(widget, doc)?;
                     current.finish_action_boundary(doc)
                 })
@@ -1888,7 +1893,7 @@ pub(crate) fn execute_resource_operation(
             ),
         };
         widget
-            .start_operation(&op, doc, path)
+            .start_operation(&op, &mut crate::widget::Edits::lend(doc), path)
             .map_err(tilo_actions::DoorError::Failed)?
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
     };

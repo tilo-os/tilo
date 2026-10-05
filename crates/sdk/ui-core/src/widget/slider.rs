@@ -579,7 +579,7 @@ impl Widget for Slider {
                         self.fine_from = None;
                         self.value_from_cursor_x(p.x)
                     };
-                    if self.commit_value(new_value, ctx.state, ctx.path) {
+                    if self.commit_value(new_value, ctx.state.doc(), ctx.path) {
                         *ctx.handled = true;
                     }
                 }
@@ -601,7 +601,7 @@ impl Widget for Slider {
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
-                    self.commit_value(new_value, ctx.state, ctx.path);
+                    self.commit_value(new_value, ctx.state.doc(), ctx.path);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
                     self.fine_from = None;
@@ -697,7 +697,7 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -707,10 +707,10 @@ impl Widget for Slider {
         }
         match action {
             Action::Increment => {
-                self.commit_value((self.value + STEP).clamp(0.0, 1.0), state, path)
+                self.commit_value((self.value + STEP).clamp(0.0, 1.0), state.doc(), path)
             }
             Action::Decrement => {
-                self.commit_value((self.value - STEP).clamp(0.0, 1.0), state, path)
+                self.commit_value((self.value - STEP).clamp(0.0, 1.0), state.doc(), path)
             }
             Action::SetValue(v) => {
                 // `f64::from_str` accepts "nan"/"inf"/"-inf" as valid text,
@@ -725,7 +725,7 @@ impl Widget for Slider {
                 }
                 // Accept either a 0..1 fraction or a 0..100 percentage.
                 let frac = if parsed > 1.0 { parsed / 100.0 } else { parsed };
-                self.commit_value(frac.clamp(0.0, 1.0), state, path)
+                self.commit_value(frac.clamp(0.0, 1.0), state.doc(), path)
             }
             _ => false,
         }
@@ -883,7 +883,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

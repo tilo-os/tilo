@@ -232,7 +232,7 @@ impl InviteAcceptScreen {
                 &mut crate::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled,
                     focus_target: ctx.focus_target,

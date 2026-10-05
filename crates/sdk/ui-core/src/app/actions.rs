@@ -4063,7 +4063,7 @@ impl App {
                 event,
                 scale,
                 self.input.modifiers,
-                &mut self.state.doc,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             )
         });
@@ -4083,7 +4083,12 @@ impl App {
         self.layout.node_map.clear();
         self.focused_node = None;
         let root = self.state.root.clone();
-        let consumed = palette.handle_key(event, &self.input.modifiers, &mut self.state.doc, &root);
+        let consumed = palette.handle_key(
+            event,
+            &self.input.modifiers,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &root,
+        );
         self.finish_action_palette_input(consumed)
     }
 
@@ -4314,7 +4319,7 @@ impl App {
                 crate::search::capability::activate_search_result(
                     self.root_widget.as_mut(),
                     &action_id,
-                    &mut self.state.doc,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
                     &root,
                 );
                 if self.state.doc.get_heads() != nav_before {

@@ -24,7 +24,7 @@ use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 
 use super::button::ButtonInteract;
-use super::{ActionRowFace, AppModel, Button, ModelPath, TaffyTreeExt, Widget};
+use super::{ActionRowFace, Button, ModelPath, TaffyTreeExt, Widget};
 
 /// The card's geometry, all from theme tokens.
 #[derive(Clone, Copy)]
@@ -414,7 +414,7 @@ impl Widget for ChoiceCard {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         self.control.perform_action(action, state, root)

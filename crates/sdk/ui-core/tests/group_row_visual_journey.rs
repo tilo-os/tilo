@@ -328,7 +328,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                     &mut tilo_ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &modifiers,
-                        state: &mut state,
+                        state: crate::widget::Edits::lend(&mut state),
                         path: &path,
                         handled: &mut handled,
                         focus_target: &mut focus,

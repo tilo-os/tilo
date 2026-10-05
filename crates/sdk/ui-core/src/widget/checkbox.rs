@@ -545,7 +545,7 @@ impl Widget for Checkbox {
             } if self.is_hovered && *element_state == ElementState::Pressed => {
                 *ctx.handled = true;
                 *ctx.focus_target = Some(ctx.node_id);
-                self.commit_user_toggle(ctx.state, ctx.path);
+                self.commit_user_toggle(ctx.state.doc(), ctx.path);
             }
             _ => {}
         }
@@ -610,7 +610,7 @@ impl Widget for Checkbox {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -619,7 +619,7 @@ impl Widget for Checkbox {
         }
         match action {
             Action::ToggleCheck | Action::Activate => {
-                self.commit_user_toggle(state, path);
+                self.commit_user_toggle(state.doc(), path);
                 true
             }
             _ => false,
@@ -797,7 +797,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -814,7 +814,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -1000,7 +1000,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -1017,7 +1017,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,

@@ -442,7 +442,7 @@ impl ResourceRequest<'_> {
                         &encoded.payload,
                     ),
                 };
-                tile.start_operation(&op, outer, &ROOT)
+                tile.start_operation(&op, &mut crate::widget::Edits::lend(outer), &ROOT)
                     .map_err(DoorError::Failed)
                     .and_then(|value| {
                         value.ok_or_else(|| {
