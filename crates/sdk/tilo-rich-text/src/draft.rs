@@ -108,14 +108,16 @@ impl RichTextSource for Draft {
         false
     }
 
-    fn sync(&mut self, _doc: &mut Doc) {
+    fn sync(&mut self, _doc: &Doc) {
         let Some(field) = self.field.as_mut() else {
             return;
         };
-        if let Err(error) = field.refresh(&mut self.doc) {
+        // The draft's own edits are read once committed.
+        self.doc.commit();
+        if let Err(error) = field.refresh(&self.doc) {
             tracing::debug!(%error, "draft reread");
             self.revision = self.revision.wrapping_add(1);
-            self.field = FieldState::read(&mut self.doc, ROOT, self.revision).ok();
+            self.field = FieldState::read(&self.doc, ROOT, self.revision).ok();
         }
     }
 

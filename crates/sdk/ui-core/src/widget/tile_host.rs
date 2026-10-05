@@ -3320,20 +3320,47 @@ mod tests {
         }
     }
 
-    /// Writes one string into whatever document it is handed, and
-    /// optionally declares a file it has open.
+    /// Notes, under its `text`, the body of whatever document it is handed
+    /// ([`seen_by`]), and optionally declares a file it has open.
     struct Scribe {
         text: String,
         opens: Option<std::path::PathBuf>,
+    }
+
+    thread_local! {
+        /// The body each [`Scribe`] last saw, by its text; `Some(None)` for a
+        /// document without one.
+        static SEEN: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
+            std::cell::RefCell::default();
+    }
+
+    /// What the [`Scribe`] named `text` last saw: `None` when it was never
+    /// handed a document.
+    fn seen_by(text: &str) -> Option<Option<String>> {
+        SEEN.with_borrow(|seen| seen.get(text).cloned())
+    }
+
+    /// Put `body` into the record `id`.
+    fn write_body(store: &RecordStore, id: &RecordId, body: &str) {
+        use automerge::transaction::Transactable;
+        store
+            .with(id, |doc| {
+                doc.put(ROOT, "body", body).unwrap();
+            })
+            .unwrap();
     }
 
     impl Widget for Scribe {
         crate::provides!(dyn crate::record::capability::RecordScoped);
 
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-            use automerge::transaction::Transactable;
+            use automerge::ReadDoc;
             let (state, path) = crate::doc::document_ref(state, path);
-            let _ = state.put(path, "body", self.text.as_str());
+            let body = match state.get(path, "body") {
+                Ok(Some((automerge::Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
+                _ => None,
+            };
+            SEEN.with_borrow_mut(|seen| seen.insert(self.text.clone(), body));
         }
         fn build_layout(
             &mut self,
@@ -3530,17 +3557,6 @@ mod tests {
             );
             assert_eq!(calls.get(), 0);
         }
-    }
-
-    fn body_of(store: &RecordStore, id: &RecordId) -> Option<String> {
-        use automerge::ReadDoc;
-        store.read(id, |doc| match doc.get(&ROOT, "body") {
-            Ok(Some((automerge::Value::Scalar(v), _))) => match v.as_ref() {
-                automerge::ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        })?
     }
 
     fn tab_checkout(id: u64) -> RecordCheckout {
@@ -4160,11 +4176,16 @@ mod tests {
             store
                 .reserve_record(&wrong)
                 .unwrap()
-                .initialize(|_| Ok(()))
+                .initialize(|doc| {
+                    use automerge::transaction::Transactable;
+                    doc.put(ROOT, "body", "the other kind's body")
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
                 .unwrap();
             let scratch = tab_checkout(91);
             let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-                text: "must not write".into(),
+                text: "kept off another kind".into(),
                 opens: Some(file),
             })));
             host.bind_or_create_record(store.clone(), scratch.clone());
@@ -4180,7 +4201,11 @@ mod tests {
                 host.accessibility().and_then(|node| node.name),
                 Some("Document unavailable".into())
             );
-            assert_eq!(body_of(&store, &file_id), None);
+            assert_ne!(
+                seen_by("kept off another kind"),
+                Some(Some("the other kind's body".into())),
+                "the app is never handed a record of another kind"
+            );
             let driver =
                 crate::headless::Driver::new(crate::State::new(), Box::new(host), (400, 240));
             let inspection = driver.inspection();
@@ -4218,7 +4243,12 @@ mod tests {
             host.sync(&mut AutoCommit::new(), &ROOT);
             assert!(host.pending_binding.is_none());
             assert!(host.record_error.is_none());
-            assert_eq!(body_of(&store, &scratch.id).as_deref(), Some("recovered"));
+            assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
+            assert_eq!(
+                seen_by("recovered"),
+                Some(None),
+                "the app is handed the recovered scratch record"
+            );
         }
 
         // Case `existing_follow_validates_kind_even_when_record_id_does_not_change`.
@@ -4230,14 +4260,18 @@ mod tests {
                 crate::record::RecordKind::new("note"),
             );
             let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-                text: "must not write".into(),
+                text: "kept off a conflicting kind".into(),
                 opens: Some(file),
             })));
             host.bind_or_create_record(store.clone(), checkout.clone());
             host.sync(&mut AutoCommit::new(), &ROOT);
             assert!(host.record_error.is_some());
             assert_eq!(host.binding.as_ref().unwrap().live, checkout.id);
-            assert_eq!(body_of(&store, &checkout.id), None);
+            assert_eq!(
+                seen_by("kept off a conflicting kind"),
+                None,
+                "an app whose record conflicts is shown nothing"
+            );
         }
     }
 
@@ -4376,11 +4410,12 @@ mod tests {
                 opens: None,
             })));
             scratch.bind_or_create_record(store.clone(), tab_checkout(1));
+            write_body(&store, &RecordId::for_tab(1), "the first tab");
             scratch.sync(&mut parent, &ROOT);
             assert_eq!(
-                body_of(&store, &RecordId::for_tab(1)).as_deref(),
-                Some("unsaved"),
-                "a tab with no file writes into the record the tab is",
+                seen_by("unsaved"),
+                Some(Some("the first tab".into())),
+                "a tab with no file shows the record the tab is",
             );
 
             let file = std::path::PathBuf::from("/work/report.odt");
@@ -4392,21 +4427,19 @@ mod tests {
                 text: "the report".into(),
                 opens: Some(file.clone()),
             })));
+            write_body(&store, &RecordId::for_file(&file), "the report's body");
             opened.bind_or_create_record(store.clone(), tab_checkout(2));
+            write_body(&store, &RecordId::for_tab(2), "the second tab");
             opened.sync(&mut parent, &ROOT);
             assert_eq!(
-                body_of(&store, &RecordId::for_file(&file)).as_deref(),
-                Some("the report"),
-                "an app that has a file open edits that file's record",
+                seen_by("the report"),
+                Some(Some("the report's body".into())),
+                "an app that has a file open shows that file's record, \
+                 not the scratch record its tab started on",
             );
             assert_eq!(
-                body_of(&store, &RecordId::for_tab(2)),
-                None,
-                "and not the scratch record its tab started on",
-            );
-            assert_eq!(
-                body_of(&store, &RecordId::for_tab(1)).as_deref(),
-                Some("unsaved"),
+                seen_by("unsaved"),
+                Some(Some("the first tab".into())),
                 "the other tab is untouched by any of it",
             );
         }
@@ -4418,7 +4451,7 @@ mod tests {
             let file_id = RecordId::for_file(&file);
             let scratch = tab_checkout(94);
             let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-                text: "must not create".into(),
+                text: "never creates the file's record".into(),
                 opens: Some(file),
             })));
             host.bind_or_create_record(store.clone(), scratch.clone());
@@ -4432,7 +4465,6 @@ mod tests {
                     .iter()
                     .any(|checkout| checkout.id == file_id)
             );
-            assert_eq!(body_of(&store, &scratch.id), None);
         }
 
         // Case `two_tabs_on_one_file_are_one_document`.
@@ -4446,6 +4478,7 @@ mod tests {
                 RecordId::for_file(&file),
                 crate::record::RecordKind::new("file"),
             ));
+            write_body(&store, &RecordId::for_file(&file), "one shared body");
             for (tab, text) in [(3u64, "first"), (4u64, "second")] {
                 let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
                     text: text.into(),
@@ -4459,11 +4492,13 @@ mod tests {
                 3,
                 "two scratch records and the one file both tabs opened",
             );
-            assert_eq!(
-                body_of(&store, &RecordId::for_file(&file)).as_deref(),
-                Some("second"),
-                "the second tab edited the same document as the first",
-            );
+            for text in ["first", "second"] {
+                assert_eq!(
+                    seen_by(text),
+                    Some(Some("one shared body".into())),
+                    "both tabs show the one document",
+                );
+            }
         }
     }
 

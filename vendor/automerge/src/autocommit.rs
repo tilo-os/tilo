@@ -396,6 +396,20 @@ impl AutoCommit {
             .unwrap_or_else(|| self.doc.get_heads())
     }
 
+    /// A copy of the committed document ([`Self::committed_document`]) as it
+    /// was at `heads`: what [`Self::fork_at`] makes, read from `&self`.
+    pub fn committed_fork_at(&self, heads: &[ChangeHash]) -> Result<Self, AutomergeError> {
+        Ok(Self {
+            doc: self.doc.fork_at(heads)?,
+            transaction: None,
+            patch_log: PatchLog::inactive(),
+            diff_cursor: vec![],
+            diff_cache: None,
+            save_cursor: vec![],
+            isolation: None,
+        })
+    }
+
     /// The patches from `before` to `after` in the committed document
     /// ([`Self::committed_document`]), without the diff cursor or cache
     /// [`Self::diff`] keeps.
