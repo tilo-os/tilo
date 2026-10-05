@@ -117,7 +117,7 @@ mod tests {
     use tilo_actions::{ContinuationArguments, ContinuationQuery};
     use ui::widget::{ActionDirectoryInvocationDomain, Widget};
 
-    fn attached(doc: &mut AutoCommit) -> crate::WordProcessorWidget {
+    fn attached(doc: &AutoCommit) -> crate::WordProcessorWidget {
         let mut widget = crate::WordProcessorWidget::detached();
         widget.sync(doc, &automerge::ROOT);
         widget
@@ -201,8 +201,8 @@ mod tests {
     }
     #[test]
     fn writer_continuation_blob_domain_stays_unknown() {
-        let (mut doc, _) = document();
-        let widget = attached(&mut doc);
+        let (doc, _) = document();
+        let widget = attached(&doc);
         assert_eq!(
             ui::resources::action_directory_invocation_domain(&widget, &doc),
             ActionDirectoryInvocationDomain::Unsupported

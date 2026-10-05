@@ -715,6 +715,14 @@ impl<'a> Edits<'a> {
     }
 }
 
+impl std::ops::Deref for Edits<'_> {
+    type Target = AutoCommit;
+
+    fn deref(&self) -> &Self::Target {
+        self.doc()
+    }
+}
+
 /// Where `doc` stands, to tell whether a settle pass changed it.
 pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
     use automerge::transaction::Transactable as _;
