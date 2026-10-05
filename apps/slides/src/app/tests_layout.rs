@@ -457,8 +457,9 @@ fn chrome_density_follows_measured_text_at_every_width() {
                 .collect();
 
             assert_eq!(segments.len(), TextAlign::ALL.len());
-            let left = chrome.inspector.x0 + 16.0;
-            let right = chrome.inspector.x1 - 16.0;
+            let inset = f64::from(Theme::dark().tokens.spacing.s3);
+            let left = chrome.inspector.x0 + inset;
+            let right = chrome.inspector.x1 - inset;
             assert_eq!(segments[0].x0, left);
             assert_eq!(segments.last().unwrap().x1, right);
             let width = segments[0].width();

@@ -1442,15 +1442,30 @@ impl PlayerApp {
     }
 
     fn request_library_play(&self, item_id: &str) {
-        self.request(&VideoEffect::PlayQueued {
-            item: item_id.to_owned(),
-        });
+        let resource = if self.queue.iter().any(|item| item.id == item_id) {
+            crate::actions::queue_item_resource_id(item_id)
+        } else {
+            crate::actions::recent_item_resource_id(item_id)
+        };
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect_on(
+                &resource,
+                &VideoEffect::PlayQueued {
+                    item: item_id.to_owned(),
+                },
+            );
+        }
     }
 
     fn request_library_remove(&self, item_id: &str) {
-        self.request(&VideoEffect::RemoveQueued {
-            item: item_id.to_owned(),
-        });
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect_on(
+                &crate::actions::queue_item_resource_id(item_id),
+                &VideoEffect::RemoveQueued {
+                    item: item_id.to_owned(),
+                },
+            );
+        }
     }
 
     fn request_library_clear(&self) {

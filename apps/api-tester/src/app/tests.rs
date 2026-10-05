@@ -667,7 +667,9 @@ fn resource_send_performs_a_real_http_round_trip() {
     app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
         .unwrap();
     assert!(app.state().history.is_empty());
+    eprintln!("HTTP milestone: before start_effect");
     let admitted = app.start_effect(&ApiTesterEffect::Send).unwrap();
+    eprintln!("HTTP {admitted:?}: admitted, before progress/pending surface inspection");
     assert!(
         !app.effect_progress().iter().any(|update| matches!(
             update,
@@ -686,6 +688,7 @@ fn resource_send_performs_a_real_http_round_trip() {
         app.state().history.is_empty(),
         "admission is not a completed request record"
     );
+    eprintln!("HTTP {admitted:?}: pending surface/history proved, before URL edit");
     // A later edit cannot change the history record of the request already sent.
     app.invoke(
         Invoke::apply(&ApiTesterAction::EditUrl(
@@ -696,6 +699,7 @@ fn resource_send_performs_a_real_http_round_trip() {
         .unwrap(),
     )
     .unwrap();
+    eprintln!("HTTP {admitted:?}: URL edit finished, before method edit");
     app.invoke(
         Invoke::apply(&ApiTesterAction::SetMethod {
             method: HttpMethod::Post,
@@ -703,15 +707,35 @@ fn resource_send_performs_a_real_http_round_trip() {
         .unwrap(),
     )
     .unwrap();
+    eprintln!("HTTP {admitted:?}: method edit finished, releasing held response");
     release_response
         .send(())
         .expect("release the held HTTP backend");
-    tilo_test_env::wait_until("the HTTP worker to complete the request", || {
+    eprintln!("HTTP {admitted:?}: response released, before terminal wait");
+    let mut first_settle = true;
+    tilo_test_env::wait_until("the HTTP worker to answer the request", || {
         app.settle();
-        app.effect_progress()
-            .iter()
-            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+        if first_settle {
+            first_settle = false;
+            eprintln!("HTTP {admitted:?}: first terminal-wait settle returned");
+        }
+        app.effect_progress().iter().any(|update| {
+            matches!(
+                update,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+                    | tilo_actions::InvocationUpdate::Failed { .. }
+                    | tilo_actions::InvocationUpdate::Cancelled { .. }
+            )
+        })
     });
+    let updates = app.effect_progress();
+    eprintln!("HTTP {admitted:?}: terminal updates {updates:?}");
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. })),
+        "admitted HTTP invocation {admitted:?} must succeed after the held backend replies: {updates:?}"
+    );
     server.join().unwrap();
     let response = app
         .with_surface::<ApiTesterApp, _>(|surface| surface.response.clone())
@@ -872,7 +896,7 @@ fn rereading_the_document_keeps_the_order_on_screen() {
 #[test]
 fn long_navigation_labels_fit_the_shared_rows() {
     fn find(widget: &mut dyn Widget, theme: &Theme, text: &mut ui::TextRenderer) -> usize {
-        if widget.name() == "RequestsNav" {
+        if widget.test_id() == Some("api.nav") {
             let rect = widget.get_rect();
             let mut scene = vello::Scene::new();
             widget.draw(
@@ -934,7 +958,8 @@ fn long_navigation_labels_fit_the_shared_rows() {
         app.settle();
         assert!(
             app.harness().inspection_json().unwrap().contains(long),
-            "long labels remain semantically complete"
+            "long labels remain semantically complete: {}",
+            app.harness().inspection_json().unwrap()
         );
         let mut text = ui::TextRenderer::new();
         text.set_text_scale(scale);

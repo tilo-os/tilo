@@ -114,6 +114,17 @@ mod tests {
             .into_iter()
             .map(LiveRow::into_resource)
             .collect();
+        let open = rows
+            .iter()
+            .flat_map(|row| &row.actions)
+            .find(|action| action.id == "select-container")
+            .expect("the sample engine publishes its canonical open-row action");
+        assert_eq!(open.kind, ui::tilo_actions::OperationKind::View);
+        assert_eq!(
+            open.contract.permission,
+            ui::tilo_actions::PermissionRequirement::Read
+        );
+        assert!(open.contract.availability.is_available());
         let effects: Vec<_> = rows
             .iter()
             .flat_map(|row| row.actions.iter())

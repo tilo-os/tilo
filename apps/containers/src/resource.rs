@@ -128,19 +128,19 @@ pub(crate) fn create_field_dispatcher(
 #[effect(operation = "containers.view")]
 pub enum ContainersEffect {
     /// Show section.
-    #[effect(permission = "read")]
+    #[effect(view, permission = "read")]
     SetSection {
         #[param("containers | images | volumes | distrobox")]
         section: String,
     },
     /// Select container.
-    #[effect(permission = "read")]
+    #[effect(view, permission = "read")]
     SelectContainer {
         #[param("Container id, or omit to clear the selection")]
         id: Option<String>,
     },
     /// Set detail tab.
-    #[effect(permission = "read")]
+    #[effect(view, permission = "read")]
     SetTab {
         #[param("logs | stats | inspect | terminal")]
         tab: String,

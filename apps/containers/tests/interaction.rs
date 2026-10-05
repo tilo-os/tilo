@@ -25,7 +25,6 @@ use containers::terminal;
 use ui::headless::Driver as FrameDriver;
 use ui::prelude::TestApp;
 use ui::theme::Theme;
-use ui::widget::Widget;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 

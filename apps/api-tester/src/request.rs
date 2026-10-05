@@ -252,7 +252,7 @@ pub(crate) fn panel(request: &Request, tab: RequestTab, blanks: &BlankRows, sink
 fn scrolling(content: Element) -> Element {
     Box::new(
         Scrollable::new_vertical()
-            .fill_parent_height()
+            .fit_content_height()
             .with_child(content),
     )
 }

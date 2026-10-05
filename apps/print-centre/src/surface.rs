@@ -2370,7 +2370,16 @@ mod tests {
 
             fn collect_cards(widget: &ui::headless::InspectionNode, cards: &mut Vec<Rect>) {
                 let [x, y, width, height] = widget.rect;
-                if widget.widget == "DashboardCard" && width > 0.0 && height > 0.0 {
+                let dashboard_group = widget.widget == "Card"
+                    || matches!(
+                        widget.test_id.as_deref(),
+                        Some(
+                            "print-centre.scan.open"
+                                | "print-centre.history.open"
+                                | "print-centre.diagnostics.open"
+                        )
+                    );
+                if dashboard_group && width > 0.0 && height > 0.0 {
                     cards.push(Rect::new(x, y, x + width, y + height));
                 }
                 for child in &widget.children {
@@ -2395,6 +2404,9 @@ mod tests {
                 centre
                     .harness()
                     .set_theme(Theme::dark().with_text_scale(text_scale));
+                centre
+                    .harness()
+                    .set_interaction_environment(ui::InteractionEnvironment::TOUCH);
                 let snapshot = centre.harness().inspection();
                 let root = &snapshot.root;
                 let controls = ids.map(|id| {
@@ -2429,7 +2441,7 @@ mod tests {
                 collect_cards(root, &mut cards);
                 assert!(
                     cards.len() >= 5,
-                    "expected active, printer, scan, and utility cards"
+                    "expected distinct active-job, printer, scan, history, and device-help groups"
                 );
                 for (index, card) in cards.iter().enumerate() {
                     assert!(
