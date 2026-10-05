@@ -377,7 +377,11 @@ fn handle(
                 || Err("App service unavailable.".to_string()),
                 |host| host.remote(true, &name, Some(&url)),
             );
-            refresh_flatpak(state);
+            if result.is_ok() {
+                refresh(state);
+            } else {
+                refresh_flatpak(state);
+            }
             remote_result(snapshots, state, result)
         }
         Request::RemoteRemove(name) => {
@@ -385,7 +389,11 @@ fn handle(
                 || Err("App service unavailable.".to_string()),
                 |host| host.remote(false, &name, None),
             );
-            refresh_flatpak(state);
+            if result.is_ok() {
+                refresh(state);
+            } else {
+                refresh_flatpak(state);
+            }
             remote_result(snapshots, state, result)
         }
         Request::UpdateAll(items) => update_all(&items, state, snapshots, staging),
