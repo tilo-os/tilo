@@ -1103,6 +1103,8 @@ pub struct FindScope {
     open: bool,
     structure_dirty: bool,
     rect: Rect,
+    /// The pointer, for which side of the band a press lands on.
+    pointer: Point,
     bar_node: Option<NodeId>,
     content_node: Option<NodeId>,
     platform: PlatformConventions,
@@ -1119,6 +1121,7 @@ impl FindScope {
             open: false,
             structure_dirty: false,
             rect: Rect::ZERO,
+            pointer: Point::ZERO,
             bar_node: None,
             content_node: None,
             platform: PlatformConventions::default(),
@@ -1170,6 +1173,25 @@ impl FindScope {
 
     pub fn bar_mut(&mut self) -> &mut FindBar {
         &mut self.bar
+    }
+
+    /// The content the scope wraps.
+    #[must_use]
+    pub fn content(&self) -> &dyn Widget {
+        self.content.as_ref()
+    }
+
+    /// The content the scope wraps, mutably.
+    pub fn content_mut(&mut self) -> &mut dyn Widget {
+        self.content.as_mut()
+    }
+
+    /// Open the bar on `query` and find it, as typing it would: a host's
+    /// "Find…" command with a selection, a capture.
+    pub fn find(&mut self, query: &str) {
+        self.open();
+        self.bar.set_query(query);
+        self.drive();
     }
 
     /// Open the bar (as Ctrl+F does) and focus its query.
@@ -1228,6 +1250,18 @@ impl Widget for FindScope {
         self.platform = conventions;
         self.bar.set_platform_conventions(conventions);
         self.content.set_platform_conventions(conventions);
+    }
+
+    /// Content that changes with no input under an open bar (output
+    /// arriving in a terminal) is found again as it syncs, so the counter
+    /// follows it (see [`Findable::content_revision`]).
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        for child in self.children_mut() {
+            child.sync(state, path);
+        }
+        if self.open {
+            self.drive();
+        }
     }
 
     fn build_layout(
@@ -1322,19 +1356,51 @@ impl Widget for FindScope {
             *ctx.handled = true;
             return;
         }
-        if self.open
-            && let Some(bar) = self.bar_node
-        {
+        if self.open {
+            // Opened since the last layout, the bar has no node of its own
+            // yet; it still takes its keys, under the scope's.
+            let bar = self.bar_node.unwrap_or(ctx.node_id);
+            // A press in the band gives the query the keyboard; a press in
+            // the content hands it back and leaves the bar open.
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            }
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                let in_band = self.bar.get_rect().contains(self.pointer);
+                if in_band && !self.bar.is_focused() {
+                    self.bar.set_focus(true);
+                    *ctx.focus_target = Some(bar);
+                } else if !in_band && self.bar.is_focused() {
+                    self.bar.set_focus(false);
+                }
+            }
+            // While the query has the keyboard, keys are the bar's: one it
+            // has no use for does not reach the content behind it (a
+            // terminal would type it into its program).
+            let typing =
+                self.bar.is_focused() && matches!(event, WindowEvent::KeyboardInput { .. });
             self.bar.route(event, &mut ctx.reborrow(ctx.path, bar));
             self.drive();
-            if *ctx.handled {
+            if !self.open {
+                // Closed (Escape, the close button): the keyboard goes back
+                // to the content.
+                *ctx.focus_target = self.content_node;
+            }
+            if *ctx.handled || typing {
                 return;
             }
         }
-        if let Some(content) = self.content_node {
-            self.content
-                .handle_event(event, &mut ctx.reborrow(ctx.path, content));
-        }
+        let content = self.content_node.unwrap_or(ctx.node_id);
+        self.content
+            .handle_event(event, &mut ctx.reborrow(ctx.path, content));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

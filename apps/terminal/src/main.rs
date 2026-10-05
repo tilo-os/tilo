@@ -17,7 +17,7 @@
 // Thin binary entry point — all logic lives in the library.
 //
 // Supports two modes:
-//   * default — build a `TerminalWidget`, hand it to `ui::App`, run
+//   * default — build a `TerminalView`, hand it to `ui::App`, run
 //     the live event loop (winit window).
 //   * `--shots <PATH>` — render the terminal at a default size into a
 //     PNG at `<PATH>` and exit. No window, no event loop. Useful for
@@ -41,7 +41,9 @@
 
 use std::fmt::Write as _;
 
-use terminal::{GridPos, TerminalWidget};
+#[cfg(test)]
+use terminal::TerminalWidget;
+use terminal::{GridPos, TerminalView};
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -102,7 +104,7 @@ fn launch_spec() -> LaunchSpec {
 }
 
 fn live_root(_args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    TerminalWidget::spawn_default()
+    TerminalView::spawn_default()
         .map(|widget| Box::new(widget) as Box<dyn Widget>)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
@@ -128,7 +130,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let prepared = spec.prepare_native(args)?;
     let mut waker = None;
     let app = prepared.build_root(|| {
-        let widget = TerminalWidget::spawn_default()
+        let widget = TerminalView::spawn_default()
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         waker = Some(widget.waker_handle());
         Ok(Box::new(widget))
@@ -153,7 +155,7 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     // A plain `--shots` is the live shell, which is the app's main screen.
     let scenario = Some(args.scenario.as_deref().unwrap_or("shell"));
     let mut widget = match scenario {
-        Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
+        Some("shell" | "shell-select") | None => TerminalView::spawn_default(),
         Some(name @ ("ended" | "ended-empty")) => {
             // `ended` leaves a transcript behind; `ended-empty` exits without
             // printing anything.
@@ -189,9 +191,9 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
                 command.args(["/d", "/c", script.as_str()]);
                 command
             };
-            TerminalWidget::spawn_command(command)
+            TerminalView::spawn_command(command)
         }
-        Some(_) => TerminalWidget::spawn_headless(),
+        Some(_) => TerminalView::spawn_headless(),
     }
     .map_err(|error| LaunchError::Operation(error.to_string()))?;
     // The target chip takes its header before the first layout, as a live
@@ -241,7 +243,7 @@ const ENDED_TRANSCRIPT: &[&str] = &[
 /// widget *after* layout (so the grid is sized to the viewport) and then
 /// re-synced before the draw.
 fn render_shot_to_png(
-    widget: &mut TerminalWidget,
+    widget: &mut TerminalView,
     viewport: (u32, u32),
     theme: Theme,
     out: &std::path::Path,
@@ -269,6 +271,11 @@ fn render_shot_to_png(
         }
     }
 
+    // A scenario that opened the find bar changed the layout: the scope
+    // stands its band over the terminal.
+    frame.layout(widget)?;
+    frame.sync(widget);
+
     // The context menu and the environments panel paint in the top layer.
     let mut scene = frame.draw(widget);
     frame.draw_overlay(widget, &mut scene);
@@ -283,7 +290,7 @@ fn render_shot_to_png(
 /// the same reader → `sync` → vte → CRDT path the live terminal uses every
 /// frame.
 fn drive_live_shell(
-    widget: &mut TerminalWidget,
+    widget: &mut TerminalView,
     doc: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
 ) -> Result<(), &'static str> {
@@ -334,7 +341,7 @@ fn drive_live_shell(
 /// shot shows the selection highlight painted over a real session. Selects the
 /// "primes" demo line if present, otherwise the first non-empty row. Uses the
 /// same public selection API a host would.
-fn apply_demo_selection(widget: &mut TerminalWidget) {
+fn apply_demo_selection(widget: &mut TerminalView) {
     use terminal::GridPos;
     let (cols, _) = widget.grid_size();
     // Target the printed OUTPUT line, not the shell's command echo (which also
@@ -348,7 +355,7 @@ fn apply_demo_selection(widget: &mut TerminalWidget) {
 }
 
 /// Feed the `tui` scenario: an alternate-screen redraw sized to the grid.
-fn feed_tui(widget: &mut TerminalWidget, doc: &mut automerge::AutoCommit, root: &automerge::ObjId) {
+fn feed_tui(widget: &mut TerminalView, doc: &mut automerge::AutoCommit, root: &automerge::ObjId) {
     let (cols, rows) = widget.grid_size();
     let mut s = String::new();
     s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
@@ -402,7 +409,7 @@ fn feed_tui(widget: &mut TerminalWidget, doc: &mut automerge::AutoCommit, root: 
 /// Feed long build output, one numbered step per line, so find has scrollback
 /// to search.
 fn feed_build_log(
-    widget: &mut TerminalWidget,
+    widget: &mut TerminalView,
     doc: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
 ) {
@@ -418,7 +425,7 @@ fn feed_build_log(
 
 /// Feed a short session: a few commands with their output, ending at a prompt.
 fn feed_transcript(
-    widget: &mut TerminalWidget,
+    widget: &mut TerminalView,
     doc: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
 ) {
@@ -439,7 +446,7 @@ fn feed_transcript(
 /// The target shots: the chip, the picker it opens, and the environments
 /// panel, over a session in one environment (or on the device itself).
 fn stage_target_scenario(
-    widget: &mut TerminalWidget,
+    widget: &mut TerminalView,
     doc: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
     name: &str,
@@ -488,7 +495,7 @@ fn demo_environments() -> Vec<terminal::target::EnvironmentSummary> {
 /// Feed a named demo scenario's VT byte sequences through the widget's
 /// production `feed` path. Used only by `--shots --scenario`.
 fn run_scenario(
-    widget: &mut TerminalWidget,
+    widget: &mut TerminalView,
     doc: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
     name: &str,

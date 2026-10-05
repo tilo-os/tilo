@@ -462,7 +462,7 @@ pub struct CodeApp {
     /// that both binaries depend on; until the terminal is extracted there, this
     /// panel keeps embedding the widget from the app crate rather than shipping a
     /// second, weaker emulator.
-    terminal: Option<terminal::TerminalWidget>,
+    terminal: Option<ui::widget::Embedded<terminal::TerminalView>>,
     /// True while the terminal owns keyboard input (the user clicked into it).
     /// Cleared when a press lands anywhere else.
     terminal_focused: bool,
@@ -2134,9 +2134,10 @@ impl CodeApp {
         if self.terminal.is_some() {
             return;
         }
-        match terminal::TerminalWidget::spawn_default() {
+        match terminal::TerminalView::spawn_default() {
             Ok(w) => {
-                self.terminal = Some(w);
+                // The terminal in its find scope, filling the panel's body.
+                self.terminal = Some(ui::widget::Embedded::new(w).filling());
                 self.panel.set_has_live_terminal(true);
                 self.panel.set_terminal_note(None);
             }
@@ -2176,7 +2177,7 @@ impl CodeApp {
     /// Type a command into the embedded terminal (drives the real shell).
     pub fn shots_terminal_input(&mut self, s: &str) {
         if let Some(t) = self.terminal.as_mut() {
-            t.write_input(s.as_bytes());
+            t.widget_mut().write_input(s.as_bytes());
         }
     }
 
@@ -2187,7 +2188,7 @@ impl CodeApp {
     pub fn shots_terminal_grid_text(&self) -> Option<String> {
         self.terminal
             .as_ref()
-            .map(terminal::TerminalWidget::grid_text)
+            .map(|terminal| terminal.widget().grid_text())
     }
 
     /// Stage the find bar over the active buffer with a real query, so the shot
@@ -2690,7 +2691,6 @@ impl CodeApp {
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
-        taffy: &TaffyTree<()>,
         handled: &mut bool,
     ) -> bool {
         let term_active = self.terminal_visible();
@@ -2709,20 +2709,7 @@ impl CodeApp {
         let tr = self.terminal_document_root(state);
         if let Some(t) = self.terminal.as_mut() {
             let mut th = false;
-            let mut tf = None;
-            t.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor,
-                    modifiers: &modifiers,
-                    state,
-                    path: &tr,
-                    handled: &mut th,
-                    focus_target: &mut tf,
-                    node_id: NodeId::new(0),
-                    taffy,
-                },
-            );
+            t.handle_event(event, scale_factor, &modifiers, state, &tr, &mut th);
             if th {
                 *handled = true;
             }
@@ -3252,7 +3239,7 @@ impl Widget for CodeApp {
         if self.terminal_visible() {
             let content = self.panel.content_rect();
             if let Some(t) = self.terminal.as_mut() {
-                t.place_at(content);
+                t.layout(content, theme, text_renderer);
                 t.draw(scene, transform, text_renderer, theme, presence);
             }
         }
@@ -3348,7 +3335,6 @@ impl Widget for CodeApp {
             ctx.scale_factor,
             *ctx.modifiers,
             ctx.state,
-            ctx.taffy,
             ctx.handled,
         ) {
             return;

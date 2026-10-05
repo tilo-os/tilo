@@ -697,7 +697,7 @@ impl ResourceApp for TerminalShell {
             TerminalWidget::spawn_default().or_else(|_| TerminalWidget::spawn_headless())
         }
         .expect("terminal surface requires an emulator");
-        cx.surface(widget)
+        cx.surface(crate::TerminalView::new(widget))
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -746,6 +746,16 @@ impl ResourceSurface<Terminal> for TerminalWidget {
         self.attach_framework(cx.dispatcher());
         #[cfg(test)]
         note_attach_retained(self.retains_framework_dispatcher());
+    }
+}
+
+impl ResourceSurface<Terminal> for crate::TerminalView {
+    fn present(&mut self, state: &std::rc::Rc<SessionState>) {
+        ResourceSurface::<Terminal>::present(self.terminal_mut(), state);
+    }
+
+    fn attach(&mut self, cx: SurfaceCx<Terminal>) {
+        ResourceSurface::<Terminal>::attach(self.terminal_mut(), cx);
     }
 }
 

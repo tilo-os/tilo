@@ -536,7 +536,7 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
 }
 
 fn send_key(
-    widget: &mut TerminalWidget,
+    widget: &mut impl ui::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     ctrl: bool,
@@ -546,7 +546,7 @@ fn send_key(
 }
 
 fn send_key_mods(
-    widget: &mut TerminalWidget,
+    widget: &mut impl ui::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     ctrl: bool,
@@ -569,12 +569,11 @@ fn send_key_mods(
 }
 
 fn send_key_with_modifiers(
-    widget: &mut TerminalWidget,
+    widget: &mut impl ui::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     state: winit::keyboard::ModifiersState,
 ) {
-    use ui::widget::Widget;
     use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{KeyLocation, PhysicalKey};
 
@@ -1093,7 +1092,7 @@ fn find_matches_follow_case_and_whole_word_options() {
         3
     );
     Findable::clear_find(&mut widget);
-    assert!(widget.find_test_state().1.is_empty());
+    assert!(widget.find_test_matches().is_empty());
 }
 
 /// The ANSI palette follows theme swaps and never hard-codes colours.
@@ -1848,6 +1847,8 @@ fn scrollback_viewport_and_scrollbar_track_output() {
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
 fn find_in_terminal_is_local_discoverable_and_reflows() {
+    use crate::TerminalView;
+
     // Case `find_shortcut_preserves_foreground_control_f_on_every_platform`.
     {
         use ui::{Platform, PlatformConventions};
@@ -1861,22 +1862,18 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                     vec![0x1b, 0x06],
                 ),
             ] {
-                let (mut widget, writes) = build_test_widget();
-                widget.set_platform_conventions(PlatformConventions::new(platform));
+                let (widget, writes) = build_test_widget();
+                let mut view = TerminalView::new(widget);
+                view.set_platform_conventions(PlatformConventions::new(platform));
                 let mut doc = AutoCommit::new();
-                send_key_with_modifiers(
-                    &mut widget,
-                    &mut doc,
-                    Key::Character("f".into()),
-                    modifiers,
-                );
+                send_key_with_modifiers(&mut view, &mut doc, Key::Character("f".into()), modifiers);
                 assert_eq!(
                     drain_writes(&writes),
                     expected,
                     "{platform:?}: shell editing bytes"
                 );
                 assert!(
-                    !widget.find_test_state().0,
+                    !view.find_is_open(),
                     "{platform:?}: shell chord must not open Find"
                 );
             }
@@ -1897,22 +1894,26 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 Platform::Linux,
                 ModifiersState::CONTROL | ModifiersState::SHIFT,
             ),
-            (Platform::MacOs, ModifiersState::SUPER),
+            (
+                Platform::MacOs,
+                ModifiersState::SUPER | ModifiersState::SHIFT,
+            ),
         ] {
-            let (mut widget, writes) = build_test_widget();
-            widget.set_platform_conventions(PlatformConventions::new(platform));
+            let (widget, writes) = build_test_widget();
+            let mut view = TerminalView::new(widget);
+            view.set_platform_conventions(PlatformConventions::new(platform));
             let mut doc = AutoCommit::new();
-            send_key_with_modifiers(&mut widget, &mut doc, Key::Character("F".into()), modifiers);
+            send_key_with_modifiers(&mut view, &mut doc, Key::Character("F".into()), modifiers);
             assert!(
-                widget.find_test_state().0,
-                "{platform:?}: native terminal Find chord"
+                view.find_is_open(),
+                "{platform:?}: the find scope's terminal chord"
             );
             assert!(
                 drain_writes(&writes).is_empty(),
                 "Find must not type into the process"
             );
             send_key(
-                &mut widget,
+                &mut view,
                 &mut doc,
                 Key::Character("query".into()),
                 false,
@@ -1922,21 +1923,24 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 drain_writes(&writes).is_empty(),
                 "private Find query must not reach the process"
             );
+            // A key the query has no use for stays the bar's too.
             send_key(
-                &mut widget,
+                &mut view,
+                &mut doc,
+                Key::Named(NamedKey::ArrowUp),
+                false,
+                false,
+            );
+            assert!(drain_writes(&writes).is_empty());
+            send_key(
+                &mut view,
                 &mut doc,
                 Key::Named(NamedKey::Escape),
                 false,
                 false,
             );
-            assert!(!widget.find_test_state().0);
-            send_key(
-                &mut widget,
-                &mut doc,
-                Key::Character("f".into()),
-                true,
-                false,
-            );
+            assert!(!view.find_is_open());
+            send_key(&mut view, &mut doc, Key::Character("f".into()), true, false);
             assert_eq!(drain_writes(&writes), vec![0x06]);
         }
     }
@@ -1949,11 +1953,15 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         let mut doc = AutoCommit::new();
         widget.init_crdt(&mut doc, &ROOT);
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        let mut view = TerminalView::new(widget);
         let heads_before = doc.get_heads();
-        let transcript = widget.accessibility().expect("terminal transcript");
+        let transcript = view
+            .terminal()
+            .accessibility()
+            .expect("terminal transcript");
         assert!(transcript.state.context_menu);
         assert!(
-            widget.perform_semantic_action(
+            view.terminal_mut().perform_semantic_action(
                 transcript
                     .action_target
                     .as_deref()
@@ -1963,7 +1971,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 &ROOT,
             )
         );
-        let semantics = widget.accessibility().expect("terminal with menu");
+        let semantics = view.terminal().accessibility().expect("terminal with menu");
         let menu = semantics
             .children
             .iter()
@@ -1979,26 +1987,16 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|item| item.name.as_deref() == Some(find_label.as_str()))
             .expect("Find entry");
-        assert!(widget.perform_semantic_action(
+        assert!(view.terminal_mut().perform_semantic_action(
             find.action_target.as_deref().expect("Find target"),
             &Action::Activate,
             &mut doc,
             &ROOT,
         ));
-        assert!(widget.find_test_state().0);
-        let semantics = widget.accessibility().expect("terminal with Find");
-        let query = semantics
-            .children
-            .iter()
-            .flat_map(|child| &child.children)
-            .find(|child| child.role == Role::TextInput)
-            .expect("discoverable query");
-        assert!(widget.perform_semantic_action(
-            query.action_target.as_deref().expect("query target"),
-            &Action::SetValue("private search".into()),
-            &mut doc,
-            &ROOT,
-        ));
+        // The terminal asks the scope that hosts it; the scope opens its bar.
+        view.sync(&mut doc, &ROOT);
+        assert!(view.find_is_open());
+        view.set_find_query("private search");
         assert!(
             drain_writes(&writes).is_empty(),
             "Find never writes shell commands"
@@ -2009,7 +2007,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             "Find remains private local view state"
         );
         assert!(
-            !widget.perform_semantic_action(
+            !view.terminal_mut().perform_semantic_action(
                 transcript.action_target.as_deref().unwrap(),
                 &Action::SetValue("unreviewed command".into()),
                 &mut doc,
@@ -2018,6 +2016,25 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             "transcript actions still cannot execute arbitrary text"
         );
         assert!(drain_writes(&writes).is_empty());
+    }
+
+    // Case `fresh_output_tells_an_open_find_bar_to_find_again`.
+    {
+        use ui::widget::Findable;
+
+        let (mut widget, _writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.init_crdt(&mut doc, &ROOT);
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        widget.sync(&mut doc, &ROOT);
+        let before = Findable::content_revision(&widget);
+        widget.feed(&mut doc, &ROOT, b"build step 020\r\n");
+        widget.sync(&mut doc, &ROOT);
+        assert_ne!(
+            Findable::content_revision(&widget),
+            before,
+            "output that reached the grid is a new revision for the bar's counter"
+        );
     }
 
     // Case `find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text`.
@@ -2035,13 +2052,14 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 .collect(),
         );
         let heads_before = doc.get_heads();
+        let mut view = TerminalView::new(widget);
 
-        widget.open_find();
-        widget.set_find_query("build step 020");
-        assert!(widget.find_test_state().0);
-        assert_eq!(widget.find_test_state().1, vec![20]);
+        view.open_find();
+        view.set_find_query("build step 020");
+        assert!(view.find_is_open());
+        assert_eq!(view.find_test_matches(), vec![20]);
         assert!(
-            widget.scroll_offset() > 0,
+            view.scroll_offset() > 0,
             "find reveals a distant history row"
         );
         assert_eq!(
@@ -2050,79 +2068,40 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             "find text/matches stay local rather than mutating the collaborative transcript"
         );
 
-        // The actual draw route computes the 200% compact composition: the shared
-        // input owns one row and all three explicit controls remain disjoint.
-        let mut scene = Scene::new();
+        // The real layout and draw at 200%: the scope stands its band above
+        // the terminal, inside the viewport, and the grid starts under it.
         let mut text = TextRenderer::new();
         let theme = Theme::high_contrast().with_text_scale(2.0);
-        widget.draw(
+        text.set_text_scale(2.0);
+        let mut host = ui::widget::Embedded::new(view).filling();
+        host.layout(viewport, &theme, &mut text);
+        let mut scene = Scene::new();
+        host.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &theme,
             &PresenceCtx::empty(),
         );
-        // The band stands above the grid, inside the viewport, and the grid
-        // starts under it.
-        let band = widget.find_test_band().expect("find band");
+        let view = host.widget_mut();
+        let band = view.find_band().expect("find band");
         assert!(band.x0 >= viewport.x0 && band.x1 <= viewport.x1);
         assert!(band.y0 >= viewport.y0 && band.y1 <= viewport.y1);
+        assert!(band.height() > 0.0);
         assert!(
-            widget.grid_rect().y0 >= band.y1,
+            view.grid_rect().y0 >= band.y1,
             "the grid starts under the find band"
         );
         assert_eq!(
-            widget.find_test_counter(),
+            view.find_counter(),
             Some(("build step 020".to_string(), Some((1, 1))))
         );
 
-        // Assistive activation uses the same local state path and never makes a
-        // blind terminal keystroke.
-        let control = |widget: &TerminalWidget, name: &str| -> String {
-            widget
-                .accessibility()
-                .expect("terminal semantics")
-                .children
-                .iter()
-                .flat_map(|child| &child.children)
-                .find(|node| node.name.as_deref() == Some(name))
-                .and_then(|node| node.action_target.clone())
-                .unwrap_or_else(|| panic!("find control {name}"))
-        };
-        let next = control(&widget, "Next match");
-        assert!(ui::widget::Widget::perform_semantic_action(
-            &mut widget,
-            &next,
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
-        ));
-        let query = widget
-            .accessibility()
-            .expect("terminal semantics")
-            .children
-            .iter()
-            .flat_map(|child| &child.children)
-            .find(|node| node.role == ui::a11y::Role::TextInput)
-            .and_then(|node| node.action_target.clone())
-            .expect("find query target");
-        assert!(ui::widget::Widget::perform_semantic_action(
-            &mut widget,
-            &query,
-            &ui::a11y::Action::SetValue("build step 042".into()),
-            &mut doc,
-            &ROOT,
-        ));
-        assert_eq!(widget.find_test_state().1, vec![42]);
-        let close = control(&widget, "Close find");
-        assert!(ui::widget::Widget::perform_semantic_action(
-            &mut widget,
-            &close,
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &ROOT,
-        ));
-        assert!(!widget.find_test_state().0);
+        view.set_find_query("build step 042");
+        assert_eq!(view.find_test_matches(), vec![42]);
+        view.close_find();
+        assert!(!view.find_is_open());
+        assert!(view.find_test_matches().is_empty());
     }
 }
 
@@ -2205,7 +2184,10 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
                 false,
                 false,
             );
-            assert!(widget.find_test_state().0);
+            assert!(
+                widget.take_find_request(),
+                "the Find row asks the hosting find scope for its bar"
+            );
             assert!(
                 ui::widget::controls::take_control_invocation(&mut widget).is_none(),
                 "Find is local presentation"
@@ -2367,7 +2349,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             let mut state = State::new();
             widget.sync(&mut state.doc, &state.root);
             widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
-            let mut app = ui::App::new(state, Box::new(widget));
+            let mut app = ui::App::new(state, Box::new(crate::TerminalView::new(widget)));
             app.set_permission_ctx(PermissionContext::from_capabilities(
                 Actor::person(Some(role), "terminal-menu-user"),
                 vec![],
@@ -2419,12 +2401,13 @@ fn menu_and_paste_actions_recheck_live_permissions() {
                     .id
                     .clone();
                 assert!(app.invoke_semantic_action(&find, "activate", None).unwrap());
+                app.init_layout();
                 app.refresh_semantic_tree();
                 assert!(
                     app.semantic_tree()
                         .iter()
-                        .any(|node| node.role == ui::a11y::Role::TextInput
-                            && node.name.as_deref() == Some("Find in scrollback"))
+                        .any(|node| node.role == ui::a11y::Role::TextInput),
+                    "the find scope's query is in the tree"
                 );
                 assert!(drain_writes(&writes).is_empty());
             }
@@ -2749,7 +2732,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             false,
         );
         assert!(
-            widget.find_test_state().0,
+            widget.take_find_request(),
             "keyboard navigation skips denied effects and reaches local Find"
         );
         assert!(ui::widget::controls::take_control_invocation(&mut widget).is_none());

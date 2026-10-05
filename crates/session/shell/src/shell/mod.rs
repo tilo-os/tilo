@@ -854,13 +854,15 @@ fn default_demo_tabs(
 
     match terminal.map_or_else(TerminalWidget::spawn_headless, Ok) {
         Ok(t) => {
-            let boxed: Box<TerminalWidget> = Box::new(t);
+            // The terminal is mounted in its find scope; the scope keeps the
+            // terminal itself boxed, so its address is stable.
+            let boxed = Box::new(terminal::TerminalView::new(t));
             #[cfg(any(test, debug_assertions))]
             {
                 // Capture the pointer *before* coercing into
-                // `Box<dyn AppWidget>` — the unsizing coercion preserves the
-                // address, so this stays valid for the `Box`'s lifetime.
-                first_terminal_ptr = Some(&raw const *boxed);
+                // `Box<dyn AppWidget>`: the terminal lives in its own box
+                // inside the view, which stays valid for the view's lifetime.
+                first_terminal_ptr = Some(std::ptr::from_ref(boxed.terminal()));
             }
             let app: Box<dyn AppWidget> = boxed;
             tabs.push(RuntimeTab::new("Terminal", RuntimeTile::App(app)));
@@ -1136,7 +1138,7 @@ fn try_to_ui_tile_for_tab(
                     TerminalWidget::spawn_hosted(services)
                         .map_err(hosted_inputs::HostedTileError::Terminal)?
                 };
-                UiTile::App(Box::new(widget))
+                UiTile::App(Box::new(terminal::TerminalView::new(widget)))
             }
             // File-explorer — `new` is infallible; the widget surfaces any
             // directory-read errors via its own in-pane status bar.
