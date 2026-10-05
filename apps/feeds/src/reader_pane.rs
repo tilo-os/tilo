@@ -19,9 +19,7 @@ use ui::theme::Theme;
 use ui::time::Instant;
 use ui::tokens::TextRole;
 use ui::widget::chip::ChipFace;
-use ui::widget::{
-    AppModel, ChipLead, EmptyState, EmptyStateContent, ModelPath, Scrollable, TaffyTreeExt, Widget,
-};
+use ui::widget::{ChipLead, EmptyState, EmptyStateContent, ScrollRegion, TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
@@ -64,9 +62,11 @@ pub(crate) fn leaf_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> R
 /// What the reader painted last frame, for hit-testing and scrolling.
 pub(crate) struct ReaderState {
     pub(crate) rect: Rect,
-    /// Scrolls the painted article: offset, wheel, momentum and the overlay
+    /// Scrolls the painted article: offset, wheel, keyboard and the overlay
     /// scroll bar that fades when idle.
-    pub(crate) scroller: Scrollable,
+    pub(crate) scroller: ScrollRegion,
+    /// The page's theme at the last paint, for the scroll bar's fade.
+    pub(crate) theme: Theme,
     /// Links, one rect per line they cover, with their target.
     pub(crate) links: Vec<(Rect, usize, String)>,
     /// Tag chips and the tag each shows.
@@ -79,7 +79,8 @@ impl Default for ReaderState {
     fn default() -> Self {
         Self {
             rect: Rect::ZERO,
-            scroller: Scrollable::new_vertical(),
+            scroller: ScrollRegion::vertical(),
+            theme: Theme::dark(),
             links: Vec::new(),
             tags: Vec::new(),
             shown: None,
@@ -90,7 +91,7 @@ impl Default for ReaderState {
 impl ReaderState {
     /// Back to the top of the article.
     pub(crate) fn scroll_to_top(&mut self) {
-        self.scroller.set_offset_y(0.0);
+        self.scroller.set_offset(vello::kurbo::Vec2::ZERO);
     }
 }
 
@@ -159,7 +160,7 @@ impl Core {
         if area.width() <= 0.0 || area.height() <= 0.0 {
             return;
         }
-        self.reader.scroller.set_viewport_rect(area);
+        self.reader.scroller.set_viewport(area, theme);
         if self.reader.shown != self.selected {
             self.reader.shown = self.selected;
             self.reader.scroll_to_top();
@@ -169,10 +170,9 @@ impl Core {
             scene.fill(Fill::NonZero, t, page, None, &area);
         }
         let page_theme = palette.page_theme(theme);
+        self.reader.theme = page_theme.clone();
         let Some(article) = self.open_article().cloned() else {
-            self.reader
-                .scroller
-                .set_content_size(area.width() as f32, 0.0);
+            self.reader.scroller.set_content_size(area.width(), 0.0);
             // An empty library has one empty state, in the list.
             if !self.store.feeds.is_empty() {
                 let content = EmptyStateContent {
@@ -199,7 +199,7 @@ impl Core {
         let x = area.x0 + (area.width() - width) / 2.0;
         let w = width as f32;
         let gap = f64::from(spacing.s4) * scale;
-        let scroll = f64::from(self.reader.scroller.offset_y());
+        let scroll = self.reader.scroller.offset().y;
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
         let top = area.y0 + gutter;
@@ -286,9 +286,7 @@ impl Core {
         y += gutter;
         scene.pop_layer();
         let content = y + scroll - area.y0;
-        self.reader
-            .scroller
-            .set_content_size(area.width() as f32, content as f32);
+        self.reader.scroller.set_content_size(area.width(), content);
         // The page fades into its paper where more can scroll in.
         if scroll > 0.0 {
             content_edge_fade(scene, t, area, ContentEdge::Top, palette.ground);
@@ -296,7 +294,7 @@ impl Core {
         if scroll + area.height() < content {
             content_edge_fade(scene, t, area, ContentEdge::Bottom, palette.ground);
         }
-        self.reader.scroller.draw_bar_overlay(scene, t, &page_theme);
+        self.reader.scroller.paint_bars(scene, t, &page_theme);
     }
 
     /// Paint one block at `y`; returns where the next one starts.
@@ -470,8 +468,9 @@ impl Core {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         // The scroll view takes the wheel, touchpad gestures and its bar.
-        self.reader.scroller.handle_event(event, ctx);
-        if *ctx.handled {
+        let theme = self.reader.theme.clone();
+        if self.reader.scroller.handle_event(event, ctx, &theme) {
+            *ctx.handled = true;
             return true;
         }
         let WindowEvent::MouseInput {
@@ -593,10 +592,6 @@ impl ReaderPane {
 }
 
 impl Widget for ReaderPane {
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        self.core.borrow_mut().reader.scroller.update(state, path)
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -657,27 +652,37 @@ impl Widget for ReaderPane {
         over.then_some(winit::window::CursorIcon::Pointer)
     }
 
-    fn wants_pointer_capture(&self) -> bool {
-        self.core
-            .try_borrow()
-            .is_ok_and(|core| core.reader.scroller.wants_pointer_capture())
-    }
-
     fn needs_animation_frame(&self) -> bool {
-        self.core
-            .try_borrow()
-            .is_ok_and(|core| core.reader.scroller.needs_animation_frame())
+        self.core.try_borrow().is_ok_and(|core| {
+            core.reader
+                .scroller
+                .needs_animation_frame(&core.reader.theme)
+        })
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         self.core
             .try_borrow()
             .ok()
-            .and_then(|core| core.reader.scroller.next_wake_deadline())
+            .and_then(|core| core.reader.scroller.next_wake_deadline(&core.reader.theme))
     }
 
-    fn mark_drawn(&mut self) {
-        self.core.borrow_mut().reader.scroller.mark_drawn();
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        self.core
+            .try_borrow()
+            .ok()
+            .and_then(|core| core.reader.scroller.primary_vertical_scroll())
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        self.core
+            .borrow_mut()
+            .reader
+            .scroller
+            .apply_primary_vertical_scroll(action)
     }
 
     fn name(&self) -> &'static str {
