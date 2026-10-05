@@ -1,5 +1,5 @@
 //! Alignment contracts exercised on Theme Studio's admitted resource view.
-//! The shared NavShell, Form and wrapping Rows now own the geometry that the
+//! The shared `NavShell`, `Form` and wrapping `Row` widgets now own the geometry that the
 //! earlier customizer painted. Tests observe their production layout.
 
 #![allow(

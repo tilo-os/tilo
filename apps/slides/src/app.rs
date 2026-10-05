@@ -1076,17 +1076,6 @@ impl SlidesApp {
         self.rail_viewport_of(rail)
     }
 
-    /// The red dashed "drop to delete" zone, pinned to the bottom of the rail
-    /// over the (drag-irrelevant) action row. Only shown — and only live — while
-    /// a slide thumbnail is being dragged. Dropping a slide here removes it
-    /// instead of reordering it, matching the app-wide drag-to-delete gesture.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.slide_delete_zone(...) call site consistent with the \
-                  other rail geometry helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
-
     /// Whether a slide drag is currently hovering the delete zone (for the
     /// zone's armed highlight).
     fn over_delete_zone(&self) -> bool {
@@ -1169,111 +1158,6 @@ impl SlidesApp {
 
     // --- geometry -----------------------------------------------------------
 
-    /// Every `(text, font, weight)` the chrome reserves a slot for, so
-    /// [`ChromeMetrics::resolve`] can measure each with the style it is
-    /// painted in. Titles are elided at paint time and need no entry.
-
-    /// Re-resolve the chrome metrics against the renderer about to paint, so
-    /// this frame's chrome — and the hit-rects later events derive from the
-    /// same `compute_chrome` — is laid out from measured text.
-
-    /// An intrinsically spaced editor shell for 200% type. Author content is
-    /// intentionally rendered at its authored size (a deck's typography is
-    /// not desktop chrome); all application controls use the active type scale
-    /// and the exact same rectangles feed draw, pointer routing, and a11y.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "large-text chrome is one shared geometry snapshot for drawing, pointer routing, and accessibility; keeping its complete rectangle set together prevents those paths diverging"
-    )]
-
-    /// Resolve the rail + inspector column geometry from the current width
-    /// and flap reveal, plus the scrim that dims the body while either is an
-    /// open overlay flap. Shared by [`Self::compute_chrome`].
-
-    /// Fit the 16:9 slide inside `canvas_area` with padding + caption room.
-    /// Returns the destination rect and the slide→pixel scale factor.
-
-    /// The rail hamburger (offered whenever the rail can collapse — it's an
-    /// overlay flap, or docked but closed). Sits at the far left toolbar edge;
-    /// returns the x the title block should start at, past it.
-
-    /// Right-anchored toolbar group: Present · palette · overview grid.
-    /// Returns the grid button's rect, which the inspector toggle and the
-    /// centre tool group both measure from.
-
-    /// Inspector toggle — offered whenever the inspector can collapse (it's
-    /// an overlay flap, or docked but not fully open). Mirrors the rail
-    /// hamburger on the opposite edge. Returns the left edge the centre tool
-    /// group must stay clear of.
-
-    /// The deck-title label(s) in the toolbar, elided so they never run under
-    /// the tools or right group. Returns the rename click-target rect and the
-    /// label's origin (used to place the rename caret).
-
-    /// Thumbnail rail chrome: the "SLIDES" header and the pinned Add/Dup/Del
-    /// row. The shared [`PageSidebar`] owns the list geometry, scroll and
-    /// reorder drag inside the returned viewport (between this header and the
-    /// pinned action row) itself.
-
-    /// Fill picker popover, anchored inside the inspector, clamped on-screen.
-    /// `None` while the picker isn't open.
-
-    /// How far the fill-picker popover panel extends beyond the picker's own
-    /// rect above (its caption row: `s2` + the caption line box + `s2`) and
-    /// below (`s3`); the sides are `s3`.
-
-    /// The popover panel painted around the fill picker at `picker` — the
-    /// same rect `draw_inspector_widgets` paints and the pointer dismisses
-    /// against, so a click on the caption row never closes the popover.
-
-    /// Lay out the inspector contents; returns the speaker-notes box rect.
-
-    /// Push a small dim "SECTION" header label at `x0, *y` and advance `*y`
-    /// past it. Shared by every inspector section.
-
-    /// Inspector contents for a selected element: type label, fill/stroke
-    /// swatches, (text elements only) the TYPE row, and the arrange actions.
-    /// Returns the y just past the arrange row and the font-size input's
-    /// rect (`Some` only for a selected text element).
-
-    /// The ARRANGE row for a selected element: bring-front/send-back and
-    /// duplicate/delete, each pair a half-width button. Returns the y just
-    /// past it.
-
-    /// The TYPE row for a selected text element: the font-size input's
-    /// reserved rect, bold/italic toggles, and an alignment segmented
-    /// control. Returns the y just past it and the font-size input's rect.
-
-    /// Inspector contents when nothing is selected: the slide-level layout /
-    /// background pills and the deck-theme pills. Returns the y just past
-    /// them.
-
-    /// Speaker notes box (always shown at the bottom of the inspector).
-    /// Returns its rect.
-
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.swatch_grid(...) call site consistent with the \
-                  other inspector layout helpers; converting to an associated function would \
-                  read worse at every call site for no benefit"
-    )]
-
-    /// Width a palette pill needs to show its full label without truncation:
-    /// the colour dot (drawn at `x0+8 .. x0+20`), a 6px gap, the measured
-    /// label, and a trailing `s3` pad.
-
-    /// Lay out the five deck-theme pills, each sized to fit its full name and
-    /// wrapping onto a new row when the next pill would overflow `x1`. This is
-    /// what keeps every theme name ("Indigo", "Emerald", …) fully readable in
-    /// the docked inspector at any width, instead of packing five fixed-width
-    /// pills that clip their labels. Returns the y just past the last row.
-
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.wrap_pills(...) call site consistent with the other \
-                  inspector layout helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
     // --- mouse → slide coords ----------------------------------------------
     #[allow(
         clippy::unused_self,
@@ -2052,20 +1936,6 @@ impl SlidesApp {
 
     // --- drawing ------------------------------------------------------------
 
-    /// Whether a chrome point (a button/label centre) falls inside the
-    /// rail panel — geometric: below the toolbar, within the panel's
-    /// (possibly off-screen / sliding) x-span.
-
-    /// Same as [`Self::in_rail`], for the inspector panel.
-
-    /// Whether a chrome point falls inside either side panel — content
-    /// here is deferred to a final pass so an open overlay flap paints on
-    /// top of the dimming scrim.
-
-    /// Base-layer panel fills + divider lines (toolbar, rail, inspector).
-    /// A docked panel is part of this base layer; an overlay flap is
-    /// painted later, on top of the dimming scrim.
-
     /// The canvas slide itself: drop shadow, the rendered slide, its
     /// border, the selection ring/handles or live text caret+selection, the
     /// snap guides, and the caption underneath. No-op while the deck has no
@@ -2155,30 +2025,6 @@ impl SlidesApp {
             scene.stroke(&line, t, you, None, &segment);
         }
     }
-
-    /// Base-layer buttons + labels: everything NOT inside the rail or
-    /// inspector panel (their content is deferred to its own layer so an
-    /// open overlay flap paints on top of the dimming scrim).
-
-    /// Rail group on top: panel fill (overlay only), then the fixed header
-    /// and action buttons, then the scrolling thumbnail list clipped to its
-    /// viewport so it can never bleed over the pinned Add/Dup/Del row.
-
-    /// Scrolling thumbnail list — the shared `PageSidebar` paints the
-    /// thumbnails, selection ring, index numbers, the live reorder ghost +
-    /// reflow gap, its scrollbar and its own right-click menu, all clipped to
-    /// the rail viewport it was given in `begin_frame`. It renders each slide
-    /// through the closure; slides keeps the panel chrome (fill + SLIDES
-    /// header + Add/Dup/Del) around it. Move the rail out of `self` so the
-    /// closure can borrow the deck + image cache alongside it. No-op below a
-    /// 1px-wide rail (fully collapsed).
-
-    /// Drop-to-delete zone: a red dashed target pinned to the bottom of the
-    /// rail, revealed only while a slide is being dragged. Dropping a
-    /// thumbnail here removes that slide.
-
-    /// Inspector group on top: panel fill (overlay only), buttons, notes,
-    /// labels.
 
     /// Position the inspector's embedded `ui` widgets (font-size field, fill
     /// picker) from `chrome` so both `draw` and `handle_event` hit-test them.

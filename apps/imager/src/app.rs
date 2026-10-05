@@ -793,8 +793,7 @@ impl ImagerApp {
             let progress = self.release_progress();
             let stage = progress
                 .as_ref()
-                .map(|progress| progress.phase.as_str())
-                .unwrap_or("Preparing");
+                .map_or("Preparing", |progress| progress.phase.as_str());
             match self
                 .release_progress()
                 .and_then(|progress| progress.completed.zip(progress.total))

@@ -1456,7 +1456,6 @@ impl CodeApp {
     /// project name, the UUID the next created file will take, and every
     /// materialised project file/folder. Everything here mirrors state the app
     /// already holds; local arena IDs are never exported as identities.
-
     fn search_file_entries(&self) -> Vec<crate::search_entries::FileEntry> {
         self.session
             .project
@@ -1474,7 +1473,6 @@ impl CodeApp {
 
     /// The text hits the platform search currently lists, as the resources
     /// that reveal them.
-
     fn search_result_refs(&self) -> Vec<actions::SearchResultRef> {
         self.search_hits
             .iter()
@@ -1848,11 +1846,10 @@ impl CodeApp {
         }
         if let Some(index) = self.panel.take_search_jump()
             && let Some(hit) = self.search_hits.get(index).cloned()
+            && let Some(node) = self.session.project.reveal_path(&hit.path)
         {
-            if let Some(node) = self.session.project.reveal_path(&hit.path) {
-                self.open_node(node);
-                self.pending_jump = Some((hit.line.saturating_sub(1), hit.col));
-            }
+            self.open_node(node);
+            self.pending_jump = Some((hit.line.saturating_sub(1), hit.col));
         }
         // Choosing a problem takes the caret to where it was reported.
         if let Some((line, col)) = self.panel.take_jump()

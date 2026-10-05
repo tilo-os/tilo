@@ -943,12 +943,7 @@ impl NotesApp {
         self.main.editor().link_at_point(self.last_mouse)
     }
 
-    /// Paint the narrow-mode top bar: a drawer-toggle (hamburger)
-    /// button on the left and the current page title beside it.
-
-    /// Open or close the narrow-mode overlay drawer. Snaps (no slide) so the
-    /// behaviour matches the pre-adoption instant toggle; the drawer's own
-    /// scrim and breakpoint memory come from the shared [`SidebarDrawer`].
+    /// Open or close the shared NavShell sidebar drawer.
     fn set_drawer_open(&mut self, open: bool) {
         if self.shell.is_sidebar_open() != open {
             if open {

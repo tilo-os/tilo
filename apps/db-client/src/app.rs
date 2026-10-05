@@ -420,7 +420,6 @@ impl DbClientApp {
     /// against the current session. Resource descriptors are only a helpful
     /// snapshot: a collaborator can remove/rename a connection before an
     /// invocation arrives, so their payload is never authority by itself.
-
     fn focus_catalog(&mut self, connection_id: &str, schema: Option<&str>) -> Result<(), String> {
         let id = Uuid::parse_str(connection_id)
             .map_err(|_| "invalid database connection id".to_string())?;
