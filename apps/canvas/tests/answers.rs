@@ -39,6 +39,68 @@ fn rect(id: &str, [x, y, width, height]: [f64; 4], fill: &str) -> Value {
     json!({"id": id, "shape": {"kind": "rect", "x": x, "y": y, "width": width, "height": height}, "fill": fill})
 }
 
+#[test]
+fn scoped_palette_counts_all_matching_marks_even_when_none_are_listed() {
+    let mut app = TestApp::<App>::new().unwrap();
+    call(
+        &mut app,
+        "add-layer",
+        json!({"id":"hut", "name":"Ferry hut"}),
+    );
+    call(
+        &mut app,
+        "draw",
+        json!({"layer":"hut", "marks":[
+            rect("wall", [0.0, 0.0, 10.0, 10.0], "#ABCDEF"),
+            {"id":"window", "shape":{"kind":"rect","x":20,"y":0,"width":10,"height":10},
+             "fill":"#abcdef", "stroke":"#ABCDEF", "stroke_width":1},
+            rect("lamp", [40.0, 0.0, 10.0, 10.0], "#ffcc0080")
+        ]}),
+    );
+    call(&mut app, "add-layer", json!({"id":"sea", "name":"Water"}));
+    call(
+        &mut app,
+        "draw",
+        json!({"layer":"sea", "marks":[rect("water", [0.0, 20.0, 60.0, 10.0], "#123456")]}),
+    );
+    let palette = |app: &mut TestApp<App>| {
+        call(
+            app,
+            "inspect",
+            json!({"layer":"hut", "limit":0,"palette":true}),
+        )
+    };
+    let before = palette(&mut app);
+    assert_eq!(before["listed"], 0);
+    assert_eq!(
+        before["palette"],
+        json!([
+            {"colour":"#abcdef","marks":2}, {"colour":"#ffcc0080","marks":1}
+        ])
+    );
+    let region = call(
+        &mut app,
+        "inspect",
+        json!({"layer":"hut", "region":[0,0,10,10],"limit":0,"palette":true}),
+    );
+    assert_eq!(region["palette"], json!([{"colour":"#abcdef","marks":1}]));
+    call(
+        &mut app,
+        "edit-marks",
+        json!({"ids":["wall"],"fill":"#112233"}),
+    );
+    assert_eq!(palette(&mut app)["palette_colours"], 3);
+    call(&mut app, "undo", json!({}));
+    assert_eq!(palette(&mut app)["palette"], before["palette"]);
+    call(&mut app, "redo", json!({}));
+    assert_eq!(palette(&mut app)["palette_colours"], 3);
+    assert!(
+        call(&mut app, "inspect", json!({"limit":0}))
+            .get("palette")
+            .is_none()
+    );
+}
+
 fn bounds(app: &TestApp<App>, id: &str) -> [f64; 4] {
     let art = app.state();
     let mark = art.mark(id).unwrap_or_else(|| panic!("{id} is drawn"));
