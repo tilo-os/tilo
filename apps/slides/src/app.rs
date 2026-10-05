@@ -589,11 +589,11 @@ struct InspectorRects {
 /// Keeping this boundary explicit prevents every router from mirroring the
 /// full [`Widget::handle_event`] signature and makes it clear which values are
 /// forwarded unchanged to child widgets.
-struct RoutedEvent<'a> {
+struct RoutedEvent<'a, 'doc> {
     event: &'a WindowEvent,
     scale_factor: f64,
     modifiers: Modifiers,
-    state: &'a mut AutoCommit,
+    state: &'a mut ui::widget::Edits<'doc>,
     path: &'a ObjId,
     focus_target: &'a mut Option<NodeId>,
     node_id: NodeId,
@@ -3421,7 +3421,7 @@ impl SlidesApp {
     /// through the deck's dispatcher as that slide's notes. Moving to
     /// another slide rebinds it; otherwise a collaborator's edit folds in
     /// under the live caret.
-    fn sync_notes(&mut self, doc: &mut AutoCommit) {
+    fn sync_notes(&mut self, doc: &AutoCommit) {
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             self.end_notes_edit();
             return;
@@ -3478,7 +3478,7 @@ impl SlidesApp {
     /// Route an event to the inline title [`TextInput`] while renaming. Returns
     /// `true` if the event was consumed. Enter / Esc commit; a press outside the
     /// field commits and falls through so the click still acts.
-    fn route_title_edit(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+    fn route_title_edit(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if !self.editing_title {
             return false;
         }
@@ -3522,7 +3522,7 @@ impl SlidesApp {
             &mut ui::widget::EventCtx {
                 scale_factor: routed.scale_factor,
                 modifiers: &routed.modifiers,
-                state: routed.state,
+                state: routed.state.reborrow(),
                 path: routed.path,
                 handled: &mut h,
                 focus_target: routed.focus_target,
@@ -3538,7 +3538,7 @@ impl SlidesApp {
     /// edit is a splice of the slide's notes through the deck's dispatcher.
     /// Escape or a press outside ends editing; all editor events otherwise
     /// stay in the shared caret/selection/IME path.
-    fn route_notes_edit(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+    fn route_notes_edit(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if !self.editing_notes {
             return false;
         }
@@ -3582,7 +3582,7 @@ impl SlidesApp {
             &mut ui::widget::EventCtx {
                 scale_factor: routed.scale_factor,
                 modifiers: &routed.modifiers,
-                state: routed.state,
+                state: routed.state.reborrow(),
                 path: routed.path,
                 handled: &mut input_handled,
                 focus_target: routed.focus_target,
@@ -5037,7 +5037,7 @@ impl AudiencePresentationProvider for SlidesApp {
     fn handle_audience_presentation_event(
         &mut self,
         event: &WindowEvent,
-        _state: &mut AutoCommit,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
         if self.mode != Mode::Present {
@@ -5082,7 +5082,7 @@ impl Widget for SlidesApp {
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+        let (state, _) = ui::doc::document_ref(state, path);
         self.adopt_deferred();
         // One-time view bootstrap: open on the second slide with its title
         // selected so the editor demonstrates selection + the element
@@ -5282,7 +5282,7 @@ impl Widget for SlidesApp {
         // A restore replaces the notes' text object; the first event may
         // precede the sync that follows it.
         if self.editing_notes {
-            self.sync_notes(ctx.state);
+            self.sync_notes(ctx.state.doc());
         }
         if matches!(
             event,
@@ -5303,7 +5303,7 @@ impl Widget for SlidesApp {
             event,
             scale_factor: ctx.scale_factor,
             modifiers: *ctx.modifiers,
-            state: ctx.state,
+            state: &mut ctx.state,
             path: ctx.path,
             focus_target: ctx.focus_target,
             node_id: ctx.node_id,
@@ -5581,7 +5581,7 @@ impl Widget for SlidesApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
@@ -6463,7 +6463,7 @@ impl SlidesApp {
 
     /// Forward an event to the open context menu and apply any chosen action.
     /// Returns `true` if a menu was open (and thus consumed the event).
-    fn route_context_menu(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+    fn route_context_menu(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if !self.ctx_menu.is_open() {
             return false;
         }
@@ -6479,7 +6479,7 @@ impl SlidesApp {
             &mut ui::widget::EventCtx {
                 scale_factor: routed.scale_factor,
                 modifiers: &routed.modifiers,
-                state: routed.state,
+                state: routed.state.reborrow(),
                 path: routed.path,
                 handled: &mut menu_handled,
                 focus_target: routed.focus_target,
@@ -6500,7 +6500,7 @@ impl SlidesApp {
     /// `true` when the event was consumed (so `handle_event` should stop).
     /// The picker popover is modal while open; the font field only claims
     /// presses on its own rect and keystrokes while focused.
-    fn route_inspector_widgets(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+    fn route_inspector_widgets(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if self.mode != Mode::Edit || self.drag.active() {
             return false;
         }
@@ -6526,7 +6526,7 @@ impl SlidesApp {
     /// The fill [`ColorPicker`] popover: modal while open, so a routed event
     /// is always consumed. A press outside its panel closes it instead of
     /// reaching the field.
-    fn route_fill_picker(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+    fn route_fill_picker(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = routed.event {
             self.last_mouse = Point::new(
                 position.x / routed.scale_factor,
@@ -6552,7 +6552,7 @@ impl SlidesApp {
             &mut ui::widget::EventCtx {
                 scale_factor: routed.scale_factor,
                 modifiers: &routed.modifiers,
-                state: routed.state,
+                state: routed.state.reborrow(),
                 path: routed.path,
                 handled: &mut h,
                 focus_target: routed.focus_target,
@@ -6579,7 +6579,7 @@ impl SlidesApp {
     /// consumed (canvas hover still wants it), a press on the field focuses
     /// and forwards it, a press elsewhere commits + blurs, and keystrokes
     /// while focused edit it (Esc commits + blurs).
-    fn route_font_input(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+    fn route_font_input(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(
@@ -6592,7 +6592,7 @@ impl SlidesApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: routed.scale_factor,
                         modifiers: &routed.modifiers,
-                        state: routed.state,
+                        state: routed.state.reborrow(),
                         path: routed.path,
                         handled: &mut h,
                         focus_target: routed.focus_target,
@@ -6618,7 +6618,7 @@ impl SlidesApp {
                         &mut ui::widget::EventCtx {
                             scale_factor: routed.scale_factor,
                             modifiers: &routed.modifiers,
-                            state: routed.state,
+                            state: routed.state.reborrow(),
                             path: routed.path,
                             handled: &mut h,
                             focus_target: routed.focus_target,
@@ -6652,7 +6652,7 @@ impl SlidesApp {
 
     /// A keystroke while the font-size field is focused: Esc blurs it
     /// (committing any change); everything else edits it.
-    fn route_font_input_key(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+    fn route_font_input_key(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -6675,7 +6675,7 @@ impl SlidesApp {
             &mut ui::widget::EventCtx {
                 scale_factor: routed.scale_factor,
                 modifiers: &routed.modifiers,
-                state: routed.state,
+                state: routed.state.reborrow(),
                 path: routed.path,
                 handled: &mut h,
                 focus_target: routed.focus_target,
@@ -7144,7 +7144,7 @@ impl SlidesApp {
 
     /// Open the editor for the text box being edited, close it when editing
     /// ended, and bring it up to date with the document.
-    fn ensure_text_editor(&mut self, doc: &mut AutoCommit) {
+    fn ensure_text_editor(&mut self, doc: &AutoCommit) {
         let Some((slide_id, element)) = self.editing_text_box() else {
             self.text_editor = None;
             self.text_drag = false;
@@ -7173,7 +7173,7 @@ impl SlidesApp {
 
     /// Give the text box being edited its keyboard and pointer events.
     /// Returns whether the event was the box's.
-    fn route_text_edit(&mut self, routed: &mut RoutedEvent<'_>, handled: &mut bool) -> bool {
+    fn route_text_edit(&mut self, routed: &mut RoutedEvent<'_, '_>, handled: &mut bool) -> bool {
         if self.editing_text_box().is_none() {
             return false;
         }
@@ -7214,7 +7214,7 @@ impl SlidesApp {
             routed.path,
             &mut consumed,
         );
-        editor.host.sync(routed.state, routed.path);
+        editor.host.sync(routed.state.doc(), routed.path);
         let outcome = editor.host.widget_mut().take_outcome();
         match routed.event {
             WindowEvent::MouseInput {
