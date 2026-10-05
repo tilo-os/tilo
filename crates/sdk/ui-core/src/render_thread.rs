@@ -368,15 +368,26 @@ impl RenderThreadHandle {
 ///
 /// Returns an error if the OS refuses to spawn the `ui-render` thread (e.g.
 /// the process is out of resources for new threads).
+pub fn spawn_render_thread(
+    render_cx: RenderContext,
+    surface: RenderSurface<'static>,
+    renderer: Renderer,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) -> Result<RenderThreadHandle, String> {
+    spawn_render_thread_for_window(render_cx, surface, renderer, wake, None)
+}
+
+/// Same worker with the native window retained for standard Wayland feedback.
 #[allow(
     clippy::too_many_lines,
     reason = "keep the single GPU owner's resize/render/trace/recycle/shutdown sequence and resource drop order visible together"
 )]
-pub fn spawn_render_thread(
+pub(crate) fn spawn_render_thread_for_window(
     render_cx: RenderContext,
     mut surface: RenderSurface<'static>,
     mut renderer: Renderer,
     wake: Arc<dyn Fn() + Send + Sync>,
+    window: Option<Arc<winit::window::Window>>,
 ) -> Result<RenderThreadHandle, String> {
     let (req_tx, rx) = mpsc::sync_channel::<RenderRequest>(1);
     let (pool_tx, pool_rx) = mpsc::sync_channel(2);
@@ -398,7 +409,7 @@ pub fn spawn_render_thread(
             let present_dbg = crate::env::var("TILO_UI_PRESENT").is_ok();
             let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
-            let presentation = crate::presentation_feedback::Observer::from_env();
+            let presentation = crate::presentation_feedback::Observer::from_env(window);
             let native_timing = presentation.as_ref().filter(|_| timing::enabled());
             if let Some(observer) = native_timing {
                 observer.log_native_config(&surface);
@@ -1399,7 +1410,11 @@ fn render_one_frame(
         observer.arm(&surface.surface, frame_ix, cpu_frame_id);
     }
     let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
-        surface_texture.present();
+        if let Some(observer) = presentation {
+            observer.present_wayland(frame_ix, cpu_frame_id, || surface_texture.present());
+        } else {
+            surface_texture.present();
+        }
     });
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-done");

@@ -238,6 +238,28 @@ fn device_control_socket(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/tilo-session/test-control.sock"))
 }
 
+/// A component layer may change its owned unit as well as its executable.
+/// Reload the live owner's manager before asking it to start that new unit.
+fn restart_user_unit_with(
+    user: &str,
+    unit: &str,
+    mut execute: impl FnMut(&str, &mut Command) -> Result<String, DaemonError>,
+) -> Result<(), DaemonError> {
+    execute(
+        &format!("systemctl --user daemon-reload as {user}"),
+        Command::new("systemctl")
+            .arg(format!("--machine={user}@"))
+            .args(["--user", "daemon-reload"]),
+    )?;
+    execute(
+        &format!("systemctl --user restart {unit} as {user}"),
+        Command::new("systemctl")
+            .arg(format!("--machine={user}@"))
+            .args(["--user", "restart", unit]),
+    )
+    .map(drop)
+}
+
 fn run(step: &str, command: &mut Command) -> Result<String, DaemonError> {
     let output = command.output().map_err(|e| DaemonError::Apply {
         step: step.to_owned(),
@@ -514,13 +536,7 @@ impl Apply for SystemdApply {
     }
 
     fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError> {
-        run(
-            &format!("systemctl --user restart {unit} as {user}"),
-            Command::new("systemctl")
-                .arg(format!("--machine={user}@"))
-                .args(["--user", "restart", unit]),
-        )
-        .map(drop)
+        restart_user_unit_with(user, unit, run)
     }
 
     fn unit_state(&mut self, unit: &str) -> String {
@@ -1137,6 +1153,46 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_user_unit_is_reloaded_before_restart_and_reload_failure_stops_it() {
+        let mut calls = Vec::new();
+        let mut loaded_pin = false;
+        restart_user_unit_with("bob", "tilo-ush.service", |_, command| {
+            assert_eq!(command.get_program(), "systemctl");
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(&args[..2], ["--machine=bob@", "--user"]);
+            calls.push(args[2].clone());
+            match args[2].as_str() {
+                "daemon-reload" => loaded_pin = true,
+                "restart" => {
+                    assert!(
+                        loaded_pin,
+                        "restart must observe the newly layered service definition"
+                    );
+                    assert_eq!(args[3], "tilo-ush.service");
+                }
+                unexpected => panic!("unexpected user manager operation {unexpected}"),
+            }
+            Ok(String::new())
+        })
+        .unwrap();
+        assert_eq!(calls, ["daemon-reload", "restart"]);
+
+        let mut calls = 0;
+        let error = restart_user_unit_with("bob", "tilo-ush.service", |_, _| {
+            calls += 1;
+            Err(DaemonError::Apply {
+                step: "reload".into(),
+                detail: "manager unavailable".into(),
+            })
+        });
+        assert!(error.is_err());
+        assert_eq!(calls, 1, "a failed reload cannot restart the stale unit");
+    }
 
     /// The board session tilo-vmd looks for is the one the board layer
     /// installs, and the units and socket it names are the ones

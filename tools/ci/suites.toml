@@ -369,6 +369,7 @@ suites = [
   "scripts/perf/collect_settings_native_test.py",
   "scripts/perf/file_explorer_effects_test.py",
   "scripts/perf/input_latency_test.py",
+  "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/main_stages_test.py",
   "scripts/perf/native_app_capture_test.py",
   "scripts/perf/native_delivery_test.py",
@@ -677,6 +678,12 @@ package = "tilo-doc-codecs"
 inputs = ["crates/doc/fixtures/"]
 readers = ["crates/doc/tilo-doc-codecs/src/bulk_equivalence.rs", "crates/doc/tilo-doc-codecs/tests/office_roundtrip.rs",
            "crates/doc/tilo-doc-codecs/tests/binary_inputs.rs", "crates/doc/tilo-doc-codecs/tests/office_fidelity.rs"]
+
+[[cargo]]
+package = "ush"
+# Native reexec proof reads the actual shipped supervisor unit.
+inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
+readers = ["crates/runtime/ush/tests/serve_handoff.rs"]
 
 [[cargo]]
 package = "tilo-font-catalog"

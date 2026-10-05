@@ -11,7 +11,7 @@ use crate::render_thread::RenderThreadHandle;
 #[cfg(feature = "native")]
 use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 #[cfg(feature = "native")]
-use crate::render_thread::{FrameOutcome, RenderRequest, spawn_render_thread};
+use crate::render_thread::{FrameOutcome, RenderRequest};
 #[cfg(feature = "native")]
 use crate::widget::AudiencePresentationWidgetExt as _;
 #[cfg(feature = "native")]
