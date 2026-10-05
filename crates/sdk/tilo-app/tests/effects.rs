@@ -378,12 +378,26 @@ pub enum TallyEffect {
         #[param("How much the row counts")]
         by: u32,
     },
+    /// Select this row in the caller's window.
+    #[effect(view, row, permission = "read")]
+    SelectRow,
+    /// Withdraw this row from the caller's window.
+    #[effect(view, row, permission = "read")]
+    WithdrawRow,
+    /// An invalid view trying to start asynchronous work.
+    #[effect(view, row, permission = "read")]
+    ViewWorker,
 }
 
 #[derive(Default)]
 struct Tally {
     rect: Rect,
     counted: u32,
+    selected_by: Option<tilo_actions::ActionInvoker>,
+    selected_invocation: Option<tilo_actions::InvocationId>,
+    document_visible: bool,
+    withdrawn: bool,
+    worker_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Widget for Tally {
@@ -425,6 +439,24 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
                 self.counted = self.counted.saturating_add(by);
                 Ok(Effected::done())
             }
+            TallyEffect::SelectRow => {
+                self.selected_by = tilo_app::invocation_scope::current_invoker();
+                self.selected_invocation = cx.invocation();
+                self.document_visible = cx.document().is_some() || !cx.heads().is_empty();
+                self.counted = self.counted.saturating_add(1);
+                Ok(Effected::done())
+            }
+            TallyEffect::WithdrawRow => {
+                self.withdrawn = true;
+                Ok(Effected::done())
+            }
+            TallyEffect::ViewWorker => {
+                let started = self.worker_started.clone();
+                Ok(cx.thread(
+                    move |_| started.store(true, std::sync::atomic::Ordering::SeqCst),
+                    |_, (), _| Ok(Effected::done()),
+                ))
+            }
             TallyEffect::Tally => Ok(cx.thread(
                 |_| 1,
                 |tally: &mut Self, step: u32, cx| {
@@ -444,7 +476,16 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
-        vec![LiveRow::new("row:5", "test.tally.row", "Five").effect(&TallyEffect::Count { by: 5 })]
+        if self.withdrawn {
+            return Vec::new();
+        }
+        vec![
+            LiveRow::new("row:5", "test.tally.row", "Five")
+                .effect(&TallyEffect::Count { by: 5 })
+                .effect(&TallyEffect::SelectRow)
+                .effect(&TallyEffect::WithdrawRow)
+                .effect(&TallyEffect::ViewWorker),
+        ]
     }
 }
 
@@ -458,6 +499,74 @@ impl ResourceApp for TallyApp {
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
         cx.surface(Tally::default())
     }
+}
+
+#[test]
+fn scoped_live_row_view_keeps_caller_and_no_document_or_worker_authority() {
+    let mut app = TestApp::<TallyApp>::new().unwrap();
+    let heads = app.peer_document().get_heads();
+    let caller = tilo_actions::ActionInvoker::actor("test-author");
+    app.call_by(caller.clone(), "row:5", "select-row", serde_json::json!({}))
+        .unwrap();
+    app.with_surface::<Tally, _>(|surface| {
+        assert_eq!(surface.selected_by.as_ref(), Some(&caller));
+        assert!(surface.selected_invocation.is_some());
+        assert!(
+            !surface.document_visible,
+            "a scoped view gets no raw document loan"
+        );
+        assert_eq!(surface.counted, 1);
+    })
+    .unwrap();
+    let refused = app
+        .call_by(
+            tilo_actions::ActionInvoker::actor("agent:viewer"),
+            "row:5",
+            "select-row",
+            serde_json::json!({}),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        refused,
+        tilo_actions::DoorError::Unavailable { .. }
+    ));
+    app.with_surface::<Tally, _>(|surface| assert_eq!(surface.counted, 1))
+        .unwrap();
+    let refused = app
+        .call_by(
+            caller.clone(),
+            "row:5",
+            "view-worker",
+            serde_json::json!({}),
+        )
+        .unwrap_err();
+    assert!(refused.to_string().contains("cannot start a job"));
+    app.with_surface::<Tally, _>(|surface| {
+        assert!(
+            !surface
+                .worker_started
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+    })
+    .unwrap();
+    app.call_by(
+        caller.clone(),
+        "row:5",
+        "withdraw-row",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    assert!(matches!(
+        app.call_by(caller, "row:5", "select-row", serde_json::json!({})),
+        Err(tilo_actions::DoorError::Unknown(_))
+    ));
+    app.with_surface::<Tally, _>(|surface| assert_eq!(surface.counted, 1))
+        .unwrap();
+    assert_eq!(
+        app.peer_document().get_heads(),
+        heads,
+        "views cannot write the document"
+    );
 }
 
 #[test]
