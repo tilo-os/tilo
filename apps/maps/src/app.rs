@@ -14,7 +14,6 @@ use std::sync::mpsc::{Receiver, Sender};
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
