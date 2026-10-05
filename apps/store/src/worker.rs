@@ -21,8 +21,8 @@ use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
 use crate::search_provider::StoreSearchIndex;
 use crate::sources::{
-    flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
-    installed_tilo_to_store_item, merge, tilo_to_store_item,
+    flathub_record_to_item, installed_flatpak_to_item, installed_tilo_to_store_item, merge,
+    tilo_to_store_item,
 };
 use crate::{FlatpakRef, StoreItem};
 
@@ -104,6 +104,7 @@ pub struct Snapshot {
     pub query: Option<String>,
     pub detail: Option<StoreItem>,
     pub remotes: Vec<Remote>,
+    pub flatpak_available: bool,
     pub operation_error: Option<String>,
 }
 
@@ -218,6 +219,9 @@ struct State {
     base_items: Vec<StoreItem>,
     installed: Vec<(String, String)>,
     remotes: Vec<Remote>,
+    flatpak_available: bool,
+    flatpak_error: Option<String>,
+    catalogue_error: Option<String>,
     searches: LruCache<String, Vec<StoreItem>>,
     details: LruCache<String, StoreItem>,
     /// The current palette/action directory. Rebuilding it is linear in a
@@ -248,6 +252,9 @@ fn run(
         base_items: Vec::new(),
         installed: Vec::new(),
         remotes: Vec::new(),
+        flatpak_available: false,
+        flatpak_error: None,
+        catalogue_error: None,
         searches: LruCache::new(CACHE_CAP),
         details: LruCache::new(CACHE_CAP),
         search_index,
@@ -342,8 +349,19 @@ fn handle(
             (alive, Some(opened.map(|_| Finished::status(label))))
         }
         Request::RefreshRemotes => {
-            state.remotes = crate::flathub_client::list_remotes();
-            let label = format!("Loaded {} Flatpak remotes.", state.remotes.len());
+            refresh_flatpak(state);
+            let outcome = state.flatpak_error.as_ref().map_or_else(
+                || {
+                    Ok(Finished::status(format!(
+                        "Loaded {} Flatpak remotes.",
+                        state.remotes.len()
+                    )))
+                },
+                |error| Err(error.clone()),
+            );
+            let label = outcome
+                .as_ref()
+                .map_or_else(Clone::clone, |finished| finished.status.clone());
             let alive = send(
                 snapshots,
                 state,
@@ -352,14 +370,14 @@ fn handle(
                 None,
                 None,
             );
-            (alive, Some(Ok(Finished::status(label))))
+            (alive, Some(outcome))
         }
         Request::RemoteAdd { name, url } => {
             let result = state.host.as_ref().map_or_else(
                 || Err("App service unavailable.".to_string()),
                 |host| host.remote(true, &name, Some(&url)),
             );
-            state.remotes = crate::flathub_client::list_remotes();
+            refresh_flatpak(state);
             remote_result(snapshots, state, result)
         }
         Request::RemoteRemove(name) => {
@@ -367,7 +385,7 @@ fn handle(
                 || Err("App service unavailable.".to_string()),
                 |host| host.remote(false, &name, None),
             );
-            state.remotes = crate::flathub_client::list_remotes();
+            refresh_flatpak(state);
             remote_result(snapshots, state, result)
         }
         Request::UpdateAll(items) => update_all(&items, state, snapshots, staging),
@@ -678,6 +696,7 @@ fn update_all(
             query: None,
             detail: None,
             remotes: state.remotes.clone(),
+            flatpak_available: state.flatpak_available,
             operation_error: None,
         };
         if !snapshots.progress(progress) {
@@ -743,7 +762,10 @@ fn send_tracked(
         query,
         detail,
         remotes: state.remotes.clone(),
-        operation_error,
+        flatpak_available: state.flatpak_available,
+        operation_error: operation_error
+            .or_else(|| state.catalogue_error.clone())
+            .or_else(|| state.flatpak_error.clone()),
     })
 }
 
@@ -798,10 +820,30 @@ fn moderation_registry(
         })
 }
 
+fn refresh_flatpak(state: &mut State) {
+    let result = state
+        .host
+        .as_ref()
+        .ok_or_else(|| "App service unavailable.".to_string())
+        .and_then(app_host::client::BlockingClient::flatpak_status);
+    match result {
+        Ok(status) => {
+            state.flatpak_error = None;
+            state.flatpak_available = status.available;
+            state.installed = installed_flatpaks(&status.installed);
+            state.remotes = crate::flathub_client::list_remotes(&status.remotes);
+        }
+        Err(error) => {
+            tracing::error!(%error, "could not observe host Flatpak state");
+            state.flatpak_available = false;
+            state.flatpak_error = Some(format!("Could not read Flatpak on this device: {error}"));
+        }
+    }
+}
+
 fn refresh(state: &mut State) {
-    state.installed = installed_flatpaks();
-    state.remotes = crate::flathub_client::list_remotes();
-    state.base_items = collect_items(
+    refresh_flatpak(state);
+    (state.base_items, state.catalogue_error) = collect_items(
         state.opened_ref.as_ref(),
         &state.installed,
         state.host.as_ref(),
@@ -824,15 +866,26 @@ fn collect_items(
     opened_ref: Option<&FlatpakRef>,
     installed: &[(String, String)],
     host: Option<&app_host::client::BlockingClient>,
-) -> Vec<StoreItem> {
+) -> (Vec<StoreItem>, Option<String>) {
+    let mut errors = Vec::new();
     let registries = match crate::config::repositories(host) {
         Ok(file) => file.registries,
         Err(error) => {
-            tracing::warn!("could not read the app repositories: {error}");
+            errors.push(format!("Could not read app repositories: {error}"));
             Vec::new()
         }
     };
-    let installed_tilo = host.and_then(|host| host.list().ok()).unwrap_or_default();
+    let installed_tilo = match host.map(app_host::client::BlockingClient::list) {
+        Some(Ok(items)) => items,
+        Some(Err(error)) => {
+            errors.push(format!("Could not read apps on this device: {error}"));
+            Vec::new()
+        }
+        None => {
+            errors.push("App service unavailable.".into());
+            Vec::new()
+        }
+    };
     let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
         match crate::registry_client::fetch_entries(registry) {
@@ -841,7 +894,7 @@ fn collect_items(
                     .iter()
                     .map(|entry| tilo_to_store_item(entry, &registry.name, &installed_tilo)),
             ),
-            Err(error) => tracing::warn!("registry {} refresh failed: {error}", registry.name),
+            Err(error) => errors.push(format!("Could not load {}: {error}", registry.name)),
         }
     }
     // The Store's action surface is also the recovery path for software that
@@ -854,10 +907,16 @@ fn collect_items(
             tilo_items.push(installed_tilo_to_store_item(installed));
         }
     }
-    let mut flatpak_items = crate::flathub_client::fetch_popular(200)
-        .unwrap_or_default()
+    let flatpak_records = match crate::flathub_client::fetch_popular(200) {
+        Ok(records) => records,
+        Err(error) => {
+            errors.push(format!("Could not load Flathub: {error}"));
+            Vec::new()
+        }
+    };
+    let mut flatpak_items = flatpak_records
         .iter()
-        .map(|entry| flathub_placeholder_to_item(entry, installed))
+        .map(|entry| flathub_record_to_item(entry, installed))
         .collect::<Vec<_>>();
     // Popular is a discovery feed, not an installed-app inventory. Preserve
     // every locally reported Flatpak so launch/remove remain possible during
@@ -876,7 +935,10 @@ fn collect_items(
         flatpak_items.insert(0, reference.clone().into_store_item(version));
     }
     tracing::debug!("{}", registries_summary(&registries));
-    merge(tilo_items, flatpak_items)
+    (
+        merge(tilo_items, flatpak_items),
+        (!errors.is_empty()).then(|| errors.join("\n")),
+    )
 }
 
 fn registries_summary(registries: &[RegistryConfig]) -> String {
@@ -948,6 +1010,9 @@ mod tests {
             base_items: items,
             installed: Vec::new(),
             remotes: Vec::new(),
+            flatpak_available: false,
+            flatpak_error: None,
+            catalogue_error: None,
             searches: LruCache::new(CACHE_CAP),
             details: LruCache::new(CACHE_CAP),
             search_index,

@@ -88,4 +88,6 @@ interface AppHost {
     # The app repositories this person configured, as `app repo list --json`
     # reports them: the one list `app`, `tilo update` and the Store share.
     repositories @12 () -> (json :Text);
+    # Fixed read-only host probes. The confined Store never executes host tools.
+    flatpakStatus @13 () -> (available :Bool, installed :Text, remotes :Text);
 }
