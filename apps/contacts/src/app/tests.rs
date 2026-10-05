@@ -618,7 +618,26 @@ fn the_contact_menu_runs_the_canonical_actions() {
                 && node.label() == Some("Action confirmation")),
         "the actual host confirms the contact menu's sensitive operation"
     );
+    act_named(
+        &mut app,
+        "Confirmation",
+        &ui::a11y::Action::SetValue("CONFIRM".into()),
+    );
+    assert!(
+        app.export.is_none(),
+        "typing the consent phrase does not itself export the contact"
+    );
     act_named(&mut app, "Confirm", &ui::a11y::Action::Activate);
+    if app.export.is_none() {
+        eprintln!(
+            "Contacts menu export after explicit confirmation: controls={:?}; failures={:?}; refusal={:?}",
+            app.harness_mut().controls(),
+            app.harness_mut().control_failures().to_vec(),
+            app.dispatcher
+                .as_ref()
+                .map(|dispatcher| dispatcher.refused().with(Clone::clone))
+        );
+    }
     assert!(
         app.export
             .as_ref()
@@ -3247,8 +3266,13 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
         let stored_bday = c.birthday;
         h.app.begin_edit(c, false);
         h.relayout();
+        act_named(&mut h.app, "Choose from calendar", &ui::a11y::Action::Focus);
         let button = target(&h.app, "contacts.form.calendar");
         assert!(button.width() > 0.0, "the calendar button is laid out");
+        assert!(
+            Rect::new(0.0, 0.0, 1280.0, 800.0).contains(button.center()),
+            "the shared form reveals its calendar command before the pointer click"
+        );
         h.press_left(button.center());
         assert!(h.app.form.as_ref().unwrap().calendar_open);
         let picker = named_widget(&*h.app, "Birthday calendar", Role::ComboBox)
@@ -3550,13 +3574,15 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     {
         let mut app = Live::empty(760, 620);
         assert!(app.store.is_empty());
+        let bounds = target(&app, crate::view::EMPTY_ACTION);
         let action = app
             .harness_mut()
             .controls()
             .into_iter()
-            .find(|control| control.name.as_deref() == Some("New contact"))
-            .expect("first-run shared action");
-        let bounds = action.bounds.expect("painted action bounds");
+            .find(|control| {
+                control.name.as_deref() == Some("New contact") && control.bounds == Some(bounds)
+            })
+            .expect("the actual first-run body action is exported");
         assert!(bounds.width() >= 44.0);
         assert!(Rect::new(0.0, 0.0, 760.0, 620.0).contains(bounds.center()));
         assert!(

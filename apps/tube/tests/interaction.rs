@@ -487,34 +487,46 @@ fn search_inputs_are_present_and_navigate() {
         let centre = bounds.center();
         app.harness().click_at(centre.x, centre.y);
         app.settle();
-        let pointer_query = app.harness().global_search_query().map(str::to_owned);
-        if pointer_query.as_deref() != Some("") {
-            let focus = app.harness().a11y_focus();
-            let controls = app.harness().controls();
-            let activation = app
-                .harness()
-                .operate_control(&search.id, &ui::headless::ControlInput::Press);
-            app.settle();
-            eprintln!(
-                "Tube Search pointer refused: viewport={viewport:?}, scale={scale}, search={search:?}, focus={focus:?}, controls={controls:?}; same control AT activation={activation:?}, AT query={:?}, AT focus={:?}",
-                app.harness().global_search_query().map(str::to_owned),
-                app.harness().a11y_focus()
-            );
-        }
+        let (_, focused) = app
+            .harness()
+            .a11y_focus()
+            .expect("pointer activation focuses the platform search input");
+        assert_eq!(focused.role(), ui::accesskit::Role::TextInput);
+        assert_eq!(focused.label(), Some("Search"));
+        assert_eq!(focused.description(), Some("Search actions and results"));
         assert_eq!(
-            pointer_query.as_deref(),
+            focused.value(),
             Some(""),
-            "the shared platform search owns input after the actual pointer click"
+            "the actual platform palette starts with an empty query"
         );
-        assert!(
-            app.harness().a11y_focus().is_some(),
-            "pointer activation focuses the platform search input"
+        app.harness().type_text("compiler");
+        app.settle();
+        let (_, focused) = app
+            .harness()
+            .a11y_focus()
+            .expect("the platform query retains input focus");
+        assert_eq!(
+            focused.value(),
+            Some("compiler"),
+            "typing reaches the actual shared query field"
         );
         app.harness().key("Escape");
         app.settle();
         assert!(
-            app.harness().global_search_query().is_none(),
-            "Escape closes the system search"
+            app.harness()
+                .controls()
+                .iter()
+                .all(|control| !(control.role == ui::a11y::Role::TextInput
+                    && control.name.as_deref() == Some("Search"))),
+            "Escape closes the actual platform query field"
+        );
+        assert!(
+            app.harness()
+                .controls()
+                .iter()
+                .any(|control| control.role == ui::a11y::Role::Button
+                    && control.name.as_deref() == search.name.as_deref()),
+            "Escape restores the platform Search button"
         );
         assert_eq!(
             route(&mut app),

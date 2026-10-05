@@ -192,7 +192,9 @@ impl FlapState {
     /// Whether the reveal is still moving toward the resolved state.
     pub fn is_animating(&self, layout: SplitLayout) -> bool {
         let target = if self.is_open(layout) { 1.0 } else { 0.0 };
-        (self.progress - target).abs() >= SETTLED
+        // Keep scheduling until tick has snapped the final fraction. A
+        // threshold here could stop the host before that last tick runs.
+        self.progress != target
     }
 }
 
@@ -240,6 +242,28 @@ mod tests {
             assert!(!flap.tick(layout, almost_complete, BASE));
             assert!(!flap.is_animating(layout));
             assert_eq!(flap.reveal_in(layout), 0.0);
+        }
+    }
+
+    #[test]
+    fn a_subthreshold_remainder_still_requests_its_final_settlement_tick() {
+        for layout in [SplitLayout::Docked, SplitLayout::Overlay] {
+            let mut flap = FlapState::closed_by_default();
+            flap.reconcile(layout);
+            flap.open();
+            // The host can observe animation state between ticks, including
+            // a remainder produced before the endpoint snap was introduced.
+            flap.progress = 1.0 - SETTLED / 2.0;
+            assert!(flap.is_animating(layout));
+            assert!(!flap.tick(layout, 0.0, BASE));
+            assert_eq!(flap.reveal_in(layout), 1.0);
+            assert!(!flap.is_animating(layout));
+            flap.close();
+            flap.progress = SETTLED / 2.0;
+            assert!(flap.is_animating(layout));
+            assert!(!flap.tick(layout, 0.0, BASE));
+            assert_eq!(flap.reveal_in(layout), 0.0);
+            assert!(!flap.is_animating(layout));
         }
     }
 

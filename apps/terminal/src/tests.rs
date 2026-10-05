@@ -1934,10 +1934,9 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
 
     // Case `find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text`.
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
-        use vello::{Scene, kurbo::Affine};
+        use ui::{Theme, a11y::Action};
 
-        let (mut widget, _writes) = build_test_widget();
+        let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
         widget.force_geometry(viewport, 10.0, 20.0);
@@ -1965,20 +1964,18 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
 
         // The real layout and draw at 200%: the scope stands its band above
         // the terminal, inside the viewport, and the grid starts under it.
-        let mut text = TextRenderer::new();
         let theme = Theme::high_contrast().with_text_scale(2.0);
-        text.set_text_scale(2.0);
-        let mut host = ui::widget::Embedded::new(view).filling();
-        host.layout(viewport, &theme, &mut text);
-        let mut scene = Scene::new();
-        host.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
+        let mut state = State::new();
+        assert!(state.adopt_doc(doc));
+        let mut framed = ui::headless::Framed::new(state, view, (390, 844), theme);
+        assert!(
+            !ui::headless::Framed::harness(&framed)
+                .scene()
+                .encoding()
+                .is_empty(),
+            "the real large-text host renders the terminal and its find band"
         );
-        let view = host.widget_mut();
+        let view = &framed;
         let band = view.find_band().expect("find band");
         assert!(band.x0 >= viewport.x0 && band.x1 <= viewport.x1);
         assert!(band.y0 >= viewport.y0 && band.y1 <= viewport.y1);
@@ -1992,35 +1989,43 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             Some(("build step 020".to_string(), Some((1, 1))))
         );
 
-        // Assistive activation uses the same local state path and never makes a
-        // blind terminal keystroke. The target includes the shared pane id so
-        // embedded terminals do not collide.
-        let next = "find-Next".to_owned();
-        assert!(ui::widget::Widget::perform_semantic_action(
-            view,
-            &next,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
-        let query = "find-query".to_owned();
-        assert!(ui::widget::Widget::perform_semantic_action(
-            view,
-            &query,
-            &ui::a11y::Action::SetValue("build step 042".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
-        assert_eq!(view.find_test_matches(), vec![42]);
-        let close = "find-Close".to_owned();
-        assert!(ui::widget::Widget::perform_semantic_action(
-            view,
-            &close,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
-        assert!(!view.find_is_open());
+        // Assistive activation resolves the exported controls to their real
+        // FindBar owner rather than sending child targets to TerminalView.
+        let control = |harness: &ui::headless::FrameHarness, key: &str| {
+            let label = ui::i18n::widget_format(key, &[]);
+            harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some(label.as_str()))
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| panic!("missing exported Find control {label}"))
+        };
+        let harness = ui::headless::Framed::harness_mut(&mut framed);
+        let next = control(harness, "find-bar-next");
+        harness
+            .perform_a11y_action(next, &Action::Activate)
+            .expect("the exported next-match control enters the real find scope");
+        let query = control(harness, "find-bar-placeholder");
+        harness
+            .perform_a11y_action(query, &Action::SetValue("build step 042".into()))
+            .expect("the exported query edits local Find state");
+        assert_eq!(framed.find_test_matches(), vec![42]);
+        let harness = ui::headless::Framed::harness_mut(&mut framed);
+        let close = control(harness, "find-bar-close");
+        harness
+            .perform_a11y_action(close, &Action::Activate)
+            .expect("the exported close control closes the real find scope");
+        assert!(!framed.find_is_open());
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "Find never writes to the PTY"
+        );
+        let (_, state) = ui::headless::Framed::split(&mut framed);
+        assert_eq!(
+            state.doc.get_heads(),
+            heads_before,
+            "hosted Find actions leave the collaborative transcript unchanged"
+        );
     }
 }
 

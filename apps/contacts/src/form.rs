@@ -546,7 +546,7 @@ impl EditForm {
             Slot::Website => input = input.with_kind(TextInputKind::Url),
             Slot::Email(_) => input = input.with_kind(TextInputKind::Email),
             Slot::Phone(_) => input = input.with_kind(TextInputKind::Number),
-            Slot::Notes => input.set_multiline(true),
+            Slot::Notes => input = input.with_min_lines(6),
             _ => {}
         }
         let submit = std::rc::Rc::clone(shared);

@@ -583,7 +583,7 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
     d.click_named("api.form-name").unwrap();
     d.key("Home");
     d.type_text("Edited ");
-    d.click_named("api.form-confirm").unwrap();
+    d.click_named("api.form.primary").unwrap();
     settle(d);
     assert!(
         d.focus_access_nodes().iter().any(|n| n
@@ -598,7 +598,7 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
     d.type_text("region");
     d.click_named("api.form-variable-value").unwrap();
     d.type_text("eu-west-1");
-    d.click_named("api.form-confirm").unwrap();
+    d.click_named("api.form.primary").unwrap();
     settle(d);
     let json = d.dump_json();
     assert!(

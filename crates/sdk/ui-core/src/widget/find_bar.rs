@@ -1572,6 +1572,12 @@ mod tests {
         fn reveal(&mut self, index: usize) {
             self.doc.reveal(index);
         }
+        fn supports_replace(&self) -> bool {
+            self.doc.supports_replace()
+        }
+        fn replace(&mut self, index: usize, with: &str) -> bool {
+            self.doc.replace(index, with)
+        }
     }
 
     impl Widget for Page {
@@ -1724,7 +1730,7 @@ mod tests {
             },
             rect: Rect::ZERO,
         };
-        let mut scope = FindScope::new(Box::new(page));
+        let mut scope = FindScope::new(Box::new(page)).with_bar(FindBar::new().with_replace());
         scope.open();
         let mut harness = crate::headless::FrameHarness::for_root(
             crate::State::new(),
@@ -1808,7 +1814,8 @@ mod tests {
                 ..Doc::default()
             },
             rect: Rect::ZERO,
-        }));
+        }))
+        .with_bar(FindBar::new().with_replace());
         scope.open();
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
