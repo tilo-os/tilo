@@ -984,6 +984,12 @@ impl Widget for FindBar {
         }
     }
 
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        // These manually laid-out fields are published once through this
+        // admitted owner, whose semantic targets route to the real controls.
+        child_index == 0 || (self.replace_row && child_index == 1)
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.replace_row {
             vec![&mut self.field, &mut self.replace_field]
@@ -1736,6 +1742,23 @@ mod tests {
                 .map(|(id, _)| id)
                 .unwrap_or_else(|| panic!("missing exported find field {name}"))
         };
+        for name in [
+            tr("find-bar-placeholder"),
+            tr("find-bar-replace-placeholder"),
+        ] {
+            assert_eq!(
+                harness
+                    .a11y_nodes()
+                    .into_iter()
+                    .filter(|(_, node)| {
+                        node.role() == accesskit::Role::TextInput
+                            && node.label() == Some(name.as_str())
+                    })
+                    .count(),
+                1,
+                "each actual find field has one exported accessibility node"
+            );
+        }
         let query = field(&harness, &tr("find-bar-placeholder"));
         harness
             .perform_a11y_action(query, &crate::a11y::Action::SetValue("one".into()))
@@ -1775,6 +1798,49 @@ mod tests {
                 .is_err()
         );
         assert_eq!(harness.root::<FindScope>().bar.query(), "two");
+    }
+
+    #[test]
+    fn semantic_tree_publishes_each_find_field_once_under_its_real_owner() {
+        let mut scope = FindScope::new(Box::new(Page {
+            doc: Doc {
+                text: "one two one".into(),
+                ..Doc::default()
+            },
+            rect: Rect::ZERO,
+        }));
+        scope.open();
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = HashMap::new();
+        let node = scope.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(900.0),
+                    height: taffy::AvailableSpace::Definite(400.0),
+                },
+            )
+            .unwrap();
+        scope.apply_layout(&taffy, node, Point::ZERO);
+        let mut tree = crate::a11y_tree::SemanticTree::new();
+        tree.refresh(&scope, &node_map, None, &[]);
+        for (name, target) in [
+            (tr("find-bar-placeholder"), "find-query"),
+            (tr("find-bar-replace-placeholder"), "find-replacement"),
+        ] {
+            let fields: Vec<_> = tree
+                .iter()
+                .filter(|node| {
+                    node.role == crate::a11y::Role::TextInput
+                        && node.name.as_deref() == Some(name.as_str())
+                })
+                .collect();
+            assert_eq!(fields.len(), 1, "one canonical semantic field for {name}");
+            assert_eq!(fields[0].semantic_target.as_deref(), Some(target));
+            assert!(fields[0].widget_taffy_id.is_some(), "real admitted owner");
+        }
     }
 
     #[test]
