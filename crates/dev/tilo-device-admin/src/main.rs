@@ -123,22 +123,31 @@ fn id_json(
     state_file: &std::path::Path,
 ) -> anyhow::Result<serde_json::Value> {
     let identity = Identity::load(root)?;
-    let relays = Relays::choose(relay)?;
+    let endpoint = identity::endpoint_id(&identity.key);
+    // What the running service reports; a stale file of another key is not it.
     let state: Option<serve::State> = std::fs::read(state_file)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let endpoint = identity::endpoint_id(&identity.key);
+        .and_then(|bytes| serde_json::from_slice::<serve::State>(&bytes).ok())
+        .filter(|state| state.endpoint == endpoint.to_string());
     let home_relay = state
         .as_ref()
-        .filter(|state| state.endpoint == endpoint.to_string())
         .and_then(|state| state.addr.relay_urls().next().map(ToString::to_string));
+    // The service reads its relay from its unit's environment, which this
+    // command does not see: its own report names it.
+    let relay = match relay {
+        Some(_) => Relays::choose(relay)?.own().map(ToString::to_string),
+        None => match state.as_ref() {
+            Some(state) => state.relay.clone(),
+            None => Relays::choose(None)?.own().map(ToString::to_string),
+        },
+    };
     let cert = identity.cert.as_ref();
     Ok(serde_json::json!({
         "device": hex::encode(identity.device_id()),
         "endpoint": endpoint.to_string(),
         "label": cert.map(|cert| cert.device_label.clone()),
         "identity": cert.map(|cert| hex::encode(cert.user_public_key)),
-        "relay": relays.own().map(ToString::to_string),
+        "relay": relay,
         "home_relay": home_relay,
         "serving": state.is_some(),
     }))
