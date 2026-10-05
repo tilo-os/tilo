@@ -51,6 +51,53 @@ fn hex(rgb: u32) -> String {
     format!("#{rgb:06x}")
 }
 
+/// Reuse document paint through the shared picker; changing counts while
+/// painting leaves this subtree in place.
+fn artwork_palette(
+    cx: &ViewCx<ArtworkResource>,
+    id: String,
+    current: impl Fn() -> String + 'static,
+    choose: impl Fn(String) + Clone + 'static,
+) -> Element {
+    let colours = cx.value(crate::palette::swatches);
+    cx.switch(&colours, move |_, colours| {
+        let authored = !colours.is_empty();
+        let colours = if authored {
+            colours.clone()
+        } else {
+            INKS.iter().map(|rgb| hex(*rgb)).collect()
+        };
+        let loaded = current().to_lowercase();
+        let selected = colours.iter().position(|colour| colour == &loaded);
+        let values = colours.clone();
+        let choose = choose.clone();
+        let picker = ColorSwatchPicker::with_palette(
+            colours.iter().filter_map(|colour| packed(colour)).collect(),
+            8,
+        )
+        .with_accessible_labels(colours.clone())
+        .with_cell(SWATCH)
+        .bare()
+        .selecting(selected)
+        .on_change(move |index| {
+            if let Some(colour) = values.get(index) {
+                choose(colour.clone());
+            }
+        });
+        let mut parts: Vec<Element> = Vec::new();
+        if authored {
+            parts.push(heading("canvas-artwork-colours"));
+        }
+        parts.push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_id(id.clone())
+                .with_child(Box::new(picker)),
+        ));
+        section(parts)
+    })
+}
+
 /// A pigment's name as words: `burnt-sienna` is "burnt sienna".
 fn words(name: &str) -> String {
     name.replace('-', " ")
@@ -273,8 +320,17 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str, tool: Tool) -
         parts.push(preset_picker(tools));
     }
     let palette = brush_palette(tools, &pigments);
-    parts.push(Box::new(palette.with_cell(SWATCH).bare()));
-    if medium.is_none() {
+    if medium.is_some() {
+        parts.push(Box::new(palette.with_cell(SWATCH).bare()));
+    } else {
+        let chosen = tools.colour.clone();
+        let loaded = tools.clone();
+        parts.push(artwork_palette(
+            cx,
+            "canvas-artwork-colours".into(),
+            move || loaded.hex(),
+            move |value| chosen.set(value),
+        ));
         parts.push(field(
             &ui::i18n::I18nManager::lookup_plain("canvas-colour"),
             Box::new(
@@ -1005,7 +1061,25 @@ fn paints(
             }),
         )),
     };
-    section(vec![Box::new(swatches), field])
+    let mut parts: Vec<Element> = Vec::new();
+    if palette.is_empty() {
+        let dispatch = cx.dispatcher();
+        let ids = ids.to_vec();
+        let paint = paint.clone();
+        let current = current.unwrap_or("none").to_owned();
+        parts.push(artwork_palette(
+            cx,
+            format!("{}-artwork-colours", paint.id()),
+            move || current.clone(),
+            move |value| {
+                dispatch.invoke(paint.invoke(&ids, value));
+            },
+        ));
+    } else {
+        parts.push(Box::new(swatches));
+    }
+    parts.push(field);
+    section(parts)
 }
 
 /// Brush strokes' preset, width and dynamics, and their paths: smoothed,
