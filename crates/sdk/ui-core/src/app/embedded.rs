@@ -51,8 +51,11 @@ pub struct EmbeddedApp {
     entering_backwards: bool,
     /// The app asked for another frame.
     wants_frame: Cell<bool>,
-    /// Painted into the host's scene at the region's origin.
+    /// Painted into the host's scene at the region's origin, and painted
+    /// again as it is until the app has something new to show.
     painted: RefCell<Scene>,
+    /// The app's background work woke it since its last frame.
+    woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EmbeddedApp {
@@ -66,9 +69,14 @@ impl EmbeddedApp {
         wake: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
     ) -> Result<Self, crate::launch::LaunchError> {
         app.set_tab_order_continues_in_host(true);
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         if let Some(scope) = app.wake_scope.as_mut() {
+            let flag = std::sync::Arc::clone(&woken);
             scope
-                .bind(wake)
+                .bind(move |event| {
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                    wake(event);
+                })
                 .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?;
         }
         Ok(Self {
@@ -84,6 +92,7 @@ impl EmbeddedApp {
             entering_backwards: false,
             wants_frame: Cell::new(true),
             painted: RefCell::new(Scene::new()),
+            woken,
         })
     }
 
@@ -95,6 +104,18 @@ impl EmbeddedApp {
     /// The app shown, to drive it.
     pub fn app_mut(&mut self) -> &mut App {
         &mut self.app
+    }
+
+    /// The root widget of the app's component: what an app's own tests
+    /// reach into, as they would in the app's window.
+    pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
+        let root = self
+            .app
+            .root_widget
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::BoundAppWidget>()?;
+        let widget: &mut dyn Widget = root.component.root.as_deref_mut()?;
+        Some(widget)
     }
 
     /// `event` from the host, in its physical pixels at `scale`, moved into
@@ -146,9 +167,11 @@ impl Widget for EmbeddedApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The app looks as the host does around it.
+        self.app.set_theme(theme.clone());
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
@@ -201,12 +224,20 @@ impl Widget for EmbeddedApp {
         _presence: &PresenceCtx,
     ) {
         let mut painted = self.painted.borrow_mut();
-        painted.reset();
-        let again = self.app.surface_frame(&self.region, &mut painted);
-        // What the host's accessibility walk reads of the app.
-        let _ = self.app.refresh_semantic_tree();
-        self.wants_frame
-            .set(again || self.region.redraw.replace(false));
+        let due = self
+            .app
+            .root_widget
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= crate::time::now());
+        let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
+        if self.wants_frame.get() || woken || due {
+            painted.reset();
+            let again = self.app.surface_frame(&self.region, &mut painted);
+            // What the host's accessibility walk reads of the app.
+            let _ = self.app.refresh_semantic_tree();
+            self.wants_frame
+                .set(again || self.region.redraw.replace(false));
+        }
         scene.append(
             &painted,
             Some(transform * Affine::translate((self.rect.x0, self.rect.y0))),
@@ -229,8 +260,55 @@ impl Widget for EmbeddedApp {
         "EmbeddedApp"
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// The id of the app shown.
+    fn test_id(&self) -> Option<&str> {
+        self.app
+            .root_widget
+            .as_any()?
+            .downcast_ref::<crate::widget::BoundAppWidget>()
+            .map(|root| root.component.app_id())
+    }
+
     fn get_rect(&self) -> KurboRect {
         self.rect
+    }
+
+    /// The app's own named targets, where they are in the host.
+    fn test_rects(&self) -> Vec<(String, KurboRect)> {
+        fn walk(
+            widget: &dyn Widget,
+            offset: vello::kurbo::Vec2,
+            out: &mut Vec<(String, KurboRect)>,
+        ) {
+            if let Some(id) = widget.test_id() {
+                out.push((id.to_owned(), widget.get_rect() + offset));
+            }
+            out.extend(
+                widget
+                    .test_rects()
+                    .into_iter()
+                    .map(|(name, rect)| (name, rect + offset)),
+            );
+            for child in widget.children() {
+                walk(child, offset, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            self.app.root_widget.as_ref(),
+            vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0),
+            &mut out,
+        );
+        out.retain(|(_, rect)| rect.area() > 0.0);
+        out
     }
 
     fn cursor_shape(&self, _point: Point) -> Option<CursorIcon> {
@@ -276,6 +354,22 @@ impl Widget for EmbeddedApp {
 
     fn needs_redraw(&self) -> bool {
         self.wants_frame.get()
+    }
+
+    /// The host's presentation preferences are the app's.
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.app.set_reduce_motion(reduced);
+    }
+
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.app.set_platform_conventions(conventions);
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.app.set_interaction_environment(environment);
     }
 
     /// The app's own accessibility tree, as this tile's subtree: a screen

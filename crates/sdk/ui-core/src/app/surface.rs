@@ -703,7 +703,6 @@ impl App {
         search_pending
             || self.needs_sync
             || self.layout.layout_dirty
-            || self.root_widget.needs_redraw()
             || self.history_needs_redraw()
             || self
                 .root_widget

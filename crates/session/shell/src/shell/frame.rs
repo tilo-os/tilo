@@ -366,7 +366,7 @@ use crate::shell::output_scene::{self, OutputGeometry};
 /// the framework root of the terminal mounted as its component, which
 /// answers to the terminal's address.
 fn is_terminal(widget: &dyn Widget) -> bool {
-    widget.name() == "Terminal" || widget.test_id() == Some("terminal")
+    widget.name() == "Terminal" || matches!(widget.test_id(), Some("terminal" | "so.tilo.terminal"))
 }
 
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
@@ -971,7 +971,20 @@ impl FrameBuilder {
         self.node_map.values_mut().find_map(|widget| {
             // SAFETY: node_map pointers are owned by the live widget tree and
             // remain valid for the borrow of `self`.
-            find(unsafe { &mut **widget })
+            let widget = unsafe { &mut **widget };
+            // An app's own widgets are inside the App its tile shows.
+            let embedded = widget
+                .as_any()
+                .is_some_and(<dyn std::any::Any>::is::<ui::app::EmbeddedApp>);
+            if embedded {
+                widget
+                    .as_any_mut()?
+                    .downcast_mut::<ui::app::EmbeddedApp>()?
+                    .component_root_mut()
+                    .and_then(&find)
+            } else {
+                find(widget)
+            }
         })
     }
 
@@ -3601,6 +3614,14 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 )]
 mod tests {
     use super::*;
+
+    /// The terminal a hosted Terminal tab shows, inside its app.
+    fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
+        let embedded = widget
+            .as_any_mut()?
+            .downcast_mut::<ui::app::EmbeddedApp>()?;
+        terminal::mounted_terminal(embedded.component_root_mut()?)
+    }
     use crate::shell::state::FreshId as _;
     use automerge::ReadDoc;
     use automerge::transaction::Transactable;
@@ -4905,7 +4926,7 @@ mod tests {
             // SAFETY: node_map pointers are owned by the live widget tree.
             let widget = unsafe { &mut **widget };
             is_terminal(widget)
-                .then(|| terminal::mounted_terminal(widget))
+                .then(|| hosted_terminal(widget))
                 .flatten()
                 .map(|term| term.attach_input_probe())
         });
@@ -4995,7 +5016,7 @@ mod tests {
         let probe = fb.node_map.values().find_map(|widget| {
             let widget = unsafe { &mut **widget };
             is_terminal(widget)
-                .then(|| terminal::mounted_terminal(widget))
+                .then(|| hosted_terminal(widget))
                 .flatten()
                 .map(|term| term.attach_input_probe())
         });
@@ -5086,7 +5107,7 @@ mod tests {
         let probe = fb.node_map.values().find_map(|widget| {
             let widget = unsafe { &mut **widget };
             is_terminal(widget)
-                .then(|| terminal::mounted_terminal(widget))
+                .then(|| hosted_terminal(widget))
                 .flatten()
                 .map(|term| term.attach_input_probe())
         });

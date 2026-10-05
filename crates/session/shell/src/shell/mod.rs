@@ -369,7 +369,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         tab: &tab,
     };
     match mount_in_process(&request, &inputs) {
-        Some(tilo_desktop::resolver::TileResolution::Component(_)) => return "App",
+        Some(tilo_desktop::resolver::TileResolution::App(_)) => return "App",
         Some(_) => return "Notice",
         None => {}
     }
@@ -1016,7 +1016,7 @@ pub fn mount_in_process(
         _ => return None,
     };
     Some(match mounted {
-        Ok(component) => TileResolution::Component(component),
+        Ok(component) => TileResolution::App(component),
         Err(error) => TileResolution::Failed(error),
     })
 }
