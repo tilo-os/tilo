@@ -1446,7 +1446,11 @@ impl CalendarApp {
                 "the calendar is not attached to a window".into(),
             ));
         };
-        dispatcher.apply_now_with(doc, action, crate::actions::history_context(action))
+        dispatcher.apply_now_with(
+            &mut ui::widget::Edits::lend(doc),
+            action,
+            crate::actions::history_context(action),
+        )
     }
 
     fn record_remote_binding(

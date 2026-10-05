@@ -1142,7 +1142,7 @@ impl CodeApp {
         action: &actions::CodeEditorAction,
     ) -> Result<(), tilo_actions::ActionError> {
         match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(doc, action),
+            Some(dispatch) => dispatch.apply_now(&mut ui::widget::Edits::lend(doc), action),
             None => Err(tilo_actions::ActionError::Refused(
                 "the editor is not open on a project".into(),
             )),

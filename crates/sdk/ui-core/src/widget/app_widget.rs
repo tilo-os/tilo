@@ -802,6 +802,24 @@ mod component_adapter {
                 .unwrap_or(());
             self.component.project_record_save_status();
         }
+        fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(edits.document_mut(), |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return;
+                    };
+                    let before = crate::widget::settle_mark(document);
+                    root.settle(&mut crate::widget::Edits::lend(document), record_root);
+                    let _ = binding.drain_owned_tree(root, document);
+                    // What it wrote shows in this same frame.
+                    if crate::widget::settle_mark(document) != before {
+                        root.update(document, record_root);
+                        root.sync(document, record_root);
+                    }
+                })
+                .unwrap_or(());
+        }
         fn update(
             &mut self,
             state: &crate::widget::AppModel,
@@ -1856,11 +1874,9 @@ mod component_adapter {
                 return false;
             };
             !binding.queued_controls.borrow().is_empty()
-                || self
-                    .component
-                    .root
-                    .as_deref()
-                    .is_some_and(|root| crate::widget::controls::has_pending_control_invocation(root))
+                || self.component.root.as_deref().is_some_and(|root| {
+                    crate::widget::controls::has_pending_control_invocation(root)
+                })
         }
         fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
             let binding = self.component.callback_binding();

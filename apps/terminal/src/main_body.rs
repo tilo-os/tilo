@@ -2130,7 +2130,7 @@ impl TerminalWidget {
             return;
         };
         for action in std::mem::take(&mut self.pending_actions) {
-            if dispatch.apply_now(doc, &action).is_err() {
+            if dispatch.apply_now(&mut ui::widget::Edits::lend(doc), &action).is_err() {
                 self.synced = None;
             }
         }
@@ -2145,7 +2145,7 @@ impl TerminalWidget {
         // A refused write leaves the record's screen unknown: the next one
         // replaces it whole.
         self.synced = dispatch
-            .apply_now(doc, &output)
+            .apply_now(&mut ui::widget::Edits::lend(doc), &output)
             .is_ok()
             .then(|| self.screen.clone());
     }

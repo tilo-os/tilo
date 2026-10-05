@@ -223,7 +223,7 @@ impl WriteSetupPanel {
     /// next keystroke continues the same undo step.
     fn dispatch(doc: &mut AutoCommit, edits: Option<&Dispatcher<Imager>>, action: &ImagerAction) {
         if let Some(edits) = edits {
-            let _ = edits.apply_now(doc, action);
+            let _ = edits.apply_now(&mut ui::widget::Edits::lend(doc), action);
         }
     }
 

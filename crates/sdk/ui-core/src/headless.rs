@@ -2486,9 +2486,16 @@ impl FrameHarness {
         self.tick_records();
         let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
         self.root.sync(&self.state.doc, &self.state.root);
-        // A sync reads the document only; what it submitted (a worker's or a
-        // chooser's answer) is applied now and shown in this same frame.
-        if crate::widget::controls::has_pending_control_invocation(self.root.as_ref()) {
+        // A sync reads the document only. What it took up is written now,
+        // through actions, and shown in this same frame.
+        let before = crate::widget::settle_mark(&self.state.doc);
+        self.root.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
+        if settled || submitted {
             self.idle_control_tick();
             self.root.update(&self.state.doc, &self.state.root);
             self.root.sync(&self.state.doc, &self.state.root);

@@ -1281,7 +1281,7 @@ impl PdfApp {
             return;
         }
         if let Err(error) = dispatcher.apply_now_with(
-            state,
+            &mut ui::widget::Edits::lend(state),
             action,
             tilo_actions::ActionContext::for_action(APP_ID, "PDF Viewer", action),
         ) {
@@ -2053,11 +2053,9 @@ impl PdfApp {
             return;
         }
         if !PdfDoc::has_page_plan(state) {
-            self.submit(
-                &crate::actions::PdfViewerAction::EnsurePagePlan {
-                    source_page_count: self.source_pages.len().max(1),
-                },
-            );
+            self.submit(&crate::actions::PdfViewerAction::EnsurePagePlan {
+                source_page_count: self.source_pages.len().max(1),
+            });
         }
         self.pin_source(state);
         // Asked again on the next frame while the PDF owner cannot be asked.
@@ -4870,9 +4868,10 @@ impl PdfApp {
                         })
                         .collect();
                     self.pending_import = None;
-                    self.submit(
-                        &crate::actions::import_pages_action(request.after.as_deref(), pages),
-                    );
+                    self.submit(&crate::actions::import_pages_action(
+                        request.after.as_deref(),
+                        pages,
+                    ));
                     self.reconcile_shared_page_plan(state);
                     self.go_to_page(request.at + 1);
                     self.status_note = Some(

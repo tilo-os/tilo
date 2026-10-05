@@ -1729,17 +1729,15 @@ impl ChatApp {
         } else {
             crate::model::Attachment::File { name, blob, size }
         };
-        self.submit_action(
-            &actions::send_message_action(
-                &pending.channel,
-                &new_message_id(),
-                now_secs(),
-                "",
-                None,
-                Some(attachment),
-                Vec::new(),
-            ),
-        );
+        self.submit_action(&actions::send_message_action(
+            &pending.channel,
+            &new_message_id(),
+            now_secs(),
+            "",
+            None,
+            Some(attachment),
+            Vec::new(),
+        ));
         self.scroll = 0.0;
         self.attachment_status = Some("Attachment shared".into());
     }

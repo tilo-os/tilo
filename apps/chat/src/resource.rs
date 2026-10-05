@@ -369,7 +369,9 @@ impl ResourceApp for ChatShell {
             let draft = std::iter::once(ChatAction::EnsureRichDraft { key: key.clone() }).chain(
                 COMPOSER_DRAFT.lines().map(|line| ChatAction::EditDraft {
                     key: key.clone(),
-                    edit: tilo_document::RichTextAction::AppendParagraph { text: line.to_owned() },
+                    edit: tilo_document::RichTextAction::AppendParagraph {
+                        text: line.to_owned(),
+                    },
                 }),
             );
             invokes.extend(draft.filter_map(|action| Invoke::apply(&action).ok()));

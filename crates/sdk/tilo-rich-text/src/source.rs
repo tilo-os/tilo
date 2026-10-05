@@ -104,7 +104,7 @@ impl RichTextSource for Hosted {
 
     fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
         match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(doc, edit),
+            Some(dispatch) => dispatch.apply_now(&mut ui::widget::Edits::lend(doc), edit),
             None => Err(ActionError::Refused("the editor is not attached".into())),
         }
     }
@@ -315,7 +315,7 @@ impl RichTextSource for RichTextField {
 
     fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
         match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(doc, edit),
+            Some(dispatch) => dispatch.apply_now(&mut ui::widget::Edits::lend(doc), edit),
             None => Err(ActionError::Refused(
                 "this text is open to view only".into(),
             )),
