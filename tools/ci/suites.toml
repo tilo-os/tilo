@@ -1260,3 +1260,17 @@ reason = "its fake persistence workers need Node 24's worker messaging; the ci-f
 [[unrequired]]
 suite = "os/tests/probe_installer_code_refresh_mounts.py"
 reason = "explicit root private-mount-namespace integration entrypoint; run with unshare -m on the development host, failing if privileges or isolation are absent; hermetic transaction and protocol cases run in test_installer_code_refresh.py"
+
+[[cargo]]
+package = "runtime-bundle"
+inputs = [
+  "tools/apps/browser_runtime_release.py",
+  "tools/apps/pack-runtime-package.sh",
+  "scripts/browser/",
+  "os/dev/assert-native-arch.sh",
+  "os/scripts/verify-elf-hardening.sh",
+  "apps/browser/tilo-app.toml",
+  "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
+  "os/Containerfile",
+]
+readers = ["crates/packaging/runtime-bundle/examples/browser_runtime_release.rs"]

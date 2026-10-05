@@ -171,6 +171,26 @@ for how selection and shared runtime compatibility interact. Use **Release / app
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
 
+For an independent Browser engine update, dispatch **Release / apps** on `main`
+with `engine_runtime_only=true`, `apps=browser` and the needed native architectures.
+This builds the digest-pinned CEF engine and the package tools, verifies native ELF
+architecture and hardening, and seals the runtime the Browser manifest names.
+`publish=true` uses the existing runtime/app signing identities and publisher OIDC;
+`publish=false` signs with disposable test identities and performs no registry write.
+The mode rejects collection qualification, coordinator and builder overrides. It
+builds neither the OS image nor the app collection. Changing engine code requires a
+new runtime version in the SDK, Browser manifest and OS recipe before publication.
+
+The explicit native pipeline proof uses no release credentials:
+
+```bash
+cargo run --locked -p runtime-bundle --example browser_runtime_release
+```
+
+Use `rcargo --on-builder run` for this proof on a configured native remote builder.
+Its output is `target/browser-runtime-release-proof`; archive/blob verification uses
+the same canonical tools as publication. The source must be clean and committed.
+
 The app registry is publicly reachable at `https://apps.tilo.so`. Main-branch
 app publication now submits each newly built immutable tapp to it; separate collector
 and networkless signer jobs independently verify accepted requests before advancing

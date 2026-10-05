@@ -46,6 +46,11 @@ on:
       - ".forgejo/workflows/release-apps.yml"
   workflow_dispatch:
     inputs:
+      engine_runtime_only:
+        description: "Build only the Browser engine; explicit trusted main dispatch only."
+        type: boolean
+        required: false
+        default: false
       apps:
         description: "Space/comma-separated app directory names; empty selects the collection."
         required: false
@@ -231,6 +236,7 @@ jobs:
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
     outputs:
+      engine_runtime_only: ${{ steps.engine-mode.outputs.engine_runtime_only }}
       builder_image: ${{ steps.builder.outputs.image }}
       apps: ${{ steps.plan.outputs.apps }}
       packages: ${{ steps.plan.outputs.packages }}
@@ -258,6 +264,21 @@ jobs:
           # deepens only immutable comparison tips or one observed main tip.
           fetch-depth: 1
           persist-credentials: false
+      - name: Validate explicit engine-only release authority
+        id: engine-mode
+        env:
+          ENGINE_RUNTIME_ONLY: ${{ github.event.inputs.engine_runtime_only }}
+          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
+          VERIFY_FINAL_RECEIPT: ${{ github.event.inputs.verify_final_receipt }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          BASELINE_RUN_ID: ${{ github.event.inputs.baseline_run_id }}
+          BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
+          BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
+          COORDINATOR_POLICY_SHA256: ${{ github.event.inputs.coordinator_policy_sha256 }}
+        run: python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py plan
       - name: Resolve one immutable builder for every architecture
         id: builder
         env:
@@ -349,7 +370,7 @@ jobs:
         id: plan
         shell: bash
         env:
-          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_APPS: ${{ steps.engine-mode.outputs.engine_runtime_only == 'true' && 'browser' || github.event.inputs.apps }}
           REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
           REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
@@ -488,7 +509,7 @@ jobs:
   build:
     # PR compilation belongs to the focused CI lane. Packaging remains available
     # through workflow_dispatch (publish=false) before requesting publication.
-    if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.count != '0'"
+    if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.count != '0' && needs.plan.outputs.engine_runtime_only != 'true'"
     needs: [plan, authorize-publish]
     name: apps / ${{ matrix.arch }}
     runs-on: ${{ matrix.build_runner }}
@@ -696,7 +717,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0' && needs.plan.outputs.engine_runtime_only != 'true'
     needs: [plan, authorize-publish, build]
     # Execute tools from the first selected native architecture. Those tools can
     # verify either target archive without executing its application payloads.
@@ -738,3 +759,102 @@ jobs:
           TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
           TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
         run: tools/apps/publish-collections.sh
+
+  build-engine-runtime:
+    if: needs.plan.outputs.engine_runtime_only == 'true'
+    needs: [plan, authorize-publish]
+    name: Browser engine / ${{ matrix.arch }}
+    runs-on: ${{ matrix.build_runner }}
+    timeout-minutes: 180
+    container:
+      image: ${{ needs.plan.outputs.builder_image }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      TILO_SCCACHE_KEY_PREFIX: tilo/apps/v2/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Restore Cargo downloads
+        uses: ./.forgejo/actions/restore-cargo-downloads
+      - name: Prepare compiler cache
+        run: bash tools/ci/sccache.sh prepare
+      - name: Compile the pinned native engine without release credentials
+        run: |
+          set -euo pipefail
+          cpus=$(nproc)
+          if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
+            cpus=$(( (quota + period - 1) / period ))
+          fi
+          memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
+          if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
+            (( limit < memory )) && memory=$limit
+          fi
+          jobs=$(( memory / (2 << 30) ))
+          (( jobs > cpus )) && jobs=$cpus
+          (( jobs < 1 )) && jobs=1
+          export CARGO_BUILD_JOBS=$jobs
+          echo "::notice::cargo jobs: $jobs of $cpus CPUs, $(( memory >> 30 )) GiB"
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py compile \
+            --arch '${{ matrix.arch }}' --source "$GITHUB_SHA"
+      - name: Seal the verified engine with existing runtime and app authorities
+        env:
+          REQUESTED_PUBLISH: ${{ needs.plan.outputs.publish }}
+          TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+        run: |
+          set -euo pipefail
+          identity="$RUNNER_TEMP/tilo-engine-app-identity.json"
+          runtime_identity="$RUNNER_TEMP/tilo-engine-runtime-identity.json"
+          trap 'rm -f "$identity" "$runtime_identity"' EXIT
+          if [[ "$REQUESTED_PUBLISH" == true ]]; then
+            : "${TAPP_PUBLISHER_IDENTITY:?}" "${RUNTIME_BUNDLE_SIGNING_KEY:?}"
+            (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")
+            (umask 077; printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" > "$runtime_identity")
+            export TAPP_PUBLISHER_IDENTITY_FILE="$identity" RUNTIME_BUNDLE_IDENTITY_FILE="$runtime_identity"
+          fi
+          unset TAPP_PUBLISHER_IDENTITY RUNTIME_BUNDLE_SIGNING_KEY
+          python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py seal \
+            --arch '${{ matrix.arch }}' --source "$GITHUB_SHA" --sequence "$GITHUB_RUN_NUMBER"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: browser-engine-runtime-${{ matrix.arch }}
+          path: |
+            dist/browser-runtime-release/package/**
+            dist/browser-runtime-release/bin/**
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-engine-runtime:
+    if: needs.plan.outputs.engine_runtime_only == 'true' && needs.plan.outputs.publish == 'true'
+    needs: [plan, authorize-publish, build-engine-runtime]
+    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    timeout-minutes: 60
+    container:
+      image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          pattern: browser-engine-runtime-*
+          path: engine-release
+      - name: Verify and publish only the signed Browser runtime
+        env:
+          MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
+          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+          ENGINE_ARCHITECTURES: ${{ needs.plan.outputs.matrix }}
+        run: tools/apps/publish-browser-runtime.sh
