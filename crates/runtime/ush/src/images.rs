@@ -218,7 +218,7 @@ pub fn registry_images() -> Result<Option<tilo_oci_images::OciImages>, String> {
 
 impl Images for StoreImages {
     fn tree(&self, id: &PackageId) -> Result<PathBuf, String> {
-        package_store::materialized_tree(&self.store, id).map_err(|e| e.to_string())
+        package_store::local_materialized_tree(&self.store, id).map_err(|e| e.to_string())
     }
 
     fn check_tool(&self, tool: &PackageId, runtime: &PackageId) -> Result<(), String> {

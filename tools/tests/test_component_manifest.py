@@ -130,6 +130,7 @@ class InstallerTests(unittest.TestCase):
                 shell = image / "desktop-binaries/usr/bin/shell"
                 self.assertEqual(shell.stat().st_mode & 0o777, 0o755)
                 self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/store"), "app")
+                self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/ush"), "../libexec/tilo-ush")
                 self.assertFalse((image / "desktop-binaries/usr/bin/browser").exists())
         with self.subTest(phase='production selection never includes dev only components'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
