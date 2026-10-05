@@ -24,6 +24,34 @@ struct Worker {
 }
 
 impl Pictures {
+    /// Decode and render the finder input on the worker, retaining the
+    /// originating window's content store for its eventual matte.
+    ///
+    /// # Errors
+    /// Returns why the selection request or its picture cannot be prepared.
+    pub fn prepare(
+        &self,
+        art: &Artwork,
+        content: ContentStore,
+        select: &crate::selection::Select,
+    ) -> Result<crate::subject::Prepared, String> {
+        let mut cached = self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
+        let worker = cached.get_or_insert_with(|| Worker {
+            renderer: Renderer::default(),
+            text: TextRenderer::new(),
+        });
+        worker.renderer.pictures.read_from(content.clone());
+        let prepared = crate::subject::prepare_in(
+            select,
+            &mut worker.renderer,
+            &mut worker.text,
+            art,
+            content,
+        );
+        drop(cached);
+        prepared
+    }
+
     /// Render the invocation's snapshot, using its window's content store.
     /// File writes stay with the completion, where the host's grants apply.
     ///
