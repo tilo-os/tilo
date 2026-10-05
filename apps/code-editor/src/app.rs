@@ -276,6 +276,18 @@ impl Widget for BottomPanelToggle {
 }
 
 impl ui::widget::controls::ActionControls for BottomPanelToggle {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        self.button.install_control_custody(domain, attachment);
+    }
+
+    fn has_pending_control_invocation(&self) -> bool {
+        self.button.has_pending_control_invocation()
+    }
+
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.button.take_control_invocation()
     }
