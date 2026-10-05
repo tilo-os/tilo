@@ -2466,6 +2466,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "runtime-dylib",
+ "runtime-portal",
  "serde",
  "serde_json",
  "taffy",
@@ -2474,7 +2475,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-vello",
  "tilo-winit",
- "tilo-xdg-paths",
  "workspace-hack",
 ]
 
@@ -5101,6 +5101,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-power-mgmt",
  "tilo-startup-metrics",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
@@ -9816,6 +9817,7 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
  "rand_core 0.10.0",
+ "runtime-portal",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -12192,6 +12194,8 @@ dependencies = [
  "capnp-rpc",
  "libc",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tilo-test-env",
  "tokio",
@@ -15513,6 +15517,27 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-device-admin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "iroh",
+ "iroh-relay",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-user-identity",
+ "tokio",
  "workspace-hack",
 ]
 

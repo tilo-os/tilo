@@ -73,3 +73,7 @@ for m in $omit_modules; do
   ! grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || {
     echo "unsupported initramfs module $m was included" >&2; exit 1; }
 done
+# A board image (one with a hardware-profile definition) also reads its
+# initramfs back: the profile's firmware and boot modules, and the Wi-Fi pieces
+# sibling unlock installs only optionally. Generic images skip this.
+python3 -B "$(dirname "${BASH_SOURCE[0]}")/verify-board-initramfs.py" "$kver"

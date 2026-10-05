@@ -424,12 +424,13 @@ impl NetworkSnapshot {
     /// system bus, so this never runs on the UI thread.
     fn read(initial: bool) -> Self {
         let profiles = os_actions::list_saved_network_profiles();
+        let radios = os_actions::get_radio_state();
         Self {
             networks: os_actions::list_wifi_networks(),
-            wifi_enabled: Some(os_actions::get_wifi()),
+            wifi_enabled: Some(wifi_enabled_from(&radios)),
             sims: initial.then(os_actions::list_mobile_sims),
             wired: Some(os_actions::get_wired()),
-            radios: Some(os_actions::get_radio_state()),
+            radios: Some(radios),
             connectivity: Some(os_actions::get_connectivity()),
             profile_settings: profiles
                 .as_deref()
@@ -455,7 +456,11 @@ impl NetworkSnapshot {
             wifi_enabled: Some(Ok(true)),
             sims: Some(Ok(Vec::new())),
             wired: Some(Ok(WiredInfo::default())),
-            radios: Some(Ok(os_actions::RadioState::default())),
+            radios: Some(Ok(os_actions::RadioState {
+                wifi_available: true,
+                wifi_enabled: true,
+                ..os_actions::RadioState::default()
+            })),
             connectivity: Some(Ok(ConnectivityState::Full)),
             profiles: Some(Ok(Vec::new())),
             profile_settings: HashMap::new(),
@@ -478,6 +483,16 @@ struct NetworkReadErrors {
     profiles: Option<String>,
     hotspot_clients: Option<String>,
     vpns: Option<String>,
+}
+
+/// The Wi-Fi switch position from the radio state. A machine without a Wi-Fi
+/// adapter has its Wi-Fi off — a state the Wi-Fi card names — and only a radio
+/// state that could not be read is an error.
+fn wifi_enabled_from(radios: &Result<os_actions::RadioState, String>) -> Result<bool, String> {
+    radios
+        .as_ref()
+        .map(|radios| radios.wifi_available && radios.wifi_enabled)
+        .map_err(Clone::clone)
 }
 
 /// Keep `value` on success and record why it failed otherwise. `None` (the
@@ -919,6 +934,8 @@ pub struct NetworkModel {
     snapshot: Option<std::sync::mpsc::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
+    /// The last radio state read lists no Wi-Fi adapter.
+    wifi_adapter_absent: bool,
     wired: WiredInfo,
     radios: os_actions::RadioState,
     connectivity: ConnectivityState,
@@ -1014,6 +1031,7 @@ impl NetworkModel {
             snapshot: None,
             networks: Vec::new(),
             wifi_enabled: false,
+            wifi_adapter_absent: false,
             wired: WiredInfo::default(),
             radios: os_actions::RadioState::default(),
             connectivity: ConnectivityState::Unknown,
@@ -1105,6 +1123,7 @@ impl NetworkModel {
             self.wired = wired;
         }
         if let Some(radios) = adopt(snapshot.radios, &mut self.read_errors.radios) {
+            self.wifi_adapter_absent = !radios.wifi_available;
             self.radios = radios;
         }
         if let Some(connectivity) = adopt(snapshot.connectivity, &mut self.read_errors.connectivity)
@@ -2065,17 +2084,23 @@ impl NetworkModel {
         let wifi_toggle =
             self.switch_control("network.wifi", self.wifi_enabled, NetworkEffect::SET_WIFI);
         // An unread radio state is not offered as a switch position.
-        let wifi_toggle: El = Box::new(if self.read_errors.wifi_enabled.is_none() {
-            wifi_toggle
-        } else {
-            wifi_toggle.with_enabled(false)
-        });
+        let wifi_toggle: El = Box::new(
+            if self.read_errors.wifi_enabled.is_none() && !self.wifi_adapter_absent {
+                wifi_toggle
+            } else {
+                wifi_toggle.with_enabled(false)
+            },
+        );
 
         let mut wifi_rows: Vec<El> = Vec::new();
         let status_label = t("net-status");
-        match self.wifi_status_error() {
-            Some(error) => wifi_rows.push(error_row(&status_label, &error)),
-            None => wifi_rows.push(value_row(&status_label, &self.connection_status_text())),
+        if self.wifi_adapter_absent {
+            wifi_rows.push(value_row(&status_label, &t("net-no-wifi-adapter")));
+        } else {
+            match self.wifi_status_error() {
+                Some(error) => wifi_rows.push(error_row(&status_label, &error)),
+                None => wifi_rows.push(value_row(&status_label, &self.connection_status_text())),
+            }
         }
         if let Some(notice) = &self.notice {
             wifi_rows.push(caption(notice));
@@ -3072,6 +3097,37 @@ mod tests {
 
     fn shown(model: &NetworkModel) -> Vec<String> {
         crate::widgets::announced_text(model.build_composition().as_ref())
+    }
+
+    /// A wired-only machine names its missing adapter without treating it as
+    /// a read failure or offering a radio switch.
+    #[test]
+    fn a_machine_without_wifi_says_so_instead_of_reporting_a_read_error() {
+        let radios = Ok(os_actions::RadioState::default());
+        assert_eq!(wifi_enabled_from(&radios), Ok(false));
+        assert_eq!(
+            wifi_enabled_from(&Err("nmcli not installed".into())),
+            Err("nmcli not installed".to_string())
+        );
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        let mut snapshot = NetworkSnapshot::of_networks(Vec::new());
+        snapshot.wifi_enabled = Some(wifi_enabled_from(&radios));
+        snapshot.radios = Some(radios);
+        model.adopt_snapshot(snapshot).unwrap();
+        let text = shown(&model);
+        assert!(
+            text.iter()
+                .any(|line| line == "No Wi-Fi adapter on this device"),
+            "{text:#?}"
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.contains("Can't read network status")),
+            "{text:#?}"
+        );
+        assert!(!text.contains(&t("net-wifi-off")), "{text:#?}");
     }
 
     /// A status that could not be read is shown as that failure, never as a

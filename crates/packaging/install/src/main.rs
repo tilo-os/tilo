@@ -393,6 +393,16 @@ enum Error {
          Or install anyway, knowing it cannot launch yet:  add --ignore-missing-runtime"
     )]
     RuntimeDependencyMissing { package: String, runtime: String },
+    #[error(
+        "{package} {version} needs system interfaces this Tilo does not provide: {unmet}.\n  \
+         It was built for another version of Tilo. Update the system first, or keep the \
+         version you have."
+    )]
+    InterfacesUnmet {
+        package: String,
+        version: String,
+        unmet: String,
+    },
     #[error("manifest declares runtime `{0}`, which is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
     #[error(
@@ -771,6 +781,22 @@ fn runtime_status(checked: &Checked) -> Result<Option<(String, bool)>, Error> {
     Ok(Some((version.to_string(), present)))
 }
 
+/// Refuse a package that requires a system interface version this OS does
+/// not serve: installed, it could not work, and it would sit in front of the
+/// image's copy that does.
+fn fits_os(checked: &Checked) -> Result<(), Error> {
+    let provided = package_store::interfaces::system_interfaces();
+    let unmet = package_store::interfaces::unmet(provided.as_ref(), &checked.manifest);
+    if unmet.is_empty() {
+        return Ok(());
+    }
+    Err(Error::InterfacesUnmet {
+        package: checked.id().to_string(),
+        version: checked.version().to_string(),
+        unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
+    })
+}
+
 /// Make the declared runtime available, or refuse the install.
 ///
 /// The refusal is the point: catching a missing `tilo-runtime/<v>`
@@ -909,6 +935,7 @@ fn install(
 
     // 3. Dependencies, before anything is stored: a half-succeeded install
     //    that then refuses is worse than one that refuses upfront.
+    fits_os(&checked)?;
     satisfy_runtime(&checked, runtime)?;
 
     // 4. Into the content store, materialised once; the registry row is the
@@ -1393,6 +1420,7 @@ fn update_one(
         return Ok(UpdateOutcome::Planned);
     }
 
+    fits_os(&checked)?;
     satisfy_runtime(&checked, request.runtime)?;
 
     // 2. The new version is materialised beside the old one and the registry

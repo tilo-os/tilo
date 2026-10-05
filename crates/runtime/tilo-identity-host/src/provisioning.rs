@@ -1435,6 +1435,7 @@ mod tests {
                 can_act_as_host: false,
                 can_read_all_workspaces: true,
                 foreign: false,
+                can_administer_devices: false,
             },
             issued_at_ns: 1_000,
             expires_at_ns: None,

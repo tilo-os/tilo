@@ -638,6 +638,9 @@ pub struct OnboardingView {
     identity_dir: Option<PathBuf>,
     nearby: Option<crate::onboarding_nearby::NearbyPairing>,
     nearby_status: Option<String>,
+    /// Why the last pairing attempt ended without joining. The nearby
+    /// screen titles its error with this cause; `error` holds its message.
+    nearby_failure: Option<crate::onboarding_nearby::NearbyFailure>,
     /// The verification code both devices show while pairing waits for
     /// approval.
     nearby_code: Option<String>,
@@ -880,6 +883,7 @@ impl OnboardingView {
             identity_dir: None,
             nearby: None,
             nearby_status: None,
+            nearby_failure: None,
             nearby_code: None,
             nearby_active_for_snapshot: false,
             nearby_status_path: None,
@@ -1355,6 +1359,7 @@ impl OnboardingView {
         self.codec_page = false;
         self.codec_error = None;
         self.nearby_status = None;
+        self.nearby_failure = None;
         self.nearby_code = None;
         self.nearby_active_for_snapshot = false;
         let minted = MintedIdentity {
@@ -2289,10 +2294,13 @@ impl OnboardingView {
             .push(heading(&t("onboarding-nearby-title"), theme))
             .push(paragraph(&t("onboarding-nearby-body"), theme));
         if let Some(error) = &self.error {
-            body = body.push(spaced_banner(
-                Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
-                theme,
-            ));
+            // The banner's title is what went wrong; a screen reader speaks
+            // it first, so it names the cause rather than only the outcome.
+            let banner = match &self.nearby_failure {
+                Some(failure) => Banner::error(failure.title()).with_message(failure.message()),
+                None => Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
+            };
+            body = body.push(spaced_banner(banner, theme));
         }
         let mut status = Column::new()
             .with_no_padding()
@@ -3105,6 +3113,7 @@ impl Widget for OnboardingView {
         let mut start_nearby = false;
         if self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing {
             self.error = None;
+            self.nearby_failure = None;
             self.nearby_status = None;
             self.nearby_code = None;
             self.flow.choose_nearby();
@@ -3139,32 +3148,33 @@ impl Widget for OnboardingView {
             && self.nearby.is_none()
             && self.persist_progress(PersistedStage::AcquiringIdentity)
         {
-            match (&self.identity_dir, &self.nearby_status_path) {
-                (Some(identity_dir), Some(status_path)) => {
-                    let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
-                    let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
-                        .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
-                    match crate::onboarding_nearby::NearbyPairing::start(
-                        &identity_root,
-                        identity_dir,
-                        status_path,
-                        &label,
-                    ) {
-                        Ok(pairing) => {
-                            self.nearby = Some(pairing);
-                            self.nearby_status = Some(t("onboarding-nearby-waiting"));
-                            self.nearby_code = None;
-                            self.error = None;
-                        }
-                        Err(error) => {
-                            self.error = Some(t_args(
-                                "onboarding-nearby-start-failed",
-                                &[("error", error.into())],
-                            ));
-                        }
+            if let (Some(identity_dir), Some(status_path)) =
+                (&self.identity_dir, &self.nearby_status_path)
+            {
+                let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
+                let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
+                    .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
+                match crate::onboarding_nearby::NearbyPairing::start(
+                    &identity_root,
+                    identity_dir,
+                    status_path,
+                    &label,
+                ) {
+                    Ok(pairing) => {
+                        self.nearby = Some(pairing);
+                        self.nearby_status = Some(t("onboarding-nearby-waiting"));
+                        self.nearby_code = None;
+                        self.error = None;
+                        self.nearby_failure = None;
+                    }
+                    Err(failure) => {
+                        self.error = Some(failure.message());
+                        self.nearby_failure = Some(failure);
                     }
                 }
-                _ => self.error = Some(t("onboarding-nearby-unavailable")),
+            } else {
+                self.error = Some(t("onboarding-nearby-unavailable"));
+                self.nearby_failure = None;
             }
             self.invalidation.structure();
         }
@@ -3200,11 +3210,12 @@ impl Widget for OnboardingView {
                 self.nearby_status = Some(t("onboarding-nearby-connected"));
                 self.invalidation.structure();
             }
-            Some(crate::onboarding_nearby::NearbyEvent::Failed(message)) => {
+            Some(crate::onboarding_nearby::NearbyEvent::Failed(failure)) => {
                 self.nearby = None;
                 self.nearby_code = None;
                 self.nearby_status = None;
-                self.error = Some(message);
+                self.error = Some(failure.message());
+                self.nearby_failure = Some(failure);
                 self.invalidation.structure();
             }
         }
@@ -3302,6 +3313,7 @@ impl Widget for OnboardingView {
             self.error = None;
             clear_secret(&self.connect_passphrase);
             self.nearby = None;
+            self.nearby_failure = None;
             self.nearby_status = None;
             self.nearby_code = None;
             if !(self.recovery_only && self.flow.screen() == Screen::Existing) {
@@ -4027,6 +4039,19 @@ mod tests {
             accessibility_for_id(&*composition, "onboarding.nearby.code").is_none(),
             "the stale code is gone"
         );
+        // What went wrong is the error's accessible name, not only its
+        // description: a screen reader speaks it first, and the generic
+        // outcome alone would hide that the commit was refused.
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        assert!(
+            names.iter().any(|name| name.contains("Permission denied")),
+            "the cause is named: {names:?}"
+        );
+        assert!(
+            !names.contains(&t("onboarding-connect-failed")),
+            "a refused commit is not reported generically: {names:?}"
+        );
     }
 
     fn process_group_has_live_member(pgid: i32) -> bool {
@@ -4123,6 +4148,15 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: winit::event::MouseButton::Left,
+        }
+    }
+
+    fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
+        if let Some(name) = widget.accessibility().and_then(|node| node.name) {
+            names.push(name);
+        }
+        for child in widget.children() {
+            accessible_names(child, names);
         }
     }
 

@@ -289,6 +289,7 @@ files-a11y-version-conflict = Has a version conflict
 files-history-encode-failed = Could not encode the history request
 files-history-request-too-large = History request exceeds its wire bound
 files-history-restore-failed = Could not restore that version: { $error }
+files-open-terminal-failed = Could not open Terminal: { $error }
 files-conflict-strategy-unsupported = That conflict strategy is not supported by Files yet
 files-conflict-encode-failed = Could not encode the conflict request
 files-conflict-request-too-large = Conflict request exceeds its wire bound

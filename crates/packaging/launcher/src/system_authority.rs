@@ -10,7 +10,14 @@
 //! nothing true to show.
 //!
 //! The grant is **owned by the image, not by the package**: only the package
-//! ids in [`CLIENTS`] receive it, whatever a manifest says. It adds
+//! ids in [`CLIENTS`] receive it, whatever a manifest says. The package in
+//! turn names the contract it was built against as the `system` service of
+//! its `[sandbox.services]` ([`crate::services::SYSTEM_SERVICE`]); a client
+//! that does not declare it gets nothing, and one that requires a version
+//! the image does not serve is refused before launch. This grant is version
+//! 1 of that interface; changing what it binds or which authorities it
+//! reaches in a way an older control panel could not work with is a new
+//! version, declared in the image's `system-interfaces.toml`. It adds
 //!
 //! - the host's client binaries and configuration, read-only
 //!   ([`HOST_READ_PATHS`]);
@@ -74,10 +81,17 @@ pub const SYSTEM_BUS_FILTER_ARGS: &[&str] = &[
     "--talk=org.fedoraproject.FirewallD1",
 ];
 
-/// Whether `package_id` receives the grant.
+/// Whether `package_id` may receive the grant.
 #[must_use]
 pub fn is_client(package_id: &str) -> bool {
     CLIENTS.contains(&package_id)
+}
+
+/// Whether a launch of `package_id` declaring `services` receives the grant:
+/// an image-named client that declares the system interface.
+#[must_use]
+pub fn grants(package_id: &str, services: &std::collections::BTreeMap<String, String>) -> bool {
+    is_client(package_id) && services.contains_key(crate::services::SYSTEM_SERVICE)
 }
 
 /// One socket bound at the same path inside the sandbox.
@@ -158,9 +172,10 @@ fn system_bus_address() -> String {
 #[must_use]
 pub fn resolve(
     package_id: &str,
+    services: &std::collections::BTreeMap<String, String>,
     uid: u32,
 ) -> Option<(SystemAuthorityPlan, Option<DBusProxyGuard>)> {
-    if !is_client(package_id) {
+    if !grants(package_id, services) {
         return None;
     }
     let mut plan = SystemAuthorityPlan {
@@ -286,7 +301,23 @@ mod tests {
 
     #[test]
     fn only_the_control_panel_receives_the_grant() {
+        let declared: std::collections::BTreeMap<String, String> =
+            [("system".to_owned(), "required@1".to_owned())].into();
         assert!(is_client("so.tilo.settings"));
+        assert!(grants("so.tilo.settings", &declared));
+        // Settings without the system interface declared is not served it.
+        assert!(!grants(
+            "so.tilo.settings",
+            &std::collections::BTreeMap::default()
+        ));
+        assert!(
+            resolve(
+                "so.tilo.settings",
+                &std::collections::BTreeMap::default(),
+                1000
+            )
+            .is_none()
+        );
         for other in [
             "so.tilo.files",
             "so.tilo.settings.evil",
@@ -294,7 +325,8 @@ mod tests {
             "so.tilo.browser",
         ] {
             assert!(!is_client(other), "{other}");
-            assert!(resolve(other, 1000).is_none(), "{other}");
+            assert!(!grants(other, &declared), "{other}");
+            assert!(resolve(other, &declared, 1000).is_none(), "{other}");
         }
     }
 

@@ -22,7 +22,7 @@
 //! Page ids are minted at *authoring* time and carried in the payload;
 //! [`Action::apply`] never touches the RNG or the wall-clock. A malformed payload
 //! (an unparseable id) is a **no-op** rather than an error, so a bad replay can't
-//! wedge a peer. Deletes and sibling renumbering are recomputed from the
+//! wedge a peer. Deletes are recomputed from the
 //! document at the replay's base state, so two replicas at the same heads land on
 //! the byte-identical result. Page *body* text is edited by splicing directly
 //! into the per-block Automerge `Text` (the toolkit's CRDT-native text path); it
@@ -44,7 +44,6 @@ use crate::continuation::{self, BuilderDomain};
 use crate::doc::NotesDoc;
 use crate::effect::NotesEffect;
 use crate::model::{PageId, PageMeta, TagId, TagMeta};
-use crate::num;
 use tilo_document::RichText;
 use tilo_document::RichTextAction;
 use tilo_document::action::RegionKind;
@@ -113,7 +112,8 @@ pub struct PageData {
     pub title: String,
     /// Parent page uuid (string form), or `""` for a root page.
     pub parent: String,
-    pub order: u32,
+    /// Fractional order key among the page's siblings.
+    pub order: String,
 }
 
 /// Wire-stable representation of a tag. Its UUID is minted before dispatch,
@@ -150,14 +150,17 @@ impl PageData {
             id: m.id.to_string(),
             title: m.title.clone(),
             parent: m.parent.map(|p| p.to_string()).unwrap_or_default(),
-            order: m.order,
+            order: m.order.clone(),
         }
     }
 
-    /// Reconstruct the model meta, or `None` when the id is malformed so `apply`
-    /// can no-op instead of writing a garbage page.
+    /// Reconstruct the model meta, or `None` when the id or order key is
+    /// malformed so `apply` can no-op instead of writing a garbage page.
     fn to_meta(&self) -> Option<PageMeta> {
         let id = self.id.parse::<PageId>().ok()?;
+        if !ui::tilo_resource::order::is_key(&self.order) {
+            return None;
+        }
         let parent = if self.parent.is_empty() {
             None
         } else {
@@ -167,7 +170,7 @@ impl PageData {
             id,
             title: self.title.clone(),
             parent,
-            order: self.order,
+            order: self.order.clone(),
         })
     }
 }
@@ -185,10 +188,10 @@ pub enum NotesAction {
     /// The title is diff-spliced so a rename doesn't tombstone the whole title.
     UpsertPage(PageData),
     /// Create a page after its parent's current children. The position is
-    /// resolved from the document at the replay's base state, as a delete's
-    /// renumbering is, so a create authored without the current tree (an
-    /// agent, a script, a second create before the tree republishes) never
-    /// takes a sibling's place.
+    /// resolved from the document at the replay's base state, so a create
+    /// authored without the current tree (an agent, a script, a second create
+    /// before the tree republishes) never takes a sibling's place. Two
+    /// replicas appending at once get the same key and order by page id.
     AppendPage {
         id: String,
         title: String,
@@ -200,10 +203,9 @@ pub enum NotesAction {
         before: Vec<PageData>,
         after: Vec<PageData>,
     },
-    /// Delete a page and every descendant, then re-densify the `order` of each
-    /// affected parent's surviving children so the tree stays contiguous. The
-    /// descendant set and the renumbering are recomputed from the document at
-    /// the replay's base state, so replicas converge.
+    /// Delete a page and every descendant. The descendant set is recomputed
+    /// from the document at the replay's base state, so replicas converge.
+    /// Surviving siblings keep their fractional keys.
     DeletePage { id: String },
     /// Copy the exact source subtree using only these pre-minted identities.
     DuplicateSubtree {
@@ -721,12 +723,7 @@ fn import_markdown(
         "" => "Imported note",
         title => title,
     };
-    let order = pages
-        .iter()
-        .filter(|existing| existing.parent.is_none())
-        .map(|existing| existing.order.saturating_add(1))
-        .max()
-        .unwrap_or(0);
+    let order = crate::model::key_after(pages.iter().filter(|existing| existing.parent.is_none()));
     for (digest, bytes) in assets {
         crate::notebook::put_asset(doc, digest, bytes)?;
     }
@@ -816,14 +813,15 @@ impl Action for NotesAction {
                 if parent.is_some_and(|parent| pages.iter().all(|page| page.id != parent)) {
                     return Err(ActionError::Refused("the parent note is gone".into()));
                 }
-                let order = pages.iter().filter(|page| page.parent == parent).count();
+                let order =
+                    crate::model::key_after(pages.iter().filter(|page| page.parent == parent));
                 NotesDoc::upsert_page_meta(
                     doc,
                     &PageMeta {
                         id,
                         title: title.clone(),
                         parent,
-                        order: num::u32_of_usize(order),
+                        order,
                     },
                 );
             }
@@ -850,14 +848,6 @@ impl Action for NotesAction {
                         stack.push(p.id);
                     }
                 }
-                // Parents whose surviving children need re-densifying: the
-                // parent of each removed page that is not itself removed.
-                let mut affected: HashSet<Option<PageId>> = HashSet::new();
-                for p in all.iter().filter(|p| removed.contains(&p.id)) {
-                    if p.parent.is_none_or(|pp| !removed.contains(&pp)) {
-                        affected.insert(p.parent);
-                    }
-                }
                 // Delete in a deterministic order (by page id). A `HashSet`'s
                 // iteration order is not stable across replicas, so emitting the
                 // delete ops in set order would make the change diverge; sorting
@@ -866,29 +856,6 @@ impl Action for NotesAction {
                 removed_sorted.sort();
                 for id in &removed_sorted {
                     NotesDoc::remove_page(doc, *id);
-                }
-                // Re-densify each affected sibling group, visiting parents in a
-                // stable order (root group first, then by parent id) for the same
-                // reason. Within a group, siblings sort by their existing order
-                // and are rewritten to 0,1,2,…; only the pages whose order
-                // actually moves are re-written (a diff-spliced title + guarded
-                // scalars make an unchanged upsert a no-op).
-                let mut affected_sorted: Vec<Option<PageId>> = affected.into_iter().collect();
-                affected_sorted.sort();
-                for parent in affected_sorted {
-                    let mut siblings: Vec<PageMeta> = all
-                        .iter()
-                        .filter(|p| p.parent == parent && !removed.contains(&p.id))
-                        .cloned()
-                        .collect();
-                    siblings.sort_by_key(|p| p.order);
-                    for (i, mut m) in siblings.into_iter().enumerate() {
-                        let new_order = num::u32_of_usize(i);
-                        if m.order != new_order {
-                            m.order = new_order;
-                            NotesDoc::upsert_page_meta(doc, &m);
-                        }
-                    }
                 }
             }
             NotesAction::EditBody { page, edit } => {
@@ -1017,8 +984,13 @@ pub fn rename_page_action(meta: &PageMeta, new_title: &str) -> NotesAction {
 }
 
 /// Create a child page under `parent` (or a root page when `parent` is `None`)
-/// with a freshly-minted `id`, positioned at `order`.
-pub fn new_page_action(id: PageId, parent: Option<PageId>, order: u32, title: &str) -> NotesAction {
+/// with a freshly-minted `id`, at the fractional key `order`.
+pub fn new_page_action(
+    id: PageId,
+    parent: Option<PageId>,
+    order: String,
+    title: &str,
+) -> NotesAction {
     NotesAction::UpsertPage(PageData {
         id: id.to_string(),
         title: title.to_string(),
@@ -1459,33 +1431,22 @@ fn decorate_backlinks(resource: &mut Resource, targets: &HashSet<PageId>) {
 /// every node (quadratic for a wide notebook).
 struct PageResourceIndex<'a> {
     children: HashMap<Option<PageId>, Vec<&'a PageMeta>>,
-    next_orders: HashMap<Option<PageId>, u32>,
 }
 
 impl<'a> PageResourceIndex<'a> {
     fn new(pages: &'a [PageMeta]) -> Self {
         let mut children: HashMap<Option<PageId>, Vec<&PageMeta>> = HashMap::new();
-        let mut next_orders = HashMap::new();
         for page in pages {
             children.entry(page.parent).or_default().push(page);
-            let next = next_orders.entry(page.parent).or_insert(0);
-            *next = (*next).max(page.order.saturating_add(1));
         }
         for siblings in children.values_mut() {
-            siblings.sort_by_key(|page| page.order);
+            siblings.sort_by(|a, b| crate::model::sibling_order(a, b));
         }
-        Self {
-            children,
-            next_orders,
-        }
+        Self { children }
     }
 
     fn children_of(&self, parent: Option<PageId>) -> &[&'a PageMeta] {
         self.children.get(&parent).map_or(&[], Vec::as_slice)
-    }
-
-    fn next_order(&self, parent: Option<PageId>) -> u32 {
-        self.next_orders.get(&parent).copied().unwrap_or(0)
     }
 }
 
@@ -1661,7 +1622,6 @@ fn page_resource_from_index(
     // New child — prompted; the child id is minted once at commit time and the
     // append position is resolved from the current tree.
     let parent = m.id;
-    let order = index.next_order(Some(m.id));
     res = res.with_action(
         ActionSpec::prompted(
             "new-child",
@@ -1672,12 +1632,11 @@ fn page_resource_from_index(
             move |title: &str| {
                 let t = title.trim();
                 let title = if t.is_empty() { "Untitled" } else { t };
-                encode(&new_page_action(Uuid::new_v4(), Some(parent), order, title))
+                encode(&append_page_action(Uuid::new_v4(), Some(parent), title))
             },
         )
         .with_continuation_identity(continuation::builder(BuilderDomain::CreatePage {
             parent: Some(parent),
-            order,
         })),
     );
 
@@ -1995,13 +1954,18 @@ pub(crate) fn notebook_bound_declarations(
     ];
     let title = today_title();
     if !workspace.pages().iter().any(|page| page.title == title) {
-        let order = PageResourceIndex::new(workspace.pages()).next_order(None);
+        let order = crate::model::key_after(
+            workspace
+                .pages()
+                .iter()
+                .filter(|page| page.parent.is_none()),
+        );
         declarations.push(
             ui::tilo_resource::ActionDecl::new(
                 "daily-note",
                 "Create today's note",
                 Vec::new(),
-                move |_, _| Ok(new_page_action(Uuid::new_v4(), None, order, &title)),
+                move |_, _| Ok(new_page_action(Uuid::new_v4(), None, order.clone(), &title)),
             )
             .describe("Create today's note, titled with the date."),
         );
@@ -2469,7 +2433,7 @@ mod tests {
             id: Uuid::from_u128(42),
             title: "Guide".into(),
             parent: None,
-            order: 0,
+            order: "a".into(),
         };
         NotesDoc::upsert_page_meta(&mut doc, &page);
         let resource = page_resource(&page, std::slice::from_ref(&page), &doc);
@@ -2581,14 +2545,14 @@ mod tests {
             let mut doc = AutoCommit::new();
             let source = Uuid::from_u128(1);
             let target = Uuid::from_u128(2);
-            for (id, title, order) in [(source, "Source", 0), (target, "Old title", 1)] {
+            for (id, title, order) in [(source, "Source", "a"), (target, "Old title", "b")] {
                 NotesDoc::upsert_page_meta(
                     &mut doc,
                     &PageMeta {
                         id,
                         title: title.into(),
                         parent: None,
-                        order,
+                        order: order.into(),
                     },
                 );
             }
@@ -2611,7 +2575,7 @@ mod tests {
                     id: target,
                     title: "Old title".into(),
                     parent: None,
-                    order: 1,
+                    order: "b".into(),
                 },
                 "New",
             )
@@ -2659,7 +2623,7 @@ mod tests {
                 id: projects,
                 title: "Projects".into(),
                 parent: None,
-                order: 0,
+                order: "a".into(),
             },
         );
         NotesDoc::upsert_page_meta(
@@ -2668,7 +2632,7 @@ mod tests {
                 id: a,
                 title: "Launch".into(),
                 parent: Some(projects),
-                order: 0,
+                order: "a".into(),
             },
         );
         NotesDoc::upsert_page_meta(
@@ -2677,7 +2641,7 @@ mod tests {
                 id: b,
                 title: "Notes".into(),
                 parent: Some(projects),
-                order: 1,
+                order: "b".into(),
             },
         );
         NotesDoc::upsert_page_meta(
@@ -2686,7 +2650,7 @@ mod tests {
                 id: inbox,
                 title: "Inbox".into(),
                 parent: None,
-                order: 1,
+                order: "b".into(),
             },
         );
         (doc, projects, a, b, inbox)
@@ -2719,12 +2683,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::notebook::initialize_empty(&mut doc).unwrap();
         for (id, parent, order, title) in [
-            (PROJECTS, None, 0, "Projects"),
-            (LAUNCH, Some(PROJECTS), 0, "Launch"),
-            (NOTES, Some(PROJECTS), 1, "Notes"),
-            (INBOX, None, 1, "Inbox"),
+            (PROJECTS, None, "a", "Projects"),
+            (LAUNCH, Some(PROJECTS), "a", "Launch"),
+            (NOTES, Some(PROJECTS), "b", "Notes"),
+            (INBOX, None, "b", "Inbox"),
         ] {
-            dispatch(&mut doc, &new_page_action(id, parent, order, title));
+            dispatch(&mut doc, &new_page_action(id, parent, order.into(), title));
         }
         dispatch(
             &mut doc,
@@ -2776,7 +2740,7 @@ mod tests {
             },
         ],
         undo: [
-            new_page => |_| encode(&new_page_action(Uuid::from_u128(0x9999), None, 2, "Fresh")),
+            new_page => |_| encode(&new_page_action(Uuid::from_u128(0x9999), None, "c".into(), "Fresh")),
         ],
         encodes: [
             delete_page => (&page_resource_id(PROJECTS), "delete", |_, _| {
@@ -2886,7 +2850,7 @@ mod tests {
                 id: projects,
                 title: "Projects".into(),
                 parent: None,
-                order: 0,
+                order: "a".into(),
             };
             let mut doc = AutoCommit::new();
             crate::notebook::initialize_empty(&mut doc).unwrap();
@@ -2931,25 +2895,25 @@ mod tests {
                     id: projects,
                     title: "Projects".into(),
                     parent: None,
-                    order: 0,
+                    order: "a".into(),
                 },
                 PageMeta {
                     id: a,
                     title: "A".into(),
                     parent: Some(projects),
-                    order: 0,
+                    order: "a".into(),
                 },
                 PageMeta {
                     id: b,
                     title: "B".into(),
                     parent: Some(projects),
-                    order: 1,
+                    order: "b".into(),
                 },
                 PageMeta {
                     id: inbox,
                     title: "Inbox".into(),
                     parent: None,
-                    order: 1,
+                    order: "b".into(),
                 },
             ];
             let mut doc = AutoCommit::new();
@@ -2982,8 +2946,12 @@ mod tests {
             )
             .unwrap();
             let updated = NotesDoc::list_pages(&doc);
-            assert_eq!(updated.iter().find(|page| page.id == b).unwrap().order, 0);
-            assert_eq!(updated.iter().find(|page| page.id == a).unwrap().order, 1);
+            let children = updated
+                .iter()
+                .filter(|page| page.parent == Some(projects))
+                .map(|page| page.id)
+                .collect::<Vec<_>>();
+            assert_eq!(children, vec![b, a]);
             let moved = updated.iter().find(|page| page.id == b).unwrap();
             let refreshed = page_resource(moved, &updated, &doc);
             assert!(
@@ -3234,7 +3202,7 @@ mod tests {
                 id: root,
                 title: "root".into(),
                 parent: None,
-                order: 0,
+                order: "a".into(),
             });
             let mut parent = root;
             for depth in 0..(RESOURCE_PAGE_SNAPSHOT_DEPTH + 4) {
@@ -3243,7 +3211,7 @@ mod tests {
                     id,
                     title: format!("deep-{depth}"),
                     parent: Some(parent),
-                    order: 0,
+                    order: "a".into(),
                 });
                 parent = id;
             }
@@ -3252,7 +3220,9 @@ mod tests {
                     id: Uuid::new_v4(),
                     title: format!("wide-{order}"),
                     parent: None,
-                    order: (order + 1) as u32,
+                    order: ui::tilo_resource::order::sequence(None, None, order + 1)
+                        .pop()
+                        .unwrap(),
                 });
             }
             let ctx = NotesResourceCtx {
@@ -3284,7 +3254,7 @@ mod tests {
                 id: page,
                 title: "Reference".into(),
                 parent: None,
-                order: 0,
+                order: "a".into(),
             }];
             let tags = (0..(RESOURCE_TAG_SNAPSHOT_LIMIT + 40))
                 .map(|index| TagMeta {
@@ -3355,7 +3325,7 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn page_hierarchy_actions_delete_create_and_record_addressable_history() {
-        eprintln!("phase delete_page_removes_the_subtree_and_renumbers");
+        eprintln!("phase delete_page_removes_the_subtree_and_keeps_survivor_keys");
         {
             let (mut doc, projects, _a, _b, inbox) = seeded();
             assert_eq!(NotesDoc::list_pages(&doc).len(), 4);
@@ -3373,13 +3343,12 @@ mod tests {
                 "only Inbox survives (Projects + 2 children gone)"
             );
             assert_eq!(left[0].id, inbox);
-            // Inbox was order 1; as the sole surviving root it re-densifies to 0.
-            assert_eq!(left[0].order, 0, "surviving root sibling renumbers to 0");
+            assert_eq!(left[0].order, "b", "a survivor keeps its key");
         }
 
-        eprintln!("phase new_child_prompt_upserts_under_its_parent");
+        eprintln!("phase new_child_prompt_appends_under_its_parent");
         {
-            let (doc, projects, _a, _b, _inbox) = seeded();
+            let (mut doc, projects, a, b, _inbox) = seeded();
             let resources = provide_resources(&ctx_from(&doc), &doc);
             let page = resources[0]
                 .children
@@ -3387,57 +3356,33 @@ mod tests {
                 .find(|r| r.label == "Projects")
                 .unwrap();
 
-            // New-child spec builds an UpsertPage under the right parent at the right
-            // order (the minted id differs each call, so compare the stable fields).
+            // New-child builds an AppendPage under the right parent; the position
+            // is resolved when it applies (the minted id differs each call).
             let new_child_spec = page.actions.iter().find(|a| a.id == "new-child").unwrap();
             let encoded = prompted_encode(new_child_spec, "Child");
             let decoded: NotesAction =
                 serde_json::from_slice(&encoded.payload).expect("payload decodes to NotesAction");
-            match decoded {
-                NotesAction::UpsertPage(d) => {
-                    assert_eq!(
-                        d.parent,
-                        projects.to_string(),
-                        "child parented under Projects"
-                    );
-                    assert_eq!(d.title, "Child");
-                    assert_eq!(d.order, 2, "appended after the two existing children");
-                }
-                NotesAction::UpdatePageTree { .. } => {
-                    panic!("new-child built the wrong action: UpdatePageTree")
-                }
-                NotesAction::DuplicateSubtree { .. } => {
-                    panic!("new-child built the wrong action: DuplicateSubtree")
-                }
-                NotesAction::ImportMarkdown { .. } => {
-                    panic!("new-child built the wrong action: ImportMarkdown")
-                }
-                NotesAction::AppendPage { .. } => {
-                    panic!("new-child built the wrong action: AppendPage")
-                }
-                NotesAction::DeletePage { id } => {
-                    panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")
-                }
-                NotesAction::EditBody { .. } => {
-                    panic!("new-child built the wrong action: EditBody")
-                }
-                NotesAction::WriteBody { .. } => {
-                    panic!("new-child built the wrong action: WriteBody")
-                }
-                NotesAction::AddImageAsset { .. } => {
-                    panic!("new-child built the wrong action: AddImageAsset")
-                }
-                NotesAction::UpsertTag(_) => panic!("new-child built the wrong action: UpsertTag"),
-                NotesAction::DeleteTag { .. } => {
-                    panic!("new-child built the wrong action: DeleteTag")
-                }
-                NotesAction::SetTagAssignment { .. } => {
-                    panic!("new-child built the wrong action: SetTagAssignment")
-                }
-                NotesAction::CreateAndAssignTag { .. } => {
-                    panic!("new-child built the wrong action: CreateAndAssignTag")
-                }
-            }
+            let NotesAction::AppendPage { id, title, parent } = &decoded else {
+                panic!("new-child built the wrong action: {decoded:?}");
+            };
+            assert_eq!(
+                parent,
+                &projects.to_string(),
+                "child parented under Projects"
+            );
+            assert_eq!(title, "Child");
+            let child = id.parse::<PageId>().unwrap();
+            dispatch(&mut doc, &decoded);
+            let children = NotesDoc::list_pages(&doc)
+                .into_iter()
+                .filter(|page| page.parent == Some(projects))
+                .map(|page| page.id)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                children,
+                vec![a, b, child],
+                "appended after the existing children"
+            );
         }
 
         eprintln!("phase a11y_tree_surfaces_page_delete_as_the_affordance_action");
@@ -3523,7 +3468,7 @@ mod tests {
                 id: "page-7".into(),
                 title: "Launch brief".into(),
                 parent: String::new(),
-                order: 0,
+                order: "a".into(),
             }));
             assert_eq!(context.action_label, "Update note");
             let resource = context.resource.expect("note resource");

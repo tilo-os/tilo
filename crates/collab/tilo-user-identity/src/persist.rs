@@ -1055,6 +1055,7 @@ pub fn provision_joined_device(
             can_act_as_host: false,
             can_read_all_workspaces: true,
             foreign: false,
+            can_administer_devices: false,
         },
         issued_at_ns: now_ns,
         expires_at_ns: None,
