@@ -521,7 +521,7 @@ impl Tools {
         let dynamics = Dynamics::of(preset, &BTreeMap::new());
         self.preset.set(preset);
         if preset.pixel() {
-            self.size.set(1.0);
+            self.size.set(0.0);
             self.view.set(Some(ViewRequest::Pixel));
         }
         self.flow.set(dynamics.flow);
