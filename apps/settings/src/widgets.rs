@@ -25,8 +25,8 @@ use ui::icons::Icon;
 use ui::tokens::{Metrics, Rhythm, Spacing, SpacingStep, TextRole};
 pub use ui::widget::Tone as StatusTone;
 use ui::widget::{
-    Badge, Button, ChipStyle, Column, Container, ControlSize, Density, Field, FormSection,
-    IconSize, IconWidget, Row, Section, Spacer, Text, Widget,
+    Badge, Button, ChipStyle, Column, Container, ControlSize, Field, FormSection, IconSize,
+    IconWidget, Row, Section, Spacer, Text, Widget,
 };
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
@@ -62,12 +62,13 @@ pub fn cards(items: Vec<El>) -> El {
 /// at layout and from the width they really get, whether their controls
 /// stand beside their labels or beneath them.
 pub fn rows(items: Vec<El>) -> El {
-    // Settings rows are a list, a compact step apart, not a form's
-    // comfortable spacing.
-    Box::new(items.into_iter().fold(
-        FormSection::untitled().with_density(Some(Density::Compact)),
-        FormSection::content,
-    ))
+    // A settings list: every labelled row a grouped row high, its control
+    // on the trailing edge, a separator between rows.
+    Box::new(
+        items
+            .into_iter()
+            .fold(FormSection::untitled().grouped(), FormSection::content),
+    )
 }
 
 /// An intrinsic-height column that owns one uniform `gap` between its

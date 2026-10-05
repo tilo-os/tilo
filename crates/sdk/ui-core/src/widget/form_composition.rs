@@ -922,7 +922,9 @@ impl Widget for Field {
         let first_line = control_height.min(self.first_line.max(1.0));
         if let Some(label) = self.parts.children.first_mut() {
             let height = measure_owned(label.as_mut(), AvailableSpace::MaxContent, text).height;
-            let top = if beside {
+            // A trailing control with help copy is centred on the whole
+            // row instead (see `place_parts`), so its label starts the row.
+            let top = if beside && !(self.trailing_control && self.has_help) {
                 ((first_line - height) / 2.0).max(0.0)
             } else {
                 0.0
@@ -1020,6 +1022,11 @@ impl Field {
                     style.justify_self = None;
                     style.justify_items = None;
                 }
+                // Beside a label with help copy, a trailing control (a
+                // switch, a chooser) is centred on the whole row, label and
+                // help together, as a settings list reads.
+                style.align_self =
+                    (trailing && beside && help).then_some(taffy::AlignItems::Center);
             });
         }
         if let Some(&part) = self.parts.nodes.get(2) {
@@ -1033,12 +1040,14 @@ impl Field {
         } else {
             self.stacked_gap
         };
-        // A grouped row with help copy keeps a tight step under it before
-        // the separator.
-        let bottom = if self.grouped && help {
-            self.help_gap
-        } else {
-            0.0
+        // A grouped row with help copy beside its control keeps a related
+        // step above and below, so a row grown past the list's row height by
+        // wrapped help never runs into its separators; stacked, it keeps a
+        // tight step under the help.
+        let (top, bottom) = match (self.grouped && help, beside) {
+            (true, true) => (self.stacked_gap, self.stacked_gap),
+            (true, false) => (0.0, self.help_gap),
+            (false, _) => (0.0, 0.0),
         };
         changed |= restyle(tree, node, |style| {
             style.grid_template_columns = if beside {
@@ -1048,6 +1057,7 @@ impl Field {
             };
             style.gap.width = length(pair_gap);
             style.gap.height = length(row_gap);
+            style.padding.top = length(top);
             style.padding.bottom = length(bottom);
         });
         changed
