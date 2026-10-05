@@ -58,6 +58,9 @@ const MOST_NEWLY_OPENED: usize = 40;
 const MAX_LOOP_TIME: Duration = Duration::from_secs(300);
 /// The most one model turn may take.
 const MAX_LOOP_TURN_TIME: Duration = Duration::from_secs(30);
+/// Bound Stop latency while the provider is silent without polling the host
+/// on every token. The broker remains the authority for the exact run/lease.
+const THINKING_CANCELLATION_POLL: Duration = Duration::from_millis(200);
 /// After a view operation, how long to wait for the broker to republish the
 /// catalogue the new view unlocks.
 const VIEW_SETTLE: Duration = Duration::from_millis(400);
@@ -870,8 +873,7 @@ impl Session {
                 .set_state(crate::live::LiveState::Thinking, "Thinking", None);
             self.live_publish(true);
         }
-        // `run_task` checked just before the first turn.
-        if turn > 0 && self.task_cancelled(run)? {
+        if self.task_cancelled(run)? {
             self.turn = None;
             return Ok(Some(LoopEnd::Cancelled(
                 "Cancelled before the next step".into(),
@@ -886,8 +888,16 @@ impl Session {
         // a turn whose transport stopped answering. Time spent running steps
         // does not count against the model.
         let mut stepping = Duration::ZERO;
+        let mut cancellation_checked = ui::time::now();
         let body = loop {
             self.pump_turn_waiting(Duration::from_millis(50));
+            if cancellation_checked.elapsed() >= THINKING_CANCELLATION_POLL {
+                if self.task_cancelled(run)? {
+                    self.turn = None;
+                    return Ok(Some(LoopEnd::Cancelled("Cancelled while thinking".into())));
+                }
+                cancellation_checked = ui::time::now();
+            }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 let handling = ui::time::now();
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
@@ -2042,6 +2052,9 @@ mod tests {
         /// desktop's open starts it.
         fresh: bool,
         writer_opened: bool,
+        /// Cancel after this many successful status surveys (zero disables).
+        cancel_after_checks: usize,
+        cancellation_checks: usize,
     }
 
     impl World {
@@ -2356,9 +2369,13 @@ mod tests {
                     }
                 }
                 CollabRequest::TaskRunCancellation { request_id, .. } => {
+                    let mut world = self.world.borrow_mut();
+                    world.cancellation_checks += 1;
+                    let cancelled = world.cancel_after_checks != 0
+                        && world.cancellation_checks > world.cancel_after_checks;
                     self.events.push(CollabEvent::TaskRunCancellation {
                         request_id: *request_id,
-                        result: Ok(false),
+                        result: Ok(cancelled),
                     });
                 }
                 CollabRequest::ReportEnrolledTask { request_id, .. }
@@ -2662,6 +2679,42 @@ mod tests {
                 .any(|line| line.as_str().unwrap().starts_with(&op("toggle-mark"))),
             "{observation}"
         );
+    }
+
+    #[test]
+    fn stop_during_the_first_silent_model_turn_does_not_wait_for_provider_output() {
+        let mut f = paced_fixture(
+            "write a paragraph",
+            World {
+                cancel_after_checks: 2,
+                ..World::default()
+            },
+            vec![turn(
+                &[
+                    invoke("append-paragraph", &serde_json::json!({"text": "late"})),
+                    finish("Done", true),
+                ],
+                24,
+            )],
+            Some(Duration::from_secs(1)),
+        );
+        let started = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(700),
+            "Stop must not wait for the provider's first event"
+        );
+        assert_eq!(f.script.bodies.lock().unwrap().len(), 1);
+        assert_eq!(
+            f.script.emitted.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(f.session.turn.is_none());
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Cancelled { .. }
+        ));
     }
 
     /// One turn does the whole job: the paragraph is written as ordered
