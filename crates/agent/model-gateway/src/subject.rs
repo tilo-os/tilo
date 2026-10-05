@@ -93,7 +93,7 @@ pub fn segment(image: &VisionImage) -> Result<String, String> {
         if hex_digest(&file) != installed.sha256 {
             return Err(TAMPERED.to_string());
         }
-        if !std::env::var_os("TILO_MODEL_GATEWAY_TIMING").is_some_and(|value| value == "0") {
+        if std::env::var_os("TILO_MODEL_GATEWAY_TIMING").is_none_or(|value| value != "0") {
             eprintln!(
                 "tilo-model-gateway: timing subject model={} bytes={} hash_us={}",
                 installed.id,
