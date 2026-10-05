@@ -171,7 +171,13 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     if publish:
                         self.assertEqual(group, "tilo-os-image-series-2")
                     else:
-                        self.assertEqual(group, f"tilo-os-image-validate-{ref}")
+                        self.assertEqual(group, "tilo-os-image-validate-2")
+        with self.subTest(phase='full branch proofs share a queue without cancelling another owner'):
+            branches = ("refs/heads/feature-a", "refs/heads/feature-b")
+            groups = [concurrency_group(ref, "workflow_dispatch", "false") for ref in branches]
+            self.assertEqual(groups, ["tilo-os-image-validate-2"] * 2)
+            self.assertNotEqual(groups[0], concurrency_group(branches[0], "workflow_call", ""))
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
         with self.subTest(phase='Lenovo publication has a source-specific lock'):
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
