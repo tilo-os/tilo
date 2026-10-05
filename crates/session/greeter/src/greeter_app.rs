@@ -33,6 +33,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
@@ -63,7 +64,7 @@ mod console;
 
 pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 
-use crate::auth::{AuthUpdate, Failure, spawn_auth};
+use crate::auth::{AuthSession, AuthUpdate, Failure, spawn_auth};
 use crate::device_status::DeviceStatus;
 use crate::i18n::{t, t_args};
 use crate::local_users::{LoginUser, discover_login_users, remember_user, remembered_user};
@@ -578,6 +579,7 @@ fn next_minute(now: Instant) -> Instant {
 struct Requests {
     /// Sign in with the passcode: the sign-in action, or Enter in a field.
     sign_in: Cell<bool>,
+    cancel_authentication: Cell<bool>,
     /// Sign in with the enrolled fingerprint instead.
     fingerprint: Cell<bool>,
     power: Cell<Option<PowerAction>>,
@@ -613,6 +615,8 @@ pub struct GreeterApp {
     /// Process-local only. Passcode text never enters Automerge, persistence,
     /// presence, diagnostics, or peer sync and is zeroized after every attempt.
     password_buffer: Arc<Mutex<String>>,
+    auth_session: Option<AuthSession>,
+    challenge_sequence: Arc<AtomicU64>,
     notice: Notice,
     /// Refused passcodes in a row, so a repeated failure says so.
     failures: u32,
@@ -778,6 +782,8 @@ impl GreeterApp {
             fingerprint,
             fingerprint_probe: enrolled_fingerprint,
             password_buffer: Arc::new(Mutex::new(String::new())),
+            auth_session: None,
+            challenge_sequence: Arc::new(AtomicU64::new(1)),
             notice: Notice::None,
             failures: 0,
             prompt: String::new(),
@@ -985,6 +991,14 @@ impl GreeterApp {
     /// in-flight wording.
     pub(crate) fn status_text(&self) -> String {
         match self.phase {
+            AuthPhase::Authenticating
+                if self
+                    .auth_session
+                    .as_ref()
+                    .is_some_and(AuthSession::is_cancelling) =>
+            {
+                t("greeter-auth-cancelling")
+            }
             AuthPhase::Authenticating if !self.prompt.trim().is_empty() => {
                 self.prompt.trim().to_string()
             }
@@ -1172,6 +1186,7 @@ impl GreeterApp {
     /// line, the alternate factor, and the other accounts to switch to.
     fn build_form(&self, busy: bool, theme: &Theme, align: AlignItems) -> Box<dyn Widget> {
         let s = &theme.tokens.spacing;
+        let challenge = self.auth_session.as_ref().and_then(AuthSession::challenge);
         let mut form: Vec<Box<dyn Widget>> = Vec::new();
         if self.login_user.is_none() {
             form.push(Box::new(
@@ -1191,12 +1206,20 @@ impl GreeterApp {
                 .with_initial_value(&value)
                 .with_id("greeter.password")
                 .with_external_buffer(Arc::clone(&self.password_buffer))
-                .with_accessible_name(t("greeter-passcode"))
+                .with_accessible_name(t(if challenge.is_some() {
+                    "greeter-auth-response"
+                } else {
+                    "greeter-passcode"
+                }))
                 .with_secret(true)
                 .with_placeholder(&t("greeter-passcode-placeholder"))
-                .disabled(busy)
+                .disabled(busy && challenge.is_none())
         };
-        let sign_in = t("greeter-sign-in");
+        let sign_in = t(if challenge.is_some() {
+            "greeter-auth-respond"
+        } else {
+            "greeter-sign-in"
+        });
         let requests = Rc::clone(&self.requests);
         form.push(Box::new(
             // The action takes the field's height, whatever the text scale
@@ -1218,6 +1241,19 @@ impl GreeterApp {
                 )),
         ));
         form.push(Box::new(self.build_status(theme)));
+        if self.phase == AuthPhase::Authenticating && self.auth_session.is_some() {
+            let requests = Rc::clone(&self.requests);
+            form.push(Box::new(
+                Button::new("greeter.cancel-authentication", &t("greeter-auth-cancel"))
+                    .ghost()
+                    .with_enabled(
+                        self.auth_session
+                            .as_ref()
+                            .is_some_and(AuthSession::can_cancel),
+                    )
+                    .on_click(move || requests.cancel_authentication.set(true)),
+            ));
+        }
         // While an attempt runs, the alternate factor gives way to the live
         // prompt; its space stays reserved so the form does not change size.
         if self.fingerprint != FingerprintAvailability::Unavailable && busy {
@@ -1687,6 +1723,23 @@ impl GreeterApp {
     /// headless), it falls back to a synchronous exchange so the path is
     /// still exercised.
     fn attempt_login(&mut self, method: AuthMethod) {
+        if self.phase == AuthPhase::Authenticating && method == AuthMethod::Password {
+            if let Some(challenge) = self.auth_session.as_ref().and_then(AuthSession::challenge)
+                && let Some(session) = &self.auth_session
+            {
+                let secret = Zeroizing::new(std::mem::take(
+                    &mut *self
+                        .password_buffer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                ));
+                if session.respond(challenge.id, secret).is_err() {
+                    self.set_hint("greeter-error-unavailable");
+                }
+                self.dirty_structure = true;
+            }
+            return;
+        }
         // Guard: never start a second attempt while one is in flight.
         if self.phase != AuthPhase::Idle {
             return;
@@ -1737,7 +1790,15 @@ impl GreeterApp {
         if let Some(proxy) = self.proxy.get() {
             // Live path: run on a worker thread so the UI can paint the
             // "Signing in…" frame and live fingerprint prompts.
-            spawn_auth(proxy.clone(), sock, username, password, argv, env);
+            self.auth_session = Some(spawn_auth(
+                proxy.clone(),
+                sock,
+                username,
+                password,
+                argv,
+                env,
+                Arc::clone(&self.challenge_sequence),
+            ));
         } else {
             // Fallback (no proxy wired): synchronous exchange. Blocks the
             // UI for the request's duration but still authenticates and
@@ -1775,6 +1836,7 @@ impl GreeterApp {
     /// The catalogue key that explains `failure` on this form.
     fn failure_key(&self, failure: Failure) -> &'static str {
         match failure {
+            Failure::Cancelled => "greeter-auth-cancelled",
             // With a known account there is no username to have mistyped.
             Failure::Credentials if self.login_user.is_some() => "greeter-error-passcode",
             Failure::Credentials => "greeter-error-credentials",
@@ -1793,13 +1855,18 @@ impl GreeterApp {
     /// keyboard back on the first field so the next try is just typing.
     fn finish_failure(&mut self, failure: Failure) {
         self.phase = AuthPhase::Idle;
+        self.auth_session.take();
         self.prompt.clear();
         self.failures = if failure == Failure::Credentials {
             self.failures.saturating_add(1)
         } else {
             0
         };
-        self.notice = Notice::Error(self.failure_key(failure));
+        self.notice = if failure == Failure::Cancelled {
+            Notice::Hint(self.failure_key(failure))
+        } else {
+            Notice::Error(self.failure_key(failure))
+        };
         self.clear_password();
         self.dirty_structure = true;
         // Inputs are re-enabled (back in the focus order) — re-seat focus on
@@ -1935,6 +2002,13 @@ impl Widget for GreeterApp {
 
         // Each request is taken before it is acted on, so one activation
         // starts exactly one attempt.
+        if self.requests.cancel_authentication.take()
+            && let Some(session) = &self.auth_session
+        {
+            let _ = session.cancel();
+            self.clear_password();
+            self.dirty_structure = true;
+        }
         if self.requests.sign_in.take() {
             self.attempt_login(AuthMethod::Password);
         }
@@ -2104,6 +2178,10 @@ impl Widget for GreeterApp {
             self.clear_form();
             *ctx.handled = true;
         }
+        if escape_pressed && !*ctx.handled && self.phase == AuthPhase::Authenticating {
+            self.requests.cancel_authentication.set(true);
+            *ctx.handled = true;
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2183,6 +2261,15 @@ impl Widget for GreeterApp {
         }
         // Progress from the background auth worker (see `crate::auth`).
         match AuthUpdate::decode(payload) {
+            Some(AuthUpdate::Challenge(challenge))
+                if self.phase == AuthPhase::Authenticating
+                    && self.auth_session.as_ref().and_then(AuthSession::challenge)
+                        == Some(challenge) =>
+            {
+                self.clear_password();
+                self.dirty_structure = true;
+                self.focus_reset_pending = true;
+            }
             Some(AuthUpdate::Prompt { text, is_error: _ }) => {
                 // Reflect the live PAM prompt (e.g. fingerprint
                 // instructions) while authenticating. The text itself carries
@@ -2199,7 +2286,7 @@ impl Widget for GreeterApp {
                 self.finish_failure(failure);
             }
             // Unrelated External payloads are ignored.
-            None => {}
+            Some(AuthUpdate::Challenge(_)) | None => {}
         }
     }
 
