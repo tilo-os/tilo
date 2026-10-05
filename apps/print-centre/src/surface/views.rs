@@ -355,28 +355,27 @@ fn printer_card(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
     } else {
         "Available to your apps"
     };
-    let open = {
-        let tx = tx.clone();
-        let name = queue.name.clone();
-        move || {
-            let _ = tx.send(UiCommand::Device(name.clone()));
-        }
-    };
-    Box::new(
-        Card::new(Box::new(
-            bare_column()
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_align_items(taffy::AlignItems::Center)
-                        .push(status_badge(queue))
-                        .push(muted(detail)),
-                ))
-                .push(supplies),
-        ))
-        .with_title(display_name(&queue.name))
-        .on_activate(format!("print-centre.device.open.{}", queue.name), open),
-    )
+    let card = Card::new(Box::new(
+        bare_column()
+            .push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_align_items(taffy::AlignItems::Center)
+                    .push(status_badge(queue))
+                    .push(muted(detail)),
+            ))
+            .push(supplies),
+    ))
+    .with_title(display_name(&queue.name));
+    let id = format!("print-centre.device.open.{}", queue.name);
+    match tx.1.as_ref().and_then(|actions| {
+        actions.effect(&crate::resource::PrintCentreEffect::OpenPrinter {
+            printer: queue.name.clone(),
+        })
+    }) {
+        Some(binding) => Box::new(card.on_action(id, binding)),
+        None => Box::new(card),
+    }
 }
 
 fn tool_row(id: &str, icon: Icon, title: &str, detail: &str, tx: &Door, command: UiCommand) -> El {
@@ -1360,7 +1359,7 @@ fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Ve
                 )
                 .icon(Icon::Camera)
                 .selected(selected == Some(scanner.device.as_str()))
-                .on_activate(move || {
+                .on_view(move || {
                     let _ = tx.send(UiCommand::SelectScanner(device.clone()));
                 }),
             ));

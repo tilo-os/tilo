@@ -243,6 +243,18 @@ impl ui::widget::Decorator for SliceChart {
             .draw_with_presence(scene, transform, text, theme, presence, permissions);
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let mut node = self.chart.accessibility()?;
+        for (child, row) in node
+            .children
+            .iter_mut()
+            .zip(self.rows.iter().filter(|row| row.bytes > 0))
+        {
+            child.semantic_key = Some(row.id.clone());
+        }
+        Some(node)
+    }
+
     fn name(&self) -> &'static str {
         "SliceChart"
     }

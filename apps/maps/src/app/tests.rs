@@ -816,7 +816,11 @@ fn platform_search_opens_finds_and_activates_places() {
                 .any(|(_, hit)| matches!(hit, Hit::OpenSearch)),
             "the docked panel's header carries the search button"
         );
-        let targets = a.accessibility_targets();
+        let mut empty = MapsApp::offline_empty();
+        empty.rect = a.rect;
+        empty.map_controls.set_viewport(empty.rect);
+        empty.draw_app(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+        let targets = empty.accessibility_targets();
         let keys: std::collections::HashSet<_> = targets
             .iter()
             .map(|target| target.target.as_str())
@@ -824,10 +828,12 @@ fn platform_search_opens_finds_and_activates_places() {
         assert_eq!(keys.len(), targets.len(), "visible targets must be unique");
         assert!(keys.contains("maps.search"));
         assert!(keys.contains("maps.empty-search"));
-        tap(&mut a, &Hit::OpenEmptySearch);
-        assert!(a.search_opener.is_pending());
-        assert!(ui::widget::controls::ActionControls::take_control_invocation(&mut a).is_some());
-        assert!(!a.search_opener.is_pending());
+        tap(&mut empty, &Hit::OpenEmptySearch);
+        assert!(empty.search_opener.is_pending());
+        assert!(
+            ui::widget::controls::ActionControls::take_control_invocation(&mut empty).is_some()
+        );
+        assert!(!empty.search_opener.is_pending());
         tap(&mut a, &Hit::OpenSearch);
         assert!(a.search_opener.is_pending());
         assert!(
