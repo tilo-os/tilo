@@ -76,6 +76,11 @@ impl Widget for Probe {
         self.deadline
     }
 
+    fn is_layout_dirty(&self) -> bool {
+        // This fixture fills a static rectangle and has no intrinsic state.
+        self.rect == Rect::ZERO
+    }
+
     fn name(&self) -> &'static str {
         "Probe"
     }
@@ -859,7 +864,24 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
         assert!(h.root::<NavShell>().is_layout_dirty());
         assert!(
             !h.root::<NavShell>().layout_needs_measure(),
-            "scroll preserves intrinsic sizes"
+            "scroll preserves intrinsic sizes: shell_pending={} dirty_parts={:?} font_constructions={}",
+            h.root::<NavShell>().invalidation.is_pending(),
+            h.root::<NavShell>()
+                .host_parts
+                .iter()
+                .filter_map(|part| {
+                    let widget = h.root::<NavShell>().part(*part)?;
+                    widget.layout_needs_measure().then(|| {
+                        (
+                            *part,
+                            widget.name(),
+                            widget.get_rect(),
+                            widget.is_layout_dirty(),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>(),
+            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(Cell::get),
         );
         h.relayout_at((1280, 800)).expect("scroll repositioned");
     }
@@ -1011,4 +1033,51 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
         0,
         "activation does not invent a selection change"
     );
+}
+
+#[test]
+fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
+    let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+        "places",
+        vec![crate::widget::NavItem::new("inbox", "Inbox")],
+    )])
+    .selected("inbox");
+    let shell = NavShell::new()
+        .mode(NavMode::Push)
+        .sidebar(Box::new(list))
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 560, 800, Theme::dark());
+    settle(&mut h, 560, 800);
+    let outgoing = h.a11y_node_named("Inbox").expect("initial navigation row");
+    {
+        let shell = h.root_mut::<NavShell>();
+        shell.show(NavPane::Content);
+        // The first animation sample is still wholly on the outgoing page.
+        shell.inputs.borrow_mut().push_pos = Some(0.0);
+    }
+    h.relayout_at((560, 800)).expect("incoming page frame");
+    assert!(geometry(&h).side_by_side, "no overview splits the content");
+    assert!(
+        h.a11y_node_named("Inbox").is_none(),
+        "outgoing navigation rows are inert even while their pixels remain visible"
+    );
+    assert!(
+        h.perform_a11y_action(outgoing, &crate::a11y::Action::Activate)
+            .is_err(),
+        "a stale AT target cannot activate the outgoing screen"
+    );
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    let back = h
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.label() == Some("Back")
+                && node.role() == crate::accesskit::Role::Button
+                && node.supports_action(crate::accesskit::Action::Click)
+        })
+        .expect("Back remains exported during the transition");
+    assert!(geometry(&h).back.x0 >= 0.0 && geometry(&h).back.x1 <= 560.0);
+    h.perform_a11y_action(back.0, &crate::a11y::Action::Activate)
+        .expect("Back cancels the in-flight navigation through AT");
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
 }

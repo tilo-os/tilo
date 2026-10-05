@@ -997,10 +997,16 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     if let Some(column) = back_column
-        && g.header(column) != Rect::ZERO
+        && (push_back || g.header(column) != Rect::ZERO)
     {
         let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
-        let row = g.header(column);
+        // The page moves; navigation belongs to the window. Back must stay
+        // operable even before the incoming screen enters the viewport.
+        let row = if push_back {
+            window_row
+        } else {
+            g.header(column)
+        };
         g.back = if slot == 0 {
             m.row.leading_chip(row, 0)
         } else {
@@ -2376,19 +2382,28 @@ impl NavShell {
             | Part::Leading(column)
             | Part::Action(column, _)
             | Part::More(column) => Some(column),
+            Part::Rail | Part::Controls => Some(Column::Overview),
+            Part::Filter => g.filter_column(&self.inputs.borrow()),
             _ => None,
         };
-        if !g.side_by_side
+        if !g.stack.is_empty()
             && let Some(column) = column
         {
+            // `side_by_side` describes only overview/content. A sidebar
+            // can still push that pair as one screen, including when no
+            // overview exists. Use the actual stack for admission.
             let pane = match column {
                 Column::Sidebar => Some(NavPane::Sidebar),
+                Column::Overview if g.side_by_side => Some(NavPane::Content),
                 Column::Overview => Some(NavPane::Overview),
                 Column::Content => Some(NavPane::Content),
                 Column::Inspector => None,
             };
-            if pane.is_some_and(|pane| g.stack.contains(&pane) && self.inputs.borrow().pane != pane)
-            {
+            let front = g
+                .stack
+                .get(stack_index(&g.stack, self.inputs.borrow().pane))
+                .copied();
+            if pane.is_some_and(|pane| g.stack.contains(&pane) && front != Some(pane)) {
                 return true;
             }
         }

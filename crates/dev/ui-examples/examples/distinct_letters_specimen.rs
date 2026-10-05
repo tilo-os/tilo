@@ -3,7 +3,7 @@
 //! letters" changes, for review on a high-resolution screen.
 //!
 //! ```bash
-//! rcargo --on-builder --fetch look/distinct-letters-specimen run -p ui-examples \
+//! cargo run -p ui-examples \
 //!     --example distinct-letters-specimen -- --out target/look/distinct-letters-specimen
 //! ```
 //!
