@@ -2003,7 +2003,7 @@ impl WordProcessor {
         }
     }
 
-    pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub fn bind(&mut self, state: &AutoCommit, root: &ObjId) {
         // A canonical body caret proves that the body is nonempty. Resolve
         // only its block instead of sorting the entire body twice per sync.
         // Match ordered_keys membership exactly; a map key alone is not enough.
@@ -2832,7 +2832,7 @@ mod tests {
         wp.attach(ui::framework::testing::detached_dispatcher("test-author"));
         let mut state = AutoCommit::new();
         crate::initialize_empty_document(&mut state).unwrap();
-        wp.bind(&mut state, &ROOT);
+        wp.bind(&state, &ROOT);
         (wp, state)
     }
 
@@ -2943,7 +2943,7 @@ mod tests {
             wp.selection_anchor = Some(anchor.clone());
             let before = tilo_doc::model::ordered_keys_scan_count();
             for _ in 0..3 {
-                wp.bind(&mut state, &ROOT);
+                wp.bind(&state, &ROOT);
             }
             assert_eq!(
                 tilo_doc::model::ordered_keys_scan_count(),
@@ -2960,7 +2960,7 @@ mod tests {
             remote.splice_text(&text, 0, 6, "é🦀").unwrap();
             state.merge_incoming(&mut remote).unwrap();
             let before = tilo_doc::model::ordered_keys_scan_count();
-            wp.bind(&mut state, &ROOT);
+            wp.bind(&state, &ROOT);
             assert_eq!(tilo_doc::model::ordered_keys_scan_count(), before);
             assert_eq!(
                 wp.caret.offset, 2,
@@ -2994,7 +2994,7 @@ mod tests {
                 vec![id.clone()]
             );
             let before = tilo_doc::model::ordered_keys_scan_count();
-            wp.bind(&mut state, &ROOT);
+            wp.bind(&state, &ROOT);
             assert_eq!(tilo_doc::model::ordered_keys_scan_count(), before);
             assert_eq!(
                 wp.caret,
@@ -3005,7 +3005,7 @@ mod tests {
             );
             wp.selection_anchor = Some(wp.caret.clone());
             state.delete(&c.blocks, &id).unwrap();
-            wp.bind(&mut state, &ROOT);
+            wp.bind(&state, &ROOT);
             assert!(
                 tilo_doc::model::blocks_in_order(&state, &c).is_empty(),
                 "a view never reseeds the body"
@@ -3037,7 +3037,7 @@ mod tests {
                 }
                 let canonical = tilo_doc::model::blocks_in_order(&state, &c);
                 assert!(!canonical.contains(&target));
-                wp.bind(&mut state, &ROOT);
+                wp.bind(&state, &ROOT);
                 assert_eq!(
                     wp.caret,
                     Caret {
@@ -3053,7 +3053,7 @@ mod tests {
                 let body = wp.caret.block.clone();
                 wp.focus_region(&mut state, region);
                 wp.insert_str(&mut state, "running text");
-                wp.bind(&mut state, &ROOT);
+                wp.bind(&state, &ROOT);
                 assert_eq!(wp.region, region);
                 assert_eq!(wp.caret.offset, 12);
                 let caret_block = wp.caret.block.clone();
@@ -3064,7 +3064,7 @@ mod tests {
                     ids: &mut ids,
                 }
                 .remove_block_in(region, &caret_block);
-                wp.bind(&mut state, &ROOT);
+                wp.bind(&state, &ROOT);
                 assert_eq!(wp.region, Region::Body);
                 assert_eq!(
                     wp.caret,

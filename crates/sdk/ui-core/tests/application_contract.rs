@@ -1411,8 +1411,8 @@ mod save_status_fixture {
             let checkout = component.record().clone();
             host.records.try_flush().unwrap();
             let mut tile = TileHost::from_component(component);
-            let mut outer = automerge::AutoCommit::new();
-            tile.sync(&mut outer, &ROOT);
+            let outer = automerge::AutoCommit::new();
+            tile.sync(&outer, &ROOT);
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().clone()),
                 vec![RecordSaveStatus::Saved]
@@ -1438,7 +1438,7 @@ mod save_status_fixture {
         }
         pub(super) fn pending_and_visible_checkpoint(&mut self) {
             self.type_pending();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
             let before = self
                 .host
                 .records
@@ -1447,7 +1447,7 @@ mod save_status_fixture {
                 })
                 .unwrap();
             for _ in 0..3 {
-                self.tile.sync(&mut self.outer, &ROOT);
+                self.tile.sync(&self.outer, &ROOT);
             }
             assert_eq!(
                 self.host
@@ -1473,7 +1473,7 @@ mod save_status_fixture {
                 .read(&self.checkout.id, Transactable::base_heads)
                 .unwrap();
             self.type_pending();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
             let pending = self
                 .host
                 .records
@@ -1498,7 +1498,7 @@ mod save_status_fixture {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saving)
@@ -1521,7 +1521,7 @@ mod save_status_fixture {
                 "a component showing Saving… must resample its durability"
             );
             self.host.records.try_flush().unwrap();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
@@ -1545,10 +1545,10 @@ mod save_status_fixture {
             };
             std::fs::create_dir(&obstruction.path).unwrap();
             self.type_pending();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
             assert!(self.host.records.try_flush().is_err());
             for _ in 0..3 {
-                self.tile.sync(&mut self.outer, &ROOT);
+                self.tile.sync(&self.outer, &ROOT);
                 assert!(matches!(
                     DELIVERED.with(|seen| seen.borrow().last().cloned()),
                     Some(RecordSaveStatus::Failed(_))
@@ -1556,13 +1556,13 @@ mod save_status_fixture {
             }
             assert_eq!(std::fs::read(&obstruction.retained).unwrap(), original);
             obstruction.restore();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
             assert!(matches!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Failed(_))
             ));
             self.host.records.try_flush().unwrap();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
@@ -1575,7 +1575,7 @@ mod save_status_fixture {
                 && report.view_error.is_none()
                 && report.teardown_error.is_none()));
             let delivered = DELIVERED.with(|seen| seen.borrow().len());
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
             assert_eq!(DELIVERED.with(|seen| seen.borrow().len()), delivered);
             STORE.with(|store| *store.borrow_mut() = None);
         }

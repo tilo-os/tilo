@@ -2188,7 +2188,7 @@ mod tests {
     fn writer(paragraphs: &[&str]) -> (ui::State, crate::WordProcessorWidget, Vec<String>) {
         let mut state = crate::initialized_state();
         let mut wp = crate::WordProcessorWidget::detached();
-        wp.sync(&mut state.doc, &state.root);
+        wp.sync(&state.doc, &state.root);
         for (index, text) in paragraphs.iter().enumerate() {
             if index > 0 {
                 wp.model_mut().enter(&mut state.doc);

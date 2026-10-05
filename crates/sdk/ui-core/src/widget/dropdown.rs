@@ -679,7 +679,7 @@ impl Dropdown {
     /// clicked row, close on a click outside the list, or open when closed.
     fn on_left_press(
         &mut self,
-        state: &mut AppModel,
+        state: &AppModel,
         root: &ModelPath,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
@@ -730,7 +730,7 @@ impl Dropdown {
         event: &WindowEvent,
         ke: &KeyEvent,
         modifiers: Modifiers,
-        state: &mut AppModel,
+        state: &AppModel,
         root: &ModelPath,
         handled: &mut bool,
     ) {
