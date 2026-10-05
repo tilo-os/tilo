@@ -106,6 +106,7 @@ pub struct Snapshot {
     pub detail: Option<StoreItem>,
     pub remotes: Vec<Remote>,
     pub flatpak_available: bool,
+    pub flatpak_error: Option<String>,
     pub operation_error: Option<String>,
 }
 
@@ -817,6 +818,7 @@ fn update_all(
             detail: None,
             remotes: state.remotes.clone(),
             flatpak_available: state.flatpak_available,
+            flatpak_error: state.flatpak_error.clone(),
             operation_error: None,
         };
         if !snapshots.progress(progress) {
@@ -883,6 +885,7 @@ fn send_tracked(
         detail,
         remotes: state.remotes.clone(),
         flatpak_available: state.flatpak_available,
+        flatpak_error: state.flatpak_error.clone(),
         operation_error: operation_error
             .or_else(|| state.catalogue_error.clone())
             .or_else(|| state.flatpak_error.clone()),
@@ -985,6 +988,15 @@ fn sync_authoritative_catalogue(state: &State) {
     state.directory.sync(&state.base_items);
 }
 
+fn verified_registry_entries(
+    host: Option<&app_host::client::BlockingClient>,
+    registry: &str,
+) -> Result<Vec<crate::registry_client::VerifiedEntry>, String> {
+    let host = host.ok_or_else(|| "App service unavailable.".to_string())?;
+    let json = host.registry_catalogue(registry)?;
+    serde_json::from_str(&json).map_err(|error| format!("Invalid verified catalogue: {error}"))
+}
+
 fn collect_items(
     opened_ref: Option<&FlatpakRef>,
     installed: &[(String, String)],
@@ -1013,7 +1025,7 @@ fn collect_items(
     };
     let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
-        match crate::registry_client::fetch_entries(registry) {
+        match verified_registry_entries(host, &registry.name) {
             Ok(entries) => tilo_items.extend(entries.iter().map(|entry| {
                 tilo_to_store_item_on_channel(
                     entry,
@@ -1164,6 +1176,32 @@ mod tests {
             directory,
             item_index: ui::search::ListIndex::default(),
         }
+    }
+
+    #[test]
+    fn flatpak_observation_failure_reaches_worker_snapshot_separately_from_missing() {
+        let mut state = state_with_items(Vec::new(), StoreDirectory::default());
+        state.flatpak_available = true;
+        refresh_flatpak(&mut state);
+        assert!(!state.flatpak_available);
+        assert!(
+            state
+                .flatpak_error
+                .as_deref()
+                .unwrap()
+                .contains("App service unavailable")
+        );
+        let (sender, received) = mpsc::channel();
+        let snapshots = Snapshots {
+            sender,
+            wake: WakeHandle::new(),
+            pending: Arc::new(AtomicUsize::new(0)),
+        };
+        assert!(send(&snapshots, &state, Vec::new(), "", None, None));
+        let snapshot = received.recv().unwrap();
+        assert_eq!(snapshot.flatpak_error, state.flatpak_error);
+        assert_eq!(snapshot.operation_error, state.flatpak_error);
+        assert!(!snapshot.flatpak_available);
     }
 
     /// LRU eviction, non-blocking requests and the authoritative action directory.

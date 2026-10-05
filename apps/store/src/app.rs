@@ -267,12 +267,23 @@ fn app_row_id(app_id: &str) -> String {
     format!("app:{app_id}")
 }
 
+fn flatpak_unavailable_reason(error: Option<&str>) -> &str {
+    error.unwrap_or(
+        "Flatpak is not installed on this host; install it before using Flatpak catalog actions",
+    )
+}
+
 /// Mark `spec` unavailable when it needs the host's Flatpak and there is none.
-fn needing_flatpak(spec: ActionSpec, action: ActionKind, flatpak_available: bool) -> ActionSpec {
+fn needing_flatpak(
+    spec: ActionSpec,
+    action: ActionKind,
+    flatpak_available: bool,
+    error: Option<&str>,
+) -> ActionSpec {
     if action.requires_flatpak_host() && !flatpak_available {
         spec.unavailable(
             "flatpak_host_unavailable",
-            "Flatpak is not installed on this host; install it before using Flatpak catalog actions",
+            flatpak_unavailable_reason(error),
         )
     } else {
         spec
@@ -281,7 +292,7 @@ fn needing_flatpak(spec: ActionSpec, action: ActionKind, flatpak_available: bool
 
 /// One catalogue app as a live row: its details, what can be done with it
 /// on this device, its versions and what its review is.
-fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
+fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> LiveRow {
     let source = match &item.source {
         StoreSource::Tilo { .. } => "Tilo verified",
         StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => item.source.distribution_name(),
@@ -313,7 +324,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
         let spec = if let Some((code, reason)) = item.unavailable_action(action) {
             spec.unavailable(code, reason)
         } else {
-            needing_flatpak(spec, action, flatpak_available)
+            needing_flatpak(spec, action, flatpak_available, error)
         };
         row = row.operation(spec);
     }
@@ -415,6 +426,8 @@ pub struct StoreApp {
     /// Flatpak items show "Install" or the "install flatpak first"
     /// helper.
     flatpak_available: bool,
+    flatpak_error: Option<String>,
+    flatpak_checking: bool,
     /// Which item the user has expanded in the responsive detail sheet.
     /// Keyed by [`StoreItem::id`] and retained across window rebuilds so the
     /// document-backed route does not disappear during a responsive reflow.
@@ -464,6 +477,7 @@ impl Default for StoreApp {
 
 impl StoreApp {
     pub fn new() -> Self {
+        crate::resource::STORE_CATALOG.ensure();
         Self {
             dispatcher: None,
             worker: None,
@@ -480,6 +494,8 @@ impl StoreApp {
             active_operation: None,
             operation_error: None,
             flatpak_available: false,
+            flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
+            flatpak_checking: true,
             focused_detail: None,
             structure_dirty: true,
             rect: Rect::ZERO,
@@ -746,6 +762,8 @@ impl StoreApp {
     /// binary.
     pub fn set_flatpak_available(&mut self, available: bool) {
         self.flatpak_available = available;
+        self.flatpak_error = None;
+        self.flatpak_checking = false;
         self.structure_dirty = true;
     }
 
@@ -1174,6 +1192,7 @@ impl StoreApp {
                 self.set_detail_from_worker(detail);
             }
             self.set_flatpak_available(snap.flatpak_available);
+            self.flatpak_error = snap.flatpak_error;
             self.set_remotes(snap.remotes);
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
@@ -1207,7 +1226,9 @@ impl StoreApp {
                 self.items
                     .iter()
                     .find(|item| item.id == id)
-                    .map(|item| inspect_item(item, self.flatpak_available))
+                    .map(|item| {
+                        inspect_item(item, self.flatpak_available, self.flatpak_error.as_deref())
+                    })
                     .ok_or_else(|| "App is not in the current catalogue.".to_string())
             })
             .transpose()?;
@@ -1218,7 +1239,7 @@ impl StoreApp {
             .iter()
             .skip(page.saturating_mul(PAGE_SIZE))
             .take(PAGE_SIZE)
-            .map(|item| inspect_item(item, self.flatpak_available))
+            .map(|item| inspect_item(item, self.flatpak_available, self.flatpak_error.as_deref()))
             .collect::<Vec<_>>();
         let remotes = self
             .remotes
@@ -1240,6 +1261,8 @@ impl StoreApp {
             "category": self.active_category, "page": page, "pages": pages,
             "total": self.items.len(), "matching": visible.len(), "items": items,
             "detail": detail, "selected_app": self.focused_detail, "flatpak_available": self.flatpak_available,
+            "flatpak_checking": self.flatpak_checking,
+            "flatpak_error": self.flatpak_error.as_deref().map(resource_detail_excerpt),
             "worker_attached": self.worker.is_some(), "worker_busy": self.worker_busy,
             "pending_jobs": self.pending_jobs,
             "status": resource_detail_excerpt(&self.status_line),
@@ -1405,6 +1428,17 @@ impl StoreApp {
                 self.reserve_job()?;
                 return Ok(Job::admitted(Request::RefreshRemotes, Finish::Status));
             }
+            StoreEffect::UseFlathubForAccount { remote } => {
+                let source = self.flathub_account_source(&remote)?;
+                self.reserve_job()?;
+                return Ok(Job::admitted(
+                    Request::RemoteAdd {
+                        name: source.name.clone(),
+                        url: "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
+                    },
+                    Finish::Status,
+                ));
+            }
             StoreEffect::AddRemote { name, url } => {
                 if let Err(error) =
                     validate_remote_name(&name).and_then(|()| validate_remote_url(&url))
@@ -1525,9 +1559,7 @@ impl StoreApp {
             .find(|item| item.id == app)
             .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
         if action.requires_flatpak_host() && !self.flatpak_available {
-            return Err(
-                "Flatpak is not installed on this host; no install operation can run".into(),
-            );
+            return Err(flatpak_unavailable_reason(self.flatpak_error.as_deref()).into());
         }
         if !item.allows_action(action, self.flatpak_available) {
             return Err("this action is no longer available for the current app state".into());
@@ -1720,7 +1752,7 @@ impl StoreApp {
         if self.flatpak_available {
             return Vec::new();
         }
-        let reason = "Flatpak is not installed on this host; install it before using Flatpak catalog actions";
+        let reason = flatpak_unavailable_reason(self.flatpak_error.as_deref());
         [
             StoreEffect::FLATPAK_INSTALL,
             StoreEffect::FLATPAK_UPDATE,
@@ -1747,7 +1779,11 @@ impl StoreApp {
                 .entry(key)
                 .or_insert_with(|| (label, Vec::new()))
                 .1
-                .push(app_row(item, self.flatpak_available));
+                .push(app_row(
+                    item,
+                    self.flatpak_available,
+                    self.flatpak_error.as_deref(),
+                ));
         }
         let mut publishers = publishers.into_iter().collect::<Vec<_>>();
         publishers.sort_by(|(_, (left, _)), (_, (right, _))| left.cmp(right));
@@ -1797,7 +1833,7 @@ impl StoreApp {
                 .find(|item| item.id == rest)
                 .cloned()
                 .or_else(|| self.directory.app(rest))
-                .map(|item| app_row(&item, self.flatpak_available));
+                .map(|item| app_row(&item, self.flatpak_available, self.flatpak_error.as_deref()));
         }
         if let Some(key) = id.strip_prefix("publisher:") {
             let item = self.items.iter().find(|item| publisher_of(item).0 == key)?;
@@ -1808,7 +1844,7 @@ impl StoreApp {
                 .remotes
                 .iter()
                 .find(|remote| remote.resource_id() == id)
-                .map(remote_row);
+                .map(|remote| self.remote_live_row(remote));
         }
         match id {
             REMOTES_ID => Some(self.remotes_row()),
@@ -1836,13 +1872,71 @@ impl StoreApp {
         )
     }
 
+    fn flathub_account_source(&self, id: &str) -> Result<&crate::flathub_client::Remote, String> {
+        let source = self
+            .remotes
+            .iter()
+            .find(|remote| remote.resource_id() == id)
+            .ok_or_else(|| ui::i18n!("store-flathub-account-missing"))?;
+        if source.user_managed
+            || source.disabled
+            || source.name != "flathub"
+            || source.url != "https://dl.flathub.org/repo/"
+        {
+            return Err(ui::i18n!("store-flathub-account-source"));
+        }
+        validate_remote_url(&source.url)?;
+        if self
+            .remotes
+            .iter()
+            .any(|remote| remote.user_managed && remote.name == source.name)
+        {
+            return Err(ui::i18n!("store-flathub-account-existing"));
+        }
+        Ok(source)
+    }
+
+    fn flathub_account_button(&self) -> Option<Box<dyn Widget>> {
+        let source = self
+            .remotes
+            .iter()
+            .find(|remote| self.flathub_account_source(&remote.resource_id()).is_ok())?;
+        let effect = StoreEffect::UseFlathubForAccount {
+            remote: source.resource_id(),
+        };
+        let binding = bindings::effect(&effect)?;
+        Some(Box::new(
+            ui::widget::Button::new("store.flathub.account", &ui::i18n!("store-flathub-account"))
+                .on_action(binding)
+                .control_size(ui::widget::ControlSize::Small),
+        ))
+    }
+
+    fn package_label(&self, action: ActionKind) -> String {
+        package_action_label(action, self.flatpak_error.as_deref())
+    }
+
+    fn remote_live_row(&self, remote: &crate::flathub_client::Remote) -> LiveRow {
+        let row = remote_row(remote);
+        if self.flathub_account_source(&remote.resource_id()).is_ok() {
+            row.effect(&StoreEffect::UseFlathubForAccount {
+                remote: remote.resource_id(),
+            })
+        } else {
+            row
+        }
+    }
+
     fn remotes_row(&self) -> LiveRow {
-        self.remotes.iter().map(remote_row).fold(
-            LiveRow::new(REMOTES_ID, "store.remote-list", "Flatpak remotes")
-                .effect(&StoreEffect::ShowRemotes)
-                .effect(&StoreEffect::RefreshRemotes),
-            LiveRow::row,
-        )
+        self.remotes
+            .iter()
+            .map(|remote| self.remote_live_row(remote))
+            .fold(
+                LiveRow::new(REMOTES_ID, "store.remote-list", "Flatpak remotes")
+                    .effect(&StoreEffect::ShowRemotes)
+                    .effect(&StoreEffect::RefreshRemotes),
+                LiveRow::row,
+            )
     }
 
     fn moderation_row(&self) -> LiveRow {
@@ -2001,7 +2095,19 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
     }
 }
 
-fn inspect_item(item: &StoreItem, flatpak_available: bool) -> serde_json::Value {
+fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
+    if action == ActionKind::NeedsFlatpakHost && error.is_some() {
+        ui::i18n!("store-flatpak-unavailable")
+    } else {
+        action.label().to_owned()
+    }
+}
+
+fn inspect_item(
+    item: &StoreItem,
+    flatpak_available: bool,
+    error: Option<&str>,
+) -> serde_json::Value {
     serde_json::json!({
         "resource": format!("app:{}", item.id), "id": item.id,
         "name": resource_detail_excerpt(&item.name),
@@ -2011,7 +2117,7 @@ fn inspect_item(item: &StoreItem, flatpak_available: bool) -> serde_json::Value 
         "trust": item.trust,
         "latest_version": resource_detail_excerpt(item.latest_version()),
         "installed": !matches!(item.installed, crate::InstalledState::Not),
-        "primary_action": item.action_kind(flatpak_available).label(),
+        "primary_action": package_action_label(item.action_kind(flatpak_available), error),
     })
 }
 
@@ -2036,6 +2142,62 @@ mod tests {
             .set("TILO_STORE_HTTP_TIMEOUT", "1");
         let app = ui::framework::testing::TestApp::<crate::resource::StoreShell>::new().unwrap();
         (environment, directory, app)
+    }
+
+    #[test]
+    fn flathub_account_control_is_enabled_on_the_live_owner_surface_and_inspection_is_truthful() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_remotes(vec![crate::flathub_client::Remote {
+                name: "flathub".into(),
+                title: "Flathub".into(),
+                url: "https://dl.flathub.org/repo/".into(),
+                disabled: false,
+                user_managed: false,
+            }]);
+            store.set_flatpak_available(false);
+            store.flatpak_error = Some("The app service is unavailable.".into());
+        })
+        .unwrap();
+        let control = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-flathub-account").as_str())
+            })
+            .unwrap();
+        assert!(
+            !control.disabled,
+            "the normal owner can use the declared account setup control"
+        );
+        assert!(
+            app.harness().controls().iter().any(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-flatpak-unavailable").as_str())
+                    && control.disabled
+            }),
+            "the actual catalogue button reports the observation failure and refuses installation"
+        );
+        let snapshot = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(snapshot["flatpak_error"], "The app service is unavailable.");
+        assert_eq!(snapshot["flatpak_checking"], false);
+        assert_eq!(snapshot["flatpak_available"], false);
+        let flatpak = snapshot["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["source"] == "Flatpak")
+            .unwrap();
+        assert_eq!(
+            flatpak["primary_action"],
+            ui::i18n!("store-flatpak-unavailable")
+        );
     }
 
     #[test]
@@ -2209,6 +2371,129 @@ mod tests {
             item("Chess", StoreSource::Flathub, "Games", InstalledState::Not),
         ]);
         app
+    }
+
+    #[test]
+    fn flatpak_observation_failure_preserves_error_and_never_claims_missing() {
+        let mut app = seeded_app();
+        app.set_flatpak_available(false);
+        let error = "Could not read Flatpak on this device: app service unavailable";
+        app.flatpak_error = Some(error.into());
+        assert_eq!(
+            app.package_label(ActionKind::NeedsFlatpakHost),
+            ui::i18n!("store-flatpak-unavailable")
+        );
+        let row = app.live_row("app:id.chess").unwrap().into_resource();
+        let action = row
+            .actions
+            .iter()
+            .find(|action| action.id == "flatpak-setup")
+            .unwrap();
+        assert!(matches!(&action.contract.availability,
+            ui::tilo_actions::Availability::Unavailable { reason, .. } if reason == error));
+        assert_eq!(
+            app.package_operation("id.chess", ActionKind::FlatpakInstall)
+                .unwrap_err(),
+            error
+        );
+        assert!(app.effect_statuses().iter().any(|status| *status
+            == EffectStatus::unavailable(
+                StoreEffect::FLATPAK_INSTALL,
+                "flatpak_host_unavailable",
+                error
+            )));
+        app.set_flatpak_available(false);
+        assert!(
+            app.package_operation("id.chess", ActionKind::FlatpakInstall)
+                .unwrap_err()
+                .contains("not installed")
+        );
+    }
+
+    #[test]
+    fn flathub_account_setup_uses_declared_authorized_descriptor_without_device_mutation() {
+        let mut app = seeded_app();
+        let source = crate::flathub_client::Remote {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            title: "Flathub".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        app.set_remotes(vec![source.clone()]);
+        let row = app
+            .live_row("remote:system:flathub")
+            .unwrap()
+            .into_resource();
+        let setup = row
+            .actions
+            .iter()
+            .find(|action| action.id == "use-flathub-for-account")
+            .unwrap();
+        assert_eq!(
+            setup.contract.permission,
+            StoreEffect::AddRemote {
+                name: "flathub".into(),
+                url: source.url.clone()
+            }
+            .bound()
+            .contract
+            .permission
+        );
+        assert!(app.flathub_account_button().is_some());
+        let job = admitted_job(
+            &mut app,
+            StoreEffect::UseFlathubForAccount {
+                remote: source.resource_id(),
+            },
+        );
+        assert!(
+            matches!(job.request, Request::RemoteAdd { ref name, ref url }
+            if name == "flathub" && url == "https://dl.flathub.org/repo/flathub.flatpakrepo")
+        );
+        assert!(
+            !row.actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        for changed in [
+            crate::flathub_client::Remote {
+                disabled: true,
+                ..source.clone()
+            },
+            crate::flathub_client::Remote {
+                url: "https://example.com/repo/".into(),
+                ..source.clone()
+            },
+            crate::flathub_client::Remote {
+                name: "other".into(),
+                ..source.clone()
+            },
+        ] {
+            app.set_remotes(vec![changed.clone()]);
+            assert!(app.flathub_account_button().is_none());
+            assert!(
+                app.admit(StoreEffect::UseFlathubForAccount {
+                    remote: changed.resource_id()
+                })
+                .is_err()
+            );
+        }
+        app.set_remotes(vec![
+            source.clone(),
+            crate::flathub_client::Remote {
+                user_managed: true,
+                url: "https://example.com/".into(),
+                ..source.clone()
+            },
+        ]);
+        assert!(app.flathub_account_button().is_none());
+        assert!(
+            app.admit(StoreEffect::UseFlathubForAccount {
+                remote: source.resource_id()
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -2676,7 +2961,7 @@ mod tests {
         {
             let app = seeded_app();
             let item = app.items.iter().find(|item| item.id == "id.notes").unwrap();
-            let presentation = app_row(item, true)
+            let presentation = app_row(item, true, None)
                 .into_resource()
                 .presentation
                 .expect("app row has a search and history summary");
@@ -3041,6 +3326,7 @@ mod tests {
                         item,
                         CardAction {
                             kind: action,
+                            label: None,
                             key: "primary",
                             binding: bindings::package(item, action),
                             in_progress: busy,

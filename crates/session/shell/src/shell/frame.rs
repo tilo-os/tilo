@@ -3895,6 +3895,58 @@ mod tests {
             .downcast_mut::<ui::app::EmbeddedApp>()?;
         terminal::mounted_terminal(embedded.component_root_mut()?)
     }
+    /// Attach a real process before rebuilding any pointers into its widget.
+    /// A probe of the unopened production tab cannot prove PTY dispatch.
+    fn live_hosted_terminal_probe(fb: &mut FrameBuilder) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        // Focus-window first changes chrome structure; materialize that tab
+        // before looking for its mounted application in the current node map.
+        fb.relayout();
+        let terminal = fb
+            .node_map
+            .values()
+            .find_map(|widget| {
+                // SAFETY: these pointers still belong to the current live tree.
+                let widget = unsafe { &mut **widget };
+                is_terminal(widget)
+                    .then(|| hosted_terminal(widget))
+                    .flatten()
+            })
+            .expect("production chrome must mount a hosted Terminal");
+        *terminal = terminal::TerminalWidget::spawn_command(terminal::CommandBuilder::new("cat"))
+            .expect("attach a real PTY process to the hosted Terminal");
+        assert!(
+            !terminal.is_disconnected(),
+            "the real PTY must be available"
+        );
+        let probe = terminal.attach_input_probe();
+        // Replacing the widget invalidates descendant pointers; rebuild before
+        // measurement or focus reconciliation can dereference the old map.
+        fb.rebuild_layout_tree();
+        fb.relayout();
+        probe
+    }
+
+    fn finish_hosted_terminal_probe(fb: &mut FrameBuilder) {
+        let terminal = fb
+            .node_map
+            .values_mut()
+            .find_map(|widget| {
+                // SAFETY: the map was rebuilt after attaching the real process.
+                let widget = unsafe { &mut **widget };
+                is_terminal(widget)
+                    .then(|| hosted_terminal(widget))
+                    .flatten()
+            })
+            .expect("the live hosted Terminal remains mounted");
+        // The assertion already consumed the tested bytes. EOF is cleanup,
+        // delivered through the same real PTY so cat and its reader both exit.
+        terminal
+            .try_write_input(b"\x04")
+            .expect("close the real cat input");
+        tilo_test_env::wait_until("the real PTY process and reader finish", || {
+            terminal.is_disconnected()
+        });
+    }
     use crate::shell::state::FreshId as _;
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable;
@@ -5372,7 +5424,7 @@ mod tests {
             fb.host_mut().focus_window_on_strip(strip, group, tab),
             "the compositor must be able to focus the hosted Terminal tab"
         );
-        fb.relayout();
+        let probe = live_hosted_terminal_probe(&mut fb);
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
         let focused = focus.expect("a terminal tile must take initial focus");
@@ -5384,17 +5436,6 @@ mod tests {
             "chrome must not keep initial focus on a workspace pill: {:?}",
             fb.widget_name(focused)
         );
-        let probe = fb.node_map.values().find_map(|widget| {
-            // SAFETY: node_map pointers are owned by the live widget tree.
-            let widget = unsafe { &mut **widget };
-            is_terminal(widget)
-                .then(|| hosted_terminal(widget))
-                .flatten()
-                .map(|term| term.attach_input_probe())
-        });
-        let Some(probe) = probe else {
-            panic!("production chrome must mount a hosted Terminal");
-        };
         let mut doc = AutoCommit::new();
         for key in [
             Key::Character(SmolStr::new_static("e")),
@@ -5421,6 +5462,7 @@ mod tests {
             b"e \r",
             "letters, Space and Enter must reach the PTY, not chrome Activate",
         );
+        finish_hosted_terminal_probe(&mut fb);
     }
 
     #[test]
@@ -5461,7 +5503,7 @@ mod tests {
         };
         let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
         assert!(fb.host_mut().focus_window_on_strip(strip, group, tab));
-        fb.relayout();
+        let probe = live_hosted_terminal_probe(&mut fb);
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
         let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
@@ -5475,16 +5517,6 @@ mod tests {
             Some("TopBarChrome"),
             "this case is the VM path: chrome, not the Terminal, holds focus"
         );
-        let probe = fb.node_map.values().find_map(|widget| {
-            let widget = unsafe { &mut **widget };
-            is_terminal(widget)
-                .then(|| hosted_terminal(widget))
-                .flatten()
-                .map(|term| term.attach_input_probe())
-        });
-        let Some(probe) = probe else {
-            panic!("production chrome must mount a hosted Terminal");
-        };
         let mut doc = AutoCommit::new();
         for key in [
             Key::Character(SmolStr::new_static("e")),
@@ -5511,6 +5543,7 @@ mod tests {
             b"e \r",
             "Space and Enter must reach the PTY while chrome still has focus",
         );
+        finish_hosted_terminal_probe(&mut fb);
     }
 
     #[test]

@@ -27,6 +27,9 @@ use crate::model::{ActionKind, StoreItem, StoreSource};
 /// written to the collaboration document.
 pub struct CardAction<'a> {
     pub kind: ActionKind,
+    /// A host-observation label, when the action's default would claim a state
+    /// the host could not verify.
+    pub label: Option<&'a str>,
     pub key: &'a str,
     pub binding: Option<ActionBinding<()>>,
     /// The action is running for this item, so the button shows progress and
@@ -60,6 +63,7 @@ pub fn store_card(
 ) -> Box<dyn Widget> {
     let CardAction {
         kind: action,
+        label,
         key: action_click_key,
         binding: action_binding,
         in_progress: operation_active,
@@ -101,7 +105,7 @@ pub fn store_card(
     let action_label = if operation_active {
         format!("{}…", action.progress_label())
     } else {
-        action.label().to_string()
+        label.unwrap_or_else(|| action.label()).to_owned()
     };
     let mut action_btn = Button::new(action_click_key, &action_label);
     if let Some(binding) = action_binding {
@@ -114,7 +118,7 @@ pub fn store_card(
             format!("{} {} is in progress", action.progress_label(), item.name)
         } else {
             item.unavailable_action(action).map_or_else(
-                || format!("{} {}", action.label(), item.name),
+                || format!("{} {}", label.unwrap_or_else(|| action.label()), item.name),
                 |(_, reason)| reason,
             )
         });

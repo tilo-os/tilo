@@ -49,6 +49,37 @@ struct Desk {
     shots: Option<std::path::PathBuf>,
 }
 
+#[test]
+fn an_artwork_swatch_loads_the_brush_and_the_pointer_uses_that_paint() {
+    for colour in ["#010203", "#01020380"] {
+        let mut desk = Desk::open();
+        desk.app.call("draw", serde_json::json!({"marks":[{
+            "id":"custom-paint", "shape":{"kind":"rect","x":400,"y":300,"width":20,"height":20},
+            "fill":colour
+        }]})).unwrap();
+        desk.key("b");
+        let palette = desk.app.harness().targets()["canvas-artwork-colours"];
+        // First document swatch; pointer through the shared picker.
+        desk.app
+            .harness()
+            .click_at(palette.x0 + 14.0, palette.y0 + 14.0);
+        let before = desk.art().marks.len();
+        desk.drag((100.0, 100.0), (200.0, 100.0));
+        assert_eq!(desk.art().marks.len(), before + 1);
+        assert_eq!(
+            desk.art().marks.last().unwrap().style.stroke.as_deref(),
+            Some(colour)
+        );
+        assert!(desk.app.undo(), "one gesture is one framework undo step");
+        assert_eq!(desk.art().marks.len(), before);
+        assert!(desk.app.redo());
+        assert_eq!(
+            desk.art().marks.last().unwrap().style.stroke.as_deref(),
+            Some(colour)
+        );
+    }
+}
+
 impl Desk {
     fn open() -> Self {
         // A double click is two clicks within the session's interval; a
