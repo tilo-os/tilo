@@ -44,7 +44,178 @@ pub(crate) enum NearbyProgress {
         record_path: PathBuf,
     },
     /// Ended without joining.
-    Failed { error: String },
+    Failed(NearbyFailure),
+}
+
+/// What made a pairing attempt end without joining. Each cause the person
+/// can act on has its own plain words; only a reason nothing more is known
+/// about falls back to the general one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NearbyCause {
+    /// This computer was not allowed to write the pairing.
+    PermissionDenied,
+    /// The disk is full.
+    StorageFull,
+    /// The storage cannot be written.
+    ReadOnly,
+    /// The other device could not be reached over the network.
+    Unreachable,
+    /// No trusted device approved before the window closed.
+    TimedOut,
+    /// The other device answered with an identity that does not verify.
+    InvalidIdentity,
+    /// The helper could not be started.
+    NotStarted,
+    /// The helper stopped without saying why.
+    Ended,
+    /// A reason that names none of the causes above.
+    Unknown,
+}
+
+impl NearbyCause {
+    /// The cause as `tilo-enroll pair-device` names it in its status file.
+    fn from_status(name: &str) -> Option<Self> {
+        Some(match name {
+            "permission_denied" => Self::PermissionDenied,
+            "storage_full" => Self::StorageFull,
+            "read_only" => Self::ReadOnly,
+            "unreachable" => Self::Unreachable,
+            "timed_out" => Self::TimedOut,
+            "invalid_identity" => Self::InvalidIdentity,
+            "not_started" => Self::NotStarted,
+            "ended" => Self::Ended,
+            "unknown" => Self::Unknown,
+            _ => return None,
+        })
+    }
+
+    fn status_name(self) -> &'static str {
+        match self {
+            Self::PermissionDenied => "permission_denied",
+            Self::StorageFull => "storage_full",
+            Self::ReadOnly => "read_only",
+            Self::Unreachable => "unreachable",
+            Self::TimedOut => "timed_out",
+            Self::InvalidIdentity => "invalid_identity",
+            Self::NotStarted => "not_started",
+            Self::Ended => "ended",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// The cause an operating-system error carries.
+    fn from_io(kind: std::io::ErrorKind) -> Option<Self> {
+        use std::io::ErrorKind;
+        match kind {
+            ErrorKind::PermissionDenied => Some(Self::PermissionDenied),
+            ErrorKind::StorageFull | ErrorKind::QuotaExceeded => Some(Self::StorageFull),
+            ErrorKind::ReadOnlyFilesystem => Some(Self::ReadOnly),
+            ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkDown
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::ConnectionRefused => Some(Self::Unreachable),
+            ErrorKind::TimedOut => Some(Self::TimedOut),
+            _ => None,
+        }
+    }
+
+    /// The cause of a reason known only as text: an operating-system error
+    /// as Rust prints it ends in `(os error N)`.
+    fn from_text(text: &str) -> Self {
+        text.rsplit_once("(os error ")
+            .and_then(|(_, code)| code.strip_suffix(')'))
+            .and_then(|code| code.parse::<i32>().ok())
+            .and_then(|code| Self::from_io(std::io::Error::from_raw_os_error(code).kind()))
+            .unwrap_or(Self::Unknown)
+    }
+
+    fn keys(self) -> (&'static str, &'static str) {
+        match self {
+            Self::PermissionDenied => (
+                "onboarding-nearby-permission-title",
+                "onboarding-nearby-permission",
+            ),
+            Self::StorageFull => (
+                "onboarding-nearby-storage-full-title",
+                "onboarding-nearby-storage-full",
+            ),
+            Self::ReadOnly => (
+                "onboarding-nearby-read-only-title",
+                "onboarding-nearby-read-only",
+            ),
+            Self::Unreachable => (
+                "onboarding-nearby-unreachable-title",
+                "onboarding-nearby-unreachable",
+            ),
+            Self::TimedOut => (
+                "onboarding-nearby-timed-out-title",
+                "onboarding-nearby-timed-out",
+            ),
+            Self::InvalidIdentity => (
+                "onboarding-nearby-invalid-identity-title",
+                "onboarding-nearby-invalid-identity",
+            ),
+            Self::NotStarted => (
+                "onboarding-nearby-not-started-title",
+                "onboarding-nearby-not-started",
+            ),
+            Self::Ended => ("onboarding-nearby-failed-title", "onboarding-nearby-ended"),
+            Self::Unknown => (
+                "onboarding-nearby-failed-title",
+                "onboarding-nearby-unknown",
+            ),
+        }
+    }
+}
+
+/// Why a pairing attempt ended, and the helper's own words when it gave any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NearbyFailure {
+    pub(crate) cause: NearbyCause,
+    pub(crate) detail: Option<String>,
+}
+
+impl NearbyFailure {
+    pub(crate) fn new(cause: NearbyCause) -> Self {
+        Self {
+            cause,
+            detail: None,
+        }
+    }
+
+    /// A failure known only by its text; its cause is read from it.
+    pub(crate) fn from_detail(detail: String) -> Self {
+        Self {
+            cause: NearbyCause::from_text(&detail),
+            detail: Some(detail),
+        }
+    }
+
+    /// What went wrong, in plain words: the banner's title.
+    pub(crate) fn title(&self) -> String {
+        t(self.cause.keys().0)
+    }
+
+    /// What to do next, followed by the helper's own words.
+    pub(crate) fn message(&self) -> String {
+        let next = t(self.cause.keys().1);
+        match &self.detail {
+            Some(detail) => format!(
+                "{next} {}",
+                t_args(
+                    "onboarding-nearby-detail",
+                    &[("detail", detail.clone().into())]
+                )
+            ),
+            None => next,
+        }
+    }
+
+    /// Whether this says more than that the helper stopped.
+    fn is_informative(&self) -> bool {
+        self.detail.is_some() || !matches!(self.cause, NearbyCause::Unknown | NearbyCause::Ended)
+    }
 }
 
 /// Parse the status file at `path`.
@@ -68,13 +239,17 @@ pub(crate) fn read_progress(path: &Path) -> NearbyProgress {
                 identity,
                 record_path: PathBuf::from(record_path),
             },
-            _ => NearbyProgress::Failed {
-                error: t("onboarding-nearby-invalid-identity"),
-            },
+            _ => NearbyProgress::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity)),
         },
-        Some("failed") => NearbyProgress::Failed {
-            error: field("error").unwrap_or_default(),
-        },
+        Some("failed") => {
+            let detail = field("error").filter(|error| !error.is_empty());
+            let cause = field("cause")
+                .as_deref()
+                .and_then(NearbyCause::from_status)
+                .or_else(|| detail.as_deref().map(NearbyCause::from_text))
+                .unwrap_or(NearbyCause::Unknown);
+            NearbyProgress::Failed(NearbyFailure { cause, detail })
+        }
         _ => field("verification_code").map_or(NearbyProgress::Starting, |code| {
             NearbyProgress::Waiting { code }
         }),
@@ -90,9 +265,8 @@ pub(crate) enum NearbyEvent {
     Code(String),
     /// The device joined this identity. Pairing is over.
     Joined(MintedIdentity),
-    /// Pairing ended without joining; the message says why and how to retry.
-    /// Pairing is over.
-    Failed(String),
+    /// Pairing ended without joining, and why. Pairing is over.
+    Failed(NearbyFailure),
 }
 
 /// One running pairing attempt. Dropping it stops the helper's whole process
@@ -110,15 +284,20 @@ impl NearbyPairing {
     ///
     /// # Errors
     ///
-    /// The message to show when the helper cannot be started.
+    /// Why the helper cannot be started.
     pub(crate) fn start(
         identity_root: &Path,
         identity_dir: &Path,
         status_path: &Path,
         label: &str,
-    ) -> Result<Self, String> {
-        let lease = tilo_relay_protocol::ProcessLease::capture(std::process::id())
-            .map_err(|error| error.to_string())?;
+    ) -> Result<Self, NearbyFailure> {
+        let lease =
+            tilo_relay_protocol::ProcessLease::capture(std::process::id()).map_err(|error| {
+                NearbyFailure {
+                    cause: NearbyCause::NotStarted,
+                    detail: Some(error.to_string()),
+                }
+            })?;
         let mut command = Command::new(ENROLL);
         command
             .arg("pair-device")
@@ -141,12 +320,12 @@ impl NearbyPairing {
         Self::spawn(command, identity_dir, status_path, PROCESS_BOUND)
     }
 
-    fn spawn(
+    pub(crate) fn spawn(
         mut command: Command,
         identity_dir: &Path,
         status_path: &Path,
         bound: Duration,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, NearbyFailure> {
         let _ = std::fs::remove_file(status_path);
         let child = command
             .stdin(Stdio::null())
@@ -157,7 +336,10 @@ impl NearbyPairing {
             // group instead of orphaning a descendant.
             .process_group(0)
             .spawn()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| NearbyFailure {
+                cause: NearbyCause::from_io(error.kind()).unwrap_or(NearbyCause::NotStarted),
+                detail: Some(error.to_string()),
+            })?;
         Ok(Self {
             child: Some(child),
             deadline: Instant::now()
@@ -184,7 +366,7 @@ impl NearbyPairing {
         {
             return match self.verified(record_path, Some(identity)) {
                 Some(joined) => NearbyEvent::Joined(joined),
-                None => self.fail(t("onboarding-nearby-invalid-identity")),
+                None => self.fail(NearbyFailure::new(NearbyCause::InvalidIdentity)),
             };
         }
         // The join selects its identity as active as part of its commit. A
@@ -199,7 +381,7 @@ impl NearbyPairing {
             return self.exited(status, progress);
         }
         if now >= self.deadline {
-            return self.fail(t("onboarding-nearby-timed-out"));
+            return self.fail(NearbyFailure::new(NearbyCause::TimedOut));
         }
         if let NearbyProgress::Waiting { code } = progress
             && self.shown_code.as_ref() != Some(&code)
@@ -211,50 +393,46 @@ impl NearbyPairing {
     }
 
     fn exited(&mut self, status: ExitStatus, progress: NearbyProgress) -> NearbyEvent {
-        let mut stderr = String::new();
-        if let Some(stream) = self.child.as_mut().and_then(|child| child.stderr.as_mut()) {
-            let _ = stream.take(64 * 1024).read_to_string(&mut stderr);
-        }
-        let detail = match progress {
-            NearbyProgress::Failed { error } if !error.is_empty() => Some(error),
+        let stderr = self
+            .child
+            .as_mut()
+            .and_then(|child| child.stderr.as_mut())
+            .map(available_output)
+            .unwrap_or_default();
+        let failure = match progress {
+            _ if status.success() => NearbyFailure::new(NearbyCause::InvalidIdentity),
+            NearbyProgress::Failed(failure) if failure.is_informative() => failure,
             _ => stderr
                 .lines()
                 .rev()
                 .map(str::trim)
                 .find(|line| !line.is_empty())
-                .map(|line| line.trim_start_matches("Error: ").to_owned()),
+                .map(|line| line.trim_start_matches("Error: ").to_owned())
+                .map_or_else(
+                    || NearbyFailure::new(NearbyCause::Ended),
+                    NearbyFailure::from_detail,
+                ),
         };
-        let message = if status.success() {
-            t("onboarding-nearby-invalid-identity")
-        } else {
-            detail.map_or_else(
-                || t("onboarding-nearby-failed"),
-                |detail| {
-                    t_args(
-                        "onboarding-nearby-failed-detail",
-                        &[("detail", detail.into())],
-                    )
-                },
-            )
-        };
-        self.fail(message)
+        self.fail(failure)
     }
 
-    /// End this attempt with `message`, recording it in the status file
+    /// End this attempt with `failure`, recording it in the status file
     /// unless the helper already recorded why it stopped.
-    fn fail(&mut self, message: String) -> NearbyEvent {
+    fn fail(&mut self, failure: NearbyFailure) -> NearbyEvent {
         terminate(&mut self.child);
-        if !matches!(
-            read_progress(&self.status_path),
-            NearbyProgress::Failed { .. }
-        ) {
-            let status = serde_json::json!({ "state": "failed", "error": message });
+        if !matches!(read_progress(&self.status_path), NearbyProgress::Failed(_)) {
+            let mut status = serde_json::Map::new();
+            status.insert("state".into(), "failed".into());
+            status.insert("cause".into(), failure.cause.status_name().into());
+            if let Some(detail) = &failure.detail {
+                status.insert("error".into(), detail.clone().into());
+            }
             if let Ok(bytes) = serde_json::to_vec(&status) {
                 let _ =
                     tilo_files::native::atomic::write_with_mode(&self.status_path, &bytes, 0o600);
             }
         }
-        NearbyEvent::Failed(message)
+        NearbyEvent::Failed(failure)
     }
 
     /// `path` as a joined identity, when it is a valid record directly in
@@ -274,6 +452,35 @@ impl Drop for NearbyPairing {
     fn drop(&mut self) {
         terminate(&mut self.child);
     }
+}
+
+/// What the helper wrote to `stream` so far, without waiting for more.
+///
+/// The helper has exited, but a worker it started may still hold the pipe
+/// open; reading to end of file would block the compositor until that worker
+/// is gone. The pipe is switched to non-blocking and drained of what is there.
+fn available_output(stream: &mut std::process::ChildStderr) -> String {
+    use std::os::fd::AsRawFd as _;
+
+    let fd = stream.as_raw_fd();
+    // SAFETY: `fd` is the open read end of this child's stderr pipe, owned by
+    // `stream` for the whole call; F_GETFL/F_SETFL only change its flags.
+    let nonblocking = unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == 0
+    };
+    if !nonblocking {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    while bytes.len() < 64 * 1024 {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => bytes.extend_from_slice(chunk.get(..read).unwrap_or_default()),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Stop `child` and every process in its group, bounded.
@@ -413,7 +620,7 @@ mod tests {
             let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
             assert_eq!(
                 poll_until_over(&mut pairing),
-                NearbyEvent::Failed(t("onboarding-nearby-invalid-identity"))
+                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
             );
         }
         // Phase `a_selected_active_identity_completes_a_lost_status_update`.
@@ -434,32 +641,36 @@ mod tests {
         // Phase `the_recorded_helper_error_is_shown_with_a_retry`.
         {
             let fixture = fixture();
-            let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
+            let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)","cause":"permission_denied"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
             let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+            let NearbyEvent::Failed(failure) = poll_until_over(&mut pairing) else {
+                panic!("the refused commit is a failure");
+            };
             assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(t_args(
-                    "onboarding-nearby-failed-detail",
-                    &[("detail", "Permission denied (os error 13)".into())],
-                ))
+                failure,
+                NearbyFailure {
+                    cause: NearbyCause::PermissionDenied,
+                    detail: Some("Permission denied (os error 13)".into()),
+                }
             );
+            assert!(failure.title().contains("Permission denied"), "{failure:?}");
         }
         // Phase `an_exit_without_a_status_reports_stderr_and_records_it`.
         {
             let fixture = fixture();
             let script = r#"echo "Error: Not authorized" >&2; exit 127"#;
             let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-            let expected = t_args(
-                "onboarding-nearby-failed-detail",
-                &[("detail", "Not authorized".into())],
-            );
+            let expected = NearbyFailure {
+                cause: NearbyCause::Unknown,
+                detail: Some("Not authorized".into()),
+            };
             assert_eq!(
                 poll_until_over(&mut pairing),
                 NearbyEvent::Failed(expected.clone())
             );
             assert_eq!(
                 read_progress(&fixture.status),
-                NearbyProgress::Failed { error: expected }
+                NearbyProgress::Failed(expected)
             );
         }
         // Phase `a_helper_that_never_finishes_is_stopped_and_reported`.
@@ -482,13 +693,33 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
             };
             assert!(saw_code, "the verification code is shown while waiting");
-            assert_eq!(event, NearbyEvent::Failed(t("onboarding-nearby-timed-out")));
+            let expected = NearbyFailure::new(NearbyCause::TimedOut);
+            assert_eq!(event, NearbyEvent::Failed(expected.clone()));
             assert!(pairing.child.is_none(), "the stuck helper was stopped");
             assert_eq!(
                 read_progress(&fixture.status),
-                NearbyProgress::Failed {
-                    error: t("onboarding-nearby-timed-out")
-                }
+                NearbyProgress::Failed(expected)
+            );
+        }
+        // Phase `a_worker_holding_stderr_open_never_blocks_the_report`.
+        {
+            let fixture = fixture();
+            // The leader reports and exits while a worker it started keeps
+            // the inherited stderr open for far longer than the test runs.
+            let script =
+                r#"(sleep 600) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
+            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+            let started = Instant::now();
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Failed(NearbyFailure {
+                    cause: NearbyCause::PermissionDenied,
+                    detail: Some("Permission denied (os error 13)".into()),
+                })
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the report waited on the worker's pipe"
             );
         }
         // Phase `a_successful_exit_without_a_joined_identity_is_an_error`.
@@ -497,8 +728,99 @@ mod tests {
             let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
             assert_eq!(
                 poll_until_over(&mut pairing),
-                NearbyEvent::Failed(t("onboarding-nearby-invalid-identity"))
+                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
             );
         }
+    }
+
+    #[test]
+    fn each_failure_cause_reaches_the_screen_in_its_own_words() {
+        // The helper names the cause in its status file.
+        for (name, cause) in [
+            ("permission_denied", NearbyCause::PermissionDenied),
+            ("storage_full", NearbyCause::StorageFull),
+            ("read_only", NearbyCause::ReadOnly),
+            ("unreachable", NearbyCause::Unreachable),
+            ("timed_out", NearbyCause::TimedOut),
+            ("unknown", NearbyCause::Unknown),
+        ] {
+            assert_eq!(NearbyCause::from_status(name), Some(cause));
+            assert_eq!(cause.status_name(), name);
+        }
+        // A reason known only as text still carries its operating-system
+        // error.
+        for (text, cause) in [
+            (
+                "Permission denied (os error 13)",
+                NearbyCause::PermissionDenied,
+            ),
+            (
+                "write commit: Operation not permitted (os error 1)",
+                NearbyCause::PermissionDenied,
+            ),
+            (
+                "No space left on device (os error 28)",
+                NearbyCause::StorageFull,
+            ),
+            ("Read-only file system (os error 30)", NearbyCause::ReadOnly),
+            (
+                "Network is unreachable (os error 101)",
+                NearbyCause::Unreachable,
+            ),
+            ("Not authorized", NearbyCause::Unknown),
+            ("Invalid argument (os error 22)", NearbyCause::Unknown),
+        ] {
+            assert_eq!(NearbyCause::from_text(text), cause, "{text}");
+        }
+        // A status without a cause field is read from its error.
+        let fixture = fixture();
+        std::fs::write(
+            &fixture.status,
+            r#"{"state":"failed","error":"Permission denied (os error 13)"}"#,
+        )
+        .expect("status");
+        assert_eq!(
+            read_progress(&fixture.status),
+            NearbyProgress::Failed(NearbyFailure {
+                cause: NearbyCause::PermissionDenied,
+                detail: Some("Permission denied (os error 13)".into()),
+            })
+        );
+
+        // Every cause the person can act on has its own title; only a reason
+        // nothing more is known about uses the general one.
+        let general = NearbyFailure::new(NearbyCause::Unknown).title();
+        let specific = [
+            NearbyCause::PermissionDenied,
+            NearbyCause::StorageFull,
+            NearbyCause::ReadOnly,
+            NearbyCause::Unreachable,
+            NearbyCause::TimedOut,
+            NearbyCause::InvalidIdentity,
+            NearbyCause::NotStarted,
+        ];
+        let mut titles = std::collections::BTreeSet::new();
+        for cause in specific {
+            let title = NearbyFailure::new(cause).title();
+            assert_ne!(title, general, "{cause:?} is reported generically");
+            assert!(
+                titles.insert(title),
+                "{cause:?} shares another cause's title"
+            );
+        }
+        let denied = NearbyFailure::from_detail("Permission denied (os error 13)".into());
+        assert!(
+            denied.title().contains("Permission denied"),
+            "{}",
+            denied.title()
+        );
+        assert!(
+            denied.message().contains("Permission denied (os error 13)"),
+            "the helper's words stay available: {}",
+            denied.message()
+        );
+        let unknown = NearbyFailure::from_detail("Not authorized".into());
+        assert_eq!(unknown.title(), general);
+        assert!(unknown.message().contains("Not authorized"));
     }
 }

@@ -23,7 +23,7 @@ APP_FAILURE = re.compile(
     r"package_id=(?P<id>[\w.-]+).*?display_name=(?P<name>.+?)\s+exit_code=",
 )
 RENDER_PHASE_FIELD = re.compile(
-    r"\b(frames|direct_frames|direct_dropped|flip_completions|unprofiled_frames|window_us|bridge_us|scanout_us|readback_bytes|output_bytes)=(\d+)\b"
+    r"\b(frames|direct_frames|direct_dropped|flip_completions|unprofiled_frames|window_us|bridge_us|scanout_us|readback_bytes|output_bytes|avg_direct_us|max_direct_us|direct_failures)=(\d+)\b"
 )
 DIRECT_STATUS = re.compile(
     r"\bdirect_scanout_status=(?P<status>[\w-]+)(?:\s+direct_scanout_reason=(?P<reason>\"(?:[^\"\\]|\\.)*\"|\S+))?"
@@ -33,6 +33,11 @@ KMS_MODE = re.compile(
     r"width=(?P<width>\d+) .*?height=(?P<height>\d+) .*?"
     r"refresh_mhz=(?P<refresh_mhz>\d+)"
 )
+KEY_LATENCY = re.compile(
+    r"KEY-LATENCY app=(?P<app>\S*) key_to_commit_us=(?P<key_to_commit_us>\d+) "
+    r"key_to_submit_us=(?P<key_to_submit_us>\d+) key_to_present_us=(?P<key_to_present_us>\d+)"
+)
+KEY_UNANSWERED = re.compile(r"KEY-LATENCY app=(?P<app>\S*) unanswered=1")
 LAUNCH_PACKAGE = re.compile(r"\bpackage_id=(?:\x1b\[[0-9;]*m)*(?P<id>[\w.-]+)")
 LAUNCH_FIELD = re.compile(
     r"\b(request_to_dispatch_us|request_to_spawn_us|request_to_map_us|"
@@ -104,6 +109,18 @@ def trace_report(path: Path) -> dict[str, object]:
             "p99": percentile(values.copy(), 99),
             "max": max(values, default=0),
         }
+    # Main-thread work of a painted frame: layout, scene build and submit.
+    frame_work = [
+        sum(int(row.get(field) or 0) for field in ("layout_us", "scene_us", "submit_us"))
+        for row in rows
+        if row.get("painted") == "1"
+    ]
+    report["frame_work_us"] = {
+        "count": len(frame_work),
+        "p50": percentile(frame_work.copy(), 50),
+        "p95": percentile(frame_work.copy(), 95),
+        "max": max(frame_work, default=0),
+    }
     report["backpressured_ticks"] = sum(
         row.get("backpressured") == "1" for row in rows
     )
@@ -152,6 +169,7 @@ def flight_report(path: Path) -> dict[str, object]:
     direct_status_samples = []
     kms_modes = []
     launch_samples: dict[str, dict[str, list[int]]] = {}
+    key_samples: dict[str, dict[str, list[int]]] = {}
     for line in lines:
         clean = ANSI.sub("", line)
         if match := KMS_MODE.search(clean):
@@ -163,6 +181,14 @@ def flight_report(path: Path) -> dict[str, object]:
                 metrics.setdefault(key, []).append(value)
         if match := DIRECT_STATUS.search(clean):
             direct_status_samples.append(match.groupdict())
+        if match := KEY_LATENCY.search(clean):
+            app = key_samples.setdefault(match.group("app") or "unknown", {})
+            for key, value in match.groupdict().items():
+                if key != "app":
+                    app.setdefault(key, []).append(int(value))
+        elif match := KEY_UNANSWERED.search(clean):
+            app = key_samples.setdefault(match.group("app") or "unknown", {})
+            app.setdefault("unanswered", []).append(1)
         if "DRM render phase summary" not in clean:
             continue
         fields = {key: int(value) for key, value in RENDER_PHASE_FIELD.findall(clean)}
@@ -177,6 +203,7 @@ def flight_report(path: Path) -> dict[str, object]:
         for line in lines
         if "DRM direct scanout unavailable" in line
         or "DRM direct frame failed" in line
+        or "DRM direct scanout degraded" in line
     ]
     launch_latency = {}
     for package, metrics in sorted(launch_samples.items()):
@@ -187,6 +214,22 @@ def flight_report(path: Path) -> dict[str, object]:
                 "p95": percentile(values.copy(), 95),
                 "max": max(values),
             }
+            for key, values in sorted(metrics.items())
+        }
+    key_latency = {}
+    for app, metrics in sorted(key_samples.items()):
+        key_latency[app] = {
+            key: (
+                len(values)
+                if key == "unanswered"
+                else {
+                    "count": len(values),
+                    "p50": percentile(values.copy(), 50),
+                    "p95": percentile(values.copy(), 95),
+                    "p99": percentile(values.copy(), 99),
+                    "max": max(values),
+                }
+            )
             for key, values in sorted(metrics.items())
         }
     idle_wake_storm_max = 0
@@ -222,9 +265,64 @@ def flight_report(path: Path) -> dict[str, object]:
         "render_phase_last": render_phases[-1] if render_phases else None,
         "kms_modes": kms_modes,
         "launch_latency_us": launch_latency,
+        "key_latency_us": key_latency,
         "xwayland_ready": any("Connected to Xwayland" in line for line in lines),
         "xwayland_unavailable": any("X11 compatibility unavailable" in line for line in lines),
     }
+
+
+def render_gate(
+    report: dict[str, object],
+    *,
+    require_direct: bool,
+    render_budget_us: int,
+    frame_work_budget_us: int,
+) -> list[str]:
+    """Why this login's presentation misses the render-path contract, if it does.
+
+    Direct GPU scanout is the presenter wherever the renderer and the display
+    share a GPU; once it ran, it must still run at the end (a failure only
+    hands frames to the readback presenter until a retry). Frame times stay
+    within the budgets on every path.
+    """
+    flight = report["flight"]
+    frames = report["frames"]
+    if not flight.get("available"):
+        return [f"no session flight record at {flight.get('path')}"]
+    phases = [phase for phase in flight["render_phase_samples"] if phase["frames"] > 0]
+    if not phases:
+        return ["the compositor logged no DRM render phase summary with frames"]
+    failures = []
+    last = phases[-1]
+    status_last = flight["direct_scanout_status_last"] or {}
+    status = status_last.get("status")
+    if require_direct or flight["direct_scanout_enabled"]:
+        if status != "enabled" or last.get("readback_bytes", 0) != 0:
+            failures.append(
+                f"direct GPU scanout is not presenting (status={status} "
+                f"reason={status_last.get('reason')} readback_bytes={last.get('readback_bytes')}); "
+                f"degradations: {flight['direct_scanout_fallback_tail']}"
+            )
+    for phase in phases:
+        direct = phase.get("direct_frames", 0)
+        if direct and phase.get("avg_direct_us", 0) > render_budget_us:
+            failures.append(
+                f"direct frames averaged {phase['avg_direct_us']} us over {direct} frames, "
+                f"budget {render_budget_us} us"
+            )
+        readback = phase["frames"] - direct
+        if readback > 0 and phase["bridge_us"] // readback > render_budget_us:
+            failures.append(
+                f"readback frames averaged {phase['bridge_us'] // readback} us over {readback} "
+                f"frames, budget {render_budget_us} us"
+            )
+    if frames.get("available"):
+        work = frames["frame_work_us"]["p95"]
+        if work > frame_work_budget_us:
+            failures.append(
+                f"painted frames' main-thread work p95 is {work} us, budget {frame_work_budget_us} us"
+            )
+    return failures
 
 
 def main() -> int:
@@ -233,6 +331,23 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=default_root)
     parser.add_argument("--previous", action="store_true", help="report the prior login")
     parser.add_argument("--output", type=Path, help="write private JSON instead of stdout")
+    parser.add_argument(
+        "--render-gate",
+        action="store_true",
+        help="exit 1 unless presentation meets the render-path contract and budgets",
+    )
+    parser.add_argument(
+        "--require-direct",
+        action="store_true",
+        help="with --render-gate: direct GPU scanout must present even if it never started",
+    )
+    parser.add_argument(
+        "--key-latency",
+        action="store_true",
+        help="print key-to-present latency of typing, per app (from KEY-LATENCY records)",
+    )
+    parser.add_argument("--render-budget-ms", type=int, default=33)
+    parser.add_argument("--frame-work-budget-ms", type=int, default=16)
     args = parser.parse_args()
     flight_name = "previous.log" if args.previous else "latest.log"
     trace_name = "previous-frame-trace.csv" if args.previous else "frame-trace.csv"
@@ -241,6 +356,35 @@ def main() -> int:
         "flight": flight_report(args.root / flight_name),
         "frames": trace_report(args.root / trace_name),
     }
+    if args.key_latency:
+        keys = report["flight"].get("key_latency_us") or {}
+        if not keys:
+            print("no typed keys were answered in this login's record")
+        for app, metrics in keys.items():
+            print(f"{app}: unanswered={metrics.get('unanswered', 0)}")
+            for stage in ("key_to_commit_us", "key_to_submit_us", "key_to_present_us"):
+                if stats := metrics.get(stage):
+                    print(
+                        f"  {stage[:-3]:<16} n={stats['count']:<5} p50={stats['p50'] / 1000:.1f}ms "
+                        f"p95={stats['p95'] / 1000:.1f}ms p99={stats['p99'] / 1000:.1f}ms "
+                        f"max={stats['max'] / 1000:.1f}ms"
+                    )
+        return 0
+    if args.render_gate:
+        failures = render_gate(
+            report,
+            require_direct=args.require_direct,
+            render_budget_us=args.render_budget_ms * 1000,
+            frame_work_budget_us=args.frame_work_budget_ms * 1000,
+        )
+        print(f"render gate: last phase summary {report['flight'].get('render_phase_last')}")
+        print(f"render gate: last direct scanout status {report['flight'].get('direct_scanout_status_last')}")
+        print(f"render gate: main-thread frame work {report['frames'].get('frame_work_us')}")
+        for failure in failures:
+            print(f"render gate: FAIL {failure}", file=sys.stderr)
+        if not failures:
+            print("render gate: PASS")
+        return 1 if failures else 0
     payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

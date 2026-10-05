@@ -12,7 +12,7 @@ fn with_focused_page() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, 0, "Order")).unwrap())
+    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "Order")).unwrap())
         .unwrap();
     let rect = app
         .harness()

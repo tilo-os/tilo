@@ -114,6 +114,26 @@ image without tilo-vm (the installed-desktop gate in `build-image.yml`):
   | python3 scripts/vm-acceptance/gpu_check.py
 ```
 
+### Cold start of every app (installed-desktop gate)
+
+Every app logs one `APP-STARTUP app=<pkg> total_ms=<ms> phases=<mark>:<ms>,...` line at
+its first presented frame, and `HISTORY-OPEN listed=<n> earlier=<bool> ms=<ms>` when its
+History opens. `app_startup_check.py` reads them from the session log, prints one row per
+app (slowest first, with the phase that took longest) and fails when a launch's first
+frame takes longer than its budget: 1 s, or 600 ms for small single-view apps
+(`acceptance/app_startup.py`), and 1 s for opening History. A launch whose window
+adapter is a CPU rasterizer (llvmpipe in a VM without a GPU) compiles vello's shaders and
+renders on the CPU, so it is held to the VM checks' software budget, 3 s, instead. The
+judgement prints every `APP-STARTUP` line it read, with all its phases. The installed-desktop gate in
+`build-image.yml` runs it after its app checks, having typed a ~2000-character note on the
+real keyboard and reopened Notes on it (`reopen-history`), so a note with thousands of
+changes in its history is part of every judged run. Under TCG it reports without judging.
+
+```bash
+./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/app_startup_check.py --probe)" \
+  | python3 scripts/vm-acceptance/app_startup_check.py --require so.tilo.notes
+```
+
 ## Provenance
 
 A dev image does not carry the commit it was built from, so `build-disk.sh` writes

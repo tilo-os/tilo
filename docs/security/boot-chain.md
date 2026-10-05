@@ -820,6 +820,10 @@ initrd generation to the image build.
 
 Tilo supports local roots only. The signed initramfs therefore explicitly omits
 Dracut's network, NetworkManager, NFS, iSCSI, Clevis/NBDE, and crypt-SSH modules.
+The `tilo-sibling-unlock` module (`docs/device-reach.md`) carries the image's
+NetworkManager binary for its own unit instead, which only a root whose LUKS2
+header holds a `tilo-sibling-unlock` token starts; it parses no network-root
+command line.
 Passphrase, TPM2, FIDO2, Plymouth, and rollback recovery remain mandatory. This
 cuts boot-time archive I/O and removes unused pre-root network and TLS parsers.
 

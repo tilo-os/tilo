@@ -467,6 +467,7 @@ jobs:
           # Check the ioctl before the expensive release build; publishing must
           # never spend hours running the installed-desktop gate under TCG.
           if python3 os/dev/probe-kvm.py '${{ matrix.arch }}'; then
+            echo 'TILO_VM_KVM=1' >> "$GITHUB_ENV"
             echo '::notice::installed-desktop gate will use KVM acceleration'
           elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
             echo '::error::release runner cannot create a KVM VM; restore nested virtualization before publishing'
@@ -622,6 +623,13 @@ jobs:
             exit 1
           fi
           (cd "$work" && sha256sum --check --strict SHA256SUMS)
+          # Apps name the runtime build they link (`<release>+native.<digest>`).
+          # A collection from before that names only the release, and its apps
+          # could not be matched to a runtime; compile instead.
+          if ! find "$work/runtime/tilo-runtime" -mindepth 1 -maxdepth 1 -type d -name '*+native.*' | grep -q .; then
+            echo "::notice::the pinned app collection does not name its runtime build; compiling the apps"
+            exit 0
+          fi
           find os/app-artifacts -mindepth 1 ! -name .gitignore -delete
           find os/app-runtime -mindepth 1 ! -name .gitignore -delete
           cp "$work"/tapp/*.tapp os/app-artifacts/
@@ -816,7 +824,7 @@ jobs:
 
       - name: Retain public Lenovo firmware import evidence
         if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-lenovo-firmware-import-${{ github.sha }}
           path: firmware-import.json
@@ -984,13 +992,23 @@ jobs:
           DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
         run: |
           set -euo pipefail
-          if [[ $DEV_BUILD == true ]]; then
+          free_kib() {
+            docker exec "buildx_buildkit_${BUILDER_NAME}0" \
+              sh -c 'df -Pk /var/lib/buildkit | awk "NR == 2 { print \$4 }"'
+          }
+          if [[ $DEV_BUILD == true ]] && (( $(free_kib) < 46875000 )); then
             # Only this job's builder cache: Docker's images and the runner
             # configuration are outside this cleanup. Reserve enough space
             # before compiles start, rather than racing the background GC.
-            timeout --kill-after=30s 180s docker buildx prune \
-              --builder "$BUILDER_NAME" --force --all \
-              --min-free-space 48GB --reserved-space 2GB
+            # Only when short of it: BuildKit's prune removes one record even
+            # when the space is there, and its pick was the Rust target cache
+            # every build would otherwise reuse. Layers go first.
+            for filter in type!=exec.cachemount type!=internal; do
+              timeout --kill-after=30s 180s docker buildx prune \
+                --builder "$BUILDER_NAME" --force --all --filter "$filter" \
+                --min-free-space 48GB --reserved-space 2GB
+              (( $(free_kib) < 46875000 )) || break
+            done
           fi
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -h /var/lib/buildkit
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -i /var/lib/buildkit
@@ -1560,6 +1578,68 @@ jobs:
           # (run 49176) for a next build that hardly ever has the same sources.
           # The steps below take its results from this builder.
 
+      # The browser engine is its own signed runtime, built above. A
+      # publication also seals it as the registry package that offers it, so
+      # a device installing the Browser from the Store fetches the engine
+      # with it. Built from this builder's results; signed with the app
+      # publisher identity, which never enters a layer.
+      - name: Package the browser engine runtime for the registry
+        id: engine-runtime-package
+        if: steps.release-mode.outputs.publish == 'true' && env.TILO_WITH_BROWSER == '1' && steps.compile-stages.outcome == 'success'
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+          file: os/Containerfile
+          target: engine-runtime-package
+          push: false
+          outputs: type=local,dest=engine-runtime-package
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+            ENGINE_RUNTIME_PACKAGE_VERSION=0.1.${{ github.run_number }}+g${{ github.sha }}
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            tapp_publisher_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: steps.engine-runtime-package.outcome == 'success'
+        with:
+          name: engine-runtime-package-${{ needs.plan.outputs.hardware-profile }}-${{ matrix.arch }}
+          path: engine-runtime-package/
+          if-no-files-found: error
+          retention-days: 3
+
       # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
       # slow step. It changes only with os/ inputs, packages and the kernel;
       # the image build below adds the build outputs on top of it.
@@ -1671,8 +1751,11 @@ jobs:
           provenance: false
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # A small graph: its intermediate steps are what the image build
-          # reuses.
-          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          # reuses. Main writes it from a seeded builder too, as it does the
+          # toolchain: the seed's bound drops these layers first (they are
+          # built early), and without a fresh cache every build compiled
+          # bootc again (~95 s).
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
@@ -2000,7 +2083,7 @@ jobs:
               --arch '${{ matrix.arch }}' --role "$role"
           done
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always() && steps.release-mode.outputs.dev-fast != 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
         continue-on-error: true
         with:
@@ -2207,7 +2290,7 @@ jobs:
       - name: Retain the boot splash frames
         if: always() && steps.splash.outcome == 'success'
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-boot-splash-${{ matrix.arch }}
           path: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
@@ -2512,8 +2595,12 @@ jobs:
           # Two more overlays on one Ethernet segment: one creates an
           # identity, the other joins it from first-boot onboarding through
           # Connect a nearby device, first through an injected helper failure
-          # and then for real, and signs in again afterwards.
-          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing"
+          # and then for real, and signs in again afterwards. With --unlock the
+          # joined device's root then moves onto LUKS2 with a sibling slot: A
+          # approves its boot, and a denial, a replayed exchange, an
+          # uncertified boot key and its removal from the fleet each leave it
+          # at the passphrase prompt.
+          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing" --unlock
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
@@ -2622,6 +2709,19 @@ jobs:
           # succeeded. Before the app checks, so none of them can mask it.
           ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-gate.sh"
 
+          # The compositor presented this login's first-use flow on the
+          # presenter its GPU allows, within budget: direct GPU scanout
+          # wherever the renderer shares the scanout GPU and never a readback
+          # that one failed frame made permanent. The guest renders with Mesa
+          # software Vulkan on both displays here, so the budgets are a
+          # software renderer's; TCG only proves the contract.
+          if [[ ${TILO_VM_KVM:-0} == 1 ]]; then
+            render_budgets='--render-budget-ms 1000 --frame-work-budget-ms 100'
+          else
+            render_budgets='--render-budget-ms 10000 --frame-work-budget-ms 2000'
+          fi
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo-session-report --render-gate $render_budgets"
+
           ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
           # Optional AirPlay encrypted-media acceptance (#57): phase-bounded
           # deadlines on the shipped script, independent of Containerfile
@@ -2710,6 +2810,9 @@ jobs:
             echo '::notice::image built without the Browser; its Ctrl+T desktop-tab gate is inapplicable'
           fi
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # Quick Settings must reach the system, not merely open: change
+          # the power profile there and read it back from the daemon.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh quick-settings
           # The system authentication sheet is drawn by the compositor, not
           # an app window. A real polkit request from the graphical session
           # must reach an external reader as a dialog with password text it
@@ -2720,19 +2823,22 @@ jobs:
           # session's logind scope and their own app scopes, and nothing of
           # the session was denied home access in its first minute.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/session-context-check.sh
+          # The device admin drives the session through the action model over
+          # their own ssh login: no TILO_TEST_CONTROL, no synthetic input.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-admin-actions.sh
 
           # Typing in a note is a keyboard's job, so the sentence reaches Notes
           # through QEMU's keyboard as key presses, never an app API. The
           # document must read back exactly what was typed, in order.
           typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-typing'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-typing'
           ./os/dev/vm.sh type "$typed_sentence"
           # The note is durable, and Notes says so: "Saved", never "Not saved".
           ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing --status Saved"
 
           # Tab in a note nests the line under the one above instead of
           # moving focus away; the second block must read as nested.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-nesting'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-nesting'
           ./os/dev/vm.sh type one
           ./os/dev/vm.sh keys ret
           ./os/dev/vm.sh type two
@@ -2741,13 +2847,24 @@ jobs:
 
           # A screenshot copied elsewhere pastes into a note as an image with
           # Ctrl+V, kept by the document media service the launcher must reach.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-image'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-image'
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh copy-image
           # The copy reaches Notes as a selection event; give it a moment to
           # read the image before pasting.
           sleep 2
           ./os/dev/vm.sh keys ctrl-v
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh present Notes "Pasted image" --state /tmp/notes-image'
+
+          # A note someone typed for minutes keeps thousands of changes in its
+          # history, one or more per key. Typed here on the real keyboard, it
+          # must still reopen and open its History within budget: the reopened
+          # launch's APP-STARTUP line and History's HISTORY-OPEN line are
+          # judged with every other launch below.
+          long_note=$(python3 -c 'import itertools; words = "sidebar flickers when a note is renamed twice then the search field loses focus".split(); print(" ".join(itertools.islice(itertools.cycle(words), 340))[:2000])')
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-history'
+          ./os/dev/vm.sh type "$long_note"
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$long_note' --state /tmp/notes-history --status Saved --min-chars 1800"
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh reopen-history Notes so.tilo.notes --expect-text '${long_note:0:12}'"
 
           # Keyboards and mice plugged in after login must reach the running
           # compositor: a USB keyboard hot-added on QEMU's own bus, then a
@@ -2762,9 +2879,50 @@ jobs:
 
           # The windows opened above logged the GPU adapter they render on. On
           # a virgl boot none may have fallen back to a CPU rasterizer; the 2D
-          # display has no render node, so there is nothing to judge.
+          # virtio display's render node has no GPU behind it, which the session
+          # reports as no-gpu, so there is nothing to judge.
           ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
             | python3 scripts/vm-acceptance/gpu_check.py
+
+          # Every app opened above logged how long it took from process start
+          # to its first frame. Print them slowest first and hold each to its
+          # cold-start budget; an emulated CPU is too slow to judge, so a TCG
+          # boot only reports them.
+          startup_judgement=()
+          if ! python3 os/dev/probe-kvm.py '${{ matrix.arch }}' >/dev/null 2>&1; then
+            startup_judgement=(--report-only)
+          fi
+          ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/app_startup_check.py --probe)" \
+            | python3 scripts/vm-acceptance/app_startup_check.py "${startup_judgement[@]}" --require so.tilo.notes
+
+          # A touchscreen plugged in after login brings up the on-screen
+          # keyboard: a tap on the search field starts the keyboard service,
+          # which must keep running and show for the field, and taps on three
+          # of its letter keys must type into it, read back over AT-SPI. Root
+          # owns the touchscreen; the session user's client says where to tap.
+          touch_log="$(mktemp /var/tmp/tilo-touch.XXXXXX)"
+          ./os/dev/vm.sh ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/input-hotplug-check.sh touchscreen \"\$XDG_RUNTIME_DIR/tilo/input-state.json\" \"/run/user/\$(id -u)/tilo-touch\" \"\$(id -un)\"" \
+            >"$touch_log" 2>&1 &
+          touch_helper=$!
+          for _ in $(seq 1 60); do
+            grep -q '^ready' "$touch_log" && break
+            kill -0 "$touch_helper" 2>/dev/null || break
+            sleep 1
+          done
+          if ! grep -q '^ready' "$touch_log"; then
+            cat "$touch_log"
+            echo "::error::the compositor never opened a touchscreen plugged in after login" >&2
+            exit 1
+          fi
+          if ! ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh osk-search "/run/user/$(id -u)/tilo-touch"'; then
+            cat "$touch_log"
+            ./os/dev/vm.sh ssh 'journalctl -b --no-pager -o short-monotonic -n 200 _UID=$(id -u)' || true
+            echo "::error::the on-screen keyboard did not type into a tapped field" >&2
+            exit 1
+          fi
+          wait "$touch_helper"
+          cat "$touch_log"
+          ./os/dev/vm.sh keys esc
 
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
@@ -2783,6 +2941,12 @@ jobs:
             # The image's apps are installed packages: Settings updates from
             # a registry, launches as the new version, and rolls back.
             RUNNER='./os/dev/vm.sh ssh' ./os/tests/booted_app_update.sh
+            # Last, because it ends this session: signed in again with every
+            # frame stalled 50-130 ms, as on a slow laptop, apps opened one
+            # beside another keep their windows, are never configured larger
+            # than the display, and never exit. Only the dev image's
+            # compositor honours the stall.
+            ./os/dev/test-slow-frame-launch.sh --out "$TILO_RUN/slow-frames" --stall 50-130
           fi
           else
             # A Lenovo DTB cannot describe QEMU virt hardware. The sealed
@@ -2816,7 +2980,7 @@ jobs:
 
       - name: Upload the boot's QEMU and serial logs
         if: always()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-os-boot-failure-${{ matrix.arch }}
           path: |
@@ -3035,12 +3199,71 @@ jobs:
             --data "$payload"
           echo "::notice::requested tilo-vm:$tag ($ARCH) from $IMAGE"
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: steps.release-mode.outputs.publish == 'true'
         with:
           name: tilo-os-child-${{ matrix.arch }}
           path: release-child/${{ matrix.arch }}.json
           if-no-files-found: error
+
+  # Offers the browser engine runtime each publication sealed in the registry
+  # (tools/apps/publish-runtime-package.sh). Separate from the image build so a
+  # registry refusal is reported without holding back the published image.
+  publish-engine-runtime:
+    needs: [plan, build-and-push]
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic'
+    runs-on: runner-quality
+    container:
+      image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
+    timeout-minutes: 60
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          pattern: engine-runtime-package-generic-*
+          path: engine
+      - name: Offer the browser engine runtime in the registry
+        env:
+          MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
+          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+        run: |
+          set -euo pipefail
+          [[ -n $MAIN_AUDIENCE && -n $TAPP_PUBLISHER_IDENTITY ]]
+          jwt=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$MAIN_AUDIENCE" | jq -er .value)
+          echo "::add-mask::$jwt"
+          identity="$RUNNER_TEMP/tilo-engine-publisher.json"
+          (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")
+          trap 'rm -f "$identity"' EXIT
+          metadata="$RUNNER_TEMP/tilo-engine-metadata.json"
+          jq -n '{name: {en: "Browser engine"},
+                  description: {en: "The Chromium engine the Browser renders web pages with. The Store installs it together with the Browser."},
+                  tagline: {en: "Web engine for the Browser"},
+                  supported_languages: ["en"],
+                  source_url: "https://code.tilo.so/tilo/tilo"}' > "$metadata"
+          host_arch=$(uname -m)
+          found=0
+          for dir in engine/engine-runtime-package-generic-*; do
+            arch=${dir##*-}
+            [[ $arch == x86_64 || $arch == aarch64 ]] || continue
+            found=1
+            cli="engine/engine-runtime-package-generic-$host_arch/bin/tilo-app-package"
+            chmod 0755 "$cli"
+            VERSION="0.0.0-$GITHUB_SHA" TILO_PACKAGE_TOKEN="$jwt" \
+              PACKAGE_API="$GITHUB_SERVER_URL/api/packages/${GITHUB_REPOSITORY%%/*}/generic" \
+              REGISTRY_URL="${TILO_REGISTRY_URL%/}" OWNER="${GITHUB_REPOSITORY%%/*}" \
+              REGISTRY_CLI="$cli" REGISTRY_IDENTITY="$identity" \
+              tools/apps/publish-runtime-package.sh "$dir/package" "$arch" \
+              so.tilo.runtime.chromium tilo-app-runtime-chromium "$metadata"
+          done
+          [[ $found == 1 ]]
 
   promote-multiarch:
     needs: [plan, build-and-push]
@@ -3050,7 +3273,7 @@ jobs:
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release-children
       # Promotion needs only Cosign, not the multi-gigabyte build-input cache.
@@ -3255,7 +3478,7 @@ jobs:
             > tilo-os-release-index.json
           echo "::notice::promoted signed, attested multi-architecture generation $generation ($index_digest)"
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-os-release-index
           path: tilo-os-release-index.json
@@ -3549,7 +3772,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-os-child-aarch64
           path: release-child
@@ -3787,7 +4010,7 @@ jobs:
           fi
           skopeo copy --multi-arch index-only --preserve-digests "docker://$repository@$digest" "docker://$moving"
           echo "::notice::$moving -> $source ($digest)"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: steps.lanes.outputs.both == 'true'
         with:
           name: tilo-os-integration-index
