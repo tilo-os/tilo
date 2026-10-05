@@ -63,6 +63,11 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
+# The system interface: the contract with the system services Settings
+# drives (network, displays, power, accounts, updates…), served through the
+# image's system authority grant. A build is offered to, installed on and run
+# by only an OS that serves this version (os/usr/share/tilo/system-interfaces.toml).
+system = "required@1"
 collab = "optional@1"
 tilo-fs = "optional@1"
 tools = "optional@1"

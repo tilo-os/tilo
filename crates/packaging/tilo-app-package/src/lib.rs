@@ -83,6 +83,8 @@ pub use pack::{
     PackError, Packed, SigningIdentity, pack, pack_with_signature, sign_placeholder_root,
 };
 pub use package::{MetaError, PackageMeta, is_safe_path};
+/// The versioned system-interface contracts packages require and images serve.
+pub use registry_types::interfaces;
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
 pub use tapp::{TAPP_FORMAT_VERSION, Tapp, TappError};
 pub use trust::{

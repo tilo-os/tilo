@@ -173,6 +173,11 @@ pub struct RegistryTarget {
     /// `tilo-runtime/<version>+wasm.<32 hex>` for `web`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
+    /// System interfaces the build requires, `<name>@<version>`, sorted:
+    /// the required services of its manifest. A device offers the version
+    /// only when its OS serves every one; see [`crate::interfaces`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<String>,
 }
 
 /// One package entry inside a registry — everything the client needs to render a store card and start a download.
@@ -497,6 +502,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 1_800_000_100,
@@ -544,6 +550,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: Some("tilo-runtime/2026.07".into()),
+                    interfaces: Vec::new(),
                 };
                 let bound_msg = bound.signing_message();
                 assert_ne!(bound_msg, base_msg);
@@ -656,6 +663,7 @@ mod tests {
             architecture: WASM32_ARCHITECTURE.into(),
             isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
             runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
+            interfaces: Vec::new(),
         };
         entry.versions.push(web);
         assert_eq!(entry.validate(), Ok(()));

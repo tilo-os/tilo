@@ -1155,6 +1155,33 @@ impl Manifest {
         Ok(m)
     }
 
+    /// The system interfaces this package cannot work without: each
+    /// `required@N` service, sorted by name. What a registry version records
+    /// as its target's `interfaces`, and what a device checks against the
+    /// versions its OS serves before installing or running the package.
+    #[must_use]
+    pub fn required_interfaces(&self) -> Vec<registry_types::InterfaceRequirement> {
+        self.sandbox
+            .services
+            .iter()
+            .filter(|(_, req)| req.requirement == Requirement::Required)
+            .map(|(name, req)| registry_types::InterfaceRequirement {
+                name: name.clone(),
+                version: req.version,
+            })
+            .collect()
+    }
+
+    /// [`Manifest::required_interfaces`] in the registry's wire form,
+    /// `<name>@<version>`.
+    #[must_use]
+    pub fn required_interface_wire(&self) -> Vec<String> {
+        self.required_interfaces()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
     /// Re-encode to TOML; used for round-trip tests and `tilo-app-package inspect`.
     ///
     /// # Errors
