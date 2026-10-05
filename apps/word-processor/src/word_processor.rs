@@ -2466,13 +2466,18 @@ impl WordProcessor {
         self.edit_core.preedit()
     }
 
-    /// The part of the composition before the input method's cursor, where
-    /// the caret draws while composing.
-    pub fn preedit_before_cursor(&self) -> &str {
-        let preedit = self.edit_core.preedit();
-        preedit
-            .get(..self.edit_core.display_caret(""))
-            .unwrap_or(preedit)
+    /// The composition in progress as an edit core over the caret block's
+    /// committed `text`, its caret at the document caret, or `None` while
+    /// nothing is being composed. Its display mapping lays the composition
+    /// out inside the paragraph.
+    pub fn composition(&self, text: &str) -> Option<EditCore> {
+        if !self.edit_core.has_preedit() {
+            return None;
+        }
+        let mut core = self.edit_core.clone();
+        core.set_caret(crate::text_offsets::char_to_byte(text, self.caret.offset));
+        core.clamp_to(text);
+        Some(core)
     }
 
     /// Select the entire document (Ctrl+A).

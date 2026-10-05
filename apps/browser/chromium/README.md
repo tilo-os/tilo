@@ -148,6 +148,15 @@ Not yet covered: cross-origin and same-origin iframe content (listed as
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```
 
+What an agent host relies on — the process budget (the browser, its storage
+service and one renderer per site; Linux adds its sandbox zygotes), hidden
+pages painting nothing yet answering page actions, and the paint stream's
+`paint_capture` / `paint_resource` ops:
+
+```sh
+python3 apps/browser/chromium/tests/agent_host.py target/chromium/tilo-chromium-host
+```
+
 ## Native blocking
 
 A request-context handler checks HTTP(S) resources, including dedicated-worker

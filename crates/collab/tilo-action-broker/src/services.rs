@@ -159,6 +159,13 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// An action invocation reached `app` in `room`. A person, an agent or
+    /// another device drives an app through its actions as much as through
+    /// keys and clicks, so a window the app closes after one was closed on
+    /// request, not lost.
+    fn note_acted_on(&self, app: &str, room: &str) {
+        let _ = (app, room);
+    }
     /// Whether [`Self::close`] can close applications on this host.
     fn closes_applications(&self) -> bool {
         false

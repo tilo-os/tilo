@@ -184,6 +184,17 @@ pub enum NotesAction {
     /// covers create, rename, re-parent, and reorder — all are a metadata write.
     /// The title is diff-spliced so a rename doesn't tombstone the whole title.
     UpsertPage(PageData),
+    /// Create a page after its parent's current children. The position is
+    /// resolved from the document at the replay's base state, as a delete's
+    /// renumbering is, so a create authored without the current tree (an
+    /// agent, a script, a second create before the tree republishes) never
+    /// takes a sibling's place.
+    AppendPage {
+        id: String,
+        title: String,
+        /// Parent page uuid, or `""` for a root page.
+        parent: String,
+    },
     /// Change an existing tree atomically against its complete metadata preimage.
     UpdatePageTree {
         before: Vec<PageData>,
@@ -539,6 +550,12 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             "notes.page",
             page.title.clone(),
         ),
+        NotesAction::AppendPage { id, title, .. } => (
+            "New note",
+            format!("notes.page:{id}"),
+            "notes.page",
+            title.clone(),
+        ),
         NotesAction::ImportMarkdown { page, title, .. } => (
             "Import Markdown",
             format!("notes.page:{page}"),
@@ -783,6 +800,33 @@ impl Action for NotesAction {
                     }
                 }
             }
+            NotesAction::AppendPage { id, title, parent } => {
+                let (Ok(id), Ok(parent)) = (
+                    id.parse::<PageId>(),
+                    (!parent.is_empty())
+                        .then(|| parent.parse::<PageId>())
+                        .transpose(),
+                ) else {
+                    return Ok(());
+                };
+                let pages = NotesDoc::list_pages(doc);
+                if pages.iter().any(|page| page.id == id) {
+                    return Err(ActionError::Refused("this note already exists".into()));
+                }
+                if parent.is_some_and(|parent| pages.iter().all(|page| page.id != parent)) {
+                    return Err(ActionError::Refused("the parent note is gone".into()));
+                }
+                let order = pages.iter().filter(|page| page.parent == parent).count();
+                NotesDoc::upsert_page_meta(
+                    doc,
+                    &PageMeta {
+                        id,
+                        title: title.clone(),
+                        parent,
+                        order: num::u32_of_usize(order),
+                    },
+                );
+            }
             NotesAction::DuplicateSubtree { source, pages } => {
                 let source = source
                     .parse::<PageId>()
@@ -981,6 +1025,15 @@ pub fn new_page_action(id: PageId, parent: Option<PageId>, order: u32, title: &s
         parent: parent.map(|p| p.to_string()).unwrap_or_default(),
         order,
     })
+}
+
+/// Create a page after `parent`'s children as they are when it applies.
+pub fn append_page_action(id: PageId, parent: Option<PageId>, title: &str) -> NotesAction {
+    NotesAction::AppendPage {
+        id: id.to_string(),
+        title: title.to_string(),
+        parent: parent.map(|p| p.to_string()).unwrap_or_default(),
+    }
 }
 
 /// Delete a page and its whole subtree.
@@ -1920,7 +1973,6 @@ pub(crate) fn notebook_child(workspace: &crate::Workspace, id: &str) -> Option<R
 pub(crate) fn notebook_bound_declarations(
     workspace: &crate::Workspace,
 ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::Notebook>> {
-    let order = PageResourceIndex::new(workspace.pages()).next_order(None);
     let mut declarations = vec![
         ui::tilo_resource::ActionDecl::new(
             "new-page",
@@ -1936,7 +1988,7 @@ pub(crate) fn notebook_bound_declarations(
                     .map(str::trim)
                     .filter(|title| !title.is_empty())
                     .unwrap_or("Untitled");
-                Ok(new_page_action(Uuid::new_v4(), None, order, title))
+                Ok(append_page_action(Uuid::new_v4(), None, title))
             },
         )
         .describe("Create a new root note."),
@@ -1948,7 +2000,7 @@ pub(crate) fn notebook_bound_declarations(
                 "daily-note",
                 "Create today's note",
                 Vec::new(),
-                move |_, _| Ok(new_page_action(Uuid::new_v4(), None, order, &title)),
+                move |_, _| Ok(append_page_action(Uuid::new_v4(), None, &title)),
             )
             .describe("Create today's note, titled with the date."),
         );
@@ -3358,6 +3410,9 @@ mod tests {
                 }
                 NotesAction::ImportMarkdown { .. } => {
                     panic!("new-child built the wrong action: ImportMarkdown")
+                }
+                NotesAction::AppendPage { .. } => {
+                    panic!("new-child built the wrong action: AppendPage")
                 }
                 NotesAction::DeletePage { id } => {
                     panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")

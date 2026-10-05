@@ -4609,7 +4609,8 @@ fn dev_restart_hands_the_checkpoint_to_the_next_process() {
 dir=\"$TILO_DEV_SESSION\"\n\
 if [ -z \"$dir\" ]; then echo missing session >&2; exit 2; fi\n\
 if [ -f \"$dir/checkpoint.bin\" ]; then\n\
-  cp \"$dir/checkpoint.bin\" \"$dir/restored\"\n\
+  cp \"$dir/checkpoint.bin\" \"$dir/restored.part\"\n\
+  mv \"$dir/restored.part\" \"$dir/restored\"\n\
 fi\n\
 trap 'printf document-route-caret > \"$dir/checkpoint.bin\"; exit 0' TERM\n\
 touch \"$dir/ready\"\n\

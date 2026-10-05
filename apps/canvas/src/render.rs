@@ -30,6 +30,7 @@ use crate::detail::{self, Detail, LayerLevel, Mips, Request, Tiles, Work};
 use crate::media;
 use crate::model::{Adjust, Artwork, Gradient, Layer, Mark, Shape};
 use crate::picture::{Pictures, Placement, Treatment};
+use crate::settle::{Ask, Settle};
 
 /// The longest side of a painted layer's simulation grid, in cells. Painted
 /// layers simulate at most this finely; an export scales the result.
@@ -75,9 +76,10 @@ fn with_opacity(colour: Color, opacity: f64) -> Color {
 }
 
 struct PaintedLayer {
-    painter: LayerPainter,
-    key: blake3::Hash,
-    image: Option<ImageData>,
+    /// The simulation, kept up with the marks away from the window.
+    settle: Settle,
+    /// The marks as paint, kept while they stay.
+    sources: Sources,
     /// The painting graded by the layer's adjustments, and what they were.
     graded: Option<(String, ImageData)>,
     /// The picture's halvings, for a view farther than its scale.
@@ -89,6 +91,76 @@ struct PaintedLayer {
     graded_mosaic: Option<(u64, String, ImageData)>,
 }
 
+/// A painted layer's marks as its medium paints them, each kept while the
+/// mark, what it is cut to and the palette and scale stay the same, so a
+/// frame does not turn every mark into paint again.
+#[derive(Default)]
+struct Sources {
+    /// The palette and scale the marks were turned into paint with.
+    basis: String,
+    marks: HashMap<String, (Mark, Option<BezPath>, Vec<Painted>)>,
+    /// The marks' ids in order, and all of them as paint with its key.
+    order: Vec<String>,
+    laid: Option<(blake3::Hash, Arc<[Painted]>)>,
+}
+
+impl Sources {
+    /// `layer`'s marks as paint, and their key.
+    fn of(
+        &mut self,
+        art: &Artwork,
+        layer: &str,
+        palette: &[Pigment],
+        scale: f64,
+    ) -> (blake3::Hash, Arc<[Painted]>) {
+        let basis = format!("{scale}|{palette:?}");
+        if basis != self.basis {
+            *self = Self {
+                basis,
+                ..Self::default()
+            };
+        }
+        let mut changed = self.laid.is_none();
+        let mut order = Vec::new();
+        for mark in art.marks_of(layer) {
+            let cut = wet_cut(art, mark);
+            let kept = self
+                .marks
+                .get(&mark.id)
+                .is_some_and(|(kept, kept_cut, _)| kept == mark && *kept_cut == cut);
+            if !kept {
+                let painted = wet_marks(mark, cut.as_ref(), palette, scale);
+                self.marks
+                    .insert(mark.id.clone(), (mark.clone(), cut, painted));
+                changed = true;
+            }
+            order.push(mark.id.as_str());
+        }
+        if order != self.order {
+            changed = true;
+            self.order = order.into_iter().map(str::to_owned).collect();
+            let order = &self.order;
+            self.marks.retain(|id, _| order.contains(id));
+        }
+        if changed || self.laid.is_none() {
+            let painted: Vec<Painted> = self
+                .order
+                .iter()
+                .filter_map(|id| self.marks.get(id))
+                .flat_map(|(_, _, painted)| painted.iter().cloned())
+                .collect();
+            let mut key = blake3::Hasher::new();
+            for mark in &painted {
+                key.update(&mark.fingerprint);
+            }
+            self.laid = Some((key.finalize(), painted.into()));
+        }
+        #[allow(clippy::expect_used, reason = "set just above when absent")]
+        let (key, painted) = self.laid.as_ref().expect("marks laid");
+        (*key, Arc::clone(painted))
+    }
+}
+
 /// Keeps what is expensive between frames: the lit ground, each painted
 /// layer's simulation and the decoded and graded pictures.
 #[derive(Default)]
@@ -96,7 +168,6 @@ pub struct Renderer {
     ground: Option<(String, Arc<Heightfield>, ImageData)>,
     painted: HashMap<String, PaintedLayer>,
     pub pictures: Pictures,
-    wet: Option<WetPreview>,
     tooth: Option<(String, ImageData)>,
     brushes: BrushCache,
     /// The ground's halvings, for a view farther than its scale.
@@ -158,18 +229,6 @@ struct MarkCx<'a> {
     layer_adjust: Option<&'a Adjust>,
 }
 
-/// The last picture of a stroke still being painted, and what it cost, so
-/// a slow medium is previewed only as often as it can keep up.
-struct WetPreview {
-    layer: String,
-    image: ImageData,
-    at: ui::time::Instant,
-    cost: ui::time::Duration,
-}
-
-/// The least time between two previews of a stroke being painted.
-const WET_INTERVAL: ui::time::Duration = ui::time::Duration::from_millis(16);
-
 /// What a scene shows.
 #[allow(
     clippy::struct_excessive_bools,
@@ -199,6 +258,11 @@ pub struct Options {
     /// simulation, the part shown is simulated finer; farther, its picture
     /// is drawn from halved copies.
     pub detail: Option<Detail>,
+    /// A frame of a live view: a painted layer still being simulated shows
+    /// its last picture (and a stroke just laid, its preview) rather than
+    /// the window waiting for it. Anything else, a `look` or an export,
+    /// waits for the exact picture.
+    pub live: bool,
 }
 
 /// The ground where an artwork's colour cannot be read: white primed
@@ -333,6 +397,12 @@ impl Renderer {
         self.tiles.pending()
     }
 
+    /// Whether a painted layer's simulation is being brought up to its
+    /// marks in the background, so the view should be drawn again soon.
+    pub fn settling(&self) -> bool {
+        self.painted.values().any(|entry| entry.settle.running())
+    }
+
     /// Draw one layer, through its mask when it has one switched on.
     fn draw_layer(
         &mut self,
@@ -354,7 +424,7 @@ impl Renderer {
                 let wet = options.wet.as_ref().filter(|wet| wet.layer == layer.id);
                 self.draw_painted(
                     art,
-                    (layer, wet),
+                    (layer, wet, options.live),
                     &medium,
                     (scene, transform, options.detail.as_ref()),
                     text,
@@ -663,13 +733,12 @@ impl Renderer {
     fn draw_painted(
         &mut self,
         art: &Artwork,
-        (layer, wet): (&Layer, Option<&Mark>),
+        (layer, wet, live): (&Layer, Option<&Mark>, bool),
         medium: &media::MediumSpec,
         (scene, transform, detail): (&mut Scene, Affine, Option<&Detail>),
         text: &mut TextRenderer,
     ) {
-        let engines = Engines::builtin();
-        let Some(engine) = engines.get(&medium.engine) else {
+        let Some(engine) = Engines::builtin().get(&medium.engine) else {
             return;
         };
         let scale = cell_scale(art);
@@ -678,47 +747,11 @@ impl Renderer {
         let preset = medium.to_preset();
         let settings = Settings::new(engine.parameters(), &preset.params);
         let palette = preset.palette;
-        let marks: Vec<Painted> = art
-            .marks_of(&layer.id)
-            .flat_map(|mark| wet_marks(mark, wet_cut(art, mark).as_ref(), &palette, scale))
-            .collect();
-        let mut key = blake3::Hasher::new();
-        for mark in &marks {
-            key.update(&mark.fingerprint);
-        }
-        key.update(medium.engine.as_bytes());
-        key.update(format!("{:?}", settings.resolved()).as_bytes());
-        let key = key.finalize();
-        let entry = self
-            .painted
-            .entry(layer.id.clone())
-            .or_insert_with(|| PaintedLayer {
-                painter: LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings.clone()),
-                key,
-                image: None,
-                graded: None,
-                mips: Mips::default(),
-                level: None,
-                graded_mosaic: None,
-            });
-        if !entry.painter.matches(engine.id(), &canvas, &settings) {
-            entry.painter =
-                LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings.clone());
-            entry.image = None;
-        }
-        if entry.image.is_none() || entry.key != key {
-            let pixels = entry.painter.paint(&marks).to_vec();
-            entry.image = Some(image(pixels, canvas.width, canvas.height));
-            entry.key = key;
-        }
-        let strokes = wet.map(|wet| wet_marks(wet, wet_cut(art, wet).as_ref(), &palette, scale));
-        let shown = shown_painting(
-            &mut self.wet,
-            entry,
-            layer,
-            (&marks, strokes),
-            (canvas.width, canvas.height),
-            scale,
+        let wait = !live || detail.is_some_and(|detail| detail.wait);
+        let (key, shown) = self.painting(
+            art,
+            (layer, wet, wait),
+            (&engine, &canvas, &settings, &palette),
         );
         let blend = match engine.blend() {
             Blend::Normal => BlendMode::default(),
@@ -764,6 +797,87 @@ impl Renderer {
             vignette(scene, transform, board, amount);
         }
         scene.pop_layer();
+    }
+
+    /// `layer`'s painting as shown now, with `wet` being painted over it,
+    /// and the key of its marks and medium. With `wait`, the exact
+    /// painting; otherwise the last one finished while the rest is
+    /// simulated in the background.
+    fn painting(
+        &mut self,
+        art: &Artwork,
+        (layer, wet, wait): (&Layer, Option<&Mark>, bool),
+        (engine, canvas, settings, palette): (
+            &Arc<dyn tilo_wet_media::MediumEngine>,
+            &Canvas,
+            &Settings,
+            &[Pigment],
+        ),
+    ) -> (blake3::Hash, Option<ImageData>) {
+        let scale = cell_scale(art);
+        let entry = self
+            .painted
+            .entry(layer.id.clone())
+            .or_insert_with(|| PaintedLayer {
+                settle: Settle::new(LayerPainter::new(
+                    Arc::clone(engine),
+                    canvas.clone(),
+                    settings.clone(),
+                )),
+                sources: Sources::default(),
+                graded: None,
+                mips: Mips::default(),
+                level: None,
+                graded_mosaic: None,
+            });
+        let (marks_key, marks) = entry.sources.of(art, &layer.id, palette, scale);
+        let mut key = blake3::Hasher::new();
+        key.update(marks_key.as_bytes());
+        key.update(engine.id().as_bytes());
+        key.update(format!("{:?}", settings.resolved()).as_bytes());
+        let key = key.finalize();
+        // What the background finished is taken in first, so the painter
+        // is checked before it paints again.
+        entry.settle.collect(wait);
+        if entry
+            .settle
+            .painter()
+            .is_some_and(|painter| !painter.matches(engine.id(), canvas, settings))
+        {
+            entry.settle.replace(LayerPainter::new(
+                Arc::clone(engine),
+                canvas.clone(),
+                settings.clone(),
+            ));
+        }
+        let stroke = wet.map(|wet| {
+            let strokes = wet_marks(wet, wet_cut(art, wet).as_ref(), palette, scale);
+            let mut stroke = blake3::Hasher::new();
+            for mark in &strokes {
+                stroke.update(&mark.fingerprint);
+            }
+            (stroke.finalize(), Arc::from(strokes))
+        });
+        let ask = Ask {
+            key,
+            marks,
+            wet: stroke,
+            size: (canvas.width, canvas.height),
+        };
+        let painting = entry.settle.show(&ask, wait);
+        // A stroke being painted shows as it is laid, before the layer's
+        // adjustments grade it.
+        let shown = match painting {
+            Some(painting) if wet.is_none() => Some(graded_painting(
+                entry,
+                painting,
+                layer.adjust.as_ref(),
+                (canvas.width, canvas.height),
+                scale,
+            )),
+            painting => painting,
+        };
+        (key, shown)
     }
 
     /// The tiles of `layer`'s part shown, simulated at a finer level than
@@ -908,39 +1022,6 @@ fn level_grid(art: &Artwork, scale: f64) -> (usize, usize) {
     (side(art.width), side(art.height))
 }
 
-/// What a painted layer shows: a stroke still being painted previewed over
-/// its painting (only as often as the medium keeps up), else its painting
-/// as the layer's adjustments grade it.
-fn shown_painting(
-    preview: &mut Option<WetPreview>,
-    entry: &mut PaintedLayer,
-    layer: &Layer,
-    (marks, wet): (&[Painted], Option<Vec<Painted>>),
-    (width, height): (usize, usize),
-    scale: f64,
-) -> Option<ImageData> {
-    let Some(strokes) = wet else {
-        if preview.as_ref().is_some_and(|wet| wet.layer == layer.id) {
-            *preview = None;
-        }
-        return graded_painting(entry, layer.adjust.as_ref(), width, height, scale);
-    };
-    let now = ui::time::now();
-    let due = preview.as_ref().is_none_or(|wet| {
-        wet.layer != layer.id || now.duration_since(wet.at) >= (wet.cost * 2).max(WET_INTERVAL)
-    });
-    if due {
-        let pixels = entry.painter.preview(marks, &strokes);
-        *preview = Some(WetPreview {
-            layer: layer.id.clone(),
-            image: image(pixels, width, height),
-            at: now,
-            cost: ui::time::now().duration_since(now),
-        });
-    }
-    preview.as_ref().map(|wet| wet.image.clone())
-}
-
 /// The marks of a painted layer its medium does not paint: its pictures
 /// (`pictures`), or its lettering, graded by their own and the layer's
 /// adjustments.
@@ -1021,30 +1102,29 @@ pub(crate) fn graded_mark(mark: &Mark, palette: &[Pigment], grades: &[Grade]) ->
 /// painting and adjustment.
 fn graded_painting(
     entry: &mut PaintedLayer,
+    image: ImageData,
     adjust: Option<&Adjust>,
-    width: usize,
-    height: usize,
+    (width, height): (usize, usize),
     cells_per_unit: f64,
-) -> Option<ImageData> {
-    let image = entry.image.clone()?;
+) -> ImageData {
     let Some(adjust) = adjust else {
-        return Some(image);
+        return image;
     };
     let treatment = Treatment::of(&[adjust], cells_per_unit);
     if treatment.is_empty() {
-        return Some(image);
+        return image;
     }
-    let key = format!("{}|{}", entry.key.to_hex(), treatment.key);
+    let key = format!("{}|{}", image.data.id(), treatment.key);
     if let Some((have, graded)) = &entry.graded
         && *have == key
     {
-        return Some(graded.clone());
+        return graded.clone();
     }
     let mut pixels = image.data.data().to_vec();
     treatment.run(&mut pixels, width, height, 1.0);
     let graded = crate::picture::image_of(pixels, width, height);
     entry.graded = Some((key, graded.clone()));
-    Some(graded)
+    graded
 }
 
 /// The scale a transform draws at: device pixels per unit.

@@ -380,6 +380,10 @@ pub trait Decorator {
         self.inner().tooltip()
     }
 
+    fn tooltip_side(&self) -> super::tooltip::TooltipSide {
+        self.inner().tooltip_side()
+    }
+
     fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
@@ -959,6 +963,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn tooltip(&self) -> Option<&str> {
         Decorator::tooltip(self)
+    }
+
+    fn tooltip_side(&self) -> super::tooltip::TooltipSide {
+        Decorator::tooltip_side(self)
     }
 
     fn tooltip_target_at(

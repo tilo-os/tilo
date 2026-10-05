@@ -201,10 +201,13 @@ flight_pipe="$logout_request_dir/flight-record.pipe"
 
 # A dev image's compositor (a dev-overrides build) takes the control socket
 # tilo-vm drives it through, at the path the board session gives it. Release
-# builds ignore the variable, so other images do not set it.
+# builds ignore the variable, so other images do not set it. This is still a
+# person's login, not a harness's session: a first login without an identity
+# goes through identity setup as on any image.
 if [ -z "${TILO_TEST_CONTROL:-}" ] && [ -r "$IMAGE_FLAVOUR" ] \
    && [ "$(<"$IMAGE_FLAVOUR")" = dev ]; then
   export TILO_TEST_CONTROL="$runtime_dir/tilo-session/test-control.sock"
+  export TILO_TEST_CONTROL_FIRST_USE=keep
 fi
 
 # Rotate the record, start a recorder for one compositor run and open its

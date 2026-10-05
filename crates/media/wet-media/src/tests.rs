@@ -205,6 +205,49 @@ fn a_preview_shows_the_wet_stroke_without_keeping_it() {
     }
 }
 
+/// A stroke laid exactly as it was last previewed takes the preview's
+/// simulation, and paints what painting it afresh paints; a stroke laid
+/// differently from its preview is painted afresh. A formed stroke is
+/// previewed piece by piece, as it is laid.
+#[test]
+fn laying_the_previewed_stroke_equals_painting_it_afresh() {
+    let mut grass = stroke(&[(30.0, 100.0), (120.0, 96.0)], 6.0, "#4f7a2a", true);
+    if let Mark::Stroke(stroke) = &mut grass {
+        stroke.form = Some(Form::Dabs {
+            count: 9,
+            scatter: 6.0,
+            length: 14.0,
+            angle: None,
+        });
+    }
+    for (engine, texture) in [("oil", Texture::Linen), ("watercolour", Texture::ColdPress)] {
+        let mut marks = marks();
+        marks.push(Painted::new("grass", grass.clone()));
+        let fresh = painter(engine, texture).paint(&marks).to_vec();
+        let (done, wet) = marks.split_at(2);
+
+        let mut layer = painter(engine, texture);
+        let preview = layer.preview(done, wet);
+        assert_eq!(preview, fresh, "{engine}: the preview is the laid stroke");
+        assert_eq!(layer.paint(&marks), fresh.as_slice(), "{engine}");
+        assert_eq!(layer.applied(), marks.len(), "{engine}");
+
+        // Previewed shorter than it was laid: painted afresh all the same.
+        let mut layer = painter(engine, texture);
+        layer.preview(done, &wet[..1]);
+        let mut other = marks.clone();
+        other[2] = Painted::new(
+            "light",
+            stroke(&[(60.0, 40.0), (110.0, 50.0)], 8.0, "#f2c12e", true),
+        );
+        assert_eq!(
+            layer.paint(&other),
+            painter(engine, texture).paint(&other),
+            "{engine}"
+        );
+    }
+}
+
 #[test]
 fn oil_covers_its_strokes_and_a_dry_brush_breaks_over_the_weave() {
     let mut oil = painter("oil", Texture::Linen);

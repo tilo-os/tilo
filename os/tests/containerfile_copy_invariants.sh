@@ -103,7 +103,10 @@ containerfile="$repo/os/Containerfile"
 # The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
 # components.toml) and its dracut module ship in the rollback-files overlay
 # beside tilo-rollback, which the initramfs carries the same way.
-expected_contract=1ba8a0e023b9811a09a261bba40bfa8fbe322cf2c8009ab0217318525ae1b8de
+# The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
+# publisher.hex), which the launcher trusts for runtimes the Store installs,
+# is a deliberate addition.
+expected_contract=80604367f4d5fa2fd7574b814fb83dab7c01e80cea6138dcc6daeed4b8b5232a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

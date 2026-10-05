@@ -560,6 +560,21 @@ struct HostRuntime {
     replaying: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Early boot of another of the person's devices asking for its sibling
+/// half. The peer is not authenticated by transport: the boot key
+/// certificate and the challenge are what the sibling checks.
+#[derive(Clone, Debug)]
+struct DeviceUnlockProtocol;
+
+impl ProtocolHandler for DeviceUnlockProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        tokio::spawn(crate::shell::device_unlock_runtime::serve_connection(
+            connection,
+        ));
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -822,7 +837,7 @@ struct ActorState {
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// When each recent remote-input message arrived (see [`mark_new_input`]).
-    recent_input: HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    recent_input: HashMap<(WorkspaceId, [u8; 32]), (EndpointId, Instant)>,
     /// Channel governance this device published to each room, by retention
     /// channel (see [`remember_governance`]).
     governance: HashMap<WorkspaceId, GovernanceLog>,
@@ -2662,9 +2677,13 @@ impl ActorState {
                 // before on purpose too: the broker drops what it holds.
                 let new = match msg {
                     NeighbourMsg::RemoteAction { .. } => true,
-                    NeighbourMsg::RemoteInput { .. } => {
-                        mark_new_input(ws, fingerprint, Instant::now(), &mut self.recent_input)
-                    }
+                    NeighbourMsg::RemoteInput { .. } => mark_new_input(
+                        ws,
+                        peer,
+                        fingerprint,
+                        Instant::now(),
+                        &mut self.recent_input,
+                    ),
                     _ => {
                         mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
                     }
@@ -3322,6 +3341,7 @@ async fn run(
                 next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
+        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .spawn();
     let mut state = ActorState {
         endpoint,
@@ -3539,22 +3559,28 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Remote input is not deduplicated for good: a second click or key press is
-/// byte-identical to the first. Only a copy arriving within [`INPUT_COPY`]
-/// (the same event over another route to this room) is dropped.
+/// byte-identical to the first. Only a copy that another host session
+/// delivers within [`INPUT_COPY`] (the same event over another route to this
+/// room) is dropped; one session delivers each event once, in order, so
+/// identical events over it (a doubled letter in one batch) are all new.
 fn mark_new_input(
     ws: WorkspaceId,
+    host: EndpointId,
     fingerprint: [u8; 32],
     now: Instant,
-    recent: &mut HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    recent: &mut HashMap<(WorkspaceId, [u8; 32]), (EndpointId, Instant)>,
 ) -> bool {
     const INPUT_COPY: Duration = Duration::from_millis(30);
     if recent.len() > 256 {
-        recent.retain(|_, seen| now.saturating_duration_since(*seen) < INPUT_COPY);
+        recent.retain(|_, (_, seen)| now.saturating_duration_since(*seen) < INPUT_COPY);
     }
-    match recent.insert((ws, fingerprint), now) {
-        Some(seen) => now.saturating_duration_since(seen) >= INPUT_COPY,
-        None => true,
+    let copy = recent.get(&(ws, fingerprint)).is_some_and(|(via, seen)| {
+        *via != host && now.saturating_duration_since(*seen) < INPUT_COPY
+    });
+    if !copy {
+        recent.insert((ws, fingerprint), (host, now));
     }
+    !copy
 }
 
 fn mark_new_message(
@@ -4051,22 +4077,50 @@ mod tests {
     #[test]
     fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
         let mut recent = HashMap::new();
+        let host = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
+        let other = iroh::SecretKey::from_bytes(&[0xA2; 32]).public();
         let start = Instant::now();
-        assert!(mark_new_input(1, [7; 32], start, &mut recent));
+        assert!(mark_new_input(1, host, [7; 32], start, &mut recent));
         assert!(
-            !mark_new_input(1, [7; 32], start + Duration::from_millis(1), &mut recent),
+            !mark_new_input(
+                1,
+                other,
+                [7; 32],
+                start + Duration::from_millis(1),
+                &mut recent
+            ),
             "the same event arriving over a second relay session"
         );
         assert!(
-            mark_new_input(1, [7; 32], start + Duration::from_millis(200), &mut recent),
+            mark_new_input(
+                1,
+                host,
+                [7; 32],
+                start + Duration::from_millis(200),
+                &mut recent
+            ),
             "a second, byte-identical click"
         );
         assert!(mark_new_input(
             2,
+            host,
             [7; 32],
             start + Duration::from_millis(200),
             &mut recent
         ));
+        // "ll" typed in one batch: both strokes come over one session at once.
+        for _ in 0..2 {
+            assert!(
+                mark_new_input(
+                    1,
+                    host,
+                    [9; 32],
+                    start + Duration::from_millis(300),
+                    &mut recent
+                ),
+                "a repeated key over the same session"
+            );
+        }
     }
 
     fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {

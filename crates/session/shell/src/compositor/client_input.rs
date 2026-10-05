@@ -291,6 +291,9 @@ fn mint_serial(state: &mut State) -> Serial {
 }
 
 fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) {
+    state
+        .clients_given_input
+        .insert(crate::compositor::state::client_index_of(surface_id));
     let now = Instant::now();
     state
         .activation_serials
@@ -733,6 +736,12 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
+        if matches!(touch, BackendTouchEvent::Down { .. })
+            && let Some((id, _)) = target
+        {
+            self.clients_given_input
+                .insert(crate::compositor::state::client_index_of(id));
+        }
         if matches!(touch, BackendTouchEvent::Down { .. }) {
             // A client that never asked for a `wl_touch` would receive
             // nothing; it gets the contact as pointer input instead.
@@ -1344,6 +1353,9 @@ pub fn route_input(
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            state.end_remote_typing();
+        }
         state.release_personal_keyboard_focus();
         // Another device of the person last placed this seat's pointer, on a
         // window it shows. The host's cursor never left its spot, so the

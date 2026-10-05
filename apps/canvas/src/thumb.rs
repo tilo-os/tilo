@@ -123,6 +123,7 @@ impl Widget for Thumb {
         let to_thumb = transform * Affine::translate(offset.to_vec2()) * Affine::scale(scale);
         let options = Options {
             layers: self.layer.clone().map(|layer| vec![layer]),
+            live: true,
             ..Options::default()
         };
         self.renderer
