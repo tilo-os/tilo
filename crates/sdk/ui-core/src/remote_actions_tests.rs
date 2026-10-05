@@ -142,6 +142,23 @@ fn an_invocation_reports_its_outcome_or_its_refusal() {
 }
 
 #[test]
+fn a_retry_safe_invocation_keeps_the_callers_durable_identity() {
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x4a; 16]));
+    let mut actions = RemoteActions::session();
+    let _answer = actions.invoke_with_id(invocation, target("done"), InvokeArgument::None, None);
+    let requests = actions.take_collab_requests();
+    let [
+        CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(request),
+        },
+    ] = requests.as_slice()
+    else {
+        panic!("one invocation request");
+    };
+    assert_eq!(request.invocation, invocation);
+}
+
+#[test]
 fn a_running_invocation_is_followed_until_it_ends() {
     let clock = crate::background::Pumped::new();
     let _entered = clock.background().enter();
@@ -198,6 +215,104 @@ fn the_session_transport_carries_requests_out_and_answers_back() {
         answer.get(),
         RemoteCall::Refused(ActionHostError::NotPermitted)
     );
+}
+
+#[test]
+fn cancellation_acknowledgement_never_pretends_the_invocation_stopped() {
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x6c; 16]));
+    let mut actions = RemoteActions::session();
+    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+    let _invoke = actions.take_collab_requests();
+
+    let cancellation = actions.cancel(invocation).expect("tracked invocation");
+    assert_eq!(cancellation.get(), CancellationCall::Pending);
+    assert_eq!(
+        actions.cancel(invocation).unwrap().get(),
+        CancellationCall::Pending
+    );
+    let requests = actions.take_collab_requests();
+    assert!(matches!(
+        requests.as_slice(),
+        [CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Cancel { invocation: id },
+        }] if *id == invocation
+    ));
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: RemoteActionMessage::CancelResponse {
+            invocation,
+            result: Ok(()),
+        },
+    });
+    assert_eq!(cancellation.get(), CancellationCall::Acknowledged);
+    assert_eq!(
+        actions.cancel(invocation).unwrap().get(),
+        CancellationCall::Acknowledged
+    );
+    assert!(actions.take_collab_requests().is_empty());
+    assert!(
+        !running.get().is_settled(),
+        "a cancellation receipt is not a stopped invocation"
+    );
+
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: RemoteActionMessage::Update {
+            invocation,
+            state: Some(InvocationState::new(
+                invocation,
+                InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("Stopped by the person".into()),
+                },
+            )),
+        },
+    });
+    assert!(matches!(
+        running.get(),
+        RemoteCall::Done(InvocationUpdate::Cancelled { .. })
+    ));
+    assert!(actions.cancel(invocation).is_none());
+    assert!(
+        actions
+            .cancel(InvocationId(uuid::Uuid::from_bytes([0xee; 16])))
+            .is_none()
+    );
+}
+
+#[test]
+fn refused_cancellation_leaves_the_invocation_running_and_actionable() {
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x7c; 16]));
+    let mut actions = RemoteActions::session();
+    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+    let _invoke = actions.take_collab_requests();
+    let cancellation = actions.cancel(invocation).expect("tracked invocation");
+    let _cancel = actions.take_collab_requests();
+    let error = ActionHostError::NotCancellable {
+        reason: "the provider is still attaching".into(),
+    };
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: RemoteActionMessage::CancelResponse {
+            invocation,
+            result: Err(error.clone()),
+        },
+    });
+    assert_eq!(cancellation.get(), CancellationCall::Refused(error));
+    assert!(!running.get().is_settled());
+    assert!(actions.is_busy());
+
+    let retried = actions.cancel(invocation).expect("running retry");
+    assert_eq!(retried.get(), CancellationCall::Pending);
+    let requests = actions.take_collab_requests();
+    assert!(matches!(
+        requests.as_slice(),
+        [CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Cancel { invocation: id },
+        }] if *id == invocation
+    ));
+    assert_eq!(
+        actions.cancel(invocation).unwrap().get(),
+        CancellationCall::Pending
+    );
+    assert!(actions.take_collab_requests().is_empty());
 }
 
 #[test]
