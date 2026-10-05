@@ -142,7 +142,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
 fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
     // Case `cleared_or_unadmitted_nodes_never_dispatch_as_outer_widgets`.
     {
-        let mut root = Button::new("probe", "Probe", None);
+        let mut root = Button::new("probe", "Probe");
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
         let node = root.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
@@ -174,7 +174,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                 .unwrap()
             );
             let original = nodes[&node];
-            let mut other = Button::new("other", "Other", None);
+            let mut other = Button::new("other", "Other");
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(&mut other));
             assert!(matches!(
                 invoke_bound_node::<()>(
@@ -2503,7 +2503,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                     )
                     .unwrap(),
                 );
-            let button = Button::new("outer-edit", "Outer edit", None)
+            let button = Button::new("outer-edit", "Outer edit")
                 .on_action(tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap());
             column = column.push(Box::new(button));
             let mut driver = controlled_driver(Box::new(column), (300, 200));
@@ -2551,7 +2551,7 @@ fn assert_same_name_inline_wrapper_refused() {
     let clicked = std::rc::Rc::new(Cell::new(false));
     let observer = clicked.clone();
     let wrapper = Box::new(SameNameUnregisteredWrapper(
-        Button::new("ambiguous-child", "Child", None).on_click(move || observer.set(true)),
+        Button::new("ambiguous-child", "Child").on_click(move || observer.set(true)),
     ));
     assert_eq!(
         std::ptr::from_ref(wrapper.as_ref()).cast::<()>(),

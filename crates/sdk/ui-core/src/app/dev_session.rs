@@ -394,7 +394,7 @@ fn dev_checkpoint_restores_document_and_route() {
                 caret: String::new(),
             }))
         } else {
-            Ok(Box::new(Button::new(route, route, None)))
+            Ok(Box::new(Button::new(route, route)))
         }
     }
     let router = Router::new("home", ["home", "settings"], &theme, screen).unwrap();

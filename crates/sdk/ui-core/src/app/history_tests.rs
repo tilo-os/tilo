@@ -5974,7 +5974,7 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
             crate::widget::Column::new()
                 .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse", None).on_click(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
                 )),
         ),
         denied: denied.clone(),
@@ -6373,7 +6373,7 @@ fn custody_matrix_app_with_confirmation(
     };
     let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let control: Box<dyn Widget> = match kind {
-        "Button" => Box::new(Button::new("control", "Control", None).on_action(unit())),
+        "Button" => Box::new(Button::new("control", "Control").on_action(unit())),
         "Checkbox" => Box::new(
             Checkbox::new("control", "unused")
                 .with_id("control")
@@ -6448,9 +6448,11 @@ fn custody_matrix_app_with_confirmation(
         unsettled_layout: None,
         installed_output: None,
         record: None,
-        child: Box::new(Column::new().push(control).push(Box::new(
-            Button::new("pulse", "Live pulse", None).on_click(|| {}),
-        ))),
+        child: Box::new(
+            Column::new()
+                .push(control)
+                .push(Box::new(Button::new("pulse", "Live pulse").on_click(|| {}))),
+        ),
         resources,
         ledger: ledger.clone(),
     });
@@ -6664,7 +6666,7 @@ fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
             crate::widget::Column::new()
                 .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse", None).on_click(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
                 )),
         ),
         denied: denied.clone(),
@@ -6776,7 +6778,7 @@ fn custody_owned_button(
         unsettled_layout: None,
         installed_output: None,
         record: None,
-        child: Box::new(crate::widget::Button::new(label, label, None).on_action(binding)),
+        child: Box::new(crate::widget::Button::new(label, label).on_action(binding)),
         resources: vec![resource],
         ledger,
     }
@@ -7141,9 +7143,7 @@ fn control_custody_core_mounted_modelview_hidden_builder_and_fresh_button() {
                 "builder sees covering lease before emitting"
             );
             *output.borrow_mut() = Some(outbox);
-            Box::new(
-                crate::widget::Button::new("dynamic", "Dynamic", None).on_action(binding.clone()),
-            )
+            Box::new(crate::widget::Button::new("dynamic", "Dynamic").on_action(binding.clone()))
         },
     );
     let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -7297,7 +7297,7 @@ fn custody_native_return_covers_final_draw_callbacks(embedded: bool) {
     let mut live = custody_owned_button("A", ledger.clone());
     live.unsettled_layout = Some(unsettled.clone());
     live.child = Box::new(crate::widget::Column::new().push(live.child).push(Box::new(
-        crate::widget::Button::new("pulse", "Live pulse", None).on_click(|| {}),
+        crate::widget::Button::new("pulse", "Live pulse").on_click(|| {}),
     )));
     live.installed_output = Some(output.clone());
     for phase in ["draw", "overlay", "mark_drawn"] {

@@ -8534,7 +8534,7 @@ mod tests {
             Box::new(
                 crate::widget::Column::new()
                     .push(Box::new(input))
-                    .push(Box::new(crate::widget::Button::new("done", "Done", None))),
+                    .push(Box::new(crate::widget::Button::new("done", "Done"))),
             ),
             (320, 180),
             Theme::dark(),
@@ -8638,7 +8638,7 @@ mod tests {
             Box::new(
                 crate::widget::Column::new()
                     .push(Box::new(input))
-                    .push(Box::new(crate::widget::Button::new("done", "Done", None))),
+                    .push(Box::new(crate::widget::Button::new("done", "Done"))),
             ),
             (320, 180),
             Theme::dark(),
@@ -8811,7 +8811,7 @@ mod tests {
 
             let form = Column::new()
                 .push(Box::new(TextInput::local().with_id("field")))
-                .push(Box::new(Button::new("next", "Next", None)));
+                .push(Box::new(Button::new("next", "Next")));
             let mut fields = Driver::new(State::new(), Box::new(form), (320, 160));
             fields.tab(false);
             let field = fields.focused().expect("first field has focus");
@@ -8828,7 +8828,7 @@ mod tests {
             let activations: std::rc::Rc<std::cell::Cell<usize>> =
                 std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = std::rc::Rc::clone(&activations);
-            let button = Button::new("save", "Save", None).on_click(move || {
+            let button = Button::new("save", "Save").on_click(move || {
                 observed.set(observed.get().saturating_add(1));
             });
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
@@ -9294,9 +9294,9 @@ mod tests {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let operation_calls = calls.clone();
             let root = crate::widget::resource_actions::immediate(
-                Box::new(Column::new().push(Box::new(
-                    Button::new("save", "Save", None).on_action(binding),
-                ))),
+                Box::new(
+                    Column::new().push(Box::new(Button::new("save", "Save").on_action(binding))),
+                ),
                 resource,
                 move |_| {
                     operation_calls.set(operation_calls.get() + 1);
@@ -9312,7 +9312,7 @@ mod tests {
 
             let legacy = Driver::new(
                 State::new(),
-                Box::new(Button::new("legacy", "Legacy", None).on_click(|| {})),
+                Box::new(Button::new("legacy", "Legacy").on_click(|| {})),
                 (320, 160),
             );
             let audit = legacy.native_app_audit();
@@ -9321,7 +9321,7 @@ mod tests {
 
             let omitted = Driver::new(
                 State::new(),
-                Box::new(Button::new("omitted", "Omitted", None)),
+                Box::new(Button::new("omitted", "Omitted")),
                 (320, 160),
             );
             assert!(
@@ -9335,7 +9335,7 @@ mod tests {
 
             let disabled = Driver::new(
                 State::new(),
-                Box::new(Button::new("unavailable", "Unavailable", None).with_enabled(false)),
+                Box::new(Button::new("unavailable", "Unavailable").with_enabled(false)),
                 (320, 160),
             );
             assert!(
@@ -9373,7 +9373,7 @@ mod tests {
         {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let invoked = calls.clone();
-            let button = Button::new("refresh", "Refresh", None).on_effect(move || {
+            let button = Button::new("refresh", "Refresh").on_effect(move || {
                 invoked.set(invoked.get() + 1);
             });
             let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
@@ -9387,31 +9387,6 @@ mod tests {
                 .perform_named("refresh", &crate::a11y::Action::Activate)
                 .expect("the visible control enters through its action");
             assert_eq!(calls.get(), 1);
-        }
-
-        // Case `collaborative_button_is_projected_for_search_and_agents`.
-        {
-            use automerge::ReadDoc as _;
-
-            let button = Button::new("complete", "Complete", Some("completed"));
-            let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
-
-            assert!(driver.native_app_audit().is_certified());
-            assert!(driver.resources().iter().any(|resource| {
-                resource.kind == "tilo.ui.control"
-                    && resource.label == "Complete"
-                    && resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "activate")
-            }));
-            driver
-                .perform_named("complete", &crate::a11y::Action::Activate)
-                .expect("semantic activation reaches the collaborative control");
-            assert!(matches!(
-                driver.state.doc.get(&automerge::ROOT, "completed"),
-                Ok(Some((automerge::Value::Scalar(value), _))) if value.as_ref() == &automerge::ScalarValue::Boolean(true)
-            ));
         }
 
         // Case `accessibility_audit_checks_controls_and_synthetic_identity_contracts`.
@@ -9463,7 +9438,7 @@ mod tests {
 
             let driver = Driver::new(
                 State::new(),
-                Box::new(Button::new("save", "Save", None)),
+                Box::new(Button::new("save", "Save")),
                 (400, 200),
             );
             assert!(driver.accessibility_audit().is_clean());
@@ -9611,7 +9586,7 @@ mod tests {
         // A button click must reach the widget through the same
         // `handle_event` the live app calls.
         {
-            let button = Button::new("btn", "Save", None);
+            let button = Button::new("btn", "Save");
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
             let targets = driver.targets();
             assert!(
@@ -9634,7 +9609,7 @@ mod tests {
 
             let fired = Rc::new(Cell::new(0));
             let fired_by_button = Rc::clone(&fired);
-            let button = Button::new("save", "Save", None)
+            let button = Button::new("save", "Save")
                 .fit_content(32.0)
                 .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
@@ -9713,7 +9688,7 @@ mod tests {
         {
             let mut driver = Driver::new(
                 State::new(),
-                Box::new(Button::new("save", "Save", None)),
+                Box::new(Button::new("save", "Save")),
                 (400, 200),
             );
             let initial = crate::InteractionEnvironment {
@@ -9740,11 +9715,7 @@ mod tests {
 
         // Case `clicking_a_missing_target_is_an_error`.
         {
-            let mut driver = Driver::new(
-                State::new(),
-                Box::new(Button::new("b", "B", None)),
-                (400, 200),
-            );
+            let mut driver = Driver::new(State::new(), Box::new(Button::new("b", "B")), (400, 200));
             let err = driver.click_named("no_such_widget").unwrap_err();
             assert!(err.contains("no_such_widget"), "{err}");
         }
@@ -9753,7 +9724,7 @@ mod tests {
         {
             let mut driver = Driver::new(
                 State::new(),
-                Box::new(Button::new("ready", "Ready", None)),
+                Box::new(Button::new("ready", "Ready")),
                 (400, 200),
             );
             driver
@@ -9867,7 +9838,7 @@ mod tests {
 
             let fired = Rc::new(Cell::new(0));
             let observed = Rc::clone(&fired);
-            let button = Button::new("save", "Save", None).on_click(move || {
+            let button = Button::new("save", "Save").on_click(move || {
                 observed.set(observed.get() + 1);
             });
             let mut driver = Driver::new_with_controlled_inputs(
@@ -9889,7 +9860,7 @@ mod tests {
         {
             let mut driver = Driver::new(
                 State::new(),
-                Box::new(Button::new("save", "Save", None)),
+                Box::new(Button::new("save", "Save")),
                 (400, 200),
             );
             let error = driver
@@ -10010,7 +9981,7 @@ mod tests {
                         .with_secret(true)
                         .with_accessible_name("Password"),
                 ))
-                .push(Box::new(Button::new("save", "Save", None)));
+                .push(Box::new(Button::new("save", "Save")));
             let driver = Driver::new(State::new(), Box::new(root), (640, 360));
             let json = driver.inspection_json().expect("inspection JSON");
             let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
@@ -10069,7 +10040,7 @@ mod tests {
                 .doc
                 .put(&automerge::ROOT, "greeting", "hello")
                 .unwrap();
-            let mut driver = Driver::new(state, Box::new(Button::new("b", "B", None)), (400, 200));
+            let mut driver = Driver::new(state, Box::new(Button::new("b", "B")), (400, 200));
             let json = driver.dump_json();
             assert!(json.contains("greeting"), "{json}");
             assert!(json.contains("hello"), "{json}");
@@ -10319,7 +10290,7 @@ mod tests {
             State::new(),
             Box::new(
                 Column::new()
-                    .push(Box::new(Button::new("toolbar", "Toolbar", None)))
+                    .push(Box::new(Button::new("toolbar", "Toolbar")))
                     .push(Box::new(ConsumingActivationControl {
                         activations: activations.clone(),
                         focused: false,
@@ -10345,9 +10316,9 @@ mod tests {
             State::new(),
             Box::new(
                 Column::new()
-                    .push(Box::new(Button::new("enabled", "Enabled", None)))
+                    .push(Box::new(Button::new("enabled", "Enabled")))
                     .push(Box::new(
-                        Button::new("disabled", "Disabled", None).with_enabled(false),
+                        Button::new("disabled", "Disabled").with_enabled(false),
                     )),
             ),
             (400, 200),
@@ -10593,7 +10564,7 @@ mod tests {
     fn semantic_token_focus_rejects_unpublished_targets() {
         let mut driver = Driver::new_with_controlled_inputs(
             State::new(),
-            Box::new(Button::new("save", "Save", None)),
+            Box::new(Button::new("save", "Save")),
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),

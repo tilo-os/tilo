@@ -675,13 +675,13 @@ impl SignInFlow {
                 _ => "Continue in browser",
             };
             buttons = buttons.push(Box::new(bind(
-                Button::new("settings.accounts.form.save", label, None),
+                Button::new("settings.accounts.form.save", label),
                 super::AccountsEffect::SaveAccountForm,
             )));
         }
         buttons = buttons
             .push(Box::new(bind(
-                Button::new("settings.accounts.form.cancel", "Cancel", None),
+                Button::new("settings.accounts.form.cancel", "Cancel"),
                 super::AccountsEffect::CancelAccountForm,
             )))
             .push(Box::new(Spacer::new()));

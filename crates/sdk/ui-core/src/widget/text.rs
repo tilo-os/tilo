@@ -2007,7 +2007,7 @@ mod tests {
                 let root = Column::new()
                     .push(Box::new(Text::new("title")))
                     .push(Box::new(
-                        Button::new("localized-action", "action", None).fit_content(40.0),
+                        Button::new("localized-action", "action").fit_content(40.0),
                     ));
                 let mut driver = crate::headless::Driver::new_with_controlled_inputs(
                     crate::State::new(),

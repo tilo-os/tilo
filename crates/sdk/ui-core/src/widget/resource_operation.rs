@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn a_read_only_caller_keeps_its_open_edits_and_refuses_a_writing_handler() {
         let mut widget = Writer {
-            inner: Button::new("probe", "Probe", None),
+            inner: Button::new("probe", "Probe"),
         };
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, "typing", "pending").unwrap();

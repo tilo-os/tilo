@@ -484,10 +484,10 @@ impl ImageAttachment {
             source: source.into(),
             editing: false,
             node: None,
-            edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit", None)
+            edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit")
                 .with_size(112.0, 32.0)
                 .on_view(move || edit_command.set(Some(true))),
-            done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done", None)
+            done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done")
                 .with_size(88.0, 32.0)
                 .on_view(move || done_command.set(Some(false))),
             command,
@@ -820,17 +820,13 @@ impl BlockEditor {
             replace_field: TextInput::local()
                 .with_id("block-editor-replacement")
                 .with_placeholder("block-editor-replace-placeholder"),
-            replace_button: Button::new("block-editor-replace", "block-editor-replace", None)
+            replace_button: Button::new("block-editor-replace", "block-editor-replace")
                 .with_size(96.0, 36.0)
                 .on_click(move || requested.set(true)),
-            replace_all_button: Button::new(
-                "block-editor-replace-all",
-                "block-editor-replace-all",
-                None,
-            )
-            .with_size(120.0, 36.0)
-            .tooltip("block-editor-replace-all-help")
-            .on_click(move || all_requested.set(true)),
+            replace_all_button: Button::new("block-editor-replace-all", "block-editor-replace-all")
+                .with_size(120.0, 36.0)
+                .tooltip("block-editor-replace-all-help")
+                .on_click(move || all_requested.set(true)),
             replace_all_node: None,
             replace_all_requested,
             find_snapshot: Vec::new(),
@@ -4686,21 +4682,17 @@ impl TableModeControl {
             } else {
                 "table-edit-visual"
             },
-            None,
         )
         .on_click(move || clicked.set(true));
         let structure = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_request = structure.clone();
         let column_request = structure.clone();
         let add_row =
-            crate::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row", None)
+            crate::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row")
                 .on_click(move || row_request.set(Some(true)));
-        let add_column = crate::widget::Button::new(
-            &format!("notes.table-add-column:{id}"),
-            "table-add-column",
-            None,
-        )
-        .on_click(move || column_request.set(Some(false)));
+        let add_column =
+            crate::widget::Button::new(&format!("notes.table-add-column:{id}"), "table-add-column")
+                .on_click(move || column_request.set(Some(false)));
         Self {
             button,
             requested,

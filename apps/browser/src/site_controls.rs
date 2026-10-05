@@ -290,7 +290,7 @@ impl SiteControls {
     }
     fn button(&self, id: &str, label: &str, pending: Pending) -> Button {
         let state = self.pending.clone();
-        Button::new(id, label, None)
+        Button::new(id, label)
             .with_size(
                 crate::browser_widget::labelled_width(160.0, self.text_scale),
                 32.0,

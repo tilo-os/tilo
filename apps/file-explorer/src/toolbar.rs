@@ -154,7 +154,7 @@ impl FileToolbar {
     ) -> Box<dyn Widget> {
         let sink = self.sink.clone();
         Box::new(
-            Button::new(id, "", None)
+            Button::new(id, "")
                 .with_icon(icon)
                 .with_size(NAV_W, NAV_H)
                 .with_enabled(enabled)
@@ -225,7 +225,7 @@ impl FileToolbar {
             if self.view_mode == ViewMode::Grid {
                 let sink = self.sink.clone();
                 out.push(Box::new(
-                    Button::new("files.sort_menu", &t("files-sort-by"), None)
+                    Button::new("files.sort_menu", &t("files-sort-by"))
                         .with_icon(Icon::ArrowUpDown)
                         .with_size(104.0, NAV_H)
                         .on_effect(move || push(&sink, FileCommand::OpenSortMenu)),
@@ -243,7 +243,6 @@ impl FileToolbar {
             let button = Button::new(
                 "files.archive.extract",
                 if self.compact { "" } else { &extract_label },
-                None,
             )
             .with_icon(Icon::Download)
             .with_size(if self.compact { NAV_W } else { 104.0 }, NAV_H)
@@ -261,7 +260,7 @@ impl FileToolbar {
             // hidden, terminal). Every action it reveals is spelled out.
             let sink = self.sink.clone();
             out.push(Box::new(
-                Button::new("files.view_menu", "", None)
+                Button::new("files.view_menu", "")
                     .with_icon(Icon::MoreHorizontal)
                     .with_size(NAV_W, NAV_H)
                     .with_accessible_name(&t("files-view-options"))

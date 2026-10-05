@@ -1371,7 +1371,6 @@ impl DisplayModel {
                         Button::new(
                             "settings.display.identify",
                             &crate::i18n::t("display-identify"),
-                            None,
                         )
                         .content_sized(),
                         DisplayEffect::IdentifyDisplays,
@@ -1852,19 +1851,16 @@ impl DisplayModel {
                         setting_row(
                             &t("display-keep-ok"),
                             Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.keep", &keep, None).content_sized(),
+                                Button::new("settings.display.keep", &keep).content_sized(),
                                 DisplayEffect::KeepDisplayChanges,
                             )),
                         ),
                         setting_row(
                             &t("display-keep-wrong"),
-                            Box::new(
-                                self.cx.bind_invocation(
-                                    Button::new("settings.display.revert", &revert, None)
-                                        .content_sized(),
-                                    DisplayEffect::RevertDisplayChanges,
-                                ),
-                            ),
+                            Box::new(self.cx.bind_invocation(
+                                Button::new("settings.display.revert", &revert).content_sized(),
+                                DisplayEffect::RevertDisplayChanges,
+                            )),
                         ),
                     ]),
                 )
@@ -1891,7 +1887,7 @@ impl DisplayModel {
                     content.push(setting_row(
                         &t("display-retry"),
                         Box::new(self.cx.bind_invocation(
-                            Button::new("settings.display.apply", &try_again, None).content_sized(),
+                            Button::new("settings.display.apply", &try_again).content_sized(),
                             DisplayEffect::ApplyDisplayChanges,
                         )),
                     ));
@@ -1907,7 +1903,7 @@ impl DisplayModel {
                         setting_row(
                             &t("display-apply-row"),
                             Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.apply", &apply, None).content_sized(),
+                                Button::new("settings.display.apply", &apply).content_sized(),
                                 DisplayEffect::ApplyDisplayChanges,
                             )),
                         ),
@@ -1939,7 +1935,6 @@ impl DisplayModel {
                     Button::new(
                         "settings.display.tool.forget",
                         &crate::i18n::t("display-tools-forget"),
-                        None,
                     ),
                     DisplayEffect::ForgetDisplayTool {
                         tool: tool.executable.clone(),

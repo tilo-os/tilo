@@ -661,7 +661,7 @@ mod tests {
             let theme = Theme::default();
             let mut router =
                 Router::new("settings", ["home", "settings"], &theme, |route, _, _| {
-                    Ok(Box::new(super::super::Button::new(route, route, None)))
+                    Ok(Box::new(super::super::Button::new(route, route)))
                 })
                 .unwrap();
             assert_eq!(router.handle().current(), "settings");

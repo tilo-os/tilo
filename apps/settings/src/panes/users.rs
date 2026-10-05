@@ -646,7 +646,7 @@ impl UsersModel {
         let username = Arc::clone(&self.form.username);
         let full_name = Arc::clone(&self.form.full_name);
         let create = self.cx.bind(
-            Button::new("settings.users.save", &t("settings-users-create"), None),
+            Button::new("settings.users.save", &t("settings-users-create")),
             effect(UsersEffect::CREATE_USER).map(move |()| {
                 (
                     username
@@ -691,7 +691,7 @@ impl UsersModel {
             };
             let name = &user.username;
             actions = actions.push(Box::new(self.cx.bind_invocation(
-                Button::new(&format!("settings.users.role.{name}"), &role_action, None),
+                Button::new(&format!("settings.users.role.{name}"), &role_action),
                 UsersEffect::SetAdministrator {
                     user: name.clone(),
                     admin: !user.admin,
@@ -700,11 +700,7 @@ impl UsersModel {
             // An unread automatic-login state offers no switch to flip.
             if user.automatic_login_error.is_none() {
                 actions = actions.push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.autologin.{name}"),
-                        &auto_action,
-                        None,
-                    ),
+                    Button::new(&format!("settings.users.autologin.{name}"), &auto_action),
                     UsersEffect::SetAutomaticLogin {
                         user: name.clone(),
                         on: !user.automatic_login,
@@ -716,7 +712,6 @@ impl UsersModel {
                     Button::new(
                         &format!("settings.users.remove_keep.{name}"),
                         &t("settings-users-remove-keep-files"),
-                        None,
                     ),
                     UsersEffect::RemoveUser {
                         user: name.clone(),
@@ -727,7 +722,6 @@ impl UsersModel {
                     Button::new(
                         &format!("settings.users.remove.{name}"),
                         &t("settings-users-remove-account-and-files"),
-                        None,
                     ),
                     UsersEffect::RemoveUser {
                         user: name.clone(),
@@ -816,7 +810,6 @@ impl UsersModel {
                     Button::new(
                         &format!("settings.users.identity.activate.{}", id.id),
                         &t("settings-users-identity-use"),
-                        None,
                     ),
                     UsersEffect::UseIdentity {
                         identity: id.id.clone(),
@@ -826,7 +819,6 @@ impl UsersModel {
                     Button::new(
                         &format!("settings.users.identity.remove.{}", id.id),
                         &t("settings-users-identity-remove"),
-                        None,
                     ),
                     UsersEffect::RemoveIdentity {
                         identity: id.id.clone(),
@@ -838,7 +830,6 @@ impl UsersModel {
                 Button::new(
                     &format!("settings.users.identity.protect.{}", id.id),
                     &t("settings-users-identity-protect"),
-                    None,
                 ),
                 UsersEffect::ProtectIdentity {
                     identity: id.id.clone(),

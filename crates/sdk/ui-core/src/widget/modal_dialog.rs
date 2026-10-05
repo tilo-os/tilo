@@ -1244,11 +1244,8 @@ mod tests {
             use crate::widget::Button;
             use accesskit::Role as AccessKitRole;
 
-            let mut d = ModalDialog::new(
-                "Confirm",
-                Button::new("modal-child", "Confirm action", None),
-            )
-            .open(true);
+            let mut d = ModalDialog::new("Confirm", Button::new("modal-child", "Confirm action"))
+                .open(true);
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             d.build_layout(&mut taffy, &Theme::dark(), &mut node_map);

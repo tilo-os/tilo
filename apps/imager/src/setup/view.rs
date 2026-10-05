@@ -1175,7 +1175,7 @@ impl SetupApp {
 
     fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label, None)
+        Button::new(id, label)
             .fit_content(40.0)
             .on_effect(move || sink.borrow_mut().push(command))
     }

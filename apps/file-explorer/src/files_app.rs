@@ -246,7 +246,7 @@ fn retry_button() -> Button {
     let spec = row.actions.first().expect("the retry row has its action");
     let binding = tilo_actions::ActionBinding::new(&row, spec, |()| serde_json::Map::new())
         .expect("the retry row exports its action");
-    Button::new(RETRY_ROW, &t("files-try-again"), None).on_action(binding)
+    Button::new(RETRY_ROW, &t("files-try-again")).on_action(binding)
 }
 
 /// The bookmarked places, as [`crate::resource::FileExplorer::children`]

@@ -653,7 +653,7 @@ mod locus_tests {
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             let counter = calls.clone();
             column = column.push(resource_actions::immediate(
-                Box::new(Button::new(id, "Same label", None).on_action(binding)),
+                Box::new(Button::new(id, "Same label").on_action(binding)),
                 resource,
                 move |_| {
                     counter.set(counter.get() + 1);
@@ -732,11 +732,9 @@ mod locus_tests {
             Box::new(
                 Column::new()
                     .push(Box::new(
-                        Button::new("a", "Same label", None).on_action(binding.clone()),
+                        Button::new("a", "Same label").on_action(binding.clone()),
                     ))
-                    .push(Box::new(
-                        Button::new("b", "Same label", None).on_action(binding),
-                    )),
+                    .push(Box::new(Button::new("b", "Same label").on_action(binding))),
             ),
             resource,
             |_| panic!("observation must not execute"),
@@ -759,7 +757,7 @@ mod locus_tests {
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             root = root.push(resource_actions::immediate(
                 Box::new(Column::new().with_id(kind).push(Box::new(
-                    Button::new("edit", "Same label", None).on_action(binding),
+                    Button::new("edit", "Same label").on_action(binding),
                 ))),
                 resource,
                 |_| panic!("observation must not execute"),
@@ -845,7 +843,7 @@ mod locus_tests {
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let frame = FrameHarness::new(
             State::new(),
-            Box::new(Button::new("stale-control", "Same label", None).on_action(binding)),
+            Box::new(Button::new("stale-control", "Same label").on_action(binding)),
             (400, 240),
         );
         assert_eq!(frame.semantic_locus(&interaction("stale:root")), None);
@@ -945,11 +943,9 @@ mod locus_tests {
             Box::new(
                 Column::new()
                     .push(Box::new(
-                        Button::new("b", "Same label", None).on_action(binding.clone()),
+                        Button::new("b", "Same label").on_action(binding.clone()),
                     ))
-                    .push(Box::new(
-                        Button::new("a", "Same label", None).on_action(binding),
-                    )),
+                    .push(Box::new(Button::new("a", "Same label").on_action(binding))),
             ),
             resource,
             |_| panic!("observation must not execute"),
@@ -986,7 +982,7 @@ mod locus_tests {
         let moved = frame.action_ui_routes(&address)[0].bounds;
         assert_eq!(moved, Some(frame.targets()["first"]));
         assert_ne!(before, moved);
-        frame.root = Box::new(Button::new("replacement", "Same label", None));
+        frame.root = Box::new(Button::new("replacement", "Same label"));
         frame.invalidate_layout_tree();
         frame.relayout();
         assert!(frame.action_ui_routes(&address).is_empty());

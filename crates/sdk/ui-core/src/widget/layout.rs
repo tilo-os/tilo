@@ -933,7 +933,7 @@ mod tests {
                     height: 100.0,
                 })
             })
-            .child(Box::new(Button::new("action", "Action", None)));
+            .child(Box::new(Button::new("action", "Action")));
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -965,7 +965,7 @@ mod tests {
 
         fn ordinary_hosts_keep_default_pixel_rounding() {
             use crate::widget::Button;
-            let mut widget = Button::new("ordinary", "Ordinary", None).with_size(100.25, 40.25);
+            let mut widget = Button::new("ordinary", "Ordinary").with_size(100.25, 40.25);
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1119,7 +1119,7 @@ mod tests {
                 ["target", "target"],
                 ["other", "removed"],
             ] {
-                let mut old = Box::new(Button::new("target", "Target", None));
+                let mut old = Box::new(Button::new("target", "Target"));
                 let mut tree = TaffyTree::new();
                 let mut nodes = HashMap::new();
                 let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1133,8 +1133,8 @@ mod tests {
                 nodes.clear();
                 bindings.clear();
                 let mut rebuilt = Column::new()
-                    .push(Box::new(Button::new(target_keys[0], "First", None)))
-                    .push(Box::new(Button::new(target_keys[1], "Second", None)));
+                    .push(Box::new(Button::new(target_keys[0], "First")))
+                    .push(Box::new(Button::new(target_keys[1], "Second")));
                 let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
                 // SAFETY: exact exclusively owned rebuilt tree and maps.
                 unsafe {
@@ -1155,8 +1155,8 @@ mod tests {
         fn duplicate_source_key_cannot_transfer_focus_to_the_surviving_other_control() {
             use crate::widget::{Button, Column};
             let mut old = Column::new()
-                .push(Box::new(Button::new("duplicate", "Removed", None)))
-                .push(Box::new(Button::new("duplicate", "Survivor", None)));
+                .push(Box::new(Button::new("duplicate", "Removed")))
+                .push(Box::new(Button::new("duplicate", "Survivor")));
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1170,7 +1170,7 @@ mod tests {
                 unsafe { CompositionFocus::capture(Some(selected), &nodes, &bindings) }.unwrap();
             nodes.clear();
             bindings.clear();
-            let mut survivor = Button::new("duplicate", "Survivor", None);
+            let mut survivor = Button::new("duplicate", "Survivor");
             let root = survivor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
             // SAFETY: exact exclusively owned replacement tree and maps.
             unsafe {
@@ -1182,7 +1182,7 @@ mod tests {
 
         fn review_disabled_duplicate_target_does_not_transfer_focus_to_enabled_other() {
             use crate::widget::{Button, Column};
-            let mut old = Button::new("target", "Original", None);
+            let mut old = Button::new("target", "Original");
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1194,11 +1194,11 @@ mod tests {
                 unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
             nodes.clear();
             bindings.clear();
-            let mut disabled = Button::new("target", "Original", None);
+            let mut disabled = Button::new("target", "Original");
             disabled.set_enabled(false);
             let mut rebuilt = Column::new()
                 .push(Box::new(disabled))
-                .push(Box::new(Button::new("target", "Other", None)));
+                .push(Box::new(Button::new("target", "Other")));
             let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
             unsafe {
                 bindings.rebuild(&rebuilt, &tree, root, &nodes);

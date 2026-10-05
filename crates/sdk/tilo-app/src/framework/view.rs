@@ -506,7 +506,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A button that invokes one fully specified action.
     pub fn button(&self, label: &str, invoke: Invoke<R>) -> Button {
         let id = self.control_id(invoke.id);
-        let button = Button::new(&id, label, None);
+        let button = Button::new(&id, label);
         let Some(spec) = self
             .published
             .actions
@@ -793,7 +793,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     pub fn effect_button<E: Effect>(&self, label: &str, effect: &E) -> Button {
         let id = self.control_id(effect.id());
         self.actions()
-            .bind_effect_invocation(Button::new(&id, label, None), effect)
+            .bind_effect_invocation(Button::new(&id, label), effect)
     }
 }
 

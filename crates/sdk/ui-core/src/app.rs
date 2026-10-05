@@ -3465,8 +3465,7 @@ pub(crate) mod ordinary_confirmation_tests {
         let ledger = Rc::new(RefCell::new(vec![]));
         let widget = Fixture {
             child: Box::new(
-                crate::widget::Button::new("ordinary-emitter", "Emit request", None)
-                    .on_action(binding),
+                crate::widget::Button::new("ordinary-emitter", "Emit request").on_action(binding),
             ),
             resources: resources.clone(),
             ledger: ledger.clone(),

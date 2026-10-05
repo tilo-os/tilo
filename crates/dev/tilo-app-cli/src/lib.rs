@@ -3067,7 +3067,7 @@ mod tests {{
                 let activated = rows_activated.clone();
                 Box::new(ui::row![
                     Text::new(label),
-                    Button::new(&format!("more-{{id}}"), "More", None)
+                    Button::new(&format!("more-{{id}}"), "More")
                         .on_view(move || activated.set(Some(id.to_string()))),
                 ])
             }})
@@ -3213,7 +3213,7 @@ mod tests {{
                 Box::new(Container::new().with_height(height).with_child(Box::new(
                     ui::row![
                         Text::new(&format!("Item {{index}}")),
-                        Button::new(&format!("open-{{key}}"), "Open", None)
+                        Button::new(&format!("open-{{key}}"), "Open")
                             .on_view(move || activated.set(Some(key.clone()))),
                     ],
                 )))
@@ -3368,7 +3368,7 @@ mod tests {{
                 .with_widget(move |_row, index| {{
                     let activated = cells_activated.clone();
                     Box::new(
-                        Button::new(&format!("open-{{index}}"), "Open", None)
+                        Button::new(&format!("open-{{index}}"), "Open")
                             .on_view(move || activated.set(Some(index.to_string())))
                             .fit_content(if index == 0 {{ 56.0 }} else {{ 28.0 }}),
                     )

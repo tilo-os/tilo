@@ -729,14 +729,14 @@ impl ApiTesterApp {
         // overlay mode, so a keyboard or screen-reader user can open the
         // workspace rail on a narrow display.
         let rail_sink = sink.clone();
-        let rail_button = Button::new("api.workspace-menu", "", None)
+        let rail_button = Button::new("api.workspace-menu", "")
             .with_icon(Icon::Menu)
             .with_accessible_name("Open workspace")
             .tooltip("Open workspace")
             .with_size(HAMBURGER_W as f32, 36.0)
             .on_effect(move || rail_sink.borrow_mut().push(Cmd::ToggleRail));
         let close_sink = sink.clone();
-        let rail_close = Button::new("api.workspace-close", "Close", None)
+        let rail_close = Button::new("api.workspace-close", "Close")
             .with_icon(Icon::X)
             .with_accessible_name("Close workspace")
             .tooltip("Close workspace")
@@ -768,12 +768,12 @@ impl ApiTesterApp {
         .on_action(Self::menu_binding(&actions::environment_menu_resource()));
 
         // Send — the accent primary action.
-        let send_button = Button::new("api.send", "Send", None)
+        let send_button = Button::new("api.send", "Send")
             .primary()
             .with_size(SEND_W as f32, 36.0)
             .on_action(Self::send_binding());
         let save_sink = sink.clone();
-        let save_button = Button::new("api.save", "Save", None)
+        let save_button = Button::new("api.save", "Save")
             .with_icon(Icon::Check)
             .with_accessible_name("Save request")
             .tooltip("Save current request")
@@ -841,11 +841,11 @@ impl ApiTesterApp {
         .with_id("api.form-variable-secret")
         .with_accessible_name("Where the value is kept");
         let submit_sink = sink.clone();
-        let form_submit = Button::new("api.form-confirm", "Confirm", None)
+        let form_submit = Button::new("api.form-confirm", "Confirm")
             .primary()
             .on_effect(move || submit_sink.borrow_mut().push(Cmd::SubmitForm));
         let cancel_sink = sink.clone();
-        let form_cancel = Button::new("api.form-cancel", "Cancel", None)
+        let form_cancel = Button::new("api.form-cancel", "Cancel")
             .on_effect(move || cancel_sink.borrow_mut().push(Cmd::CancelForm));
         let management = [
             (
@@ -922,7 +922,7 @@ impl ApiTesterApp {
             .into_iter()
             .map(|(id, label, command)| {
                 let sink = sink.clone();
-                Button::new(id, label, None)
+                Button::new(id, label)
                     .with_accessible_name(label)
                     .tooltip(label)
                     .on_effect(move || sink.borrow_mut().push(command.clone()))
@@ -3393,8 +3393,7 @@ impl Widget for ApiTesterApp {
         ] {
             // Preserve each button's callback while refreshing its contextual
             // screen-reader name.
-            let button =
-                std::mem::replace(&mut self.manage_buttons[index], Button::new("", "", None));
+            let button = std::mem::replace(&mut self.manage_buttons[index], Button::new("", ""));
             self.manage_buttons[index] = button.with_accessible_name(&format!("{label}: {target}"));
         }
 

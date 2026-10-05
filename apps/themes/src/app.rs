@@ -79,7 +79,7 @@ const BREAKPOINT: f64 = 840.0;
 /// A top-bar button invoking one of the studio's effects through the same
 /// door as the palette, or disabled when the effect is not published.
 fn effect_button(id: &str, label: &str, effect: &ThemesEffect) -> Button {
-    let button = Button::new(id, label, None).fit_content(TOPBAR_CONTROL_H);
+    let button = Button::new(id, label).fit_content(TOPBAR_CONTROL_H);
     match crate::actions::effect_binding(effect) {
         Some(binding) => button.on_action(binding),
         None => button.with_enabled(false),
@@ -234,7 +234,7 @@ impl ThemesApp {
         let gallery_toggle_request = Rc::new(Cell::new(false));
         let gallery_toggle_button = |icon: Icon, name: &str| {
             let toggle_request = gallery_toggle_request.clone();
-            Button::new("themes.gallery_toggle", "", None)
+            Button::new("themes.gallery_toggle", "")
                 .with_icon(icon)
                 .with_size(TOPBAR_CONTROL_H, TOPBAR_CONTROL_H)
                 .tooltip(name)

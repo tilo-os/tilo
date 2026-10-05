@@ -2,7 +2,6 @@ use super::*;
 use crate::widget::{
     Actions, Button, Card, CardGrid, Column, Element, EmptyState, Scrollable, Text,
 };
-use automerge::ReadDoc;
 use std::cell::Cell;
 use std::rc::Rc;
 use winit::dpi::PhysicalPosition;
@@ -19,18 +18,11 @@ fn fixture() -> App {
                 .with_title("Connection")
                 .with_footer(Box::new(
                     Actions::new(
-                        Button::new(
-                            &format!("primary-{index}"),
-                            "Refresh connections",
-                            Some("clicked"),
-                        )
-                        .primary(),
+                        Button::new(&format!("primary-{index}"), "Refresh connections")
+                            .on_click(crate::testing::record_click("clicked"))
+                            .primary(),
                     )
-                    .secondary(Button::new(
-                        &format!("secondary-{index}"),
-                        "Details",
-                        None,
-                    )),
+                    .secondary(Button::new(&format!("secondary-{index}"), "Details")),
                 )),
             ) as Element
         })
@@ -95,13 +87,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         let target = initial[3].1.center();
         assert!(app.dispatch_semantic_click(target.x, target.y));
         assert_eq!(app.focused_node, Some(app.focusable_order[3]));
-        assert!(
-            app.state
-                .doc
-                .get(automerge::ROOT, "clicked")
-                .unwrap()
-                .is_some()
-        );
+        assert_eq!(crate::testing::clicks("clicked"), 1);
         let mut scene = Scene::new();
         app.root_widget.draw(
             &mut scene,
@@ -154,7 +140,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             ))))));
         }
         content = content.push(Box::new(
-            Button::new("final-action", "Open all applications", None).on_click(move || {
+            Button::new("final-action", "Open all applications").on_click(move || {
                 activated.set(activated.get() + 1);
             }),
         ));

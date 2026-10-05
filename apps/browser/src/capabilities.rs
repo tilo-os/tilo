@@ -305,7 +305,6 @@ impl Capabilities {
                 Button::new(
                     &format!("browser.decision.{permission}.{id}.{allow}"),
                     label,
-                    None,
                 )
                 .with_size(80.0, 36.0)
                 .on_effect(move || {
@@ -353,10 +352,11 @@ impl Capabilities {
             if d.state == "progress" {
                 let engine = engine.clone();
                 row = row.push(Box::new(
-                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel", None)
-                        .on_effect(move || {
+                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel").on_effect(
+                        move || {
                             engine.send(WebViewCommand::CancelNativeDownload { id });
-                        }),
+                        },
+                    ),
                 ));
             }
             if d.state == "complete" && !d.path.is_empty() {
@@ -364,8 +364,8 @@ impl Capabilities {
                     let path = std::path::PathBuf::from(&d.path);
                     let notice = self.notice.writer();
                     row = row.push(Box::new(
-                        Button::new(&format!("browser.download.{name}.{id}"), label, None)
-                            .on_effect(move || match open_download(&path, reveal) {
+                        Button::new(&format!("browser.download.{name}.{id}"), label).on_effect(
+                            move || match open_download(&path, reveal) {
                                 Err(message) => notice.set(message),
                                 Ok(channel) => {
                                     let notice = notice.clone();
@@ -383,7 +383,8 @@ impl Capabilities {
                                             });
                                         });
                                 }
-                            }),
+                            },
+                        ),
                     ));
                 }
             }
@@ -391,10 +392,11 @@ impl Capabilities {
                 if d.retryable {
                     let engine = engine.clone();
                     row = row.push(Box::new(
-                        Button::new(&format!("browser.download.retry.{id}"), "Retry", None)
-                            .on_effect(move || {
+                        Button::new(&format!("browser.download.retry.{id}"), "Retry").on_effect(
+                            move || {
                                 engine.send(WebViewCommand::RetryDownload { id });
-                            }),
+                            },
+                        ),
                     ));
                 } else {
                     row = row.push(Box::new(

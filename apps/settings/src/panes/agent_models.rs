@@ -743,7 +743,6 @@ impl AgentModelsModel {
                                 Button::new(
                                     "agent-models-accelerator-setup",
                                     &t("agent-accel-setup"),
-                                    None,
                                 )
                                 .content_sized(),
                                 AgentModelsEffect::SetUpAccelerator,
@@ -785,7 +784,6 @@ impl AgentModelsModel {
                                 Button::new(
                                     "agent-models-accelerator-retry",
                                     &t("agent-accel-retry"),
-                                    None,
                                 )
                                 .content_sized(),
                                 AgentModelsEffect::SetUpAccelerator,
@@ -826,18 +824,15 @@ impl AgentModelsModel {
             caption(&accept),
             Box::new(
                 Row::new()
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new("agent-models-confirm-install", &accept_btn, None)
-                                .content_sized(),
-                            AgentModelsEffect::InstallModel {
-                                model: package.id.clone(),
-                                revision: package.revision.clone(),
-                            },
-                        ),
-                    ))
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new("agent-models-cancel-install", &cancel, None).content_sized(),
+                        Button::new("agent-models-confirm-install", &accept_btn).content_sized(),
+                        AgentModelsEffect::InstallModel {
+                            model: package.id.clone(),
+                            revision: package.revision.clone(),
+                        },
+                    )))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new("agent-models-cancel-install", &cancel).content_sized(),
                         AgentModelsEffect::ReviewModelDownload { show: false },
                     )))
                     .push(Box::new(Spacer::new())),
@@ -877,7 +872,7 @@ impl AgentModelsModel {
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("agent-models-setup-unavailable", &unavailable, None)
+                        Button::new("agent-models-setup-unavailable", &unavailable)
                             .content_sized()
                             .with_enabled(false),
                     ))
@@ -902,7 +897,7 @@ impl AgentModelsModel {
                 Row::new()
                     .push(Box::new(
                         self.cx.bind_invocation(
-                            Button::new("agent-models-setup-local", &setup, None)
+                            Button::new("agent-models-setup-local", &setup)
                                 .content_sized()
                                 .with_enabled(
                                     self.manager_available
@@ -993,7 +988,6 @@ impl AgentModelsModel {
                                 token(&model.package.id)
                             ),
                             &action_label(action),
-                            None,
                         )
                         .content_sized(),
                         model_effect(model, action),
@@ -1048,12 +1042,8 @@ impl AgentModelsModel {
             Row::new()
                 .push(Box::new(
                     self.cx.bind_invocation(
-                        Button::new(
-                            "agent-models-add-anthropic",
-                            &t("agent-add-anthropic"),
-                            None,
-                        )
-                        .content_sized(),
+                        Button::new("agent-models-add-anthropic", &t("agent-add-anthropic"))
+                            .content_sized(),
                         AgentModelsEffect::AddProvider {
                             protocol: "anthropic".into(),
                         },
@@ -1062,7 +1052,7 @@ impl AgentModelsModel {
                 .push(hgap(8.0))
                 .push(Box::new(
                     self.cx.bind_invocation(
-                        Button::new("agent-models-add-openai", &t("agent-add-compatible"), None)
+                        Button::new("agent-models-add-openai", &t("agent-add-compatible"))
                             .content_sized(),
                         AgentModelsEffect::AddProvider {
                             protocol: "openai-compatible".into(),
@@ -1136,7 +1126,6 @@ impl AgentModelsModel {
                             Button::new(
                                 &format!("agent-models-save-provider-{profile_id}"),
                                 &t("agent-save-details"),
-                                None,
                             )
                             .content_sized(),
                             effect(AgentModelsEffect::SET_PROVIDER_DETAILS).map(move |()| {
@@ -1156,7 +1145,6 @@ impl AgentModelsModel {
                             Button::new(
                                 &format!("agent-models-protocol-{profile_id}"),
                                 &alternate_protocol_label,
-                                None,
                             )
                             .content_sized(),
                             AgentModelsEffect::SetProviderProtocol {
@@ -1175,7 +1163,6 @@ impl AgentModelsModel {
                                 } else {
                                     t("agent-enable")
                                 },
-                                None,
                             )
                             .content_sized(),
                             AgentModelsEffect::SetProviderEnabled {
@@ -1190,7 +1177,6 @@ impl AgentModelsModel {
                             Button::new(
                                 &format!("agent-models-remove-provider-{profile_id}"),
                                 &t("agent-remove-provider"),
-                                None,
                             )
                             .content_sized(),
                             AgentModelsEffect::RemoveProvider {
@@ -1234,7 +1220,6 @@ impl AgentModelsModel {
                                 } else {
                                     t("agent-save-key")
                                 },
-                                None,
                             )
                             .content_sized(),
                             AgentModelsEffect::SaveProviderKey {
@@ -1248,7 +1233,6 @@ impl AgentModelsModel {
                             Button::new(
                                 &format!("agent-models-remove-api-key-{profile_id}"),
                                 &t("agent-remove-key"),
-                                None,
                             )
                             .content_sized(),
                             AgentModelsEffect::RemoveProviderKey {
@@ -1275,7 +1259,6 @@ impl AgentModelsModel {
                             } else {
                                 t("agent-use-default")
                             },
-                            None,
                         )
                         .content_sized(),
                         AgentModelsEffect::SetDefaultProvider {
