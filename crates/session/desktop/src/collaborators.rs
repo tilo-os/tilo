@@ -1316,6 +1316,18 @@ impl CollaboratorsOverlay {
         theme: &Theme,
         frame: &RowFrame<'_>,
     ) {
+        self.draw_row_avatar(scene, transform, text_renderer, theme, frame);
+        self.draw_row_relationship(scene, transform, text_renderer, theme, frame);
+    }
+
+    fn draw_row_avatar(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        frame: &RowFrame<'_>,
+    ) {
         let row = frame.row;
         let colors = &theme.tokens.colors;
         let center = Point::new(self.panel.x0 + 28.0, frame.y + 29.0);
@@ -1379,6 +1391,18 @@ impl CollaboratorsOverlay {
                 text_renderer,
             );
         }
+    }
+
+    fn draw_row_relationship(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        frame: &RowFrame<'_>,
+    ) {
+        let row = frame.row;
+        let center = Point::new(self.panel.x0 + 28.0, frame.y + 29.0);
         if !row.invited {
             // A live spark belongs on the identity itself: it reads as
             // "here now" without turning the row into a status report.
