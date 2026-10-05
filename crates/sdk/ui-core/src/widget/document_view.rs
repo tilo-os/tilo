@@ -595,8 +595,8 @@ mod tests {
             .with_gap(0.0)
             .push(Box::new(Spacer::fixed(40.0)))
             .push(Box::new(ModelView::from_state(&state, move |_| page())));
-        let mut doc = AutoCommit::new();
-        root.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        root.sync(&doc, &ROOT);
         solve(&mut root, 400.0, 300.0);
         let view = root.children()[1].get_rect();
         assert!(
@@ -614,7 +614,7 @@ mod tests {
                 crate::widget::optional(None)
             })))
             .push(Box::new(Spacer::fixed(10.0)));
-        root.sync(&mut doc, &ROOT);
+        root.sync(&doc, &ROOT);
         solve(&mut root, 400.0, 300.0);
         let children = root.children();
         let gap = children[2].get_rect().y0 - children[0].get_rect().y1;

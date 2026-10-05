@@ -1116,8 +1116,8 @@ mod tests {
         .size(ProgressRingSize::Small);
         assert_eq!(ring.value, "30");
         state.set(12);
-        let mut doc = automerge::AutoCommit::new();
-        ring.sync(&mut doc, &automerge::ROOT);
+        let doc = automerge::AutoCommit::new();
+        ring.sync(&doc, &automerge::ROOT);
         assert_eq!(ring.value, "12");
         assert_eq!(ring.caption, "seconds");
         ring.set_caption("minutes");

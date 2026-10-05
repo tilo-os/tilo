@@ -1531,8 +1531,8 @@ mod tests {
             Some("3.5 s")
         );
         slider.set_focus(true);
-        let mut doc = AutoCommit::new();
-        let mut key = |slider: &mut Slider, named: winit::keyboard::NamedKey| {
+        let doc = AutoCommit::new();
+        let key = |slider: &mut Slider, named: winit::keyboard::NamedKey| {
             // SAFETY: winit keeps one field private; the zero pattern is valid
             // for it and every public field is set below.
             let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
@@ -1541,7 +1541,7 @@ mod tests {
                 winit::keyboard::NativeKeyCode::Unidentified,
             );
             ev.state = ElementState::Pressed;
-            slider.handle_key(&ev, &mut doc, &automerge::ROOT)
+            slider.handle_key(&ev, &doc, &automerge::ROOT)
         };
         assert!(key(&mut slider, NamedKey::ArrowRight));
         assert!((slider.value() - 4.0).abs() < 1e-9);

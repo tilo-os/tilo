@@ -103,8 +103,8 @@ fn every_column_title_changes_in_place_and_a_bound_title_follows_its_state() {
     h.root_mut::<NavShell>().set_inspector_title("Details");
     h.root_mut::<NavShell>().set_content_count(Some(12));
     title.set("Archive".to_owned());
-    let mut doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
     settle(&mut h, 1400, 800);
     assert_eq!(heading(&h, Column::Sidebar).as_deref(), Some("Mail"));
     assert_eq!(heading(&h, Column::Inspector).as_deref(), Some("Details"));
@@ -227,8 +227,8 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
     // Press More: the menu lists what did not fit.
     h.click_at(more.center().x, more.center().y);
     settle(&mut h, 220, 700);
-    let mut doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
     let labels = at(&h.root::<NavShell>().headers, Column::Content)
         .more
         .menu_labels();
@@ -309,8 +309,8 @@ fn back_follows_the_apps_page_stack() {
     assert_eq!(geometry(&h).back, Rect::ZERO, "the root has no Back");
 
     pages.update(|stack| stack.push("queue"));
-    let mut doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
     settle(&mut h, 1024, 700);
     let g = geometry(&h);
     assert!(g.back.width() > 0.0, "a page pushed: Back shows");
@@ -417,8 +417,8 @@ fn a_bound_state_opens_a_drawer_and_hears_the_persons_choice() {
         "the shell wrote where it stands: a closed drawer"
     );
     open.set(true);
-    let mut doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
     settle(&mut h, 800, 600);
     assert!(
         h.root::<NavShell>().is_sidebar_open(),
@@ -436,7 +436,7 @@ fn a_bound_state_opens_a_drawer_and_hears_the_persons_choice() {
     settle(&mut h, 1280, 800);
     assert!(inspector.with(|v| *v), "docked: open");
     inspector.set(false);
-    h.root_mut::<NavShell>().sync(&mut doc, &automerge::ROOT);
+    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
     settle(&mut h, 1280, 800);
     assert!(
         !h.root::<NavShell>().is_inspector_open(),
@@ -677,8 +677,8 @@ fn typed_access_controls_and_the_filter_reach_the_apps_widgets() {
         .filter_mut()
         .expect("the filter")
         .set_query("kai");
-    let mut doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
     assert_eq!(query.borrow().as_str(), "kai");
     assert_eq!(
         h.root::<NavShell>().filter().and_then(SearchField::count),

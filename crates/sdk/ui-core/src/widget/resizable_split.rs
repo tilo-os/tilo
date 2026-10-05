@@ -1591,8 +1591,8 @@ mod tests {
     fn the_per_frame_update_reaches_both_panes() {
         let mut s = split(SplitOrientation::Horizontal);
         let (left, right) = (s.left().updates.clone(), s.right().updates.clone());
-        let mut doc = AutoCommit::new();
-        assert!(Widget::update(&mut s, &mut doc, &automerge::ROOT));
+        let doc = AutoCommit::new();
+        assert!(Widget::update(&mut s, &doc, &automerge::ROOT));
         assert_eq!((left.get(), right.get()), (1, 1));
     }
 
