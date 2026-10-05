@@ -124,6 +124,31 @@ impl NativeStateRuntime {
     pub(crate) fn requires_uncertain(&self, room: crate::shell::state::RoomId) -> bool {
         self.0.uncertain_rooms.read().contains(&room)
     }
+    /// Read-only witness for host policy exports. A stale/fenced native
+    /// authority must not renew an application action lease.
+    pub(crate) fn authority_is_current(
+        &self,
+        storage: &NativeAuthorityStorage,
+        room: crate::shell::state::RoomId,
+    ) -> bool {
+        if !self.healthy() || self.requires_uncertain(room) {
+            return false;
+        }
+        let Ok(expected) = digest(storage) else {
+            return false;
+        };
+        let current = self.0.writer.lock().expected;
+        if current.is_some_and(|current| current != expected) {
+            return false;
+        }
+        if storage.requires(room) {
+            let Some(owner) = self.owner() else {
+                return false;
+            };
+            return owner.with_current(room, |_| Ok(())).is_ok();
+        }
+        true
+    }
     pub(super) fn healthy(&self) -> bool {
         self.0.healthy.load(Ordering::Acquire)
     }
@@ -283,5 +308,28 @@ impl Writer {
         self.expected = Some(expected);
         self.lease = Some(lease);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod action_authority_tests {
+    use super::*;
+    #[test]
+    fn action_authority_witness_rejects_fenced_uncertain_and_stale_native_writer() {
+        let runtime = NativeStateRuntime::default();
+        let storage = NativeAuthorityStorage::default();
+        let room =
+            crate::shell::state::RoomId::parse("00000000-0000-4000-8000-000000000123").unwrap();
+        assert!(runtime.authority_is_current(&storage, room));
+        runtime.0.healthy.store(false, Ordering::Release);
+        assert!(!runtime.authority_is_current(&storage, room));
+        runtime.0.healthy.store(true, Ordering::Release);
+        runtime.0.uncertain_rooms.write().insert(room);
+        assert!(!runtime.authority_is_current(&storage, room));
+        runtime.0.uncertain_rooms.write().remove(&room);
+        runtime.0.writer.lock().expected = Some([0xff; 32]);
+        assert!(!runtime.authority_is_current(&storage, room));
+        runtime.0.writer.lock().expected = Some(digest(&storage).unwrap());
+        assert!(runtime.authority_is_current(&storage, room));
     }
 }

@@ -110,6 +110,7 @@ impl Store for TreeStore {
                 *tree = candidate;
                 // Only the acknowledged final admitted projection reaches authority exports.
                 tree.export_fs_capabilities();
+                crate::shell::launcher::action_authority::Export::of(&tree).submit();
             }
         }
         Ok(())
