@@ -211,6 +211,26 @@ fn native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycl
     assert_legacy_and_segmented_match(&mut frame, "Quick Settings close", false);
 }
 
+fn sparse_refusal_details(previous: Option<&ProducedSections>, frame: &FrameBuilder) -> String {
+    let current = frame.last_produced_sections.as_ref();
+    match (previous, current) {
+        (Some(old), Some(new)) => format!(
+            "filters={}/{} backdrop_same={} workspace_same={} above_same={} topbar_bounds={:?}/{:?} quick_settings_bounds={:?}/{:?}",
+            old.global_filter,
+            new.global_filter,
+            old.backdrop.encoding_eq(&new.backdrop),
+            old.workspace.encoding_eq(&new.workspace),
+            old.above_quick_settings
+                .encoding_eq(&new.above_quick_settings),
+            old.topbar_bounds,
+            new.topbar_bounds,
+            old.quick_settings_bounds,
+            new.quick_settings_bounds,
+        ),
+        _ => "missing source sections".into(),
+    }
+}
+
 #[test]
 fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense() {
     let (mut frame, _clock) = settled_builder();
@@ -222,6 +242,7 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
     assert_legacy_and_segmented_match(&mut frame, "large-shadow desktop", false);
 
     let closed = frame.paint_with_damage();
+    let closed_sections = frame.last_produced_sections.clone();
     let mut retained = bridge();
     let mut dense_oracle = bridge();
     let mut seed_pixels = vec![0; xrgb_pitch() * NATIVE_HEIGHT as usize];
@@ -244,10 +265,12 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
     frame.with_chrome(|chrome| chrome.overlays.quick_settings = true);
     frame.host.set_quick_settings_capture_openness(1_000);
     let open = frame.paint_with_damage();
-    let open_damage = open
-        .damage_regions
-        .as_deref()
-        .expect("settled Quick Settings opening should be sparse-eligible");
+    let open_damage = open.damage_regions.as_deref().unwrap_or_else(|| {
+        panic!(
+            "settled Quick Settings opening should be sparse-eligible: {}",
+            sparse_refusal_details(closed_sections.as_ref(), &frame)
+        )
+    });
     let quick_settings_bounds = frame
         .last_produced_sections
         .as_ref()
