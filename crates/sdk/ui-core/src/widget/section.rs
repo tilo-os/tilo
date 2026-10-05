@@ -898,6 +898,8 @@ pub struct Section {
     expanded: Option<Rc<Cell<bool>>>,
     /// The label column the section's property lists share.
     labels: crate::widget::property_list::PropertyColumn,
+    /// The width the section's dropdowns share.
+    choosers: crate::widget::dropdown::ChooserColumn,
 }
 
 impl Section {
@@ -909,6 +911,7 @@ impl Section {
             header: None,
             expanded: None,
             labels: crate::widget::property_list::PropertyColumn::new(),
+            choosers: crate::widget::dropdown::ChooserColumn::default(),
         }
     }
 
@@ -1126,13 +1129,17 @@ impl Widget for Section {
         // header (it belongs to its items), nothing between consecutive list
         // rows (one list), `sibling` otherwise. A collapsed section lays out
         // only its header.
-        // The section's property lists share one label column.
+        // The section's property lists share one label column, and its
+        // dropdowns one width.
+        self.choosers.reset();
         for child in &mut self.parts.children {
             if let Some(list) = child
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<crate::widget::PropertyList>())
             {
                 list.join_column(&self.labels);
+            } else {
+                self.choosers.join(child.as_mut());
             }
         }
         let rows = self.row_flags();
