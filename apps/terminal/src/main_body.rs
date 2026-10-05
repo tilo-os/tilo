@@ -557,6 +557,8 @@ pub struct TerminalWidget {
     pending_actions: Vec<crate::resource::TerminalAction>,
     /// Where the session record says this session runs.
     recorded_target: Option<crate::target::SessionTarget>,
+    /// Identity of the process attached here, distinct from a replica's record.
+    local_session: Option<String>,
     /// The relay session the record says this session re-attaches to.
     recorded_relay_session: Option<String>,
 
@@ -791,6 +793,7 @@ impl TerminalWidget {
             synced: None,
             pending_actions: Vec::new(),
             recorded_target: None,
+            local_session: None,
             recorded_relay_session: None,
             current_attr: Attr::default(),
             pending_wrap: false,
@@ -864,6 +867,7 @@ impl TerminalWidget {
     /// the one before it.
     fn begin_local_session(&mut self) {
         let session_id = uuid::Uuid::new_v4().to_string();
+        self.local_session = Some(session_id.clone());
         self.pane_id = uuid::Uuid::new_v4().to_string();
         self.submit(crate::resource::TerminalAction::BindLocalSession { session_id });
         self.submit(crate::resource::TerminalAction::ClaimPane {
@@ -1020,15 +1024,14 @@ impl TerminalWidget {
         use crate::resource::TerminalEffect as E;
         use ui::framework::EffectStatus;
         let mut statuses = Vec::new();
-        if self.is_disconnected() {
-            let reason = "The terminal process has ended or its PTY failed; input cannot be sent.";
+        if let Some((code, reason)) = self.input_unavailable() {
             statuses.extend([
-                EffectStatus::unavailable(E::SEND, "session_disconnected", reason),
-                EffectStatus::unavailable(E::RUN, "session_disconnected", reason),
-                EffectStatus::unavailable(E::INTERRUPT, "session_disconnected", reason),
-                EffectStatus::unavailable(E::CLEAR, "session_disconnected", reason),
-                EffectStatus::unavailable(E::PASTE, "session_disconnected", reason),
-                EffectStatus::unavailable(E::PASTE_PRIMARY, "session_disconnected", reason),
+                EffectStatus::unavailable(E::SEND, code, reason),
+                EffectStatus::unavailable(E::RUN, code, reason),
+                EffectStatus::unavailable(E::INTERRUPT, code, reason),
+                EffectStatus::unavailable(E::CLEAR, code, reason),
+                EffectStatus::unavailable(E::PASTE, code, reason),
+                EffectStatus::unavailable(E::PASTE_PRIMARY, code, reason),
             ]);
         }
         if self.grid.len() <= self.current_visible_rows() {
@@ -1046,6 +1049,47 @@ impl TerminalWidget {
             ));
         }
         statuses
+    }
+
+    fn input_unavailable(&self) -> Option<(&'static str, &'static str)> {
+        if self.sessions.is_live()
+            && !matches!(self.sessions.state, crate::sessions::OpenState::Open)
+        {
+            return Some((
+                "session_not_open",
+                "The terminal process has not opened; input cannot be sent.",
+            ));
+        }
+        self.is_disconnected().then_some((
+            "session_disconnected",
+            "The terminal process has ended or its PTY failed; input cannot be sent.",
+        ))
+    }
+
+    pub(crate) fn inspect_session(&self) -> serde_json::Value {
+        use crate::sessions::OpenState;
+        let (lifecycle, startup_reason) = match &self.sessions.state {
+            OpenState::Fixed => ("fixed", None),
+            OpenState::Unopened => ("unopened", None),
+            OpenState::Open => ("open", None),
+            OpenState::AwaitingAllow => ("awaiting_allow", None),
+            OpenState::Failed(reason) => ("failed", Some(reason.as_str())),
+            OpenState::NoRuntime(reason) => ("no_runtime", Some(reason.as_str())),
+        };
+        serde_json::json!({
+            "lifecycle": lifecycle,
+            "target": self.sessions.target,
+            "input_available": self.input_unavailable().is_none(),
+            "transport_disconnected": self.is_disconnected(),
+            "transport_reason": self.is_disconnected().then(|| self.disconnected_message()),
+            "startup_reason": startup_reason,
+            "session": self.local_session,
+            "known_environments": self.sessions.environments.iter().map(|environment| {
+                serde_json::json!({ "record": environment.key, "name": environment.name,
+                    "tools": environment.tools, "grants": environment.grants })
+            }).collect::<Vec<_>>(),
+            "host_access_requirement": "requires_person_owner_grant",
+        })
     }
 
     fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
@@ -1849,6 +1893,9 @@ impl TerminalWidget {
     /// poisoned, or either write/flush operation fails. Every such error marks
     /// the session disconnected before returning.
     pub fn try_write_input(&self, bytes: &[u8]) -> Result<(), String> {
+        if let Some(("session_not_open", reason)) = self.input_unavailable() {
+            return Err(reason.to_owned());
+        }
         if self.is_disconnected() {
             return Err("terminal session is disconnected; input was not sent".to_string());
         }
@@ -2018,6 +2065,11 @@ impl TerminalWidget {
     ) -> Result<(), String> {
         use crate::resource::TerminalEffect as E;
         match effect {
+            E::InspectSession => {
+                return Err(
+                    "Inspect session is answered by the resource's read-only handler".into(),
+                );
+            }
             E::Send { text } => {
                 if text.is_empty() {
                     return Err("text to send cannot be empty".to_string());
@@ -6966,12 +7018,14 @@ impl TerminalWidget {
     fn without_process(content: ContentStore) -> Self {
         let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
         let (_tx, output_rx) = sync_channel(1);
-        TerminalWidget::new(
+        let widget = TerminalWidget::new(
             std::sync::Arc::new(std::sync::Mutex::new(writer)),
             std::sync::Arc::new(std::sync::Mutex::new(Box::new(NullMaster))),
             output_rx,
             content,
-        )
+        );
+        widget.mark_disconnected("Terminal process has not opened — input unavailable");
+        widget
     }
 
     /// Put a freshly opened process behind this widget: its writer, master

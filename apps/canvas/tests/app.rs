@@ -42,9 +42,12 @@ fn painting_is_undoable_and_viewers_cannot_paint() {
             .invoke(ArtworkResource::PAINT.with((None, vec![stroke("#204080")])))
             .is_err()
     );
-    let look: ActionRef<ArtworkResource, ()> = ActionRef::new("look", &[]);
     assert!(
-        viewer.operate(look.invoke()).unwrap().is_some(),
+        viewer
+            .effect(&canvas::resource::ViewOp::Look(
+                canvas::resource::Look::default()
+            ))
+            .is_ok(),
         "a viewer may look"
     );
 }
@@ -55,11 +58,11 @@ fn painting_is_undoable_and_viewers_cannot_paint() {
 #[test]
 fn look_and_inspect_answer_through_the_host_door() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    let look: ActionRef<ArtworkResource, u32> = ActionRef::new("look", &["size"]);
-    let before = app
-        .operate(look.with(256))
-        .unwrap()
-        .expect("a look finishes at once");
+    let look = canvas::resource::ViewOp::Look(canvas::resource::Look {
+        size: Some(256),
+        ..Default::default()
+    });
+    let before = app.effect(&look).expect("a look finishes as a job");
     let value = before.value.clone().unwrap();
     assert_eq!(value["width"], 256, "{value}");
     let address = before
@@ -74,7 +77,7 @@ fn look_and_inspect_answer_through_the_host_door() {
 
     app.invoke(ArtworkResource::PAINT.with((None, vec![stroke("pigment:ultramarine")])))
         .expect("paint");
-    let after = app.operate(look.with(256)).unwrap().unwrap();
+    let after = app.effect(&look).unwrap();
     assert_ne!(
         after.value.unwrap()["revision"],
         value["revision"],

@@ -227,13 +227,19 @@ impl Command {
 
     /// A command the canvas carries out off the window's thread: `select`,
     /// handed to it when the button is pressed.
-    fn asking(icon: Icon, id: &str, tools: &Tools, select: impl Fn() -> Select + 'static) -> Self {
-        let finding = std::rc::Rc::clone(&tools.finding);
+    fn asking(
+        icon: Icon,
+        id: &str,
+        select: impl Fn() -> crate::resource::FindArea + 'static,
+    ) -> Self {
         Self {
             icon,
             id: id.to_owned(),
-            bind: Box::new(move |button, _| {
-                Box::new(button.on_view(move || finding.borrow_mut().wanted = Some(select())))
+            bind: Box::new(move |button, cx| {
+                let dispatch = cx.dispatcher();
+                Box::new(button.on_effect(move || {
+                    dispatch.effect(&crate::resource::ViewOp::FindArea(select()));
+                }))
             }),
             edit: std::sync::Arc::new(|| CanvasAction::Select(Box::default())),
             iconic: true,
@@ -481,9 +487,11 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         using(Icon::Eraser, "clear"),
         {
             let zoom = tools.zoom.clone();
-            Command::asking(Icon::Brush, "canvas-area-refine", tools, move || Select {
-                refine: Some(EDGE / zoom.with(|zoom| zoom.max(1e-6))),
-                ..Select::default()
+            Command::asking(Icon::Brush, "canvas-area-refine", move || {
+                crate::resource::FindArea {
+                    refine: Some(EDGE / zoom.with(|zoom| zoom.max(1e-6))),
+                    ..Default::default()
+                }
             })
         },
         refine(tools, Icon::Plus, "canvas-area-grow", Refine::Grow(GROW)),
