@@ -201,7 +201,7 @@ fn open_tilo(
     host: Option<&app_host::client::BlockingClient>,
     item: &StoreItem,
     action: ActionKind,
-    staging_dir: &Path,
+    _staging_dir: &Path,
 ) -> ActionOutcome {
     let Some(host) = host else {
         return ActionOutcome::fail("App service is unavailable; no host command was attempted.");
@@ -220,12 +220,6 @@ fn open_tilo(
         let Some(version) = item.versions.first() else {
             return ActionOutcome::fail("registry entry has no version");
         };
-        let Some(url) = version.download_url.clone() else {
-            return ActionOutcome::fail(format!(
-                "{}: no download URL in registry entry",
-                item.name
-            ));
-        };
         let Some(root) = version
             .root_hash_hex
             .as_deref()
@@ -233,19 +227,6 @@ fn open_tilo(
         else {
             return ActionOutcome::fail("registry entry has an invalid package root");
         };
-        let dest = staging_dir.join(format!("{root}.tapp"));
-        if let Err(e) = download_tapp(&url, &dest, version.size_bytes) {
-            return ActionOutcome::fail(format!("{}: {e}", item.name));
-        }
-        let bytes = match std::fs::read(&dest) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return ActionOutcome::fail(format!("{}: read staged package: {error}", item.name));
-            }
-        };
-        // Clean the staged file regardless — the bytes now live in
-        // the content-addressed store.
-        let _ = std::fs::remove_file(&dest);
         let Some(publisher) = item.publisher_pubkey_hex.as_deref() else {
             return ActionOutcome::fail("registry entry has no publisher identity");
         };
@@ -267,7 +248,10 @@ fn open_tilo(
                 );
             }
         };
-        match host.install(&bytes, &expected) {
+        let StoreSource::Tilo { registry_name } = &item.source else {
+            return ActionOutcome::fail("This package has no Tilo repository.");
+        };
+        match host.install_offer(registry_name, &expected) {
             Ok(installed) => package_root = Some(installed),
             Err(error) => {
                 return ActionOutcome::fail(format!("{}: install refused: {error}", item.name));

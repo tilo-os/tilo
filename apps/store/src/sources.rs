@@ -20,24 +20,37 @@ use package_store::InstalledPackage;
 ///
 /// `installed_index` is the app host's install snapshot — passed by-ref so the merge can cheaply
 /// look up install state per package id.
-#[allow(
-    clippy::unreachable,
-    reason = "VerifiedEntry is constructed only after the registry verifier rejects Untrusted; reaching this arm would violate that security boundary"
-)]
 pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
     registry_name: &str,
     installed_index: &[InstalledPackage],
 ) -> StoreItem {
+    tilo_to_store_item_on_channel(
+        verified,
+        registry_name,
+        installed_index,
+        app_cli::ReleaseChannel::Stable,
+    )
+}
+
+/// Convert only versions the device can run within the configured channel.
+#[allow(
+    clippy::unreachable,
+    reason = "VerifiedEntry is constructed only after the registry verifier rejects Untrusted; reaching this arm would violate that security boundary"
+)]
+pub fn tilo_to_store_item_on_channel(
+    verified: &VerifiedEntry,
+    registry_name: &str,
+    installed_index: &[InstalledPackage],
+    channel: app_cli::ReleaseChannel,
+) -> StoreItem {
     let entry = &verified.entry;
     // A build that needs system interfaces this OS does not serve is never
     // offered: it could not run here.
-    let versions: Vec<StoreItemVersion> = entry
-        .versions
-        .iter()
-        .filter(|version| app_cli::serves_interfaces(version))
+    let mut versions: Vec<StoreItemVersion> = app_cli::installable_versions(entry, channel)
         .map(tilo_version_to_store)
         .collect();
+    versions.sort_by(|left, right| app_cli::compare_versions(&right.version, &left.version));
     let latest = versions
         .first()
         .map(|v| v.version.clone())
@@ -374,6 +387,29 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use registry_types::{RegistryEntry, sign_entry};
 
+    #[test]
+    fn native_catalogue_matches_cli_target_channel_and_version_selection() {
+        let mut entry = tilo_entry("so.tilo.notes", "Notes", "1.0.0", [1; 32]);
+        let mut foreign = entry.versions[0].clone();
+        foreign.version = "9.0.0".into();
+        foreign.target.architecture = "different-device".into();
+        let mut newest = entry.versions[0].clone();
+        newest.version = "2.0.0".into();
+        let mut prerelease = entry.versions[0].clone();
+        prerelease.version = "3.0.0-beta.1".into();
+        entry.versions = vec![foreign, entry.versions[0].clone(), prerelease, newest];
+        let verified = verified(entry);
+        let item = tilo_to_store_item(&verified, "Tilo main", &[]);
+        assert_eq!(item.latest_version(), "2.0.0");
+        assert_eq!(item.versions.len(), 2);
+        assert_eq!(
+            app_cli::entry_to_app(&verified, "Tilo main")
+                .unwrap()
+                .version,
+            item.latest_version()
+        );
+    }
+
     fn tilo_entry(id: &str, name: &str, version: &str, publisher: [u8; 32]) -> RegistryEntry {
         let mut e = RegistryEntry {
             package_id: id.into(),
@@ -395,8 +431,8 @@ mod tests {
                 tapp_blake3_hex: "ef".repeat(32),
                 target: registry_types::RegistryTarget {
                     platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: std::env::consts::ARCH.into(),
                     runtime: None,
                     interfaces: Vec::new(),
                 },

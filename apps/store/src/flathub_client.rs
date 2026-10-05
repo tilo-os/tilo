@@ -57,6 +57,18 @@ pub struct Remote {
     pub url: String,
     pub title: String,
     pub disabled: bool,
+    /// System remotes are supplied by the image and cannot be deleted as this user.
+    pub user_managed: bool,
+}
+
+impl Remote {
+    pub fn resource_id(&self) -> String {
+        if self.user_managed {
+            format!("remote:{}", self.name)
+        } else {
+            format!("remote:system:{}", self.name)
+        }
+    }
 }
 
 /// Trimmed `AppStream` record — only the fields the store surfaces.
@@ -211,7 +223,18 @@ fn decode_records(text: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
         .as_array()
         .or_else(|| value.get("hits").and_then(serde_json::Value::as_array))
         .ok_or_else(|| FlathubError::Decode("expected an array or hits array".into()))?;
-    rows.iter().map(record_from_value).collect()
+    rows.iter()
+        .filter(|row| {
+            row.get("arches")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(|arches| {
+                    arches
+                        .iter()
+                        .any(|arch| arch.as_str() == Some(std::env::consts::ARCH))
+                })
+        })
+        .map(record_from_value)
+        .collect()
 }
 
 fn record_from_value(value: &serde_json::Value) -> Result<AppStreamRecord, FlathubError> {
@@ -358,6 +381,7 @@ pub fn list_remotes(output: &str) -> Vec<Remote> {
                 name: name.to_string(),
                 url,
                 title: if title.is_empty() { name } else { title }.to_string(),
+                user_managed: !options.split(',').any(|option| option.trim() == "system"),
                 disabled: options.split(',').any(|option| option.trim() == "disabled"),
             })
         })
@@ -489,6 +513,14 @@ mod tests {
             decode_popular(current_collection).unwrap()[0].app_id,
             "org.gnome.Calculator"
         );
+
+        let architecture_rows = serde_json::json!({"hits": [
+            {"app_id": "org.example.Native", "arches": [std::env::consts::ARCH]},
+            {"app_id": "org.example.Foreign", "arches": ["different-device"]}
+        ]});
+        let native = decode_records(&architecture_rows.to_string()).unwrap();
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].app_id, "org.example.Native");
 
         // Host rows include system and user installations, and disabled remotes.
         let rows = list_remotes(
