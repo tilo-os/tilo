@@ -1992,7 +1992,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         // Assistive activation resolves the exported controls to their real
         // FindBar owner rather than sending child targets to TerminalView.
         let control = |harness: &ui::headless::FrameHarness, key: &str| {
-            let label = ui::i18n::widget_format(key, &[]);
+            let label = ui::i18n::I18nManager::lookup_plain(key);
             harness
                 .a11y_nodes()
                 .into_iter()
