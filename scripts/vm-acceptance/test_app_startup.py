@@ -19,6 +19,8 @@ LOG = """\
 [app so.tilo.notes stderr] APP-STARTUP app=so.tilo.notes total_ms=8842 phases=app-construct-end:8692,first-frame-presented:31
 [app so.tilo.calculator stderr] APP-STARTUP app=so.tilo.calculator total_ms=129 phases=window-vello-init-done:10
 [app so.tilo.calculator stderr] APP-STARTUP app=so.tilo.calculator total_ms=700 phases=
+[app so.tilo.photos stderr] tilo-gpu: window adapter "llvmpipe (LLVM 22.1.8, 256 bits)" type=Cpu backend=Vulkan driver="llvmpipe"
+[app so.tilo.photos stderr] APP-STARTUP app=so.tilo.photos total_ms=2621 phases=render-worker-first-blit-copy-done:2031
 [app so.tilo.notes stderr] HISTORY-OPEN listed=200 earlier=true ms=340
 """
 
@@ -38,7 +40,8 @@ class AppStartupTest(unittest.TestCase):
     def test_parses_launches_phases_and_history(self):
         startups = app_startup.parse_startups(LOG)
         self.assertEqual([s["app"] for s in startups],
-                         ["so.tilo.notes", "so.tilo.calculator", "so.tilo.calculator"])
+                         ["so.tilo.notes", "so.tilo.calculator", "so.tilo.calculator", "so.tilo.photos"])
+        self.assertEqual([s["renderer"] for s in startups], ["unknown"] * 3 + ["cpu"])
         self.assertEqual(startups[0]["phases"]["app-construct-end"], 8692)
         self.assertEqual(startups[2]["phases"], {})
         self.assertEqual(app_startup.parse_history_opens(LOG),
@@ -51,12 +54,14 @@ class AppStartupTest(unittest.TestCase):
         self.assertIn("app-construct-end 8692 ms", problems[0])
         # A small app holds the tighter budget.
         self.assertIn("so.tilo.calculator took 700 ms", problems[1])
+        # A CPU rasterizer is held to the software budget, so Photos passes.
         self.assertEqual(app_startup.over_budget(app_startup.parse_startups(LOG), scale=20), [])
 
     def test_table_lists_the_slowest_app_first(self):
         rows = app_startup.table(app_startup.parse_startups(LOG))
-        self.assertTrue(rows[2].startswith("| so.tilo.notes | 1 | 8842 | 8842 | 1000 |"))
-        self.assertTrue(rows[3].startswith("| so.tilo.calculator | 2 |"))
+        self.assertTrue(rows[2].startswith("| so.tilo.notes | 1 | 8842 | 8842 | unknown | 1000 |"))
+        self.assertTrue(rows[3].startswith("| so.tilo.photos | 1 | 2621 | 2621 | cpu | 3000 |"))
+        self.assertTrue(rows[4].startswith("| so.tilo.calculator | 2 |"))
 
     def test_gate_fails_over_budget_and_reports_only_when_asked(self):
         status, out = judge(LOG)
