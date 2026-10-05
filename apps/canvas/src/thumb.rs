@@ -219,15 +219,21 @@ impl Widget for Thumb {
     reason = "a few squares of float geometry across a small box"
 )]
 fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
-    const SQUARE: f64 = 8.0; // the transparency checker's square, not spacing
+    // The checker's square is a step of the theme's spacing.
+    let square_side = f64::from(theme.tokens.spacing.s2);
     scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &area);
-    let columns = (area.width() / SQUARE).ceil() as usize;
-    let rows = (area.height() / SQUARE).ceil() as usize;
+    let columns = (area.width() / square_side).ceil() as usize;
+    let rows = (area.height() / square_side).ceil() as usize;
     for row in 0..rows {
         for column in (row % 2..columns).step_by(2) {
-            let x = area.x0 + column as f64 * SQUARE;
-            let y = area.y0 + row as f64 * SQUARE;
-            let square = Rect::new(x, y, (x + SQUARE).min(area.x1), (y + SQUARE).min(area.y1));
+            let x = area.x0 + column as f64 * square_side;
+            let y = area.y0 + row as f64 * square_side;
+            let square = Rect::new(
+                x,
+                y,
+                (x + square_side).min(area.x1),
+                (y + square_side).min(area.y1),
+            );
             scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &square);
         }
     }

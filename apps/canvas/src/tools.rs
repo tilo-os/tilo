@@ -417,10 +417,10 @@ pub const ROOM_STEP: u32 = 24; // a granularity of a measured width, not spacing
 const INK: &str = "#2b3f8f";
 
 /// The smallest brush, in artwork units.
-const BRUSH_SMALLEST: f64 = 1.0;
+const BRUSH_SMALLEST: u8 = 1; // a brush width in artwork units, not on-screen spacing
 /// The largest brush on any artwork, in units: a small artwork still gets
 /// a broad one.
-const BRUSH_LARGEST_LEAST: f64 = 120.0;
+const BRUSH_LARGEST_LEAST: u8 = 120; // a brush width in artwork units, not on-screen spacing
 /// The largest brush as a share of the artwork's longest side: a quarter,
 /// enough to lay in a sky in a few strokes on any size of artwork.
 const BRUSH_LARGEST_SHARE: f64 = 0.25;
@@ -444,13 +444,14 @@ impl Tools {
     /// small end, up to a quarter of the artwork's longest side.
     pub fn brush_size(&self) -> f64 {
         let travel = self.size.with(|size| size.clamp(0.0, 1.0));
-        BRUSH_SMALLEST + travel * travel * (self.largest_brush() - BRUSH_SMALLEST)
+        let smallest = f64::from(BRUSH_SMALLEST);
+        smallest + travel * travel * (self.largest_brush() - smallest)
     }
 
     /// The largest brush on this artwork, in units.
     pub fn largest_brush(&self) -> f64 {
         let extent = self.extent.with(|extent| *extent);
-        (extent * BRUSH_LARGEST_SHARE).max(BRUSH_LARGEST_LEAST)
+        (extent * BRUSH_LARGEST_SHARE).max(f64::from(BRUSH_LARGEST_LEAST))
     }
 
     /// The paint on the brush as a mark names it: `pigment:<name>` or
