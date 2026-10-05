@@ -43,7 +43,9 @@ const MAX_FRAME_BYTES = 64 * 1024;
 const MAX_STREAMS = 32;
 const MAX_ROOM_STREAMS = 64;
 const MAX_ROOM_PIXELS = 32 * 1024 * 1024;
-const MAX_INPUT_BACKLOG = 128;
+// Four seconds of physical mixed-case typing can exceed 128 events while an
+// HTTPS send is pending. Keep eight wire batches, still bounded by 128 KiB.
+const MAX_INPUT_BACKLOG = 512;
 const MAX_INPUT_BACKLOG_BYTES = 128 * 1024;
 /** The host re-sends a live index every second: a silent publisher's streams are gone. */
 export const INDEX_EXPIRE_MS = 5000;
