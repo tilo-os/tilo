@@ -277,6 +277,14 @@ impl Dropdown {
         self
     }
 
+    /// Update the localized empty-value label without replacing the control.
+    pub fn set_placeholder(&mut self, placeholder: &str) {
+        if self.placeholder != placeholder {
+            placeholder.clone_into(&mut self.placeholder);
+            self.drawn = None;
+        }
+    }
+
     /// Set the enabled state at build time; see the `enabled` field.
     #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
@@ -1409,6 +1417,22 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    #[test]
+    fn updating_placeholder_does_not_select_or_replace_a_private_value() {
+        let selection = crate::LocalState::new(String::new());
+        let mut dropdown = Dropdown::from_state(opts(), &selection);
+        dropdown.set_placeholder("Waiting for tasks");
+        assert_eq!(
+            dropdown.accessibility().unwrap().name.as_deref(),
+            Some("Waiting for tasks")
+        );
+        assert!(selection.with(String::is_empty));
+        dropdown.set_selected("UTC");
+        dropdown.set_placeholder("Choose a task");
+        assert_eq!(dropdown.selected(), "UTC");
+        assert_eq!(selection.with(Clone::clone), "UTC");
     }
 
     /// CRDT doc with `tz` seeded as a Text object holding `value`.
