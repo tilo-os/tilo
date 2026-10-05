@@ -8236,6 +8236,10 @@ fn src_over(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
     [mix(sr, dr), mix(sg, dg), mix(sb, db), 255]
 }
 
+/// The toolkit's scrim (`ui::chrome::fill_scrim`) composited over a cached
+/// frame: `scrim` is the theme's scrim hue with the strength as its alpha
+/// byte, and each channel takes the same tone and level stages the shader
+/// does, so the fast overview frame matches the full one.
 fn blend_scrim_rect(
     pixels: &mut [u8],
     stride_px: u32,
@@ -8263,7 +8267,14 @@ fn blend_scrim_rect(
             let Ok(existing) = <[u8; 4]>::try_from(pixel) else {
                 continue;
             };
-            let mixed = src_over([sr, sg, sb, sa_byte], existing);
+            let strength = f32::from(sa_byte) / 255.0;
+            let [er, eg, eb, ea] = existing;
+            let mixed = [
+                ui::chrome::scrim_channel(er, strength, sr),
+                ui::chrome::scrim_channel(eg, strength, sg),
+                ui::chrome::scrim_channel(eb, strength, sb),
+                ea,
+            ];
             if let Some(slot) = pixels.get_mut(at..at.saturating_add(4)) {
                 slot.copy_from_slice(&mixed);
             }
@@ -8334,7 +8345,14 @@ mod overview_composite {
             [0, 0, 0, 255],
         );
         assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
-        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &[0, 0, 0, 255]);
+        let scrimmed = [
+            ui::chrome::scrim_channel(10, 1.0, 0),
+            ui::chrome::scrim_channel(20, 1.0, 0),
+            ui::chrome::scrim_channel(30, 1.0, 0),
+            255,
+        ];
+        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &scrimmed);
+        assert!(scrimmed[2] < 30, "the scrim darkens what it covers");
         let panel = [255u8, 0, 0, 255];
         blit_straight(
             &mut pixels,
@@ -8349,6 +8367,6 @@ mod overview_composite {
             (1, 1),
         );
         assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &[255, 0, 0, 255]);
-        assert_eq!(&pixels[(8 + 2) * 4..(8 + 2) * 4 + 4], &[0, 0, 0, 255]);
+        assert_eq!(&pixels[(8 + 2) * 4..(8 + 2) * 4 + 4], &scrimmed);
     }
 }

@@ -745,27 +745,39 @@ pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f3
 /// Must mirror the shader: soft light against black is `Cb²` (W3C
 /// compositing) composited `lerp(Cb, Cb², αs)`, then an ordinary
 /// source-over of the theme's scrim hue for the level stage.
+pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
+    let hue = theme.tokens.colors.surfaces.scrim.to_rgba8();
+    // The scrim hue is a near-neutral by construction, so its own relative
+    // luminance is the proxy for "the grey it adds".
+    let hue_grey =
+        (0.2126 * f64::from(hue.r) + 0.7152 * f64::from(hue.g) + 0.0722 * f64::from(hue.b)) / 255.0;
+    scrim_value(f64::from(value) / 255.0, strength, hue_grey)
+}
+
+/// What [`fill_scrim`] does to one 8-bit channel behind it, given that
+/// channel of the scrim hue: the same tone and level stages, for a host
+/// that composites a scrim on the CPU (a cached frame) instead of through
+/// the shader.
+#[must_use]
+pub fn scrim_channel(value: u8, strength: f32, hue: u8) -> u8 {
+    scrim_value(f64::from(value) / 255.0, strength, f64::from(hue) / 255.0)
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "explicitly clamped to 0.0..=1.0 immediately before the *255.0 scale, \
               so the final value is always within 0..=255"
 )]
-pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
+fn scrim_value(v: f64, strength: f32, hue: f64) -> u8 {
     let strength = f64::from(strength.clamp(0.0, 1.0));
-    let v = f64::from(value) / 255.0;
     let tone = (strength * 255.0).round().clamp(0.0, 255.0) / 255.0;
     let toned = v * (1.0 - tone) + v * v * tone;
     let level = (strength * f64::from(SCRIM_LEVEL_SHARE) * 255.0)
         .round()
         .clamp(0.0, 255.0)
         / 255.0;
-    let hue = theme.tokens.colors.surfaces.scrim.to_rgba8();
-    // The scrim hue is a near-neutral by construction, so its own relative
-    // luminance is the proxy for "the grey it adds".
-    let hue_grey =
-        (0.2126 * f64::from(hue.r) + 0.7152 * f64::from(hue.g) + 0.0722 * f64::from(hue.b)) / 255.0;
-    let out = toned * (1.0 - level) + hue_grey * level;
+    let out = toned * (1.0 - level) + hue * level;
     (out.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
