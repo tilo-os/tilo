@@ -38,7 +38,7 @@ def immutable(value):
 
 
 def expected_inputs(repo, revision, architecture, base, rpms, epoch, jobs=2,
-                    runtime_version='2026.07', engine_runtime_version='2026.10.0-chromium'):
+                    runtime_version='2026.07', engine_runtime_version='2026.10.1-chromium'):
     repo = Path(repo)
     require(re.fullmatch('[0-9a-f]{40}', revision) and architecture in tools.ARCHES, 'source/native architecture required')
     require(tools.command('git', '-C', str(repo), 'rev-parse', 'HEAD').decode().strip() == revision,
