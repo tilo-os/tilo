@@ -747,13 +747,15 @@ impl<T, M: TreeModel> TreeView<T, M> {
         row: Option<Rect>,
     ) -> Vec<AccessNode> {
         let mut children = Vec::new();
-        if let Some(field) = self.rename.as_ref().filter(|field| field.id == id)
+        let rename_input = if let Some(field) = self.rename.as_ref().filter(|field| field.id == id)
             && let Some(mut input) = Widget::accessibility(&field.input)
         {
             input.name = Some(crate::i18n!("tree-rename-field"));
             input.bounds = Some(field.input.get_rect().into());
-            children.push(input.with_action_target(format!("rename:{id}")));
-        }
+            Some(input.with_action_target(format!("rename:{id}")))
+        } else {
+            None
+        };
         if let Some(node) = self.nav_section_action_node(id, label, row) {
             children.push(node);
         }
@@ -793,6 +795,11 @@ impl<T, M: TreeModel> TreeView<T, M> {
         for child in &mut children {
             child.state.focused =
                 focused_target.is_some_and(|target| child.action_target.as_deref() == Some(target));
+        }
+        // Virtual affordances use the tree's focus target. The real inline
+        // text field already reports its own focus; keep that state intact.
+        if let Some(input) = rename_input {
+            children.insert(0, input);
         }
         children
     }

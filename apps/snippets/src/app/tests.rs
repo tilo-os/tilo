@@ -191,6 +191,8 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
         snippet("First", "first body"),
         snippet("Second", "second body"),
     ]);
+    activate(&mut app, "First");
+    assert_eq!(body_shown(&mut app), "first body");
     let second = by_title(&app, "Second");
     let row = app
         .harness()
@@ -201,6 +203,31 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
         })
         .map(|(id, _)| id)
         .expect("the exported Second list row");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Focus)
+        .expect("the measured list owner focuses the addressed row");
+    app.settle();
+    assert_eq!(body_shown(&mut app), "second body");
+    let focused = app
+        .harness()
+        .focused_access_node()
+        .expect("the list remains the actual keyboard focus owner");
+    assert!(
+        focused
+            .children
+            .iter()
+            .any(|child| { child.name.as_deref() == Some("Second") && child.state.focused }),
+        "the addressed Second row carries focused semantics"
+    );
+    assert!(
+        focused
+            .children
+            .iter()
+            .all(|child| { child.name.as_deref() != Some("First") || !child.state.focused }),
+        "First must no longer carry focused semantics"
+    );
+    activate(&mut app, "First");
+    assert_eq!(body_shown(&mut app), "first body");
     app.harness()
         .perform_a11y_action(row, &ui::a11y::Action::Activate)
         .expect("the measured list owner handles its row");

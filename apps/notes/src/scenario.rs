@@ -412,17 +412,6 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             reveal_sidebar(driver);
             let rect = semantic_name_rect(driver, LAUNCH).ok_or("rename row missing")?;
             driver.double_click_at(rect.center().x, rect.center().y);
-            if scenario == Some("rename") {
-                eprintln!(
-                    "rename immediately after double click: native_focus={:?} accessible_focus={:?} fields={:?}",
-                    driver.focused(),
-                    driver.focused_access_node(),
-                    nodes(driver)
-                        .into_iter()
-                        .filter(|node| node.role == ui::a11y::Role::TextInput)
-                        .collect::<Vec<_>>()
-                );
-            }
             if scenario == Some("rename_commit") {
                 driver.type_text(" v2");
                 driver.click_at(900.0, 400.0);
