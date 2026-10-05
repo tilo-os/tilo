@@ -579,6 +579,16 @@ impl Daemon {
         let (record, _) = self.user_slot(name)?;
         let seat = match (&record.seat0, record.kind, &record.seat) {
             (Some(_), _, _) => "seat0".to_owned(),
+            (None, SlotKind::Device, _)
+                if record
+                    .device
+                    .as_ref()
+                    .is_some_and(|device| device.login.is_some()) =>
+            {
+                // A greetd device login already owns the physical seat; it
+                // does not need the lease used by a developer's headful slot.
+                "seat0".to_owned()
+            }
             (None, SlotKind::Headful, Some(seat)) => seat.clone(),
             (None, SlotKind::Headful, None) => return Err(DaemonError::NoSession(name.to_owned())),
             _ => return Err(DaemonError::HeadlessInput(name.to_owned())),
