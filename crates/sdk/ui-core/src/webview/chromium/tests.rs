@@ -2088,7 +2088,10 @@ fn owned_navigation_concurrent_cancel_cannot_overtake_admitted_command() {
 #[test]
 #[cfg(unix)]
 fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
-    let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
+    // Closing the command queue hangs up helper stdin. Keep stdout owned by
+    // the supervised helper until cancellation fails it; otherwise an unrelated
+    // EOF can win the first-error latch before the refusal under test.
+    let (dir, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 3600");
     let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     let enabled = Arc::new(AtomicBool::new(false));
     let reentered = Arc::new(AtomicBool::new(false));
