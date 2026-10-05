@@ -2485,6 +2485,12 @@ impl FrameHarness {
         self.root.update(&self.state.doc, &self.state.root);
         self.tick_records();
         let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
+        // What the widgets took up since the last frame (an edit a child
+        // made on its own) is written before the document is read again.
+        self.root.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
         self.root.sync(&self.state.doc, &self.state.root);
         // A sync reads the document only. What it took up is written now,
         // through actions, and shown in this same frame.

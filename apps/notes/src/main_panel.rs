@@ -140,10 +140,10 @@ impl RichTextSource for PageBody {
 
     fn apply(
         &mut self,
-        doc: &mut AutoCommit,
+        edits: &mut ui::widget::Edits<'_>,
         edit: &tilo_document::RichTextAction,
     ) -> Result<(), ui::tilo_actions::ActionError> {
-        self.field.apply(doc, edit)
+        self.field.apply(edits, edit)
     }
 
     fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {

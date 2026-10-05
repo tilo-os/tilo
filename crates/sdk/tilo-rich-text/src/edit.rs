@@ -23,7 +23,6 @@ use tilo_doc::snapshot::BlockView;
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{RichTextAction, RichTextState};
 use ui::tilo_actions::ActionError;
-use ui::tilo_resource::Doc;
 use ui::widget::marks::{self, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
 
@@ -31,14 +30,18 @@ use crate::convert::{self, KindSpec, chars};
 
 /// Where edits go and where their result is read back.
 pub(crate) trait Host {
+    /// The document the edits go to, as the host holds it.
+    type Doc: ?Sized;
+
     /// Apply one edit to `doc` now.
     ///
     /// # Errors
     /// Returns the host's refusal; nothing is written.
-    fn apply(&mut self, doc: &mut Doc, action: &RichTextAction) -> Result<(), ActionError>;
+    fn apply(&mut self, doc: &mut Self::Doc, action: &RichTextAction) -> Result<(), ActionError>;
 
     /// Read the state as of `doc`, after the edits applied so far.
-    fn read<T>(&mut self, doc: &mut Doc, read: impl FnOnce(&RichTextState) -> T) -> Option<T>;
+    fn read<T>(&mut self, doc: &mut Self::Doc, read: impl FnOnce(&RichTextState) -> T)
+    -> Option<T>;
 }
 
 /// `(at, removed, inserted)` in characters: the one splice turning `before`
@@ -110,7 +113,7 @@ fn body_neighbour(state: &RichTextState, id: &str, step: isize) -> Option<String
 
 struct Commit<'a, H: Host> {
     host: &'a mut H,
-    doc: &'a mut Doc,
+    doc: &'a mut H::Doc,
     /// The document id each editor block ended up with.
     resolved: HashMap<String, String>,
     /// Editor blocks whose text is already in the document.
@@ -570,9 +573,9 @@ impl<H: Host> Commit<'_, H> {
 /// # Errors
 /// Returns the first refusal. Edits applied before it stay applied; the
 /// caller presents the document as it now is.
-pub(crate) fn commit(
-    host: &mut impl Host,
-    doc: &mut Doc,
+pub(crate) fn commit<H: Host>(
+    host: &mut H,
+    doc: &mut H::Doc,
     presented: &[BlockContent],
     edited: &[BlockContent],
 ) -> Result<Vec<(String, String)>, ActionError> {
@@ -623,6 +626,7 @@ mod tests {
     use super::*;
     use tilo_document::RichText;
     use ui::tilo_actions::Action;
+    use ui::tilo_resource::Doc;
     use ui::tilo_resource::{Demand, Reader, Resource};
     use ui::widget::marks::Mark;
 
@@ -634,6 +638,8 @@ mod tests {
     }
 
     impl Host for Replica {
+        type Doc = Doc;
+
         fn apply(&mut self, doc: &mut Doc, action: &RichTextAction) -> Result<(), ActionError> {
             action.apply(doc)?;
             doc.commit();
