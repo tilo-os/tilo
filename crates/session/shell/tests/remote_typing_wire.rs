@@ -204,6 +204,22 @@ impl Harness {
         }
     }
 
+    fn pump_extra(
+        &mut self,
+        conn: &Connection,
+        queue: &mut wayland_client::EventQueue<Client>,
+        client: &mut Client,
+    ) {
+        for _ in 0..6 {
+            let _ = queue.flush();
+            self.pump();
+            if let Some(guard) = conn.prepare_read() {
+                let _ = guard.read();
+            }
+            let _ = queue.dispatch_pending(client);
+        }
+    }
+
     fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> I
     where
         Client: Dispatch<I, ()>,
@@ -538,4 +554,148 @@ fn assert_host_focus_permissions(
     );
     h.pump();
     assert_eq!(h.client.focus.as_ref(), Some(expected_focus));
+}
+
+/// Focus diagnostics observe the protocol seat, including differences from
+/// the router and text-input focus, without serializing application content.
+#[test]
+fn seat_focus_metadata_tracks_actual_wayland_focus_and_clearing() {
+    use smithay::wayland::text_input::TextInputSeat as _;
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let surface = compositor.create_surface(&h.queue.handle(), ());
+    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
+    let toplevel = xdg.get_toplevel(&h.queue.handle(), ());
+    toplevel.set_app_id("org.example.Focus".into());
+    toplevel.set_title("private window content must stay private".into());
+    h.pump();
+    let window = foreign_id(&h.state, "org.example.Focus");
+    h.state.set_client_keyboard_focus(Some(window));
+    let metadata = h.state.seat_focus_json();
+    assert_eq!(metadata["keyboard"]["surface"], window);
+    assert_eq!(metadata["keyboard"]["app_id"], "org.example.Focus");
+    assert_eq!(metadata["keyboard"]["role"], "toplevel");
+    assert_eq!(metadata["routed_keyboard_surface"], window);
+    assert!(!metadata.to_string().contains("private window content"));
+
+    // Read the actual text-input handle independently of keyboard routing.
+    let protocol_surface = h.state.client_input.surface(window).unwrap().clone();
+    h.state.seat.text_input().set_focus(Some(protocol_surface));
+    assert_eq!(h.state.seat_focus_json()["text_input"]["surface"], window);
+    h.state.seat.get_keyboard().unwrap().set_focus(
+        &mut h.state,
+        None,
+        smithay::utils::SERIAL_COUNTER.next_serial(),
+    );
+    let metadata = h.state.seat_focus_json();
+    assert_eq!(metadata["keyboard"], serde_json::Value::Null);
+    assert_eq!(
+        metadata["routed_keyboard_surface"], window,
+        "actual seat focus must not be inferred from the routing cache"
+    );
+    h.state.seat.text_input().set_focus(None);
+    assert_eq!(
+        h.state.seat_focus_json()["text_input"],
+        serde_json::Value::Null
+    );
+    h.state.set_client_keyboard_focus(None);
+    assert_eq!(
+        h.state.seat_focus_json()["routed_keyboard_surface"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn a_trusted_osk_toplevel_never_adopts_a_tab_before_its_app_id_arrives() {
+    use shell::compositor::input_method::TrustedInputMethod;
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let surface = compositor.create_surface(&h.queue.handle(), ());
+    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
+    let toplevel = xdg.get_toplevel(&h.queue.handle(), ());
+    toplevel.set_app_id("org.example.Writer".into());
+    h.pump();
+    let window = foreign_id(&h.state, "org.example.Writer");
+    // Leave a window to the right: removing an anonymous OSK group must
+    // not choose that neighbour instead of the person's previous window.
+    let neighbour = compositor.create_surface(&h.queue.handle(), ());
+    let neighbour_xdg = wm.get_xdg_surface(&neighbour, &h.queue.handle(), ());
+    let neighbour_toplevel = neighbour_xdg.get_toplevel(&h.queue.handle(), ());
+    neighbour_toplevel.set_app_id("org.example.Reader".into());
+    h.pump();
+    assert!(shell::compositor::tab_binding::activate_surface(
+        &mut h.state.workspace_tree.write(),
+        window
+    ));
+    h.state.set_client_keyboard_focus(Some(window));
+    let before = serde_json::to_value(&*h.state.workspace_tree.read()).unwrap();
+    let focus = h.state.seat_focus_json();
+
+    let (server, client) = UnixStream::pair().unwrap();
+    h.display
+        .handle()
+        .insert_client(
+            server,
+            shell::compositor::state::ClientState::input_method_arc(
+                TrustedInputMethod::OnScreenKeyboard,
+            ),
+        )
+        .unwrap();
+    client.set_nonblocking(true).unwrap();
+    let conn = Connection::from_socket(client).unwrap();
+    let mut queue = conn.new_event_queue::<Client>();
+    let qh = queue.handle();
+    let registry = conn.display().get_registry(&qh, ());
+    let mut client = Client::default();
+    h.pump_extra(&conn, &mut queue, &mut client);
+    let named = |interface: &str| {
+        client
+            .globals
+            .iter()
+            .find(|(_, name, _)| name == interface)
+            .unwrap()
+            .0
+    };
+    let compositor =
+        registry.bind::<wl_compositor::WlCompositor, _, _>(named("wl_compositor"), 4, &qh, ());
+    let wm = registry.bind::<xdg_wm_base::XdgWmBase, _, _>(named("xdg_wm_base"), 1, &qh, ());
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    // Flush the actual new_toplevel request BEFORE setting an app id.
+    h.pump_extra(&conn, &mut queue, &mut client);
+    assert_eq!(
+        serde_json::to_value(&*h.state.workspace_tree.read()).unwrap(),
+        before,
+        "a trusted keyboard must never be adopted as an anonymous ordinary window"
+    );
+    assert_eq!(h.state.seat_focus_json()["keyboard"], focus["keyboard"]);
+    assert!(
+        h.state.osk_surface.is_none(),
+        "overlay authority still requires the exact app-id"
+    );
+    toplevel.set_app_id("so.tilo.osk".into());
+    h.pump_extra(&conn, &mut queue, &mut client);
+    assert_eq!(
+        serde_json::to_value(&*h.state.workspace_tree.read()).unwrap(),
+        before
+    );
+    assert_eq!(h.state.seat_focus_json()["keyboard"], focus["keyboard"]);
+
+    // Merely copying the app-id on a public connection grants no OSK role.
+    let public_compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let public_wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let spoof = public_compositor.create_surface(&h.queue.handle(), ());
+    let spoof_xdg = public_wm.get_xdg_surface(&spoof, &h.queue.handle(), ());
+    let spoof_toplevel = spoof_xdg.get_toplevel(&h.queue.handle(), ());
+    spoof_toplevel.set_app_id("so.tilo.osk".into());
+    h.pump();
+    let public_window = foreign_id(&h.state, "so.tilo.osk");
+    assert_ne!(h.state.osk_surface, Some(public_window));
 }
