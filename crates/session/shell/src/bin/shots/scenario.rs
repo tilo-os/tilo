@@ -1337,7 +1337,7 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                     .join("\n\n");
                 match inputs.mount_note(&room, tab, "Complete capture.md", &body) {
                     Some(Ok(component)) => {
-                        match tilo_desktop::resolver::app_tile(component, |_| {}) {
+                        match tilo_desktop::resolver::app_tile(component, None, |_| {}) {
                             Ok(app) => {
                                 if let Some(host) = driver
                                     .host_mut()

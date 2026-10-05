@@ -533,6 +533,7 @@ impl LauncherServices for NativeLauncher {
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
+            || super::launcher::consume_in_process_launch(pid, app, room)
     }
     fn closes_applications(&self) -> bool {
         super::app_close::installed()

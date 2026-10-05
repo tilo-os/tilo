@@ -128,6 +128,8 @@ tilo-automation = { path = "../../collab/automation" }
 tilo-app-state = { path = "../../system/app-state" }
 # The store the apps the shell mounts in-process keep their records in.
 durable-store = { path = "../../system/durable-store" }
+# Errors a host-made collaboration connection reports.
+runtime-portal = { path = "../../runtime/runtime-portal" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
