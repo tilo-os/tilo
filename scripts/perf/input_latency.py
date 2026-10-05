@@ -5,6 +5,7 @@ keypress-to-photon metric. Brackets bound sampling/float representation only;
 no accuracy bound is claimed for the compositor's presentation timestamp.
 """
 import math
+import uuid
 from native_delivery import rows, summarize_native_delivery
 from presentation_feedback import summarize_presentation
 from runtime_benchmark import distribution
@@ -114,7 +115,18 @@ def summarize_physical_notes_latency(lines, scratch_page):
     if len(process_ids) != 1 or any(type(pid) is not int or pid <= 0 for pid in process_ids):
         raise ValueError('Physical input is not scoped to one actual Notes worker')
     process_id = next(iter(process_ids))
-    if any(frame.get('process_id') != process_id for frame in mappings):
+    sessions = {event.get('observer_session') for event in inputs}
+    if (len(sessions) != 1 or any(not isinstance(value, str) or len(value) != 36 for value in sessions)):
+        raise ValueError('Input lacks one sandbox-independent app worker lifetime identity')
+    session = next(iter(sessions))
+    try:
+        parsed_session = uuid.UUID(session)
+    except ValueError as error:
+        raise ValueError('Malformed app worker lifetime UUID') from error
+    if parsed_session.version != 4 or str(parsed_session) != session:
+        raise ValueError('App worker lifetime identity is not a canonical random UUID')
+    if any(frame.get('observer_session') != session or frame.get('process_id') != process_id
+           for frame in mappings):
         raise ValueError('Frame belongs to a different Notes worker')
     def unique(values, key):
         out = {}
@@ -127,7 +139,7 @@ def summarize_physical_notes_latency(lines, scratch_page):
     physical = unique(deliveries, 'wayland_serial')
     frames = unique(mappings, 'cpu_frame_id')
     feedback = unique([r for r in displayed if r.get('backend') == 'wayland'
-                       and r.get('process_id') == process_id], 'cpu_frame_id')
+                       and r.get('observer_session') == session and r.get('process_id') == process_id], 'cpu_frame_id')
     by_input = {}
     for frame in frames.values():
         identities = frame.get('input_ids')
