@@ -3927,7 +3927,7 @@ mod tests {
         );
     }
 
-    fn activate(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
+    pub(super) fn activate(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
         perform(app, doc, id, &ui::a11y::Action::Activate);
     }
 
