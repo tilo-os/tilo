@@ -3436,6 +3436,18 @@ mod tests {
                 .union(rect_for(card, "greeter.login").expect("sign-in action"));
             let mut before = Vec::new();
             geometry(&app, &mut before);
+            // The scroll bar shown with the first frame fades on its own
+            // timer; let it run out first, so the keystrokes' damage is
+            // theirs alone however slowly they are typed.
+            let deadline = tilo_test_env::hang_deadline();
+            while let Some(wake) = Widget::next_wake_deadline(&app) {
+                assert!(Instant::now() < deadline, "the screen never settled");
+                std::thread::sleep(wake.saturating_duration_since(Instant::now()));
+                paint(&mut app, &theme);
+                let mut settled = Vec::new();
+                app.collect_damage(&mut settled);
+                Widget::mark_drawn(&mut app);
+            }
 
             for c in ["h", "u", "n", "t", "e", "r", "2"] {
                 laid.deliver(&mut app, &mut doc, &char_event(c));
