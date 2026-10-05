@@ -2964,6 +2964,18 @@ impl FrameBuilder {
 
     /// Whether the trusted on-screen keyboard service has a surface, shown
     /// or not.
+    /// Whether field activation and the input modality request the keyboard.
+    pub fn osk_requested(&self) -> bool {
+        self.osk_active
+    }
+
+    /// Whether the keyboard has supplied a buffer, even while hidden.
+    pub fn osk_mapped(&self) -> bool {
+        self.osk_overlay
+            .as_ref()
+            .is_some_and(ForeignSurfaceWidget::is_mapped)
+    }
+
     pub fn osk_connected(&self) -> bool {
         self.osk_overlay.is_some()
     }

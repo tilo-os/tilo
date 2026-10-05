@@ -2798,6 +2798,8 @@ impl ControlState for FrameBuilderControlState<'_> {
             // and where it is painted while it serves the focused field.
             "on_screen_keyboard": {
                 "connected": self.fb.osk_connected(),
+                "requested": self.fb.osk_requested(),
+                "mapped": self.fb.osk_mapped(),
                 "commits": self.fb.osk_commits(),
                 "serves_shell_field": self.fb.osk_serves_shell(),
                 "shown": self.fb.osk_surface_rect().map(|(_, rect)| serde_json::json!({
