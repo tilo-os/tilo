@@ -1320,13 +1320,19 @@ impl SystemPrefs {
     /// Load from the shared settings path. Returns section defaults when the
     /// file is absent or unreadable.
     pub fn load() -> Self {
-        let Some(path) = RegionSettings::store_path() else {
-            return Self::default();
+        let mut prefs = match RegionSettings::store_path() {
+            Some(path) => match std::fs::read_to_string(&path) {
+                Ok(text) => Self::from_json(&text),
+                Err(_) => Self::default(),
+            },
+            None => Self::default(),
         };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::from_json(&text),
-            Err(_) => Self::default(),
+        // A capture with `--distinct-letters` shows the setting as that
+        // choice everywhere it appears, matching the text it renders.
+        if let Some(on) = ui::launch::capture_distinct_letters() {
+            prefs.appearance.choose_distinct_letters(on);
         }
+        prefs
     }
 
     /// Persist to the shared settings path, preserving foreign keys. Creates

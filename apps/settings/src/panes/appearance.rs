@@ -924,7 +924,13 @@ impl AppearancePane {
     ) -> (bool, bool) {
         let canonical_value = read_bool(state, root, canonical).unwrap_or(current);
         let draft = Self::draft_key(canonical);
-        let draft_value = read_bool(state, root, &draft).unwrap_or(canonical_value);
+        // The switch draws the draft: one that was never written reads as
+        // off, so a setting that is already on would show as off until
+        // touched. Rest it on the setting.
+        let draft_value = read_bool(state, root, &draft).unwrap_or_else(|| {
+            let _ = state.put(root, draft.as_str(), canonical_value);
+            canonical_value
+        });
         if canonical_value != current {
             let _ = state.put(root, draft, canonical_value);
             (canonical_value, true)
@@ -1249,6 +1255,34 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+    }
+
+    /// A switch draws its draft key. A setting that is already on when the
+    /// pane opens rests its switch on, instead of showing off until touched.
+    #[test]
+    fn a_setting_that_is_already_on_shows_its_switch_on() {
+        let mut prefs = AppearancePrefs {
+            reduce_transparency: true,
+            ..AppearancePrefs::default()
+        };
+        prefs.choose_distinct_letters(true);
+        let mut pane = AppearancePane::with_prefs(prefs);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        for key in [DISTINCT_LETTERS_KEY, REDUCE_TRANSPARENCY_KEY] {
+            assert_eq!(read_bool(&doc, &root, key), Some(true), "{key}");
+            assert_eq!(
+                read_bool(&doc, &root, AppearancePane::draft_key(key)),
+                Some(true),
+                "{key}: the switch's draft"
+            );
+        }
+        assert_eq!(
+            read_bool(&doc, &root, AppearancePane::draft_key(HIGH_CONTRAST_KEY)),
+            Some(false),
+            "a setting that is off rests its switch off"
+        );
     }
 
     /// The theme dropdowns show the theme the stored reference names, not a
