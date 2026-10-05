@@ -52,6 +52,8 @@ struct ClientSide {
     seat: Option<(u32, u32)>,
     manager: Option<(u32, u32)>,
     entered: bool,
+    /// Each enter starts a fresh enable cycle, even after a batched leave/enter.
+    reentered: bool,
     pending_preedit: Option<String>,
     pending_commit: Option<String>,
     /// Translated, ready for the chrome.
@@ -231,7 +233,8 @@ impl ShellTextInput {
             self.surface = Some(compositor.create_surface(&qh, ()));
             self.text_input = Some(manager.get_text_input(&seat, &qh, ()));
         }
-        if !self.state.entered {
+        let reentered = std::mem::take(&mut self.state.reentered);
+        if !self.state.entered || reentered {
             self.enabled = None;
         }
         let _ = self.conn.flush();
@@ -342,7 +345,10 @@ impl wayland_client::Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientS
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwp_text_input_v3::Event::Enter { .. } => state.entered = true,
+            zwp_text_input_v3::Event::Enter { .. } => {
+                state.entered = true;
+                state.reentered = true;
+            }
             zwp_text_input_v3::Event::Leave { .. } => state.entered = false,
             zwp_text_input_v3::Event::PreeditString { text, .. } => {
                 state.pending_preedit = Some(text.unwrap_or_default());
