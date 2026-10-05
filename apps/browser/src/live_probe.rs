@@ -43,6 +43,12 @@ impl WebViewEngine for LiveProbe {
     fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
         self.inner.set_waker(waker);
     }
+    fn set_visible(&self, visible: bool) {
+        self.inner.set_visible(visible);
+    }
+    fn presented(&self) {
+        self.inner.presented();
+    }
     fn paint_frame(&self) -> Option<std::sync::Arc<ui::webview::paint::stream::Frame>> {
         self.inner.paint_frame()
     }
