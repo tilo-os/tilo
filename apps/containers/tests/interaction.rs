@@ -448,7 +448,7 @@ fn keyboard_pointer_and_semantic_navigation() {
         assert!(d.app().selected().is_none(), "selection cleared");
         // Click the real laid-out first container row, whose position moves
         // with the shared list header and theme.
-        let label = d.app().engine.containers[0].name.clone();
+        let label = sample_engine().containers[0].name.clone();
         let bounds = d
             .a11y_nodes()
             .into_iter()
