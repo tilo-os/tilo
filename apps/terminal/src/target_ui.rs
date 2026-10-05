@@ -3,12 +3,14 @@
 // widget's module next to `main_body.rs`.
 
 use crate::sessions::OpenState;
-use crate::target::{EnvironmentSummary, Location, SessionTarget};
+use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
 
 /// One row of the target picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TargetMenuRow {
     Open(SessionTarget),
+    /// Run the current environment here or on a relay.
+    RunOn(Location),
     Manage,
 }
 
@@ -76,7 +78,23 @@ fn environment_details(env: &EnvironmentSummary) -> (String, String) {
 }
 
 /// What the chip and the picker call a target.
-fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> String {
+/// What the picker calls a place an environment runs.
+fn location_label(location: &Location, relays: &[RelaySummary]) -> String {
+    match location {
+        Location::ThisDevice => t("terminal-run-on-this-device"),
+        Location::Relay { relay } => relays
+            .iter()
+            .find(|r| r.relay == *relay)
+            .map_or_else(|| relay.chars().take(8).collect(), |r| r.label.clone()),
+    }
+}
+
+/// What the chip and the picker call a target.
+fn target_label(
+    target: &SessionTarget,
+    environments: &[EnvironmentSummary],
+    relays: &[RelaySummary],
+) -> String {
     match target {
         SessionTarget::Host => t("terminal-target-host"),
         SessionTarget::Environment { record, location } => {
@@ -99,7 +117,7 @@ fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> 
                 );
             match location {
                 Location::ThisDevice => name,
-                Location::Relay { id } => format!("{name} · {id}"),
+                Location::Relay { .. } => format!("{name} · {}", location_label(location, relays)),
             }
         }
         SessionTarget::Legacy { vm } => format!("{vm} · {}", t("terminal-target-legacy")),
@@ -110,13 +128,25 @@ fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> 
 /// `environment`, `environment:<record>` or `legacy:<vm>`.
 pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
     let raw = raw.trim();
+    // `…@<relay endpoint id>` runs an environment on that relay.
+    let (raw, location) = match raw.split_once('@') {
+        Some((base, relay)) if base.starts_with("environment") => (
+            base,
+            Location::Relay {
+                relay: relay.to_ascii_lowercase(),
+            },
+        ),
+        Some(_) => return None,
+        None => (raw, Location::ThisDevice),
+    };
     let target = match raw.split_once(':') {
         None if raw == "host" => SessionTarget::Host,
         None if raw == "environment" => SessionTarget::default_environment(),
         Some(("environment", record)) => SessionTarget::environment(record),
         Some(("legacy", vm)) => SessionTarget::Legacy { vm: vm.to_owned() },
         _ => return None,
-    };
+    }
+    .at(location);
     target.is_valid().then_some(target)
 }
 
@@ -150,6 +180,12 @@ impl TerminalWidget {
         self.sessions.legacy_vms = vms;
     }
 
+    /// Report the person's relays, for "Run on" — for hosts and screenshot
+    /// scenes; a live tab lists them from the supervisor.
+    pub fn set_relays(&mut self, relays: Vec<RelaySummary>) {
+        self.sessions.relays = relays;
+    }
+
     /// Open sessions through `sessions` — for tests.
     #[cfg(test)]
     pub(crate) fn set_sessions(&mut self, sessions: crate::sessions::Sessions) {
@@ -173,6 +209,28 @@ impl TerminalWidget {
             Ok(Some((Value::Scalar(value), _))) => value.as_str().and_then(SessionTarget::decode),
             _ => None,
         }
+    }
+
+    fn read_recorded_relay_session(state: &AutoCommit) -> Option<String> {
+        let parent = match state.get(&automerge::ROOT, "terminal_panel") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => automerge::ROOT,
+        };
+        match state.get(&parent, crate::target::RELAY_SESSION_KEY) {
+            Ok(Some((Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
+            _ => None,
+        }
+    }
+
+    /// Keep (or forget) the relay session this session re-attaches to.
+    fn record_relay_session(&mut self, state: &mut AutoCommit, session: Option<String>) {
+        if session.is_none() && Self::read_recorded_relay_session(state).is_none() {
+            return;
+        }
+        self.apply_session_action(
+            state,
+            &crate::resource::TerminalAction::SetRelaySession { session },
+        );
     }
 
     fn record_target(&mut self, state: &mut AutoCommit, target: &SessionTarget) {
@@ -206,7 +264,13 @@ impl TerminalWidget {
             self.record_target(state, &target);
             target
         };
-        self.open_session(state, root, &target, Requester::Person);
+        // A session on a relay outlives the tab; reopening re-attaches to it.
+        let attach = target
+            .location()
+            .is_some_and(|location| !location.is_this_device())
+            .then(|| Self::read_recorded_relay_session(state))
+            .flatten();
+        self.open_session_attaching(state, root, &target, Requester::Person, attach.as_deref());
     }
 
     /// Put a session on `target` behind this tab, replacing any it has.
@@ -217,14 +281,34 @@ impl TerminalWidget {
         target: &SessionTarget,
         requested_by: Requester,
     ) {
+        self.open_session_attaching(state, root, target, requested_by, None);
+    }
+
+    /// [`Self::open_session`], re-attaching to the relay session `attach`
+    /// when one is named; a session that is gone is replaced by a new one.
+    fn open_session_attaching(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        target: &SessionTarget,
+        requested_by: Requester,
+        attach: Option<&str>,
+    ) {
         self.sessions.target = Some(target.clone());
-        match self.sessions.open(target, requested_by) {
+        match self.sessions.open(target, requested_by, attach) {
             Ok(backend) => {
+                let relay_session = backend.relay_session.clone();
+                self.record_relay_session(state, relay_session);
                 self.attach_backend(backend);
                 self.resize_pty_to_grid();
                 self.sessions.state = OpenState::Open;
                 self.sessions.remember(target);
                 self.reset_stale_local_session(state, root);
+            }
+            Err(_) if attach.is_some() => {
+                self.record_relay_session(state, None);
+                self.open_session_attaching(state, root, target, requested_by, None);
+                return;
             }
             Err(OpenError::NeedsAllow(_))
                 if requested_by == Requester::Person && self.sessions.request_allow() =>
@@ -403,7 +487,7 @@ impl TerminalWidget {
         self.sessions
             .target
             .as_ref()
-            .map(|target| target_label(target, &self.sessions.environments))
+            .map(|target| target_label(target, &self.sessions.environments, &self.sessions.relays))
     }
 
     fn draw_target_header(
@@ -485,9 +569,20 @@ impl TerminalWidget {
         let mut menu = ContextMenu::new();
         menu.set_platform_conventions(self.conventions);
         let mut rows = Vec::with_capacity(targets.len() + 1);
+        // Picking another environment keeps it where the current one runs.
+        let here = self
+            .sessions
+            .target
+            .as_ref()
+            .and_then(SessionTarget::location)
+            .cloned();
         for target in targets {
+            let target = match here.clone() {
+                Some(location) => target.at(location),
+                None => target,
+            };
             let current = self.sessions.target.as_ref() == Some(&target);
-            let label = target_label(&target, &self.sessions.environments);
+            let label = target_label(&target, &self.sessions.environments, &self.sessions.relays);
             let label = if current {
                 format!("✓ {label}")
             } else {
@@ -495,6 +590,28 @@ impl TerminalWidget {
             };
             menu.push(MenuItem::action(label, || {}));
             rows.push(Some(TargetMenuRow::Open(target)));
+        }
+        // "Run on": this device or one of the person's relays, for the
+        // environment the tab runs.
+        if let Some(here) = here.filter(|_| !self.sessions.relays.is_empty()) {
+            menu.push(MenuItem::separator());
+            rows.push(None);
+            let places =
+                std::iter::once(Location::ThisDevice).chain(self.sessions.relays.iter().map(|r| {
+                    Location::Relay {
+                        relay: r.relay.clone(),
+                    }
+                }));
+            for place in places {
+                let label = format!(
+                    "{}{} {}",
+                    if place == here { "✓ " } else { "" },
+                    t("terminal-run-on"),
+                    location_label(&place, &self.sessions.relays)
+                );
+                menu.push(MenuItem::action(label, || {}));
+                rows.push(Some(TargetMenuRow::RunOn(place)));
+            }
         }
         menu.push(MenuItem::separator());
         rows.push(None);
@@ -548,6 +665,12 @@ impl TerminalWidget {
         match rows.get(index).cloned().flatten() {
             Some(TargetMenuRow::Open(target)) => {
                 let _ = self.switch_target(state, root, &target, Requester::Person);
+            }
+            Some(TargetMenuRow::RunOn(location)) => {
+                if let Some(target) = self.sessions.target.clone() {
+                    let _ =
+                        self.switch_target(state, root, &target.at(location), Requester::Person);
+                }
             }
             Some(TargetMenuRow::Manage) => self.open_environments_panel(),
             None => {}

@@ -7248,6 +7248,9 @@ pub struct TerminalBackend {
     pub reader: Box<dyn Read + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub shell_name: String,
+    /// For an environment on a relay: the session's id there, which
+    /// re-attaches to it.
+    pub relay_session: Option<String>,
     #[cfg(unix)]
     service_lifetime: Option<std::os::unix::net::UnixStream>,
     #[cfg(windows)]
@@ -7262,6 +7265,7 @@ impl TerminalBackend {
             reader: Box::new(std::io::empty()),
             master: Box::new(NullMaster),
             shell_name: "test".into(),
+            relay_session: None,
             service_lifetime: None,
         }
     }
@@ -7296,10 +7300,13 @@ impl TerminalBackend {
     pub fn open(
         target: &crate::target::SessionTarget,
         requested_by: Requester,
+        relay_session: Option<&str>,
     ) -> Result<Self, OpenError> {
         let program = launch_command_from_env();
         match confinement_route(target) {
-            ConfineRoute::Service => ush_service_backend(&program, target, requested_by),
+            ConfineRoute::Service => {
+                ush_service_backend(&program, target, requested_by, relay_session)
+            }
             ConfineRoute::SelfHosted(bin) => {
                 let mut cmd = CommandBuilder::new(&bin);
                 cmd.arg("run");
@@ -7360,6 +7367,7 @@ impl TerminalBackend {
             reader,
             master: pair.master,
             shell_name,
+            relay_session: None,
             #[cfg(unix)]
             service_lifetime: None,
             #[cfg(windows)]
@@ -7554,7 +7562,8 @@ pub fn environments_available() -> bool {
 /// target reaches a local process while the supervisor is present; the
 /// device's own shell is reached only by naming it; and an environment that
 /// cannot run is unavailable, never quietly the host shell instead. Relay and
-/// legacy-VM targets are not served by this device's supervisor.
+/// relay targets are carried there by this device's supervisor; legacy VMs
+/// are not served by it.
 pub fn decide_route(
     target: &crate::target::SessionTarget,
     service_available: bool,
@@ -7566,9 +7575,11 @@ pub fn decide_route(
         SessionTarget::Environment {
             location: Location::Relay { .. },
             ..
-        } => {
+        } if !service_available => {
             return ConfineRoute::Unavailable(
-                "Environments on a relay cannot be opened from this device yet".into(),
+                "Environments on a relay are reached through Tilo's shell runtime, which is \
+                 not available here"
+                    .into(),
             );
         }
         SessionTarget::Legacy { .. } => {
@@ -7704,6 +7715,7 @@ fn ush_service_backend(
     program: &[String],
     target: &crate::target::SessionTarget,
     requested_by: Requester,
+    relay_session: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
     use std::os::fd::{FromRawFd, RawFd};
     use std::os::unix::net::UnixStream;
@@ -7730,7 +7742,7 @@ fn ush_service_backend(
         // `USH_SERVICE_TAKEN` keeps a second session from taking it again.
         unsafe { UnixStream::from_raw_fd(raw) }
     };
-    let opened = ush_backend_on(&stream, program, target, requested_by);
+    let opened = ush_backend_on(&stream, program, target, requested_by, relay_session);
     if opened.as_ref().is_err_and(OpenError::is_refusal)
         && let Ok(mut refused) = USH_SERVICE_REFUSED.lock()
     {
@@ -7744,6 +7756,7 @@ fn ush_service_backend(
     _program: &[String],
     _target: &crate::target::SessionTarget,
     _requested_by: Requester,
+    _relay_session: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
     Err(OpenError::Unavailable(
         "Tilo hosted terminal service transport is unavailable on Windows".into(),
@@ -7754,6 +7767,7 @@ pub(crate) fn ush_request(
     program: &[String],
     target: &crate::target::SessionTarget,
     requested_by: Requester,
+    relay_session: Option<&str>,
     (cols, rows): (u16, u16),
 ) -> Result<Vec<u8>, OpenError> {
     let wire_target = target.to_supervisor().ok_or_else(|| {
@@ -7767,8 +7781,13 @@ pub(crate) fn ush_request(
         "target": wire_target,
         "requested_by": requested_by.wire(),
     });
-    if let (false, Some(fields)) = (program.is_empty(), request.as_object_mut()) {
-        fields.insert("command".to_string(), serde_json::json!(program));
+    if let Some(fields) = request.as_object_mut() {
+        if !program.is_empty() {
+            fields.insert("command".to_string(), serde_json::json!(program));
+        }
+        if let Some(session) = relay_session {
+            fields.insert("relay_session".to_string(), serde_json::json!(session));
+        }
     }
     let mut request =
         serde_json::to_vec(&request).map_err(|error| OpenError::Failed(error.to_string()))?;
@@ -7782,10 +7801,11 @@ pub(crate) fn ush_backend_on(
     program: &[String],
     target: &crate::target::SessionTarget,
     requested_by: Requester,
+    relay_session: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
     use std::os::fd::AsRawFd;
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
-    let request = ush_request(program, target, requested_by, (80, 24))?;
+    let request = ush_request(program, target, requested_by, relay_session, (80, 24))?;
     {
         let mut w = stream;
         w.write_all(&request).map_err(|e| failed(&e))?;
@@ -7808,8 +7828,22 @@ pub(crate) fn ush_backend_on(
         reader,
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
+        relay_session: granted_relay_session(&payload),
         service_lifetime: Some(stream.try_clone().map_err(|e| failed(&e))?),
     })
+}
+
+/// The relay session a supervisor's answer names, if it is one.
+pub(crate) fn granted_relay_session(payload: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Reply {
+        #[serde(default)]
+        relay_session: Option<String>,
+    }
+    serde_json::from_slice::<Reply>(payload)
+        .ok()?
+        .relay_session
+        .filter(|session| session.len() == 32 && session.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// What a supervisor reply without a descriptor means.

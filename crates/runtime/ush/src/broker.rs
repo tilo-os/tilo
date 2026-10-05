@@ -122,10 +122,10 @@ pub enum Response {
     Denied {
         reason: String,
     },
+    /// A host command's exit status. Its output reached the guest as it was
+    /// produced, in output frames ahead of this answer.
     Command {
         code: i32,
-        stdout: String,
-        stderr: String,
     },
     Perms {
         entries: Vec<PermEntry>,
@@ -149,9 +149,9 @@ pub enum Response {
 }
 
 /// Socket-only framing for requests whose output may take a while (host
-/// management commands, tool builds). The public [`ask`] API still returns
-/// one complete [`Response`]; clients which opt in to [`ask_streaming`]
-/// additionally receive each output chunk as it arrives.
+/// management commands, tool builds): each output chunk as it arrives, then
+/// the [`Response`]. Output is never collected into the response, so a slow
+/// `app update` shows its progress line by line rather than all at the end.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "frame", rename_all = "kebab-case")]
 enum WireFrame {
@@ -161,7 +161,26 @@ enum WireFrame {
 }
 
 const MAX_ARG_BYTES: usize = 4096;
+/// The most output one host command forwards to the guest, stdout and stderr
+/// together. Past it the command keeps running to completion (stopping an
+/// update halfway over its chatter would be worse) and only its exit status
+/// follows.
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+/// How long an update may run before the broker stops it. Generous: a system
+/// image or every app over a slow link legitimately takes many minutes; the
+/// limit only keeps a wedged host command from holding the update lock for
+/// ever.
+const UPDATE_TIME_LIMIT: Duration = Duration::from_secs(30 * 60);
+/// How long a read-only query (`app list`, `system status`, ...) may run.
+const QUERY_TIME_LIMIT: Duration = Duration::from_secs(5 * 60);
+/// A silent host command gets a heartbeat this often, so the guest can tell
+/// the person it is still working.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// The answer to a host command that reached [`BrokerState::handle`]
+/// directly: host commands stream their output, so they run only over the
+/// socket.
+const HOST_COMMAND_NEEDS_SOCKET: &str = "host commands run only over the broker socket";
 
 #[derive(Debug)]
 struct HostCommand {
@@ -170,10 +189,18 @@ struct HostCommand {
     args: Vec<String>,
     binary: PathBuf,
     mutating: bool,
+    /// `None` for a legacy app launch, which lasts as long as the person
+    /// keeps the app open.
+    time_limit: Option<Duration>,
 }
 
 fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<HostCommand> {
     let (operation, program, args, mutating) = match req {
+        // On a relay worker the launch is a request to the relay, answered
+        // at once by `BrokerState::handle`, not a host command.
+        Request::LegacyLaunch { .. } if crate::legacy_relay::socket_from_env().is_some() => {
+            return None;
+        }
         Request::LegacyLaunch { app, args, cwd } => (
             "legacy-launch",
             LEGACY_PROGRAM,
@@ -225,12 +252,18 @@ fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<
         }
         _ => return None,
     };
+    let time_limit = match operation {
+        "legacy-launch" => None,
+        _ if mutating => Some(UPDATE_TIME_LIMIT),
+        _ => Some(QUERY_TIME_LIMIT),
+    };
     Some(HostCommand {
         operation,
         program,
         args,
         binary: host_root.join("usr/bin").join(program),
         mutating,
+        time_limit,
     })
 }
 
@@ -389,42 +422,15 @@ impl BrokerState {
     /// it can be tested without a socket.
     pub fn handle(&mut self, req: Request) -> Response {
         match req {
-            Request::AppUpdate { package } => {
-                let mut args = vec!["update".to_string()];
-                if let Some(package) = package {
-                    args.push(package);
-                }
-                self.host_command("app-update", "app", &args)
-            }
-            Request::SystemUpdate => self.host_command(
-                "system-update",
-                "tilo",
-                &["system".into(), "update".into(), "--yes".into()],
-            ),
-            Request::AllUpdates => {
-                self.host_command("all-updates", "tilo", &["update".into(), "--yes".into()])
-            }
-            Request::AppList { json } => {
-                let args = if json {
-                    vec!["list".into(), "--json".into()]
-                } else {
-                    vec!["list".into()]
-                };
-                self.host_command("app-list", "app", &args)
-            }
-            Request::AppSearch { query } => {
-                self.host_command("app-search", "app", &["search".into(), query])
-            }
-            Request::AppRepoList => {
-                self.host_command("app-repo-list", "app", &["repo".into(), "list".into()])
-            }
-            Request::SystemStatus { json } => {
-                let mut args = vec!["system".into(), "status".into()];
-                if json {
-                    args.push("--json".into());
-                }
-                self.host_command("system-status", "tilo", &args)
-            }
+            Request::AppUpdate { .. }
+            | Request::SystemUpdate
+            | Request::AllUpdates
+            | Request::AppList { .. }
+            | Request::AppSearch { .. }
+            | Request::AppRepoList
+            | Request::SystemStatus { .. } => Response::Denied {
+                reason: HOST_COMMAND_NEEDS_SOCKET.into(),
+            },
             Request::TrustDir { path } => self.trust_dir(&path),
             Request::AllowHost { host } => self.allow_host(&host),
             Request::ListPerms => Response::Perms {
@@ -475,51 +481,64 @@ impl BrokerState {
                 self.log("restart", None, true, None);
                 Response::Ok
             }
-            Request::LegacyLaunch { app, args, cwd } => {
-                if let Some(args) =
-                    legacy_launch_args(&self.environment.policy(), &app, &args, &cwd)
-                {
-                    self.host_command("legacy-launch", LEGACY_PROGRAM, &args)
-                } else {
-                    let reason = format!("{app:?} is not a legacy app name");
-                    self.log("legacy-launch", Some(&app), false, Some(&reason));
-                    Response::Denied { reason }
-                }
-            }
+            Request::LegacyLaunch { app, args, cwd } => self.legacy_launch(&app, args, &cwd),
         }
     }
 
-    fn host_command(&self, operation: &str, program: &str, args: &[String]) -> Response {
-        if args.iter().map(String::len).sum::<usize>() > MAX_ARG_BYTES {
-            let reason = "management command arguments are too large".to_string();
-            self.log(operation, Some(program), false, Some(&reason));
-            return Response::Denied { reason };
+    /// A legacy app's shim: on a device, the user's own legacy VM; on a
+    /// relay worker, a launch the relay routes to a worker with KVM.
+    fn legacy_launch(&self, app: &str, args: Vec<String>, cwd: &Path) -> Response {
+        if let Some(socket) = crate::legacy_relay::socket_from_env() {
+            return self.relay_legacy_launch(&socket, app, args, cwd);
         }
-        let binary = self.host_root.join("usr/bin").join(program);
-        let output = match std::process::Command::new(&binary).args(args).output() {
-            Ok(output) => output,
-            Err(error) => {
-                let reason = format!("could not run {}: {error}", binary.display());
-                self.log(operation, Some(program), false, Some(&reason));
-                return Response::Denied { reason };
+        if legacy_launch_args(&self.environment.policy(), app, &args, cwd).is_some() {
+            Response::Denied {
+                reason: HOST_COMMAND_NEEDS_SOCKET.into(),
             }
-        };
-        if output.stdout.len() > MAX_OUTPUT_BYTES || output.stderr.len() > MAX_OUTPUT_BYTES {
-            let reason = "management command produced too much output".to_string();
-            self.log(operation, Some(program), false, Some(&reason));
-            return Response::Denied { reason };
+        } else {
+            let reason = format!("{app:?} is not a legacy app name");
+            self.log("legacy-launch", Some(app), false, Some(&reason));
+            Response::Denied { reason }
         }
-        let code = output.status.code().unwrap_or(1);
-        self.log(
-            operation,
-            Some(program),
-            true,
-            Some(&format!("exit {code}")),
-        );
-        Response::Command {
-            code,
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+
+    /// A legacy launch from an environment on a relay worker: the relay
+    /// runs the app on a worker with KVM and its windows open on the
+    /// member's devices.
+    fn relay_legacy_launch(
+        &self,
+        socket: &Path,
+        app: &str,
+        args: Vec<String>,
+        cwd: &Path,
+    ) -> Response {
+        use crate::legacy_relay::{LaunchReply, LaunchRequest, request};
+        let asked = LaunchRequest {
+            app: app.to_string(),
+            args,
+            cwd: cwd.display().to_string(),
+        };
+        match request(socket, &asked) {
+            Ok(LaunchReply::Launched { launch }) => {
+                self.log(
+                    "legacy-launch",
+                    Some(app),
+                    true,
+                    Some(&format!("relay {launch}")),
+                );
+                Response::Applied {
+                    detail: format!("{app} runs on the relay; its windows open on your devices."),
+                }
+            }
+            Ok(LaunchReply::Refused { detail }) => {
+                self.log("legacy-launch", Some(app), false, Some(&detail));
+                Response::Denied { reason: detail }
+            }
+            Err(error) => {
+                let reason = format!("the relay worker did not take the launch: {error}");
+                self.log("legacy-launch", Some(app), false, Some(&reason));
+                Response::Denied { reason }
+            }
         }
     }
 
@@ -1212,18 +1231,110 @@ fn start_host_command(
     })
 }
 
+/// The guest hung up (Ctrl-C ends the client) or the broker is stopping.
+#[derive(Debug)]
+struct Cancelled;
+
+fn cancelled(reader: &UnixStream, stop: &AtomicBool) -> bool {
+    stop.load(Ordering::Acquire) || peer_disconnected(reader)
+}
+
+/// Take the lock that keeps host updates one at a time. A second update
+/// says why it is not starting instead of sitting silent, and gives up when
+/// its guest does.
 fn acquire_host_mutation<'a>(
     command: &HostCommand,
     gate: &'a Mutex<()>,
-) -> Option<std::sync::MutexGuard<'a, ()>> {
-    command.mutating.then(|| {
-        gate.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    })
+    writer: &mut UnixStream,
+    reader: &UnixStream,
+    stop: &AtomicBool,
+) -> Result<Option<std::sync::MutexGuard<'a, ()>>, Cancelled> {
+    if !command.mutating {
+        return Ok(None);
+    }
+    let mut told = false;
+    loop {
+        match gate.try_lock() {
+            Ok(guard) => return Ok(Some(guard)),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                return Ok(Some(poisoned.into_inner()));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if !told {
+            told = true;
+            let notice = WireFrame::Output {
+                stderr: true,
+                data: b"Waiting for another host update to finish...\n".to_vec(),
+            };
+            if !write_frame(writer, &notice) {
+                return Err(Cancelled);
+            }
+        }
+        if cancelled(reader, stop) {
+            return Err(Cancelled);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
-/// Run a host management command without retaining the state lock. Returns
-/// true when the complete response reached the guest.
+/// The frames one chunk of command output becomes: the part still within
+/// the output cap, and the notice when this chunk crosses it. `forwarded`
+/// counts every byte the command printed so far.
+fn capped_output(
+    command: &HostCommand,
+    stderr: bool,
+    data: &[u8],
+    forwarded: &mut usize,
+) -> Vec<WireFrame> {
+    let room = MAX_OUTPUT_BYTES.saturating_sub(*forwarded);
+    let shown = data.get(..room.min(data.len())).unwrap_or_default();
+    let was_within_cap = *forwarded <= MAX_OUTPUT_BYTES;
+    *forwarded = forwarded.saturating_add(data.len());
+    let mut frames = Vec::new();
+    if !shown.is_empty() {
+        frames.push(WireFrame::Output {
+            stderr,
+            data: shown.to_vec(),
+        });
+    }
+    if was_within_cap && *forwarded > MAX_OUTPUT_BYTES {
+        frames.push(WireFrame::Output {
+            stderr: true,
+            data: format!(
+                "\n{} printed more than {} KiB; the rest of its output is not shown. \
+                 It keeps running; its exit status follows.\n",
+                command.program,
+                MAX_OUTPUT_BYTES / 1024
+            )
+            .into_bytes(),
+        });
+    }
+    frames
+}
+
+/// Record, and answer, a command the broker stopped at its time limit.
+fn past_time_limit(command: &HostCommand, state: &Arc<Mutex<BrokerState>>) -> Response {
+    let reason = format!(
+        "`{} {}` did not finish within {} and was stopped",
+        command.program,
+        command.args.join(" "),
+        limit_label(command.time_limit.unwrap_or_default())
+    );
+    if let Ok(s) = state.lock() {
+        s.log(
+            command.operation,
+            Some(command.program),
+            false,
+            Some(&reason),
+        );
+    }
+    Response::Denied { reason }
+}
+
+/// Run a host management command without retaining the state lock,
+/// forwarding its output as it is produced. Returns true when the complete
+/// response reached the guest.
 fn serve_host_command(
     command: &HostCommand,
     state: &Arc<Mutex<BrokerState>>,
@@ -1232,13 +1343,21 @@ fn serve_host_command(
     stop: &Arc<AtomicBool>,
     host_mutation_gate: &Arc<Mutex<()>>,
 ) -> bool {
-    let _mutation_guard = acquire_host_mutation(command, host_mutation_gate);
+    let Ok(_mutation_guard) =
+        acquire_host_mutation(command, host_mutation_gate, writer, reader.get_ref(), stop)
+    else {
+        log_disconnected(state, command);
+        return false;
+    };
     let mut child = match start_host_command(command, state) {
         Ok(child) => child,
         Err(response) => {
             return write_frame(writer, &WireFrame::Complete { response });
         }
     };
+    let deadline = command
+        .time_limit
+        .and_then(|limit| Instant::now().checked_add(limit));
 
     let (tx, rx) = std::sync::mpsc::channel();
     let (Some(child_stdout), Some(child_stderr)) = (child.stdout.take(), child.stderr.take())
@@ -1249,92 +1368,98 @@ fn serve_host_command(
     pipe_reader(child_stdout, false, tx.clone());
     pipe_reader(child_stderr, true, tx);
 
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
+    let poll = Duration::from_millis(50);
+    let mut forwarded: usize = 0;
     let mut open_pipes: usize = 2;
     let mut last_activity = Instant::now();
-    while open_pipes > 0 {
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(PipeEvent::Data {
-                stderr: is_stderr,
-                data,
-            }) => {
-                let collected = if is_stderr { &mut stderr } else { &mut stdout };
-                if collected.len().saturating_add(data.len()) > MAX_OUTPUT_BYTES {
-                    stop_child(&mut child);
-                    let reason = "management command produced too much output".to_string();
-                    if let Ok(s) = state.lock() {
-                        s.log(
-                            command.operation,
-                            Some(command.program),
-                            false,
-                            Some(&reason),
-                        );
-                    }
-                    return write_frame(
-                        writer,
-                        &WireFrame::Complete {
-                            response: Response::Denied { reason },
-                        },
-                    );
-                }
-                collected.extend_from_slice(&data);
-                if !write_frame(
-                    writer,
-                    &WireFrame::Output {
-                        stderr: is_stderr,
-                        data,
-                    },
-                ) {
-                    stop_child(&mut child);
-                    log_disconnected(state, command);
-                    return false;
-                }
-                last_activity = Instant::now();
+    let code = loop {
+        // Output is complete only once both pipes closed; a helper which
+        // inherited them can outlive the command itself.
+        if open_pipes == 0 {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.code().unwrap_or(1),
+                Ok(None) => {}
+                Err(_) => break 1,
             }
-            Ok(PipeEvent::Eof) => open_pipes = open_pipes.saturating_sub(1),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if stop.load(Ordering::Acquire) || peer_disconnected(reader.get_ref()) {
-                    stop_child(&mut child);
-                    log_disconnected(state, command);
-                    return false;
-                }
-                if last_activity.elapsed() >= Duration::from_secs(10) {
-                    if !write_frame(writer, &WireFrame::Heartbeat) {
+        }
+        let event = if open_pipes > 0 {
+            rx.recv_timeout(poll)
+        } else {
+            std::thread::sleep(poll);
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        };
+        match event {
+            Ok(PipeEvent::Data { stderr, data }) => {
+                let frames = capped_output(command, stderr, &data, &mut forwarded);
+                for frame in &frames {
+                    if !write_frame(writer, frame) {
                         stop_child(&mut child);
                         log_disconnected(state, command);
                         return false;
                     }
+                }
+                if !frames.is_empty() {
                     last_activity = Instant::now();
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(PipeEvent::Eof) => open_pipes = open_pipes.saturating_sub(1),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => open_pipes = 0,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
-    }
+        if cancelled(reader.get_ref(), stop) {
+            stop_child(&mut child);
+            log_disconnected(state, command);
+            return false;
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            stop_child(&mut child);
+            let response = past_time_limit(command, state);
+            return write_frame(writer, &WireFrame::Complete { response });
+        }
+        if last_activity.elapsed() >= HEARTBEAT_INTERVAL {
+            if !write_frame(writer, &WireFrame::Heartbeat) {
+                stop_child(&mut child);
+                log_disconnected(state, command);
+                return false;
+            }
+            last_activity = Instant::now();
+        }
+    };
 
-    let code = child
-        .wait()
-        .ok()
-        .and_then(|status| status.code())
-        .unwrap_or(1);
     if let Ok(s) = state.lock() {
+        let detail = if forwarded > MAX_OUTPUT_BYTES {
+            format!(
+                "exit {code}; output past {} KiB not shown",
+                MAX_OUTPUT_BYTES / 1024
+            )
+        } else {
+            format!("exit {code}")
+        };
         s.log(
             command.operation,
             Some(command.program),
             true,
-            Some(&format!("exit {code}")),
+            Some(&detail),
         );
     }
     write_frame(
         writer,
         &WireFrame::Complete {
-            response: Response::Command {
-                code,
-                stdout: String::new(),
-                stderr: String::new(),
-            },
+            response: Response::Command { code },
         },
     )
+}
+
+/// "30 minutes"; seconds for limits that are not whole minutes.
+fn limit_label(limit: Duration) -> String {
+    let secs = limit.as_secs();
+    let (count, unit) = if secs >= 60 && secs.is_multiple_of(60) {
+        (secs / 60, "minute")
+    } else {
+        (secs, "second")
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{plural}")
 }
 
 fn log_disconnected(state: &Arc<Mutex<BrokerState>>, command: &HostCommand) {
@@ -1415,7 +1540,8 @@ fn write_frame(writer: &mut UnixStream, frame: &WireFrame) -> bool {
     writer.write_all(&bytes).is_ok() && writer.flush().is_ok()
 }
 
-/// Ask the broker one question, from inside a guest.
+/// Ask the broker one question, from inside a guest. A host command's output
+/// is discarded; use [`ask_streaming`] to see it.
 ///
 /// # Errors
 ///
@@ -1426,8 +1552,8 @@ pub fn ask(socket: &Path, req: &Request) -> std::io::Result<Response> {
 }
 
 /// Ask the broker while copying host-command output to the supplied streams as
-/// soon as it is produced. The returned response remains fully populated so
-/// existing callers can continue to inspect or replay the captured output.
+/// soon as it is produced. The output is not repeated in the response, which
+/// carries only the exit status.
 ///
 /// # Errors
 ///
@@ -1463,8 +1589,6 @@ pub fn ask_streaming_with_progress(
     writer.write_all(&bytes)?;
     writer.flush()?;
     let mut reader = BufReader::new(stream);
-    let mut captured_stdout = Vec::new();
-    let mut captured_stderr = Vec::new();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -1481,7 +1605,6 @@ pub fn ask_streaming_with_progress(
             WireFrame::Output { stderr: true, data } => {
                 stderr.write_all(&data)?;
                 stderr.flush()?;
-                captured_stderr.extend_from_slice(&data);
             }
             WireFrame::Output {
                 stderr: false,
@@ -1489,7 +1612,6 @@ pub fn ask_streaming_with_progress(
             } => {
                 stdout.write_all(&data)?;
                 stdout.flush()?;
-                captured_stdout.extend_from_slice(&data);
             }
             WireFrame::Heartbeat => {
                 if show_progress {
@@ -1497,13 +1619,7 @@ pub fn ask_streaming_with_progress(
                     stderr.flush()?;
                 }
             }
-            WireFrame::Complete { mut response } => {
-                if let Response::Command { stdout, stderr, .. } = &mut response {
-                    *stdout = String::from_utf8_lossy(&captured_stdout).into_owned();
-                    *stderr = String::from_utf8_lossy(&captured_stderr).into_owned();
-                }
-                return Ok(response);
-            }
+            WireFrame::Complete { response } => return Ok(response),
         }
     }
 }
@@ -1591,6 +1707,8 @@ mod tests {
             .unwrap();
             assert_eq!(command.binary, PathBuf::from("/usr/bin/tilo-legacy"));
             assert!(!command.mutating);
+            // A legacy app runs for as long as the person keeps it open.
+            assert_eq!(command.time_limit, None);
         }
         // phase: an untrusted directory is named but not shared
         {
@@ -1607,83 +1725,118 @@ mod tests {
         }
     }
 
+    /// An executable fake of the host's `/usr/bin/<program>` under `dir`.
+    fn fake_host_program(dir: &Path, program: &str, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = dir.join("base/usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = bin.join(program);
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Ask over the socket; the answer and everything streamed ahead of it.
+    fn ask_capturing(socket: &Path, req: &Request) -> (Response, String, String) {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let response = ask_streaming(socket, req, &mut stdout, &mut stderr).unwrap();
+        (
+            response,
+            String::from_utf8(stdout).unwrap(),
+            String::from_utf8(stderr).unwrap(),
+        )
+    }
+
+    /// Output written to it arrives on a channel, as the guest CLI would
+    /// print it.
+    struct ChannelWriter(std::sync::mpsc::Sender<Vec<u8>>);
+
+    impl Write for ChannelWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.send(bytes.to_vec());
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Wait until `path` exists; only a hang reaches the bound.
+    fn wait_for_file(path: &Path) {
+        let started = Instant::now();
+        while started.elapsed() < HANG_BOUND && !path.exists() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(path.exists(), "{} never appeared", path.display());
+    }
+
     #[test]
     fn host_management_commands_run_on_the_base_and_nothing_else() {
-        // phase: management_commands_run_on_the_host_base_and_preserve_status
+        // phase: commands run on the host base, stream both streams and keep their status
         {
-            use std::os::unix::fs::PermissionsExt;
-
             let dir = tempfile::tempdir().unwrap();
-            let bin = dir.path().join("base/usr/bin");
-            std::fs::create_dir_all(&bin).unwrap();
-            let tilo = bin.join("tilo");
-            std::fs::write(&tilo, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 7\n").unwrap();
-            std::fs::set_permissions(&tilo, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let app = bin.join("app");
-            std::fs::write(&app, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 6\n").unwrap();
-            std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-            let response = state(dir.path()).handle(Request::AppUpdate {
-                package: Some("browser".into()),
-            });
-            assert_eq!(
-                response,
-                Response::Command {
-                    code: 6,
-                    stdout: "update\nbrowser\n".into(),
-                    stderr: String::new(),
-                }
+            fake_host_program(
+                dir.path(),
+                "tilo",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 7\n",
             );
-
-            let response = state(dir.path()).handle(Request::AllUpdates);
-            assert_eq!(
-                response,
-                Response::Command {
-                    code: 7,
-                    stdout: "update\n--yes\n".into(),
-                    stderr: String::new(),
-                }
+            fake_host_program(
+                dir.path(),
+                "app",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'note\\n' >&2\nexit 6\n",
             );
-        }
-        // phase: signed_host_update_round_trips_over_the_guest_broker_socket
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let dir = tempfile::tempdir().unwrap();
-            let bin = dir.path().join("base/usr/bin");
-            std::fs::create_dir_all(&bin).unwrap();
-            let tilo = bin.join("tilo");
-            std::fs::write(&tilo, "#!/bin/sh\nprintf 'host:%s\\n' \"$*\"\n").unwrap();
-            std::fs::set_permissions(&tilo, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let app = bin.join("app");
-            std::fs::write(&app, "#!/bin/sh\nprintf 'host:%s\\n' \"$*\"\n").unwrap();
-            std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
             let socket = dir.path().join("broker.sock");
             let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
 
             assert_eq!(
-                ask(
+                ask_capturing(
                     &socket,
                     &Request::AppUpdate {
                         package: Some("browser".into()),
                     }
+                ),
+                (
+                    Response::Command { code: 6 },
+                    "update\nbrowser\n".into(),
+                    "note\n".into()
                 )
-                .unwrap(),
-                Response::Command {
-                    code: 0,
-                    stdout: "host:update browser\n".into(),
-                    stderr: String::new(),
-                }
             );
             assert_eq!(
-                ask(&socket, &Request::SystemUpdate).unwrap(),
-                Response::Command {
-                    code: 0,
-                    stdout: "host:system update --yes\n".into(),
-                    stderr: String::new(),
-                }
+                ask_capturing(&socket, &Request::AllUpdates),
+                (
+                    Response::Command { code: 7 },
+                    "update\n--yes\n".into(),
+                    String::new()
+                )
+            );
+            assert_eq!(
+                ask_capturing(&socket, &Request::SystemUpdate),
+                (
+                    Response::Command { code: 7 },
+                    "system\nupdate\n--yes\n".into(),
+                    String::new()
+                )
             );
             drop(broker);
+        }
+        // phase: host commands never run outside the streaming socket path
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let ran = dir.path().join("ran");
+            fake_host_program(
+                dir.path(),
+                "app",
+                &format!("#!/bin/sh\ntouch '{}'\n", ran.display()),
+            );
+            assert_eq!(
+                state(dir.path()).handle(Request::AppUpdate { package: None }),
+                Response::Denied {
+                    reason: HOST_COMMAND_NEEDS_SOCKET.into()
+                }
+            );
+            assert!(!ran.exists());
         }
         // phase: management_protocol_has_no_arbitrary_program_variant
         {
@@ -1697,152 +1850,232 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn host_commands_stream_and_serialise_without_blocking_status() {
-        // phase: host_output_streams_while_other_broker_requests_remain_responsive
-        {
-            use std::os::unix::fs::PermissionsExt;
+    fn host_output_reaches_the_guest_before_the_command_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let release = dir.path().join("release");
+        // The second line waits for the test, so the first one can only have
+        // arrived while the command was still running.
+        fake_host_program(
+            dir.path(),
+            "app",
+            &format!(
+                "#!/bin/sh\nprintf 'started\\n'\n\
+                 while [ ! -e '{}' ]; do sleep 0.05; done\nprintf 'finished\\n'\n",
+                release.display()
+            ),
+        );
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
 
-            struct ChannelWriter(std::sync::mpsc::Sender<Vec<u8>>);
-            impl Write for ChannelWriter {
-                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                    self.0.send(bytes.to_vec()).unwrap();
-                    Ok(bytes.len())
-                }
-
-                fn flush(&mut self) -> std::io::Result<()> {
-                    Ok(())
-                }
-            }
-
-            let dir = tempfile::tempdir().unwrap();
-            let bin = dir.path().join("base/usr/bin");
-            std::fs::create_dir_all(&bin).unwrap();
-            let app = bin.join("app");
-            std::fs::write(
-                &app,
-                "#!/bin/sh\nprintf 'started\\n'\nsleep 1\nprintf 'finished\\n'\n",
+        let command_socket = socket.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let command = std::thread::spawn(move || {
+            ask_streaming(
+                &command_socket,
+                &Request::AppUpdate { package: None },
+                &mut ChannelWriter(tx),
+                &mut std::io::sink(),
             )
-            .unwrap();
-            std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let socket = dir.path().join("broker.sock");
-            let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+            .unwrap()
+        });
 
-            let command_socket = socket.clone();
-            let (tx, rx) = std::sync::mpsc::channel();
-            let command = std::thread::spawn(move || {
-                let mut stdout = ChannelWriter(tx);
-                ask_streaming(
-                    &command_socket,
-                    &Request::AppUpdate { package: None },
-                    &mut stdout,
-                    &mut std::io::sink(),
-                )
-                .unwrap()
-            });
+        assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), b"started\n");
+        assert!(!command.is_finished());
+        // A running command does not retain the state lock.
+        let before = Instant::now();
+        assert!(matches!(
+            ask(&socket, &Request::Status),
+            Ok(Response::Status { .. })
+        ));
+        assert!(before.elapsed() < Duration::from_millis(500));
 
-            assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), b"started\n");
-            let before = Instant::now();
-            assert!(matches!(
-                ask(&socket, &Request::Status),
-                Ok(Response::Status { .. })
-            ));
-            assert!(
-                before.elapsed() < Duration::from_millis(500),
-                "a management command must not retain the BrokerState lock"
-            );
-            assert_eq!(
-                command.join().unwrap(),
-                Response::Command {
-                    code: 0,
-                    stdout: "started\nfinished\n".into(),
-                    stderr: String::new(),
-                }
-            );
-            drop(broker);
-        }
-        // phase: host_updates_serialize_without_blocking_status
-        {
-            use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&release, b"").unwrap();
+        assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), b"finished\n");
+        assert_eq!(command.join().unwrap(), Response::Command { code: 0 });
+        drop(broker);
+    }
 
-            let dir = tempfile::tempdir().unwrap();
-            let bin = dir.path().join("base/usr/bin");
-            std::fs::create_dir_all(&bin).unwrap();
-            let events = dir.path().join("events");
-            let app = bin.join("app");
-            std::fs::write(
-                &app,
-                format!(
-                    "#!/bin/sh\nprintf '%s-start\\n' \"$2\" >> '{}'\n\
-                 if [ \"$2\" = first ]; then sleep 1; fi\n\
-                 printf '%s-end\\n' \"$2\" >> '{}'\n",
-                    events.display(),
-                    events.display()
-                ),
+    #[test]
+    fn host_updates_run_one_at_a_time_and_say_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events");
+        let release = dir.path().join("release");
+        fake_host_program(
+            dir.path(),
+            "app",
+            &format!(
+                "#!/bin/sh\nprintf '%s-start\\n' \"$2\" >> '{events}'\n\
+                 if [ \"$2\" = first ]; then while [ ! -e '{release}' ]; do sleep 0.05; done; fi\n\
+                 printf '%s-end\\n' \"$2\" >> '{events}'\n",
+                events = events.display(),
+                release = release.display(),
+            ),
+        );
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+        let first_socket = socket.clone();
+        let first = std::thread::spawn(move || {
+            ask(
+                &first_socket,
+                &Request::AppUpdate {
+                    package: Some("first".into()),
+                },
             )
-            .unwrap();
-            std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let socket = dir.path().join("broker.sock");
-            let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+            .unwrap()
+        });
+        wait_for_file(&events);
 
-            let first_socket = socket.clone();
-            let first = std::thread::spawn(move || {
-                ask(
-                    &first_socket,
-                    &Request::AppUpdate {
-                        package: Some("first".into()),
-                    },
-                )
-                .unwrap()
-            });
-            let deadline = Instant::now() + HANG_BOUND;
-            while Instant::now() < deadline {
-                if std::fs::read_to_string(&events).is_ok_and(|text| text.contains("first-start")) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+        let second_socket = socket.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let second = std::thread::spawn(move || {
+            ask_streaming(
+                &second_socket,
+                &Request::AppUpdate {
+                    package: Some("second".into()),
+                },
+                &mut std::io::sink(),
+                &mut ChannelWriter(tx),
+            )
+            .unwrap()
+        });
+        let notice = rx.recv_timeout(HANG_BOUND).unwrap();
+        assert!(String::from_utf8_lossy(&notice).contains("Waiting for another host update"));
+        assert_eq!(
+            std::fs::read_to_string(&events).unwrap(),
+            "first-start\n",
+            "the second update started before the first update exited"
+        );
+        let before = Instant::now();
+        assert!(matches!(
+            ask(&socket, &Request::Status),
+            Ok(Response::Status { .. })
+        ));
+        assert!(before.elapsed() < Duration::from_millis(500));
 
-            let second_socket = socket.clone();
-            let second = std::thread::spawn(move || {
-                ask(
-                    &second_socket,
-                    &Request::AppUpdate {
-                        package: Some("second".into()),
-                    },
-                )
-                .unwrap()
-            });
-            std::thread::sleep(Duration::from_millis(150));
-            assert_eq!(
-                std::fs::read_to_string(&events).unwrap(),
-                "first-start\n",
-                "the second update started before the first update exited"
-            );
+        std::fs::write(&release, b"").unwrap();
+        assert_eq!(first.join().unwrap(), Response::Command { code: 0 });
+        assert_eq!(second.join().unwrap(), Response::Command { code: 0 });
+        assert_eq!(
+            std::fs::read_to_string(&events).unwrap(),
+            "first-start\nfirst-end\nsecond-start\nsecond-end\n"
+        );
+        drop(broker);
+    }
 
-            let before = Instant::now();
-            assert!(matches!(
-                ask(&socket, &Request::Status),
-                Ok(Response::Status { .. })
-            ));
-            assert!(before.elapsed() < Duration::from_millis(500));
-            assert!(matches!(
-                first.join().unwrap(),
-                Response::Command { code: 0, .. }
-            ));
-            assert!(matches!(
-                second.join().unwrap(),
-                Response::Command { code: 0, .. }
-            ));
-            assert_eq!(
-                std::fs::read_to_string(&events).unwrap(),
-                "first-start\nfirst-end\nsecond-start\nsecond-end\n"
-            );
-            drop(broker);
+    #[test]
+    fn output_past_the_cap_is_dropped_but_the_exit_status_still_arrives() {
+        let dir = tempfile::tempdir().unwrap();
+        // One stream, so the line after the flood cannot overtake it.
+        fake_host_program(
+            dir.path(),
+            "app",
+            &format!(
+                "#!/bin/sh\nhead -c {} /dev/zero | tr '\\0' x\nprintf 'after the flood\\n'\nexit 3\n",
+                MAX_OUTPUT_BYTES.saturating_mul(2)
+            ),
+        );
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+        let (response, stdout, stderr) =
+            ask_capturing(&socket, &Request::AppUpdate { package: None });
+        assert_eq!(response, Response::Command { code: 3 });
+        assert_eq!(stdout.len(), MAX_OUTPUT_BYTES);
+        assert!(stdout.bytes().all(|byte| byte == b'x'));
+        assert!(
+            stderr.contains("the rest of its output is not shown"),
+            "{stderr}"
+        );
+        let audit = broker.state().lock().unwrap().audit.read_all();
+        assert!(audit.iter().any(|record| {
+            record.allowed
+                && record
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("exit 3") && detail.contains("not shown"))
+        }));
+        drop(broker);
+    }
+
+    #[test]
+    fn a_host_command_past_its_time_limit_is_stopped_with_a_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        fake_host_program(
+            dir.path(),
+            "app",
+            &format!(
+                "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}'\n\
+                 printf 'working\\n'\nwait\n",
+                pid_file.display()
+            ),
+        );
+        let command = HostCommand {
+            operation: "app-update",
+            program: "app",
+            args: vec!["update".into()],
+            binary: dir.path().join("base/usr/bin/app"),
+            mutating: true,
+            time_limit: Some(Duration::from_secs(1)),
+        };
+        let state = Arc::new(Mutex::new(state(dir.path())));
+        let (broker_side, guest_side) = UnixStream::pair().unwrap();
+        let mut writer = broker_side.try_clone().unwrap();
+        let reader = BufReader::new(broker_side);
+
+        let started = Instant::now();
+        assert!(serve_host_command(
+            &command,
+            &state,
+            &mut writer,
+            &reader,
+            &Arc::new(AtomicBool::new(false)),
+            &Arc::new(Mutex::new(())),
+        ));
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        drop((writer, reader));
+
+        let frames: Vec<WireFrame> = BufReader::new(guest_side)
+            .lines()
+            .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
+            .collect();
+        assert!(frames.iter().any(|frame| matches!(
+            frame,
+            WireFrame::Output { stderr: false, data } if data == b"working\n"
+        )));
+        let Some(WireFrame::Complete {
+            response: Response::Denied { reason },
+        }) = frames.last()
+        else {
+            panic!("expected a refusal, got {frames:?}");
+        };
+        assert_eq!(
+            reason,
+            "`app update` did not finish within 1 second and was stopped"
+        );
+        let pids: Vec<i32> = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        let deadline = Instant::now() + HANG_BOUND;
+        while Instant::now() < deadline && !pids.iter().all(|pid| has_terminated(*pid)) {
+            std::thread::sleep(Duration::from_millis(20));
         }
+        assert!(
+            pids.iter().all(|pid| has_terminated(*pid)),
+            "the command process group outlived its time limit"
+        );
+        let audit = state.lock().unwrap().audit.read_all();
+        assert!(audit.iter().any(|record| {
+            !record.allowed
+                && record
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("did not finish"))
+        }));
     }
 
     /// Whether `pid` no longer runs. The killed helper is reparented away from

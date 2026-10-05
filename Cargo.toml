@@ -18,6 +18,8 @@ exclude = [
     "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
+    "vendor/zlink-macros",
     "vendor/web-transport-quinn",
     "vendor/automerge",
 ]
@@ -30,6 +32,7 @@ default-members = [
     "crates/doc/tilo-doc-codecs",
     "crates/system/fs",
     "crates/session/shell",
+    "crates/session/control-cli",
     "crates/sdk/ui-core",
     "crates/packaging/tilo-app-package",
     "crates/runtime/runtime",
@@ -40,7 +43,9 @@ members = [
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
+    "crates/browser/tilo-browser-compute",
     "crates/browser/tilo-browser-peer",
+    "crates/browser/paint-stream",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
     "apps/hot-reload-demo",
@@ -139,6 +144,7 @@ members = [
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-joined-room",
+    "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
 
     # Dev
@@ -148,9 +154,11 @@ members = [
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
+    "crates/dev/test-app-registry",
     "crates/dev/test-http",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
+    "crates/dev/tilo-device-admin",
     "crates/dev/tilo-vm",
     "crates/dev/tilo-vm-protocol",
     "crates/dev/tilo-vmd",
@@ -177,6 +185,7 @@ members = [
 
     # Media
     "crates/media/ocr",
+    "crates/media/segment",
     "crates/media/thumbnail",
     "crates/media/vision",
     "crates/media/wet-media",
@@ -224,6 +233,7 @@ members = [
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/platform/tilo-location",
+    "crates/platform/tilo-image-codec",
     "crates/platform/tilo-media",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
@@ -233,6 +243,7 @@ members = [
     "crates/platform/tilo-process",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
+    "crates/platform/tilo-subject",
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
 
@@ -261,6 +272,7 @@ members = [
 
     # Session
     "crates/session/console-control",
+    "crates/session/control-cli",
     "crates/session/desktop-model",
     "crates/session/desktop-search",
     "crates/session/desktop-surface",
@@ -312,6 +324,7 @@ members = [
     "crates/system/tilo-native-certs",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
+    "crates/system/tilo-sibling-unlock",
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
@@ -656,6 +669,23 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.tiny-skia]
 opt-level = 3
+# Refining a selection's edge filters every pixel of a photograph, and the
+# subject model runs a network: unoptimised, select subject takes many
+# seconds in a dev build. rten's kernels are its own crates.
+[profile.dev.package.tilo-segment]
+opt-level = 3
+[profile.test.package.tilo-segment]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-tensor]
+opt-level = 3
 
 # Hashing, signature verification and font parsing run on every fixture in
 # large parts of the suite: tilo-ui hashes its 43 MB bundled font catalog per
@@ -798,7 +828,11 @@ opt-level = 3
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, so a process can contain a helper that fails: the compositor
+# restarts its collaboration broker rather than end the session. Every other
+# panic still aborts the process: tilo-rt installs a hook that aborts outside
+# `tilo_rt::panic_boundary::isolate` (see that module).
+panic = "unwind"
 strip = "symbols"
 overflow-checks = false
 debug = "line-tables-only"
@@ -813,6 +847,7 @@ incremental = false
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
+panic = "abort"
 debug = false
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK

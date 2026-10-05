@@ -40,11 +40,23 @@ impl WebViewEngine for LiveProbe {
     fn frames(&self) -> FrameSlot {
         self.inner.frames()
     }
-    fn take_dmabuf(&self) -> Option<ui::webview::DmabufFrame> {
-        self.inner.take_dmabuf()
-    }
     fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
         self.inner.set_waker(waker);
+    }
+    fn set_visible(&self, visible: bool) {
+        self.inner.set_visible(visible);
+    }
+    fn presented(&self) {
+        self.inner.presented();
+    }
+    fn paint_frame(&self) -> Option<std::sync::Arc<ui::webview::paint::stream::Frame>> {
+        self.inner.paint_frame()
+    }
+    fn paint_blob(&self, hash: &[u8; 32]) -> Option<std::sync::Arc<Vec<u8>>> {
+        self.inner.paint_blob(hash)
+    }
+    fn take_paint_stream(&self, keyframe: bool) -> Vec<ui::webview::paint::stream::wire::Payload> {
+        self.inner.take_paint_stream(keyframe)
     }
     fn drain_events(&self) -> Vec<WebViewEvent> {
         let events = self.inner.drain_events();

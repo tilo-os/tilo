@@ -177,6 +177,13 @@ pub enum StoreEffect {
     /// Refresh catalog.
     #[effect(job)]
     Refresh,
+    /// Update all apps.
+    ///
+    /// Installs the newest version of every installed app a catalogue
+    /// offers an update for, the system image's apps included, one after
+    /// another, without opening any.
+    #[effect(job)]
+    UpdateAll,
     /// Search apps.
     #[effect(permission = "read")]
     SetSearch {
@@ -186,7 +193,7 @@ pub enum StoreEffect {
     /// Filter apps by source.
     #[effect(permission = "read")]
     SetSource {
-        #[param("All, Tilo, Flatpak, or On device")]
+        #[param("All, Tilo, Flatpak, On device, or Updates")]
         source: String,
     },
     /// Filter apps by category.
@@ -670,6 +677,40 @@ mod tests {
                 .all(|action| action.kind != OperationKind::Document),
             "a catalogue row carries only views and effects"
         );
+    }
+
+    /// Every control on screen invokes an action the published tree has: a
+    /// binding the tree does not resolve withholds the window's whole action
+    /// surface. Checked on the running Store (whose effects are published),
+    /// on the catalogue, its remotes and its trust page.
+    #[test]
+    fn every_control_binds_a_published_action() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        app.settle();
+        for (page, effect) in [
+            ("catalogue", None),
+            ("remotes", Some(StoreEffect::ShowRemotes)),
+            ("trust", Some(StoreEffect::ShowTrust)),
+        ] {
+            if let Some(effect) = effect {
+                app.effect(&effect).unwrap();
+                app.settle();
+            }
+            let resources = app.harness().resources();
+            let bindings =
+                ui::widget::controls::control_action_bindings(app.harness().root_widget());
+            assert!(!bindings.is_empty(), "{page}");
+            for binding in bindings {
+                if let ui::widget::ControlBindingKind::Action(address) = &binding.kind {
+                    assert!(
+                        ui::tilo_actions::door::resolve(&resources, address).is_some(),
+                        "{page}: control {} binds {address:?}, which is not published",
+                        binding.control_id,
+                    );
+                }
+            }
+        }
     }
 
     /// A report is drafted through the declared action and its note typed

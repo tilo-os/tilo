@@ -83,7 +83,7 @@ fn flag(doc: &Doc, obj: &ObjId, key: &str) -> Option<bool> {
     }
 }
 
-fn json<T: serde::de::DeserializeOwned>(doc: &Doc, obj: &ObjId, key: &str) -> Option<T> {
+pub(crate) fn json<T: serde::de::DeserializeOwned>(doc: &Doc, obj: &ObjId, key: &str) -> Option<T> {
     serde_json::from_str(&text(doc, obj, key)?).ok()
 }
 
@@ -113,6 +113,7 @@ pub fn read(doc: &Doc) -> Artwork {
                 base: number(doc, &obj, "base").unwrap_or(1.0),
                 invert: flag(doc, &obj, "invert").unwrap_or(false),
                 clip: flag(doc, &obj, "clip").unwrap_or(false),
+                unlinked: flag(doc, &obj, "unlinked").unwrap_or(false),
                 id,
             })
         })
@@ -125,18 +126,12 @@ pub fn read(doc: &Doc) -> Artwork {
         .filter_map(|id| {
             let obj = child(doc, marks_map.as_ref()?, &id)?;
             let body: MarkBody = json(doc, &obj, "body")?;
-            Some(Mark {
-                layer: text(doc, &obj, "layer").unwrap_or_default(),
-                order: text(doc, &obj, "order").unwrap_or_default(),
-                name: body.name,
-                shape: body.shape,
-                style: body.style,
-                transform: body.transform,
-                group: body.group,
-                clip: body.clip,
-                area: body.area,
+            Some(Mark::of_body(
                 id,
-            })
+                text(doc, &obj, "layer").unwrap_or_default(),
+                text(doc, &obj, "order").unwrap_or_default(),
+                body,
+            ))
         })
         .filter(|mark| layers.iter().any(|layer| layer.id == mark.layer))
         .collect();
@@ -242,7 +237,11 @@ pub fn write_layer(doc: &mut Doc, layer: &Layer) -> Result<(), AutomergeError> {
             doc.put(&obj, "base", layer.base)?;
         }
     }
-    for (key, value) in [("invert", layer.invert), ("clip", layer.clip)] {
+    for (key, value) in [
+        ("invert", layer.invert),
+        ("clip", layer.clip),
+        ("unlinked", layer.unlinked),
+    ] {
         if flag(doc, &obj, key).unwrap_or(false) != value {
             doc.put(&obj, key, value)?;
         }
@@ -259,16 +258,7 @@ pub fn write_mark(doc: &mut Doc, mark: &Mark) -> Result<(), AutomergeError> {
     let obj = ensure(doc, &marks, &mark.id)?;
     put_text(doc, &obj, "layer", &mark.layer)?;
     put_text(doc, &obj, "order", &mark.order)?;
-    let body = MarkBody {
-        name: mark.name.clone(),
-        shape: mark.shape.clone(),
-        style: mark.style.clone(),
-        transform: mark.transform,
-        group: mark.group.clone(),
-        clip: mark.clip.clone(),
-        area: mark.area.clone(),
-    };
-    let encoded = serde_json::to_string(&body).unwrap_or_default();
+    let encoded = serde_json::to_string(&mark.body()).unwrap_or_default();
     put_text(doc, &obj, "body", &encoded)
 }
 

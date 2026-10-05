@@ -1133,6 +1133,12 @@ pub trait Widget {
         None
     }
 
+    /// Which side of the control its tooltip goes: below by default,
+    /// beside it for a control in a vertical rail.
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        crate::widget::tooltip::TooltipSide::Below
+    }
+
     fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
@@ -1446,6 +1452,16 @@ pub trait Widget {
     /// a wizard raises it on step transitions.
     fn take_focus_reset(&mut self) -> bool {
         false
+    }
+
+    /// One-shot (reading MUST clear it) request to change the window's
+    /// accessibility preferences, raised by a control the person used. The
+    /// host applies it before the next frame. Default forwards the first
+    /// request found among the children.
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        self.children_mut()
+            .into_iter()
+            .find_map(|child| child.take_accessibility_request())
     }
 
     /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
@@ -2278,8 +2294,6 @@ pub mod marks;
 pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
-pub mod rich_text_editor;
-pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
@@ -2330,6 +2344,8 @@ pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 mod floating_surface;
 pub use context_menu::{ContextMenu, MenuItem};
+pub mod context_menu_area;
+pub use context_menu_area::{ContextMenuArea, MenuEntry};
 pub mod data_table;
 mod virtual_table_semantics;
 pub use virtual_table_semantics::{
@@ -2484,7 +2500,7 @@ pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, 
 pub mod action_row;
 pub use action_row::ActionRowFace;
 pub mod choice_card;
-pub use choice_card::ChoiceCardFace;
+pub use choice_card::{ChoiceCard, ChoiceCardFace};
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
 pub mod disclosure_header;

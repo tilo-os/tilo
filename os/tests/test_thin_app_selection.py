@@ -46,7 +46,7 @@ class ThinAppSelectionTests(unittest.TestCase):
         for name in ("os/scripts/build-thin-apps.sh", "tools/ci/rustc-thin-app-wrapper.sh"):
             self.write(name, (ROOT / name).read_text())
         self.write("Cargo.toml", """[workspace]
-members = ["apps/calculator", "apps/other", "apps/browser", "runtime", "shared", "app_sdk"]
+members = ["apps/calculator", "apps/other", "apps/extra", "runtime", "shared", "app_sdk"]
 resolver = "2"
 [profile.thin-app]
 inherits = "dev"
@@ -123,21 +123,21 @@ shared = {{ path = "../../shared"{extra} }}
                 'assert_eq!(app_sdk::value() & 1, 0); println!("unified-runtime-ok"); }',
             )
             self.write(f"apps/{name}/tilo-app.toml", f'bin = "bin/{name}"\n')
-        # Models apps/browser: excluded from the CI collection. When pulled into
-        # the image thin graph, browser/wpe unified ui/webview into shared deps.
-        self.write("apps/browser/Cargo.toml", """[package]
-name = "browser"
+        # An app outside a collection whose feature unifies more code into the
+        # shared crates when the image's thin graph pulls it in (#1158).
+        self.write("apps/extra/Cargo.toml", """[package]
+name = "extra"
 version = "0.1.0"
 edition = "2024"
 [features]
 thin = ["dep:runtime-dylib"]
-wpe = ["app-sdk/webview"]
+bloat = ["app-sdk/webview"]
 [dependencies]
 runtime-dylib = { path = "../../runtime", optional = true }
 app-sdk = { path = "../../app_sdk" }
 """)
-        self.write("apps/browser/src/main.rs", 'fn main() { let _ = app_sdk::value(); }\n')
-        self.write("apps/browser/tilo-app.toml", 'bin = "bin/browser"\n')
+        self.write("apps/extra/src/main.rs", 'fn main() { let _ = app_sdk::value(); }\n')
+        self.write("apps/extra/tilo-app.toml", 'bin = "bin/extra"\n')
         self.run_command("cargo", "generate-lockfile", "--offline")
 
     def write(self, relative, text):
@@ -188,13 +188,13 @@ app-sdk = { path = "../../app_sdk" }
             self.assertIn("outside the runtime graph: missing", result.stderr)
             self.assertFalse((self.root / "target").exists())
         restart_fixture(self)
-        with self.subTest(phase="browser_wpe_unifies_webview_into_runtime_text"):
-            # CI collection excludes browser. The image used to add browser/wpe
-            # to the thin graph (#1158), unifying webview into shared crates.
+        with self.subTest(phase="a_divergent_graph_unifies_more_into_runtime_text"):
+            # A thin graph that pulls in a package or feature the collection
+            # leaves out unifies more code into the shared crates (#1158).
             ci = self.run_command(
                 "bash", "os/scripts/build-thin-apps.sh",
                 INCLUDE_PACKAGES="calculator other",
-                EXCLUDE_PACKAGES="browser",
+                EXCLUDE_PACKAGES="extra",
                 BUILD_PACKAGES="calculator",
             )
             self.assertEqual(ci.returncode, 0, ci.stdout + ci.stderr)
@@ -203,9 +203,9 @@ app-sdk = { path = "../../app_sdk" }
             restart_fixture(self)
             image = self.run_command(
                 "bash", "os/scripts/build-thin-apps.sh",
-                INCLUDE_PACKAGES="calculator other browser",
+                INCLUDE_PACKAGES="calculator other extra",
                 BUILD_PACKAGES="calculator",
-                APP_FEATURES="browser/wpe",
+                APP_FEATURES="extra/bloat",
             )
             self.assertEqual(image.returncode, 0, image.stdout + image.stderr)
             image_app = text_size(self.root / "target/thin-app/calculator")
@@ -217,12 +217,12 @@ app-sdk = { path = "../../app_sdk" }
             # app .text stays flat; the runtime must grow or the check is blind.
             self.assertEqual(
                 image_app, ci_app,
-                f"prefer-dynamic should keep browser/wpe out of the tapp .text; "
+                f"prefer-dynamic should keep extra/bloat out of the tapp .text; "
                 f"ci_app={ci_app} image_app={image_app}",
             )
             self.assertGreater(
                 image_rt, ci_rt,
-                f"browser/wpe must enlarge the shared runtime .text; "
+                f"extra/bloat must enlarge the shared runtime .text; "
                 f"ci_rt={ci_rt} image_rt={image_rt}",
             )
 

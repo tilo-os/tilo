@@ -23,6 +23,7 @@ pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
+pub mod app_tabs;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
@@ -54,6 +55,9 @@ pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
+pub mod device_unlock;
+pub mod device_unlock_runtime;
+pub mod device_wake;
 pub mod display_bars;
 pub mod display_confirm;
 pub mod display_identify;
@@ -70,6 +74,7 @@ pub mod floating;
 pub mod foreign;
 pub mod frame;
 pub mod fs_authority;
+pub mod gpu_frames;
 pub mod hdr_display;
 pub mod hdr_surface;
 pub mod hdr_tonemap;
@@ -128,6 +133,7 @@ pub mod remote_actions;
 pub mod remote_audio;
 pub mod remote_capture;
 pub mod remote_cursors;
+pub mod remote_use;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
@@ -238,7 +244,7 @@ pub struct Shell {
 impl Shell {
     /// Constructs a shell hosting the default demo workspace: Terminal
     /// (null backend), Files, Notes, Editor, and a
-    /// Browser chrome. Production launches the packaged WPE-backed browser;
+    /// Browser chrome. Production launches the packaged Chromium browser;
     /// this in-process workspace mirror uses the same `BrowserWidget` contract.
     /// # Panics
     /// Panics if its explicitly temporary fixture directory cannot be created.

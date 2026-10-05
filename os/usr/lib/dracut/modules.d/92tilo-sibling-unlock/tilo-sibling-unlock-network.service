@@ -1,0 +1,11 @@
+[Unit]
+Description=Network for unlocking the disk with another of your devices
+DefaultDependencies=no
+Wants=dbus.socket
+After=dbus.socket systemd-udev-trigger.service
+Conflicts=shutdown.target initrd-switch-root.target
+Before=shutdown.target initrd-switch-root.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/NetworkManager --no-daemon --config=/etc/NetworkManager/tilo-sibling-unlock.conf

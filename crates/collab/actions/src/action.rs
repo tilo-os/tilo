@@ -186,6 +186,17 @@ pub trait Action: std::fmt::Debug {
     fn change_kind(&self) -> crate::context::ChangeKind {
         crate::context::ChangeKind::Content
     }
+
+    /// What history calls this value: the step it makes, in words a person
+    /// and an agent reading the history both follow ("Recolour 2 marks",
+    /// "Move Sun", "Brush size 24"), read from `doc` as it is before the
+    /// value applies. `None` names the step after the action it came
+    /// through. Runs on the origin only; replicas replay the name with the
+    /// change.
+    fn history_label(&self, doc: &Doc) -> Option<String> {
+        let _ = doc;
+        None
+    }
 }
 
 /// A serialized action ready to cross a process/network boundary: the

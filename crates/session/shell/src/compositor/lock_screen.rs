@@ -23,7 +23,8 @@ use ui::theme::Theme;
 
 use ui::accesskit::{
     Action as AccessAction, Node as AccessNode, NodeId as AccessNodeId, Rect as AccessRect,
-    Role as AccessRole, TreeId, TreeInfo, TreeUpdate,
+    Role as AccessRole, TextPosition as AccessTextPosition, TextSelection as AccessTextSelection,
+    TreeId, TreeInfo, TreeUpdate,
 };
 
 use crate::compositor::lock_auth::UNAVAILABLE_MSG;
@@ -47,6 +48,7 @@ const LOCK_MEDIA_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 5);
 pub const LOCK_MEDIA_PREVIOUS_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 6);
 pub const LOCK_MEDIA_PLAY_PAUSE_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 7);
 pub const LOCK_MEDIA_NEXT_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 8);
+const LOCK_PASSWORD_TEXT_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 9);
 
 /// The transport button an accessibility node stands for. The lock tree has
 /// no other actionable media node: no player switching, no output routing.
@@ -106,6 +108,24 @@ pub struct LockView<'a> {
     /// What is playing, shown as a compact card with transport controls
     /// only. `None` hides the card.
     pub now_playing: Option<&'a PlayerSnapshot>,
+    /// The keyboard drawn on the lock screen for unlocking by touch, while
+    /// touch is the input in use. `None` hides it.
+    pub keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
+}
+
+/// The lock screen keyboard's key height and spacing, from the theme: keys
+/// as tall as a panel row, the form's small gap between them.
+pub fn keyboard_key_metrics(theme: &Theme) -> (f64, f64) {
+    (
+        f64::from(theme.tokens.metrics.panel_row_height),
+        f64::from(theme.tokens.spacing.s2),
+    )
+}
+
+/// The keyboard is never wider than a wide sheet, so keys stay a thumb's
+/// reach apart.
+fn keyboard_max_width(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.panel_width_sheet) * 1.25
 }
 
 /// One output the lock overlay must cover, in the compositor's combined
@@ -148,6 +168,8 @@ pub struct LockLayout {
     pub status: Rect,
     pub notifications: Rect,
     pub scale: f64,
+    /// Where the keyboard for unlocking by touch sits, when it shows.
+    pub keyboard: Option<Rect>,
 }
 
 impl LockLayout {
@@ -156,6 +178,36 @@ impl LockLayout {
     /// multiplied into the card a second time. Only Tilo's explicit UI scale
     /// participates here, then is capped by available space.
     pub fn for_output(output: LockOutput, theme: &Theme) -> Self {
+        Self::for_output_with_keyboard(output, theme, false)
+    }
+
+    /// The layout with the keyboard for unlocking by touch along the bottom
+    /// of the output when `keyboard` is set; the credential surface fits in
+    /// the space above it.
+    pub fn for_output_with_keyboard(output: LockOutput, theme: &Theme, keyboard: bool) -> Self {
+        if !keyboard {
+            return Self::without_keyboard(output, theme);
+        }
+        let margin = (output.size.1 * 0.02).clamp(8.0, 24.0);
+        let height = {
+            let (key_height, gap) = keyboard_key_metrics(theme);
+            ui::passcode_keyboard::PasscodeKeyboard::height(key_height, gap)
+        };
+        let width = (output.size.0 - margin * 2.0).clamp(1.0, keyboard_max_width(theme));
+        let x0 = output.origin.0 + (output.size.0 - width) / 2.0;
+        let y1 = output.origin.1 + output.size.1 - margin;
+        let pad = Rect::new(x0, (y1 - height).max(output.origin.1), x0 + width, y1);
+        let above = LockOutput {
+            size: (output.size.0, (pad.y0 - margin - output.origin.1).max(1.0)),
+            ..output
+        };
+        let mut layout = Self::without_keyboard(above, theme);
+        layout.output = Self::without_keyboard(output, theme).output;
+        layout.keyboard = Some(pad);
+        layout
+    }
+
+    fn without_keyboard(output: LockOutput, theme: &Theme) -> Self {
         let width = output.size.0.max(1.0);
         let height = output.size.1.max(1.0);
         let output_rect = Rect::new(
@@ -295,6 +347,7 @@ impl LockLayout {
             status,
             notifications,
             scale,
+            keyboard: None,
         }
     }
 }
@@ -361,12 +414,104 @@ pub fn transport_at(
     point: Point,
 ) -> Option<Transport> {
     let player = view.now_playing?;
-    let layout = LockLayout::for_output(primary_output(outputs)?, theme);
+    let layout = LockLayout::for_output_with_keyboard(
+        primary_output(outputs)?,
+        theme,
+        view.keyboard.is_some(),
+    );
     LockMediaLayout::for_layout(&layout, theme)?
         .transport
         .into_iter()
         .find(|(transport, rect)| rect.contains(point) && transport.enabled(player))
         .map(|(transport, _)| transport)
+}
+
+/// When the lock screen draws its keyboard for unlocking by touch, and what
+/// its keys type. No input method runs while the session is locked; the
+/// passcode never leaves the lock screen.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LockTouchKeyboard {
+    keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
+    /// The keyboard already showed when the latest touch began. The touch
+    /// that brings it up never also presses the key that appears under it.
+    armed: bool,
+}
+
+impl LockTouchKeyboard {
+    /// The keyboard to draw, when it shows.
+    pub fn shown(self) -> Option<ui::passcode_keyboard::PasscodeKeyboard> {
+        self.keyboard
+    }
+
+    /// A finger touched the lock screen: the keyboard shows.
+    pub fn touch_started(&mut self) {
+        self.armed = self.keyboard.is_some();
+        self.keyboard.get_or_insert_default();
+    }
+
+    /// A physical key: a keyboard is at hand, the drawn one steps aside.
+    pub fn physical_key(&mut self) {
+        *self = Self::default();
+    }
+
+    /// A press landed on `key` of the drawn keyboard. Returns what it asks
+    /// of the lock's passcode.
+    pub fn press(
+        &mut self,
+        key: ui::passcode_keyboard::PasscodeKey,
+    ) -> crate::compositor::lock_controller::LockKey {
+        use crate::compositor::lock_controller::LockKey;
+        use ui::passcode_keyboard::PasscodeInput;
+        let armed = std::mem::replace(&mut self.armed, true);
+        let Some(keyboard) = self.keyboard.as_mut().filter(|_| armed) else {
+            return LockKey::Ignored;
+        };
+        match keyboard.press(key) {
+            Some(PasscodeInput::Text(text)) => LockKey::Text(text),
+            Some(PasscodeInput::Backspace) => LockKey::Backspace,
+            Some(PasscodeInput::Enter) => LockKey::Submit,
+            None => LockKey::Ignored,
+        }
+    }
+}
+
+/// Every key of the lock screen's keyboard and where it sits, when it
+/// shows: for the state dump, so a test drives it as a finger would.
+pub fn keyboard_keys(
+    outputs: &[LockOutput],
+    theme: &Theme,
+    view: &LockView<'_>,
+) -> Vec<(ui::passcode_keyboard::PasscodeKey, Rect)> {
+    let Some(keyboard) = view.keyboard else {
+        return Vec::new();
+    };
+    let Some(output) = primary_output(outputs) else {
+        return Vec::new();
+    };
+    LockLayout::for_output_with_keyboard(output, theme, true)
+        .keyboard
+        .map(|pad| {
+            let (key_height, gap) = keyboard_key_metrics(theme);
+            keyboard.layout(pad, key_height, gap)
+        })
+        .unwrap_or_default()
+}
+
+/// The key of the lock screen's keyboard under `point`, when it shows.
+pub fn keyboard_key_at(
+    outputs: &[LockOutput],
+    theme: &Theme,
+    view: &LockView<'_>,
+    point: Point,
+) -> Option<ui::passcode_keyboard::PasscodeKey> {
+    let keyboard = view.keyboard?;
+    let layout = LockLayout::for_output_with_keyboard(primary_output(outputs)?, theme, true);
+    keyboard.key_at(
+        layout.keyboard?,
+        keyboard_key_metrics(theme).0,
+        keyboard_key_metrics(theme).1,
+        point,
+    )
 }
 
 /// Resolve the one output that carries the credential surface. A hot-unplug
@@ -388,6 +533,26 @@ fn locked_clock_label(view: &LockView<'_>) -> String {
             &[("clock", view.clock.into()), ("date", view.date.into())],
         ),
     }
+}
+
+/// The password's text run, attached to `password` with the caret at its
+/// start. AccessKit offers AT-SPI `Text` and `EditableText` only on a field with
+/// a text run; this one stays empty whatever was typed, so it discloses
+/// neither the password nor its length.
+fn password_text_run(password: &mut AccessNode, bounds: Rect) -> AccessNode {
+    let mut run = AccessNode::new(AccessRole::TextRun);
+    run.set_value("");
+    run.set_bounds(access_rect(bounds));
+    let start = AccessTextPosition {
+        node: LOCK_PASSWORD_TEXT_ID,
+        character_index: 0,
+    };
+    password.set_text_selection(AccessTextSelection {
+        anchor: start,
+        focus: start,
+    });
+    password.set_children(vec![LOCK_PASSWORD_TEXT_ID]);
+    run
 }
 
 /// The locked semantic tree has one password target, matching the primary
@@ -429,6 +594,7 @@ pub fn build_accessibility_tree(
         // else, so it does not expose hidden desktop actions while locked.
         password.add_action(AccessAction::Click);
     }
+    let password_text = password_text_run(&mut password, layout.password);
 
     let mut help = AccessNode::new(AccessRole::Label);
     help.set_label(t("lock-screen-help"));
@@ -438,6 +604,7 @@ pub fn build_accessibility_tree(
     let mut nodes = vec![
         (LOCK_CLOCK_ID, clock),
         (LOCK_PASSWORD_ID, password),
+        (LOCK_PASSWORD_TEXT_ID, password_text),
         (LOCK_HELP_ID, help),
     ];
     if let (Some(player), Some(media)) = (
@@ -721,10 +888,25 @@ pub fn draw_lock_scene_at_time(
     // deliberately have a quieter non-interactive indication.
     let primary = primary_output(outputs);
     for output in outputs {
-        let layout = LockLayout::for_output(*output, theme);
         if Some(*output) == primary {
+            let layout =
+                LockLayout::for_output_with_keyboard(*output, theme, view.keyboard.is_some());
             draw_lock_widget(&mut scene, &layout, theme, text, view);
+            if let (Some(keyboard), Some(pad)) = (view.keyboard, layout.keyboard) {
+                keyboard.paint(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    text,
+                    theme,
+                    (
+                        pad,
+                        keyboard_key_metrics(theme).0,
+                        keyboard_key_metrics(theme).1,
+                    ),
+                );
+            }
         } else {
+            let layout = LockLayout::for_output(*output, theme);
             draw_secondary_lock_widget(&mut scene, &layout, theme, text, view);
         }
     }
@@ -1316,6 +1498,19 @@ mod tests {
             assert!(password.supports_action(AccessAction::SetValue));
             assert!(password.supports_action(AccessAction::Click));
             assert_eq!(password.value(), None, "credential values never enter AT");
+            // AT-SPI Text and EditableText need a text run; it stays empty
+            // with the caret at its start, whatever length was typed.
+            assert_eq!(password.children(), [LOCK_PASSWORD_TEXT_ID].as_slice());
+            let (_, run) = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == LOCK_PASSWORD_TEXT_ID)
+                .expect("the password's text run is exported");
+            assert_eq!(run.role(), AccessRole::TextRun);
+            assert_eq!(run.value(), Some(""));
+            let selection = password.text_selection().expect("a caret");
+            assert_eq!(selection.focus.node, LOCK_PASSWORD_TEXT_ID);
+            assert_eq!(selection.focus.character_index, 0);
             assert!(
                 update.nodes.iter().all(|(_, node)| {
                     node.label()
@@ -2156,6 +2351,106 @@ mod tests {
         let layout = LockLayout::for_output(tiny[0], &theme);
         if let Some(media) = LockMediaLayout::for_layout(&layout, &theme) {
             assert_inside(media.card, layout.output, "tiny media card");
+        }
+    }
+
+    #[test]
+    fn the_touch_that_brings_the_keyboard_up_types_nothing_and_a_key_hides_it() {
+        use crate::compositor::lock_controller::LockKey;
+        use ui::passcode_keyboard::PasscodeKey;
+        let mut lock = LockTouchKeyboard::default();
+        assert!(lock.shown().is_none(), "hidden until touched");
+        lock.touch_started();
+        assert!(lock.shown().is_some());
+        assert_eq!(
+            lock.press(PasscodeKey::Char('t')),
+            LockKey::Ignored,
+            "the waking touch lands on a key that was not there"
+        );
+        for (key, expected) in [
+            (PasscodeKey::Char('t'), LockKey::Text("t".into())),
+            (PasscodeKey::Shift, LockKey::Ignored),
+            (PasscodeKey::Char('o'), LockKey::Text("O".into())),
+            (PasscodeKey::Backspace, LockKey::Backspace),
+            (PasscodeKey::Enter, LockKey::Submit),
+        ] {
+            lock.touch_started();
+            assert_eq!(lock.press(key), expected, "{key:?}");
+        }
+        lock.physical_key();
+        assert!(lock.shown().is_none(), "a physical key hides it");
+        lock.touch_started();
+        assert_eq!(lock.press(PasscodeKey::Char('x')), LockKey::Ignored);
+    }
+
+    #[test]
+    fn the_touch_keyboard_sits_below_the_passcode_and_types_into_it() {
+        use ui::passcode_keyboard::{PasscodeKey, PasscodeKeyboard};
+        let theme = Theme::dark();
+        for (w, h) in [
+            (2944.0 / 2.0, 1840.0 / 2.0),
+            (1280.0, 800.0),
+            (800.0, 600.0),
+            (640.0, 480.0),
+        ] {
+            let outputs = single(w, h);
+            let layout = LockLayout::for_output_with_keyboard(outputs[0], &theme, true);
+            let pad = layout.keyboard.expect("the keyboard has a place");
+            assert!(
+                pad.x0 >= 0.0 && pad.y0 >= 0.0 && pad.x1 <= w && pad.y1 <= h,
+                "the keyboard is on screen at {w}x{h}: {pad:?}"
+            );
+            for (name, rect) in [
+                ("panel", layout.panel),
+                ("passcode", layout.password),
+                ("status", layout.status),
+            ] {
+                assert!(
+                    rect.y1 <= pad.y0,
+                    "the {name} {rect:?} sits above the keyboard {pad:?} at {w}x{h}"
+                );
+            }
+            assert_eq!(
+                layout.output,
+                LockLayout::for_output(outputs[0], &theme).output
+            );
+            assert!(
+                LockLayout::for_output(outputs[0], &theme)
+                    .keyboard
+                    .is_none()
+            );
+
+            let keyboard = PasscodeKeyboard::default();
+            let view = LockView {
+                keyboard: Some(keyboard),
+                ..LockView::default()
+            };
+            let key_rect = keyboard
+                .layout(
+                    pad,
+                    keyboard_key_metrics(&theme).0,
+                    keyboard_key_metrics(&theme).1,
+                )
+                .into_iter()
+                .find(|(key, _)| *key == PasscodeKey::Char('k'))
+                .map(|(_, rect)| rect)
+                .expect("a letter key");
+            assert_eq!(
+                keyboard_key_at(&outputs, &theme, &view, key_rect.center()),
+                Some(PasscodeKey::Char('k'))
+            );
+            assert_eq!(
+                keyboard_key_at(&outputs, &theme, &LockView::default(), key_rect.center()),
+                None,
+                "no keyboard, no keys"
+            );
+            assert_eq!(
+                keyboard_key_at(&outputs, &theme, &view, layout.password.center()),
+                None,
+                "the passcode field is not a key"
+            );
+            let mut text = TextRenderer::new();
+            let _ = draw_lock_scene(&outputs, &theme, &mut text, &view);
         }
     }
 }

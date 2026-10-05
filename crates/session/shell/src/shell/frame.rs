@@ -449,6 +449,13 @@ pub struct FrameBuilder {
     floating_transfer_proxies: Vec<FloatingTransferProxy>,
     osk_anchor_x: Option<f64>,
     osk_active: bool,
+    /// [`crate::compositor::state::State::osk_commits`], for the state dump.
+    osk_commits: u64,
+    /// The keyboard serves one of the shell's own fields.
+    osk_serves_shell: bool,
+    /// The lock screen's keyboard keys by name and where they sit, while it
+    /// shows; for the state dump.
+    lock_keyboard_keys: Vec<(String, Rect)>,
     /// A layout rebuild invalidates every Taffy node id held by the native
     /// input loop. Re-seat its external focus cursor before the next event;
     /// otherwise the first-login wizard starts unfocused and a step change
@@ -672,6 +679,9 @@ impl FrameBuilder {
             floating_transfer_proxies: Vec::new(),
             osk_anchor_x: None,
             osk_active: false,
+            osk_commits: 0,
+            osk_serves_shell: false,
+            lock_keyboard_keys: Vec::new(),
             focus_tree_changed: true,
             native_focus_ordinal: None,
             last_produced_sections: None,
@@ -951,6 +961,68 @@ impl FrameBuilder {
         })
     }
 
+    /// Match `ui::App` for an app hosted in this process: Ctrl+T, Ctrl+W and
+    /// Ctrl+Shift+T that the app left unhandled are the desktop's tab chords —
+    /// another instance beside it, close its tab, reopen the last closed one.
+    /// Never while chrome (a palette, a menu, a dialog) holds the keyboard.
+    fn apply_hosted_tab_chord(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
+        use crate::shell::state::TileContent;
+        use ui::shell_tabs::TabRequest;
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != winit::event::ElementState::Pressed || key.repeat {
+            return false;
+        }
+        let mods = modifiers.state();
+        let Some(request) = ui::shell_tabs::chord_request(
+            &key.logical_key,
+            mods.control_key(),
+            mods.shift_key(),
+            mods.alt_key() || mods.super_key(),
+        ) else {
+            return false;
+        };
+        if self.host.modal_capture().is_some() {
+            return false;
+        }
+        let hosted = {
+            let chrome = self.chrome();
+            let tile = crate::shell::window_actions::active_tab_id(&chrome).and_then(|tab| {
+                let tree = chrome.tree();
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|candidate| candidate.id == tab)
+                    .map(|candidate| matches!(candidate.tile, TileContent::AppPlaceholder { .. }))
+            });
+            tile.unwrap_or(false)
+        };
+        if !hosted {
+            return false;
+        }
+        self.with_chrome(|st| match request {
+            TabRequest::OpenBeside { .. } => {
+                if let Err(error) = crate::shell::window_actions::duplicate_active_tab(st) {
+                    tracing::debug!(?error, "no new tab for the hosted app");
+                }
+            }
+            TabRequest::CloseThis => {
+                if let Err(error) = crate::shell::window_actions::close_active_tab(st) {
+                    tracing::debug!(?error, "hosted tab not closed");
+                }
+            }
+            TabRequest::ReopenClosed => {
+                st.reopen_closed_tab();
+            }
+            TabRequest::PlaceNextWindowBeside { .. } => {}
+        });
+        true
+    }
+
     fn active_tile_is_terminal(&self) -> bool {
         let chrome = self.chrome();
         let tree = chrome.tree();
@@ -1176,6 +1248,9 @@ impl FrameBuilder {
         self.layout_osk_overlay();
     }
 
+    /// Dock the keyboard at the bottom of the output it serves. The release
+    /// gate taps its keys from the same placement
+    /// (`keyboard_rect` in `tools/atspi_external_client.py`).
     fn layout_osk_overlay(&mut self) {
         if self.osk_overlay.is_none() {
             return;
@@ -2629,11 +2704,14 @@ impl FrameBuilder {
         &mut self,
         surface_id: Option<u64>,
         focused_surface: Option<u64>,
+        shell_field: Option<ui::ime::ImeWindowState>,
         active: bool,
     ) {
         let anchor = focused_surface
             .and_then(|id| self.host.foreign_surface_rect(id))
-            .map(|rect| rect.center().x);
+            .map(|rect| rect.center().x)
+            .or_else(|| shell_field.map(|field| f64::from(field.x) + f64::from(field.width) / 2.0));
+        self.osk_serves_shell = shell_field.is_some();
         self.osk_anchor_x = anchor;
         self.osk_active = active;
         match surface_id {
@@ -2858,6 +2936,38 @@ impl FrameBuilder {
             .then_some((keyboard.surface_id(), rect))
     }
 
+    /// Record how many commits the on-screen keyboard has made.
+    pub fn set_osk_commits(&mut self, commits: u64) {
+        self.osk_commits = commits;
+    }
+
+    /// Record where the lock screen's keyboard keys sit (empty: hidden).
+    pub fn set_lock_keyboard_keys(&mut self, keys: Vec<(String, Rect)>) {
+        self.lock_keyboard_keys = keys;
+    }
+
+    /// The lock screen's keyboard keys by name, while it shows.
+    pub fn lock_keyboard_keys(&self) -> &[(String, Rect)] {
+        &self.lock_keyboard_keys
+    }
+
+    /// Whether the keyboard serves one of the shell's own fields rather
+    /// than an application's.
+    pub fn osk_serves_shell(&self) -> bool {
+        self.osk_serves_shell
+    }
+
+    /// How many commits the on-screen keyboard has made this session.
+    pub fn osk_commits(&self) -> u64 {
+        self.osk_commits
+    }
+
+    /// Whether the trusted on-screen keyboard service has a surface, shown
+    /// or not.
+    pub fn osk_connected(&self) -> bool {
+        self.osk_overlay.is_some()
+    }
+
     /// The compositor-owned keyboard's painted rectangle, if it is currently
     /// visible. Native output membership uses this rather than the focused
     /// app's rectangle: the keyboard is its own Wayland surface and may move
@@ -2901,6 +3011,23 @@ impl FrameBuilder {
         best.map(|(_, icon)| icon)
     }
 
+    /// What the focused chrome widget asks of an input method — its purpose
+    /// and caret — when it takes text; `None` otherwise.
+    pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
+        let widget = *self.node_map.get(&focus?)?;
+        // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
+        // pointer stays valid until the next structural rebuild, the same
+        // invariant every focused-node dispatch here relies on.
+        ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
+    }
+
+    /// Whether a chrome widget under `point` handles a touch contact that
+    /// starts there itself, rather than through the pointer events a touch
+    /// is otherwise turned into. Mirrors `ui::App` for application windows.
+    pub fn claims_raw_touch_at(&self, point: vello::kurbo::Point) -> bool {
+        claims_raw_touch_walk(self.host.as_ref(), point)
+    }
+
     /// Inner node id (host's root child). Required by the input dispatch
     /// path in `bin/shots`'s `ShellDriver`; the compositor doesn't need this.
     /// `None` only in the narrow window where `rebuild_layout_tree` just
@@ -2921,6 +3048,14 @@ impl FrameBuilder {
         focus: Option<NodeId>,
         scale: f64,
     ) -> ui::accesskit::TreeUpdate {
+        // A modal sheet takes every key, so the reader's cursor belongs on
+        // the part of it that has the keyboard: the host is the focused
+        // widget, and the sheet's focused node its active descendant.
+        let focus = if self.host.modal_sheet_owns_keyboard() {
+            self.host_node.or(focus)
+        } else {
+            focus
+        };
         ui::accesskit_bridge::build_tree_update(self.host.as_ref(), &self.node_map, focus, scale)
     }
 
@@ -3200,6 +3335,9 @@ impl FrameBuilder {
                 handled = true;
             }
         }
+        if !handled && self.apply_hosted_tab_chord(event, *modifiers) {
+            return true;
+        }
         // Match `ui::App`: unmodified Tab advances the global DFS focus order
         // only when the focused widget did not claim it. A terminal and a
         // multiline editor legitimately consume Tab as input; intercepting it
@@ -3252,6 +3390,7 @@ impl FrameBuilder {
             }
         };
         put("add_workspace".into(), host.add_workspace_rect_for_tests());
+        launchpad_targets(host.as_ref(), &mut put);
         for (key, tab) in [
             ("general", WsTab::General),
             ("members", WsTab::Members),
@@ -3321,6 +3460,33 @@ impl FrameBuilder {
             put(name.to_string(), rect);
         }
     }
+}
+
+/// The first-use launchpad's cards, which it paints and hit-tests itself.
+fn launchpad_targets(
+    widget: &dyn ui::widget::Widget,
+    put: &mut impl FnMut(String, vello::kurbo::Rect),
+) {
+    if let Some(launchpad) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+    {
+        for (name, rect) in launchpad.targets() {
+            put(name, rect);
+        }
+        return;
+    }
+    for child in widget.children() {
+        launchpad_targets(child, put);
+    }
+}
+
+fn claims_raw_touch_walk(widget: &dyn ui::widget::Widget, point: vello::kurbo::Point) -> bool {
+    (widget.get_rect().contains(point) && widget.claims_raw_touch(point))
+        || widget
+            .children()
+            .into_iter()
+            .any(|child| claims_raw_touch_walk(child, point))
 }
 
 fn chrome_cursor_walk(
@@ -3924,10 +4090,10 @@ mod tests {
             crate::shell::foreign::store().publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
             let mut fb = FrameBuilder::new((1600, 900));
 
-            fb.set_osk_surface(Some(SURFACE), None, false);
+            fb.set_osk_surface(Some(SURFACE), None, None, false);
             assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
 
-            fb.set_osk_surface(Some(SURFACE), None, true);
+            fb.set_osk_surface(Some(SURFACE), None, None, true);
             let (id, rect) = fb
                 .osk_surface_hit((800.0, 700.0))
                 .expect("active keyboard is hit-testable");
@@ -3935,7 +4101,7 @@ mod tests {
             assert_eq!(rect.width(), 960.0);
             assert_eq!(rect.y1, 880.0);
 
-            fb.set_osk_surface(Some(SURFACE), None, false);
+            fb.set_osk_surface(Some(SURFACE), None, None, false);
             assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
             crate::shell::foreign::store().forget(SURFACE);
         }
@@ -3953,7 +4119,7 @@ mod tests {
             let plane_id = plane.id();
             crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
             let mut fb = FrameBuilder::new((1600, 900));
-            fb.set_osk_surface(Some(SURFACE), None, true);
+            fb.set_osk_surface(Some(SURFACE), None, None, true);
 
             let frame = fb.paint_with_damage();
             let [layer] = frame.hdr_layers.as_slice() else {
@@ -4151,6 +4317,37 @@ mod tests {
         assert_eq!(queries, 1, "one editable query");
     }
 
+    #[test]
+    fn assistive_technology_sets_the_open_palettes_query() {
+        // The palette is published inside the host's tree, so setting its
+        // query from outside reaches the host first; it must still be typed.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.host_mut().set_palette_visible(true);
+        fb.host_mut().set_palette_focus(true);
+        fb.host_mut().force_palette_settled();
+        fb.relayout();
+        let update = fb.build_a11y_tree_update(None, 1.0);
+        let (query_id, _) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::TextInput
+                    && node.supports_action(ui::accesskit::Action::SetValue)
+            })
+            .cloned()
+            .expect("the open palette publishes its query");
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        assert!(fb.dispatch_a11y_action(
+            query_id,
+            &ui::a11y::Action::SetValue("photos".into()),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(fb.host().palette_query(), "photos");
+    }
+
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));
@@ -4168,6 +4365,89 @@ mod tests {
     }
 
     #[test]
+    fn administrator_prompt_raised_during_onboarding_is_drawn_above_it_and_takes_the_keyboard() {
+        use crate::shell::portal_dialog::{
+            AuthenticationDecision, AuthenticationRequest, PortalDialogQueue,
+        };
+
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+        let onboarding_focus = focused_name(&fb, focus);
+        assert!(onboarding_focus.is_some(), "onboarding holds focus");
+
+        // The polkit agent enqueues on the session queue while first-use
+        // setup is still on screen.
+        let queue = PortalDialogQueue::default();
+        let mut receiver = queue
+            .enqueue_authentication(AuthenticationRequest {
+                handle: "polkit:onboarding".into(),
+                message: "Administrator approval is required".into(),
+                action_id: "org.tilo.example".into(),
+                identities: vec!["quinn".into()],
+                identity: 0,
+                prompt: "Password:".into(),
+                echo: false,
+                notice: None,
+            })
+            .expect("queued");
+        fb.host_mut().set_portal_dialog_queue(queue);
+        assert!(fb.host().onboarding_active());
+
+        // The ordinary onboarding tick must bring the sheet up.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        let state = fb.host().portal_dialog_state_json();
+        assert_eq!(state["kind"], "authentication", "sheet is up: {state}");
+        assert!(
+            fb.widget_registry()
+                .contains_key(crate::shell::trusted_ui::PORTAL_DIALOG_TARGET),
+            "the sheet is on screen above onboarding"
+        );
+        let _ = fb.paint();
+
+        // Typed keys reach the sheet's secret field, not the focused setup
+        // control underneath.
+        for key in ["h", "u", "n", "t"] {
+            let mut typed = key_press(Key::Character(key.into()));
+            if let WindowEvent::KeyboardInput { event, .. } = &mut typed {
+                event.text = Some(key.into());
+            }
+            assert!(fb.dispatch_event(
+                &typed,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+        }
+        assert_eq!(fb.host().portal_dialog_state_json()["secret_len"], 4);
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            receiver.try_recv(),
+            Ok(AuthenticationDecision::Answered {
+                identity: 0,
+                secret: "hunt".into(),
+            })
+        );
+
+        // Answered: the sheet is gone and onboarding keeps its focus.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        assert!(!fb.host().portal_dialog_open());
+        assert!(fb.host().onboarding_active());
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(focused_name(&fb, focus), onboarding_focus);
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -4177,7 +4457,10 @@ mod tests {
             let (mut fb, _identity_dir) = onboarding_frame();
             let mut focus = None;
             fb.reconcile_native_focus(&mut focus);
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Use my existing Tilo identity")
+            );
         }
 
         fn native_oobe_exports_named_roles_state_and_focus_to_accesskit() {
@@ -4186,9 +4469,10 @@ mod tests {
             fb.reconcile_native_focus(&mut focus);
 
             let update = fb.build_a11y_tree_update(focus, 1.0);
-            let (existing_id, existing) = exported_node_named(&update, "Use existing")
-                .expect("existing-identity action reaches the external tree");
-            let (_, create) = exported_node_named(&update, "Create identity")
+            let (existing_id, existing) =
+                exported_node_named(&update, "Use my existing Tilo identity")
+                    .expect("existing-identity action reaches the external tree");
+            let (_, create) = exported_node_named(&update, "Create a new identity")
                 .expect("create-identity action reaches the external tree");
             // Identity setup has distinct backup and final hand-off states, so
             // its semantic progress surface contains four stages.
@@ -4214,10 +4498,23 @@ mod tests {
             fb.reconcile_native_focus(&mut focus);
 
             let intro = fb.build_a11y_tree_update(focus, 1.0);
-            let (existing_id, _) = exported_node_named(&intro, "Use existing")
+            let (existing_id, _) = exported_node_named(&intro, "Use my existing Tilo identity")
                 .expect("the external tree exposes the Connect-existing action");
             assert!(fb.dispatch_a11y_action(
                 existing_id,
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+
+            let choice = fb.build_a11y_tree_update(focus, 1.0);
+            let (restore_id, _) = exported_node_named(&choice, "Restore from a backup")
+                .expect("the use-existing choice offers its restore flow");
+            assert!(fb.dispatch_a11y_action(
+                restore_id,
                 &ui::a11y::Action::Activate,
                 &mut doc,
                 &automerge::ROOT,
@@ -4279,7 +4576,7 @@ mod tests {
             let protect = fb.build_a11y_tree_update(focus, 1.0);
 
             assert!(
-                exported_node_named(&protect, "Use existing").is_none(),
+                exported_node_named(&protect, "Use my existing Tilo identity").is_none(),
                 "nodes from the replaced step must leave the exported tree"
             );
             assert!(
@@ -4356,7 +4653,10 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus,
             ));
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Create a new identity")
+            );
             assert!(fb.dispatch_event(
                 &key_press(Key::Named(NamedKey::Enter)),
                 &Modifiers::default(),
@@ -4432,6 +4732,67 @@ mod tests {
                     .any(|name| name == "Confirm new backup passphrase"),
                 "backup confirmation must be keyboard reachable: {names:?}"
             );
+
+            // A screen reader reaches the passphrase as password text it can
+            // focus and type into: AccessKit's AT-SPI adapter offers Text and
+            // EditableText only on a text input with a text run, so the field
+            // carries one that never holds what was typed.
+            // Its visible label shares the name, so pick the field by role.
+            let passphrase_run = |update: &ui::accesskit::TreeUpdate| {
+                let (id, field) = update
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some("New backup passphrase")
+                            && node.role() == ui::accesskit::Role::PasswordInput
+                    })
+                    .expect("the passphrase reaches AT-SPI as password text");
+                assert!(field.supports_action(ui::accesskit::Action::Focus));
+                assert!(field.supports_action(ui::accesskit::Action::SetValue));
+                assert_eq!(field.value(), None);
+                let runs: Vec<_> = update
+                    .nodes
+                    .iter()
+                    .filter(|(node_id, node)| {
+                        field.children().contains(node_id)
+                            && node.role() == ui::accesskit::Role::TextRun
+                    })
+                    .collect();
+                let [(_, run)] = runs.as_slice() else {
+                    panic!("one text run among {:?}", field.children());
+                };
+                (*id, run.value().map(str::to_owned))
+            };
+            let (field, typed) = passphrase_run(&fb.build_a11y_tree_update(focus, 1.0));
+            assert_eq!(typed.as_deref(), Some(""));
+            assert!(fb.dispatch_a11y_action(
+                field,
+                &ui::a11y::Action::Focus,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert!(fb.dispatch_a11y_action(
+                field,
+                &ui::a11y::Action::SetValue("tilosecretprobe42".into()),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            fb.relayout();
+            let update = fb.build_a11y_tree_update(focus, 1.0);
+            assert_eq!(update.focus, field, "AT-SPI focus lands on the field");
+            assert_eq!(passphrase_run(&update).1.as_deref(), Some(""));
+            assert!(
+                update.nodes.iter().all(|(_, node)| {
+                    node.value()
+                        .is_none_or(|value| !value.contains("tilosecretprobe42"))
+                        && node
+                            .label()
+                            .is_none_or(|label| !label.contains("tilosecretprobe42"))
+                }),
+                "a typed passphrase never reaches assistive technology"
+            );
             assert!(
                 names
                     .iter()
@@ -4487,11 +4848,17 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus,
             ));
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Create a new identity")
+            );
 
             let shift = Modifiers::from(ModifiersState::SHIFT);
             assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Use my existing Tilo identity")
+            );
         }
 
         fn native_oobe_focus_order_excludes_disabled_controls() {
@@ -4878,6 +5245,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn native_oobe_transitions_and_rebuilds_reseat_focus_and_keep_pointer_state() {
         fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
             let (mut fb, _identity_dir) = onboarding_frame();
@@ -4907,7 +5278,10 @@ mod tests {
             let mut focus = None;
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Use my existing Tilo identity")
+            );
 
             doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
                 .expect("begin identity setup");
@@ -4927,8 +5301,14 @@ mod tests {
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
 
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CONNECT, true)
-                .expect("open identity restore");
+            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_EXISTING, true)
+                .expect("open the use-existing choice");
+            doc.put(
+                &automerge::ROOT,
+                crate::onboarding_view::KEY_CHOOSE_RESTORE,
+                true,
+            )
+            .expect("open identity restore");
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
@@ -4963,14 +5343,17 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus,
             ));
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Create a new identity")
+            );
 
             fb.rebuild_layout_tree();
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
             assert_eq!(
                 focused_name(&fb, focus).as_deref(),
-                Some("Create identity"),
+                Some("Create a new identity"),
                 "an unrelated structure refresh must preserve the focused ordinal"
             );
         }

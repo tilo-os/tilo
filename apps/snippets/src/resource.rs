@@ -4,22 +4,20 @@
 //! Document mutations (`new-snippet`, per-folder create, per-snippet rename /
 //! language / tags / star / delete, the body as editable text) live on this
 //! resource via [`Resource::declarations`] / [`Resource::children`]. Opening a
-//! snippet, revealing a tag and focusing search are View operations the
-//! surface answers.
+//! snippet, revealing a tag and focusing search are [`SnippetsView`]s the
+//! surface answers; the first two ride the snippet or tag they show.
 
 use std::rc::Rc;
 
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, OperationKind, ParamType, Resource as PublishedResource,
-};
+use ui::tilo_actions::{ActionParam, ParamType, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, library_view_specs,
+    SNIPPETS_ACTION_TYPE, SnippetsAction, SnippetsView, create_snippet_action,
     open_snippet_address, publish_children, register, reveal_tag_address, titled_snippet,
 };
 use crate::app::SnippetsApp;
@@ -80,13 +78,6 @@ impl Resource for Snippets {
 
     fn children(state: &Vec<Snippet>) -> Vec<PublishedResource> {
         publish_children(state)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        library_view_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     /// Every snippet is found by its title, language, folder, tags,
@@ -172,7 +163,7 @@ impl ResourceApp for SnippetsShell {
     }
 }
 
-impl ResourceSurface<Snippets> for SnippetsApp {
+impl ResourceSurface<Snippets, SnippetsView> for SnippetsApp {
     fn present(&mut self, state: &Rc<Vec<Snippet>>) {
         self.show_library(state);
     }
@@ -183,6 +174,10 @@ impl ResourceSurface<Snippets> for SnippetsApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or_default());
+    }
+
+    fn effect(&mut self, view: SnippetsView, _: &mut EffectCx<Snippets, Self>) -> EffectAnswer {
+        self.show(view)
     }
 }
 
@@ -292,6 +287,11 @@ mod tests {
             .unwrap();
         app.call_on(&tag_resource_id("k8s"), "reveal", serde_json::json!({}))
             .unwrap();
+        app.call("search", serde_json::json!({})).unwrap();
+        assert!(
+            !surface.contains("\"snippet\""),
+            "opening is offered on each snippet, never with an id to type"
+        );
         assert!(
             app.call_on(
                 &snippet_resource_id(Uuid::nil()),

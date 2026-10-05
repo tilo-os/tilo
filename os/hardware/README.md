@@ -282,3 +282,32 @@ image for the firmware, Wi-Fi plugin, and signed regulatory database, then
 verify Wi-Fi association, Bluetooth initialization/pairing, and suspend/resume
 on the laptop. The diagnostic runtime and QEMU tests cannot establish those
 physical-device results.
+
+### Wi-Fi before the root is open
+
+Sibling unlock (docs/device-reach.md) can join the owner's unlock Wi-Fi
+networks from the initramfs, so the profile carries the radio there. Its
+`system_firmware` adds the WCN7850's `ath12k/WCN7850/hw2.0/amss.bin`,
+`m3.bin` and `board-2.bin`, and the signed `regulatory.db` and
+`regulatory.db.p7s` cfg80211 loads. `board-2.bin` is one container for every
+WCN7850 board; it holds the entry ath12k builds for the Yoga's subsystem,
+`bus=pci,vendor=17cb,device=1107,subsystem-vendor=17aa,subsystem-device=e0e9,qmi-chip-id=2,qmi-board-id=255`
+(the device tree names no calibration variant), and the regulatory data it
+also reads. The `ncm865` firmware beside it is for another module and stays out.
+
+`boot_modules` names the drivers udev would otherwise find only after
+switch-root: `ath12k` and its PCI front end `ath12k_wifi7`, `mac80211`,
+`cfg80211`, the MHI bus and QRTR-over-MHI transport ath12k talks QMI over
+(`mhi`, `qrtr`, `qrtr-mhi`, `qmi_helpers`), the WCN7850 power sequencer
+(`pwrseq-qcom-wcn`), the PCI power-control driver that asks it to power the
+radio before the bus is scanned (`pci-pwrctrl-pwrseq`), and the PCIe PHY
+(`phy-qcom-qmp-pcie`). The PCIe controller driver (`CONFIG_PCIE_QCOM`) and
+the power-sequencing and PCI power-control cores are built in. Generic images
+carry none of this.
+
+`os/scripts/verify-board-initramfs.py` runs after dracut in every board
+build and reads the result back with `lsinitrd`: each profile firmware file
+and modular boot driver must be there, and when the sibling-unlock unit is,
+NetworkManager's Wi-Fi plugin, `wpa_supplicant` and its D-Bus activation file
+too. That proves the pieces are present. Only the laptop can show that the
+radio powers up, picks that board entry and associates before the root opens.

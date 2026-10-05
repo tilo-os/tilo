@@ -7,6 +7,8 @@
 #                       [--validation-sysext PATH]
 #                                              start the VM (detached); --serial gives
 #                                              the boot disk a stable hardware serial
+#                                              TILO_VM_LAN_PORT/_PEER/_MAC add a NIC on an
+#                                              L2 segment shared with one peer VM
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
 #   TILO_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
@@ -46,6 +48,10 @@
 #   ./os/dev/vm.sh status                       is it running?
 #   ./os/dev/vm.sh stop                         power off
 #   ./os/dev/vm.sh capture-boot [DIR]          boot->greeter->login->desktop demo
+#   ./os/dev/vm.sh greeter-acceptance [DIR]    judge the sign-in screen's scanned-out
+#                                             frames: idle, pointer, typing latency,
+#                                             a wrong passcode (os/dev/greeter-acceptance.py)
+#   ./os/dev/vm.sh check-frame NAME [DIR]       capture the display and require it whole
 #
 # DISPLAY MODES (important):
 #   --2d (default): virtio VGA (x86) or virtio-gpu-pci (ARM), with no host
@@ -96,6 +102,9 @@ char_key() {
     '#') echo shift-3;; '*') echo shift-8;; '&') echo shift-7;;
     '(') echo shift-9;; ')') echo shift-0;; '!') echo shift-1;;
     '"') echo shift-apostrophe;; "'") echo apostrophe;;
+    '?') echo shift-slash;;
+    # A capital is its letter's key with Shift held, as on a real keyboard.
+    [[:upper:]]) echo "shift-$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')";;
     *) echo "$1";;
   esac
 }
@@ -155,7 +164,7 @@ cmd_boot() {
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
     $(virtio_disk "$disk" tilo-disk "$disk_serial") $attach_arg \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(lan_qemu_args) $(input_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"
@@ -482,6 +491,32 @@ cmd_login() {
   check_login_submitted
 }
 
+# The sign-in screen as a person meets it, judged from what QEMU scans out.
+# Leaves the form focused on an empty passcode field, ready for `login`.
+cmd_greeter_acceptance() {
+  local dir="${1:-$TILO_RUN/greeter}"
+  wait_greeter_input
+  mkdir -p "$dir"
+  python3 "$TILO_OS_DIR/dev/greeter-acceptance.py" --monitor "$TILO_MON" \
+    --console "$TILO_CONSOLE" --out "$dir" --width "$TILO_XRES" --height "$TILO_YRES"
+}
+
+# One capture of whatever is on screen now, saved as NAME.png and required to
+# be fully painted.
+cmd_check_frame() {
+  local name="${1:?usage: check-frame NAME [DIR]}" dir="${2:-$TILO_RUN/greeter}"
+  mkdir -p "$dir"
+  local ppm="$dir/$name.ppm" reply
+  rm -f "$ppm"
+  reply="$(hmp "screendump $ppm" 2>&1 || true)"
+  if printf '%s' "$reply" | grep -qi 'no surface'; then
+    die "QEMU has no 2D surface to capture for $name"
+  fi
+  local i
+  for i in $(seq 1 50); do [ -s "$ppm" ] && break; sleep 0.1; done
+  python3 "$TILO_OS_DIR/dev/greeter-acceptance.py" --check-image "$ppm" --png "$dir/$name.png"
+}
+
 cmd_serial() {
   [ -f "$TILO_SERIAL" ] || die "no serial log yet ($TILO_SERIAL)"
   if [ -n "${1:-}" ]; then tr -d '\000' < "$TILO_SERIAL" | sed 's/\r//g' | grep -aiE "$1"; else
@@ -609,6 +644,8 @@ case "$sub" in
   status) cmd_status;;
   stop) cmd_stop;;
   capture-boot) cmd_capture_boot "$@";;
+  greeter-acceptance) cmd_greeter_acceptance "$@";;
+  check-frame) cmd_check_frame "$@";;
   -h|--help|"") sed -n '2,51p' "$0";;
   *) die "unknown subcommand: $sub (try --help)";;
 esac

@@ -35,6 +35,17 @@ Generation 0 is the bare VM image.
 services) are swapped into the reserved slot `vm`. Its layers merge into the
 VM's own `/usr`, so they affect every slot.
 
+**Device and the `device` slot.** A real machine that already runs a Tilo
+dev image, such as a board, registered with `tilo-vm vm add` and reached over
+SSH instead of a hypervisor, as root or as its owner's account through
+`sudo -n`. An always-on board image runs its account's own session without a
+greeter; the reserved slot `device` is that session, so its layers reach the
+board's real session and a swap restarts it. On a laptop the `device` slot is
+the owner's Tilo login through greetd on the built-in display: its layers
+merge into the machine's `/usr` (with the `vm` slot's) and a swap restarts
+the owner's desktop in place, without logging them out (`tilo-vm guide
+devices`).
+
 **Seat.** `seat0` is the VM's real display, the one the hypervisor window
 shows. It runs greetd until a slot claims it (`tilo-vm seat claim`); the
 claim is a lease that records who holds it.

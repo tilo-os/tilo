@@ -836,9 +836,11 @@ fn validate_version_history(
                 .iter()
                 .find(|version| same_version_identity(version, old))
             else {
-                // Only an entry at its version limit drops versions, the
-                // oldest first, and only one superseded by a newer version
-                // for its target, so no target loses its current release.
+                // A version leaves under the publisher's retention, once
+                // enough newer versions of its target and channel stay, or
+                // when the entry is at its version limit and a newer version
+                // for its target supersedes it. No target loses its current
+                // release either way.
                 let at_limit = proposed.versions.len() == registry_types::entry::MAX_ENTRY_VERSIONS;
                 let superseded = at_limit
                     && proposed.versions.iter().any(|version| {
@@ -846,7 +848,7 @@ fn validate_version_history(
                             && tilo_app_package::version::compare(&version.version, &old.version)
                                 .is_gt()
                     });
-                if superseded {
+                if superseded || registry_types::retention::may_drop(old, &proposed.versions) {
                     continue;
                 }
                 return Err(ModerationError::VersionHistoryRemoved {
@@ -1110,6 +1112,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: timestamp,
@@ -1182,14 +1185,55 @@ mod tests {
             Err(ModerationError::VersionHistoryRemoved { .. })
         ));
 
-        // Below the limit nothing may be dropped.
+        // Below the limit, retention drops versions with enough newer ones
+        // of their target and channel left.
         let mut short = current.clone();
         short
             .versions
             .retain(|v| v.version != "1.1" && v.version != "1.2");
         short.versions.push(version(limit, "x86_64"));
+        assert!(validate_version_history(&short, Some(&current), &official).is_ok());
+    }
+
+    #[test]
+    fn retention_never_drops_the_newest_versions_of_a_target() {
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let official = ArtifactHosts::default();
+        let floor = registry_types::retention::MIN_RETAINED_PER_CHANNEL;
+        let version = |n: usize| {
+            let mut v = entry(&key, 1).versions[0].clone();
+            v.version = format!("1.{n}");
+            v
+        };
+        let mut current = entry(&key, 1);
+        current.versions = (1..=floor + 1).map(version).collect();
+
+        // The oldest has `floor` newer versions: it may go.
+        let mut oldest = current.clone();
+        oldest.versions.remove(0);
+        assert!(validate_version_history(&oldest, Some(&current), &official).is_ok());
+
+        // The next one has one fewer: dropping it removes history.
+        let mut recent = current.clone();
+        recent.versions.remove(1);
         assert!(matches!(
-            validate_version_history(&short, Some(&current), &official),
+            validate_version_history(&recent, Some(&current), &official),
+            Err(ModerationError::VersionHistoryRemoved { .. })
+        ));
+
+        // A newer pre-release does not count toward a release's channel.
+        let mut current = entry(&key, 1);
+        current.versions = vec![version(1)];
+        let mut next = current.clone();
+        next.versions = (1..=floor)
+            .map(|n| {
+                let mut v = version(2);
+                v.version = format!("1.2.0-dev.{n}");
+                v
+            })
+            .collect();
+        assert!(matches!(
+            validate_version_history(&next, Some(&current), &official),
             Err(ModerationError::VersionHistoryRemoved { .. })
         ));
     }
@@ -1304,6 +1348,7 @@ mod tests {
             architecture: registry_types::WASM32_ARCHITECTURE.into(),
             isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
             runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
+            interfaces: Vec::new(),
         };
         with_web.versions.push(web);
         assert!(validate_version_history(&with_web, Some(&current), &official).is_ok());
@@ -1336,6 +1381,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
             };
             with_android.versions.push(android);
         }

@@ -638,7 +638,7 @@ mod component_adapter {
             };
             if request
                 .target
-                .is_none_or(|target| target.instance_id == binding.instance_id)
+                .is_none_or(|target| target.same_component(&binding))
             {
                 let target = request.target.unwrap_or(&binding);
                 if let Some((invocation, accepted)) = self
@@ -1356,7 +1356,11 @@ mod component_adapter {
                 return None;
             };
             let root = self.component.root.as_deref()?;
-            root.next_wake_deadline()
+            let saving = self.component.save_status_wake_deadline();
+            match (root.next_wake_deadline(), saving) {
+                (Some(own), Some(saving)) => Some(own.min(saving)),
+                (own, saving) => own.or(saving),
+            }
         }
         fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
             let binding = self.component.callback_binding();
@@ -1371,10 +1375,11 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return false;
             };
+            let save_status_changed = self.component.take_save_status_changed();
             let Some(root) = self.component.root.as_deref_mut() else {
                 return false;
             };
-            root.take_structure_dirty()
+            root.take_structure_dirty() | save_status_changed
         }
         fn needs_redraw(&self) -> bool {
             let binding = self.component.callback_binding();
