@@ -89,7 +89,26 @@ fn problems_label(problems: usize) -> String {
     }
 }
 
-fn build_toolbar(queue: &Queue, problems: usize, shown: bool) -> Toolbar {
+trait OptionalToolbarAction {
+    fn with_optional_action(self, binding: Option<ui::tilo_actions::ActionBinding<()>>) -> Self;
+}
+
+impl OptionalToolbarAction for Toolbar {
+    fn with_optional_action(self, binding: Option<ui::tilo_actions::ActionBinding<()>>) -> Self {
+        match binding {
+            Some(binding) => self.with_action(binding),
+            None => self,
+        }
+    }
+}
+
+fn build_toolbar(
+    queue: &Queue,
+    problems: usize,
+    shown: bool,
+    actions: Option<&ui::framework::Actions<crate::resource::TypstEditor>>,
+) -> Toolbar {
+    use crate::actions::TypstEffect;
     let label = problems_label(problems);
     // Overflow folds the trailing commands first, so the order is the
     // priority: what the person needs at every width (compile, and whether the
@@ -97,18 +116,32 @@ fn build_toolbar(queue: &Queue, problems: usize, shown: bool) -> Toolbar {
     // commands, which have shortcuts, fold into the More menu first.
     Toolbar::new(Orientation::Horizontal)
         .push_button("Compile", command(queue, Command::Compile))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Compile)))
         .push_toggle(&label, shown, command(queue, Command::ToggleProblems))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Problems)))
         .push_separator()
         .push_icon(Icon::Minus, "Zoom out", command(queue, Command::ZoomOut))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::ZoomOut)))
         .push_icon(Icon::Plus, "Zoom in", command(queue, Command::ZoomIn))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::ZoomIn)))
         // Zoom out without zoom in reads as a broken control: the pair folds
         // into the More menu together.
         .joined()
         .push_button("Fit width", command(queue, Command::Fit))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::FitWidth)))
         .push_spacer()
         .push_button("Save", command(queue, Command::Save))
+        .with_optional_action(
+            actions.and_then(|actions| actions.effect(&TypstEffect::Save { path: None })),
+        )
         .push_button("Open", command(queue, Command::Open))
+        .with_optional_action(
+            actions.and_then(|actions| actions.effect(&TypstEffect::Open { path: None })),
+        )
         .push_button("Export PDF", command(queue, Command::ExportPdf))
+        .with_optional_action(
+            actions.and_then(|actions| actions.effect(&TypstEffect::ExportPdf { path: None })),
+        )
 }
 
 impl Default for Chrome {
@@ -143,7 +176,7 @@ impl Chrome {
             shown: false,
         };
         Self {
-            toolbar: build_toolbar(&queue, 0, false),
+            toolbar: build_toolbar(&queue, 0, false, None),
             toolbar_for,
             document,
             document_name,
@@ -157,6 +190,24 @@ impl Chrome {
             visible: Visible::default(),
             queue,
         }
+    }
+
+    /// Bind the actual toolbar commands to the resource's declared operations.
+    pub(crate) fn attach_actions(
+        &mut self,
+        actions: &ui::framework::Actions<crate::resource::TypstEditor>,
+    ) {
+        self.toolbar = build_toolbar(
+            &self.queue,
+            self.toolbar_for.problems,
+            self.toolbar_for.shown,
+            Some(actions),
+        );
+        self.close_problems = actions.bind_effect_invocation(
+            Button::icon_only("typst.close-problems", Icon::X, "Close problems"),
+            &crate::actions::TypstEffect::Problems,
+        );
+        self.structure_dirty = true;
     }
 
     /// Everything the controls were asked to do since the last call.

@@ -340,6 +340,7 @@ impl TypstApp {
         &mut self,
         cx: &ui::framework::SurfaceCx<crate::resource::TypstEditor>,
     ) {
+        self.chrome.attach_actions(&cx.actions());
         self.actions = Some(cx.dispatcher());
         if let Some(file) = cx.fixture::<crate::resource::CaptureFile>() {
             *self.current.borrow_mut() = Some(file.0.clone());
@@ -1845,6 +1846,16 @@ mod tests {
             .and_then(|file| crate::resource::source_text(doc, &file.id))
             .and_then(|text| doc.text(&text).ok())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn mounted_toolbar_commands_have_native_action_admission() {
+        let mut app = live_fixture((1280, 720));
+        for viewport in [(1280, 720), (480, 720)] {
+            app.harness().resize(viewport).unwrap();
+            let audit = app.harness().native_app_audit();
+            assert!(audit.is_certified(), "{viewport:?}: {audit:?}");
+        }
     }
 
     #[test]

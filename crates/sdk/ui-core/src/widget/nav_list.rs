@@ -1605,7 +1605,16 @@ impl crate::widget::controls::ActionControls for NavList {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let shared = self.shared.borrow();
         let mut bindings = crate::widget::controls::control_action_bindings(&self.tree);
-        for (node, key) in &shared.keys {
+        // The tree exports only the current paint window. Keep its control
+        // inventory equally bounded, including after filtering or scrolling.
+        for (node, _, _) in self
+            .tree
+            .visible_row_range()
+            .filter_map(|index| self.tree.visible_row(index))
+        {
+            let Some(key) = shared.keys.get(&node) else {
+                continue;
+            };
             if let Some(action) = shared.selection_actions.get(key) {
                 let id = format!("node:{node}");
                 bindings.retain(|binding| binding.control_id != id);

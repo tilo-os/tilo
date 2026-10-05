@@ -816,6 +816,18 @@ fn platform_search_opens_finds_and_activates_places() {
                 .any(|(_, hit)| matches!(hit, Hit::OpenSearch)),
             "the docked panel's header carries the search button"
         );
+        let targets = a.accessibility_targets();
+        let keys: std::collections::HashSet<_> = targets
+            .iter()
+            .map(|target| target.target.as_str())
+            .collect();
+        assert_eq!(keys.len(), targets.len(), "visible targets must be unique");
+        assert!(keys.contains("maps.search"));
+        assert!(keys.contains("maps.empty-search"));
+        tap(&mut a, &Hit::OpenEmptySearch);
+        assert!(a.search_opener.is_pending());
+        assert!(ui::widget::controls::ActionControls::take_control_invocation(&mut a).is_some());
+        assert!(!a.search_opener.is_pending());
         tap(&mut a, &Hit::OpenSearch);
         assert!(a.search_opener.is_pending());
         assert!(

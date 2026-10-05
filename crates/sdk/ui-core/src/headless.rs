@@ -7965,7 +7965,7 @@ fn effect_control_ids_of(
 /// Which semantic nodes count as controls.
 struct EffectFilter<'a> {
     include: &'a dyn Fn(&AccessNode) -> bool,
-    /// Count a focusable list item too.
+    /// Count a focusable list or tree item too.
     pressable_items: bool,
 }
 
@@ -7993,7 +7993,9 @@ fn collect_effect_access_nodes(
                 | Role::SpinButton
                 | Role::TextInput
                 | Role::MultilineTextInput
-        ) || (filter.pressable_items && node.role == Role::ListItem && node.state.focusable));
+        ) || (filter.pressable_items
+            && matches!(node.role, Role::ListItem | Role::TreeItem)
+            && node.state.focusable));
     if effect {
         let identity = node
             .action_target
@@ -9926,6 +9928,53 @@ mod tests {
             assert_eq!(event.text_with_all_modifiers(), expected_text);
             assert_eq!(event.key_without_modifiers(), key);
         }
+    }
+
+    #[test]
+    fn a_bound_navigation_tree_is_certified_and_invokes_its_live_action() {
+        let resource = crate::widget::resource_actions::resource(
+            "navigation",
+            "Navigation",
+            "open",
+            "Open destination",
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").unwrap();
+        let items = (0..40)
+            .map(|index| {
+                crate::widget::NavItem::new(format!("item-{index}"), format!("Item {index}"))
+            })
+            .collect();
+        let list =
+            crate::widget::NavList::new(vec![crate::widget::NavSection::new("items", "", items)])
+                .with_id("navigation-list")
+                .with_accessible_name("Destinations")
+                .selection_actions((0..40).map(|index| (format!("item-{index}"), binding.clone())));
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = calls.clone();
+        let root =
+            crate::widget::resource_actions::immediate(Box::new(list), resource, move |_| {
+                count.set(count.get() + 1);
+                Ok(tilo_actions::ActionOutput::default())
+            });
+        let mut driver = Driver::new(State::new(), root, (280, 360));
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        let bindings = crate::widget::controls::control_action_bindings(driver.root_widget());
+        assert!(!bindings.is_empty() && bindings.len() < 40);
+        driver
+            .perform_semantic_named(
+                "navigation-list",
+                Some(&bindings[0].control_id),
+                &crate::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert_eq!(
+            calls.get(),
+            1,
+            "the mounted row invokes its published action"
+        );
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
     }
 
     #[test]

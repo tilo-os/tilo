@@ -2082,6 +2082,8 @@ mod tests {
         eprintln!("phase published_tree_exposes_real_navigation_and_device_operations");
         {
             let mut app = live_with_studio();
+            let audit = app.harness().native_app_audit();
+            assert!(audit.is_certified(), "{audit:?}");
             let surface = app.agent_surface();
             let actions = surface
                 .as_array()

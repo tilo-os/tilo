@@ -3124,12 +3124,16 @@ impl Widget for CodeApp {
             .map_or("No file open", |buffer| buffer.name.as_str());
         let mut children = vec![
             AccessNode::new(Role::Heading { level: 1 })
+                .with_key(ui::a11y::hash_key(&"code.project-heading"))
                 .with_name(self.session.project.name.clone()),
-            AccessNode::new(Role::StaticText).with_name(active.to_string()),
+            AccessNode::new(Role::StaticText)
+                .with_key(ui::a11y::hash_key(&"code.active-buffer"))
+                .with_name(active.to_string()),
         ];
         if let Some(notice) = &self.notice {
             children.push(
                 AccessNode::new(Role::StaticText)
+                    .with_key(ui::a11y::hash_key(&"code.notice"))
                     .with_name(notice.text.clone())
                     .with_live(if notice.is_error {
                         Politeness::Assertive
@@ -3144,6 +3148,7 @@ impl Widget for CodeApp {
         if !analysis.is_empty() {
             children.push(
                 AccessNode::new(Role::StaticText)
+                    .with_key(ui::a11y::hash_key(&"code.analysis-status"))
                     .with_name(analysis)
                     .with_live(Politeness::Polite),
             );
