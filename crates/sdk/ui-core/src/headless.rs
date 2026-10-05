@@ -8684,17 +8684,110 @@ mod tests {
         assert!(frame.frame_output().ime.is_none());
     }
 
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct SetRemember {
+        value: bool,
+    }
+
+    const SET_REMEMBER: &str = "test.remember";
+
+    impl tilo_actions::Action for SetRemember {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, "remember", self.value)?;
+            Ok(())
+        }
+        fn locus(&self) -> tilo_actions::ExecutionLocus {
+            tilo_actions::ExecutionLocus::ClientLocal
+        }
+    }
+
+    struct RememberControl {
+        content: crate::widget::Checkbox,
+        resource: tilo_actions::Resource,
+    }
+
+    impl RememberControl {
+        fn new() -> Self {
+            use tilo_actions::{ActionParam, ActionSpec, EncodedAction, ParamType};
+            let spec = ActionSpec::typed(
+                "set",
+                "Remember",
+                "value",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "value",
+                    ParamType::Boolean,
+                    "Remember",
+                )],
+                |args| {
+                    EncodedAction::encode(
+                        SET_REMEMBER,
+                        &SetRemember {
+                            value: args.boolean("value").unwrap(),
+                        },
+                    )
+                    .unwrap()
+                },
+            );
+            let resource = tilo_actions::Resource::new("remember", "test", "Remember")
+                .with_action(spec.clone());
+            let binding = tilo_actions::ActionBinding::new(&resource, &spec, |value: bool| {
+                serde_json::json!({"value": value})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            })
+            .unwrap();
+            Self {
+                content: crate::widget::Checkbox::new("remember", "remember")
+                    .with_id("remember")
+                    .on_action(binding),
+                resource,
+            }
+        }
+    }
+
+    impl Widget for RememberControl {
+        crate::provides!(
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::controls::ActionControls
+        );
+        crate::testing::delegate_widget_methods!(content: sync, build_layout, apply_layout, draw, handle_event, get_rect);
+        fn name(&self) -> &str {
+            "RememberControl"
+        }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            self.content.accessibility()
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![&self.content]
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            vec![&mut self.content]
+        }
+    }
+    impl crate::widget::controls::ActionControls for RememberControl {}
+    impl crate::resources::PublishesResources for RememberControl {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+            vec![self.resource.clone()]
+        }
+    }
+
     #[test]
     fn portable_frame_exports_real_scene_size_and_input_result() {
         use automerge::ReadDoc;
         let mut frame = FrameHarness::new_with_controlled_inputs(
             State::new(),
-            Box::new(crate::widget::Checkbox::new("remember", "remember").with_id("remember")),
+            Box::new(RememberControl::new()),
             (320, 180),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
             crate::permissions::UserId("fixture".into()),
         );
+        frame
+            .action_registry_mut()
+            .register::<SetRemember>(SET_REMEMBER);
         frame.set_input_scale(2.0).unwrap();
         let output = frame.frame_output();
         assert_eq!(output.logical_size, (320, 180));
@@ -8884,7 +8977,7 @@ mod tests {
         }
     }
 
-    use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
+    use crate::widget::{Button, CodeEditor, Column, TextInput, TreeNode, TreeView};
 
     struct StructureReplacingEditor {
         current: Box<dyn Widget>,
@@ -9658,8 +9751,11 @@ mod tests {
         {
             use automerge::ReadDoc;
 
-            let checkbox = Checkbox::new("remember", "remember").with_id("remember");
-            let mut driver = Driver::new(State::new(), Box::new(checkbox), (400, 200));
+            let mut driver =
+                Driver::new(State::new(), Box::new(RememberControl::new()), (400, 200));
+            driver
+                .action_registry_mut()
+                .register::<SetRemember>(SET_REMEMBER);
             driver.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
             let rect = driver.targets()["remember"];
             assert_eq!((rect.width(), rect.height()), (48.0, 48.0));

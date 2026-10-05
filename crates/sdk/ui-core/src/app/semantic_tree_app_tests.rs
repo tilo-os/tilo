@@ -357,22 +357,22 @@ impl Widget for CounterCard {
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         let (s, p) = crate::doc::document_ref(s, p);
         self.button.sync(s, p);
-        // A finished job submits its edit as the counter's own action,
-        // continuing the invocation it answers.
-        let bump = || tilo_actions::ControlInvocation {
-            address: tilo_actions::ActionAddress::new("test.counter", "bump"),
-            arguments: serde_json::Map::new(),
-        };
+    }
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, p: &automerge::ObjId) {
+        self.button.settle(edits, p);
+        let mut actions = crate::action_host::ActionHost::new();
         for scope in std::mem::take(&mut self.scoped_jobs) {
             let invocation = scope.invocation();
-            self.scoped_results.push(match scope.check() {
-                Ok(()) => {
-                    self.follow_ups.push((bump(), Some(invocation)));
-                    tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    }
-                }
+            let result = scope.with_document_mutation(edits.document_mut(), |doc| {
+                actions
+                    .try_dispatch(doc, COUNTER_TYPE, &CounterAction::Bump)
+                    .map_err(|error| error.to_string())
+            });
+            self.scoped_results.push(match result {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
                 Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
                     error: tilo_actions::ActionFailure {
@@ -385,7 +385,9 @@ impl Widget for CounterCard {
             });
         }
         if let Some(invocation) = self.pending_bump.take() {
-            self.follow_ups.push((bump(), Some(invocation)));
+            actions
+                .try_dispatch(edits.document_mut(), COUNTER_TYPE, &CounterAction::Bump)
+                .unwrap();
             self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),

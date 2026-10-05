@@ -2799,9 +2799,16 @@ fn rebound_owner_cannot_inherit_retained_result_or_invocation() {
         "an unrelated lifecycle tick must not erase an explicit release refusal"
     );
 
-    assert!(
-        accepted(&handles.accepted).is_empty(),
+    assert_eq!(
+        stored_body(&second, &checkout),
+        "second",
         "the replacement owner must never be loaned to opaque work admitted by the old owner"
+    );
+    assert!(
+        accepted(&handles.accepted)
+            .iter()
+            .all(|(owner, _)| owner == "first"),
+        "every queued result stays with the owner that admitted it"
     );
     let update = unsafe {
         (*tile_pointer)
