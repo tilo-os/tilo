@@ -522,7 +522,10 @@ mod tests {
                 vec![],
             ),
         );
-        pointer.on_hit(crate::app::Hit::VoiceChannel("c_standup".into()), &mut doc);
+        pointer.on_hit(
+            crate::app::Hit::VoiceChannel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         let pointer_requests = pointer.take_collab_requests();
         let mut resource = crate::app::ChatApp::new_ephemeral();
         resource.reload(&doc);

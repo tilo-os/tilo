@@ -17218,7 +17218,12 @@ mod history_reconcile_tests {
             restore(&mut doc, &selected);
             present(&mut app, &doc);
             present(&mut app, &doc);
-            app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+            app.perform_semantic_action(
+                "nonexistent",
+                &AccessAction::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT,
+            );
             assert!(
                 !app.metadata_editor,
                 "stale draft must detach before any new input"
@@ -17251,7 +17256,12 @@ mod history_reconcile_tests {
             library.photos[1].tags = vec!["remote edit".into()];
             PhotosDoc::set_library(&mut doc, &library);
             present(&mut app, &doc);
-            app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+            app.perform_semantic_action(
+                "nonexistent",
+                &AccessAction::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT,
+            );
             assert!(
                 !app.metadata_editor,
                 "a changed non-first batch target invalidates the draft before input"
@@ -17536,7 +17546,12 @@ mod history_reconcile_tests {
     }
 
     fn activate_album_control(app: &mut PhotosApp, doc: &mut AutoCommit, target: &str) {
-        assert!(app.perform_semantic_action(target, &AccessAction::Activate, doc, &ROOT));
+        assert!(app.perform_semantic_action(
+            target,
+            &AccessAction::Activate,
+            &mut ui::widget::Edits::lend(doc),
+            &ROOT
+        ));
         sync(app, doc);
     }
 

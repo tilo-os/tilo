@@ -1690,7 +1690,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             &mut app,
             "photos:toolbar:photos-rotate-right",
             &AccessAction::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         settle(&mut app, &mut doc);

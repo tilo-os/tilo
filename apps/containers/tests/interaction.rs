@@ -133,7 +133,7 @@ impl Driver {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc.reborrow(),
+                state: ui::widget::Edits::lend(doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -457,7 +457,7 @@ fn keyboard_pointer_and_semantic_navigation() {
         assert!(app.perform_semantic_action(
             &target,
             &ui::a11y::Action::Activate,
-            doc,
+            &mut ui::widget::Edits::lend(doc),
             &automerge::ROOT,
         ));
         assert_eq!(d.app().selected(), Some(expected.as_str()));

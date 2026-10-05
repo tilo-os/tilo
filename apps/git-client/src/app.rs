@@ -8,7 +8,6 @@
 //! hit-testing the regions each screen emits.
 
 #[cfg(test)]
-use automerge::AutoCommit;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use ui::time::Instant;
@@ -3827,7 +3826,7 @@ mod tests {
             &mut app,
             "git.open-repository",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(!app.test_awaiting_repo());
@@ -3846,7 +3845,7 @@ mod tests {
                 &mut app,
                 target,
                 &ui::a11y::Action::SetValue(text.into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
         }
@@ -3894,7 +3893,7 @@ mod tests {
             &mut app,
             "git.diff-layout",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_ne!(app.settings.diff_layout, before);
@@ -3903,7 +3902,7 @@ mod tests {
             &mut app,
             "git.commit-message",
             &ui::a11y::Action::Focus,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(app.focus, Some(Field::Commit));

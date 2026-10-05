@@ -435,7 +435,7 @@ fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -463,7 +463,7 @@ fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -491,7 +491,7 @@ fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -529,7 +529,7 @@ fn send_mouse_button_mods(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -550,7 +550,7 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -636,7 +636,7 @@ fn send_key_with_modifiers(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -679,7 +679,7 @@ fn send_key_without_text(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -1759,7 +1759,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                     .as_deref()
                     .expect("transcript target"),
                 &Action::ShowContextMenu,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             )
         );
@@ -1782,7 +1782,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         assert!(widget.perform_semantic_action(
             find.action_target.as_deref().expect("Find target"),
             &Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert!(widget.find_test_state().0);
@@ -1796,7 +1796,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         assert!(widget.perform_semantic_action(
             query.action_target.as_deref().expect("query target"),
             &Action::SetValue("private search".into()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert!(
@@ -1812,7 +1812,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             !widget.perform_semantic_action(
                 transcript.action_target.as_deref().unwrap(),
                 &Action::SetValue("unreviewed command".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             ),
             "transcript actions still cannot execute arbitrary text"
@@ -1878,7 +1878,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             &mut widget,
             &next,
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         let query = widget.find_test_target("query");
@@ -1886,7 +1886,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             &mut widget,
             &query,
             &ui::a11y::Action::SetValue("build step 042".into()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert_eq!(widget.find_test_state().1, vec![42]);
@@ -1895,7 +1895,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             &mut widget,
             &close,
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert!(!widget.find_test_state().0);
@@ -2671,7 +2671,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         assert!(!Widget::perform_action(
             &mut w,
             &Action::SetValue("printf semantic".to_string()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -2695,7 +2695,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 anchor: 1,
                 focus: 3,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(
@@ -2720,7 +2720,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 anchor: 1,
                 focus: 6,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(
@@ -3539,7 +3539,7 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -3568,7 +3568,7 @@ fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,

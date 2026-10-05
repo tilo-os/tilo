@@ -172,7 +172,7 @@ mod tests {
                 &escape(),
                 1.0,
                 Modifiers::default(),
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
             ));
             assert!(!sheet.is_open());
         }
@@ -185,9 +185,12 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            assert!(
-                !sheet.handle_event(&press, 1.0, Modifiers::default(), &mut AutoCommit::new(),)
-            );
+            assert!(!sheet.handle_event(
+                &press,
+                1.0,
+                Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+            ));
         }
 
         // Phase `open_sheet_exposes_shared_modal_semantics`.

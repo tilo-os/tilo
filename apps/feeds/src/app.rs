@@ -5898,14 +5898,14 @@ mod tests {
             assert!(a.perform_semantic_action(
                 &format!("feeds.star:{id}"),
                 &A11yAction::ToggleCheck,
-                &mut st.doc,
+                &mut ui::widget::Edits::lend(&mut st.doc),
                 &st.root,
             ));
             assert_ne!(a.store.article(id).expect("sample article").starred, before);
             assert!(a.perform_semantic_action(
                 &format!("feeds.article:{id}"),
                 &A11yAction::Activate,
-                &mut st.doc,
+                &mut ui::widget::Edits::lend(&mut st.doc),
                 &st.root,
             ));
             assert_eq!(a.selected_article(), Some(id));
@@ -6024,14 +6024,14 @@ mod tests {
                     );
                     assert!(field.perform_action(
                         &A11yAction::SetValue(url.into()),
-                        &mut doc,
+                        &mut ui::widget::Edits::lend(&mut doc),
                         &automerge::ROOT
                     ));
                 }
                 assert!(dialog.perform_semantic_action(
                     "modal.primary",
                     &A11yAction::Activate,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
             }
@@ -6136,7 +6136,7 @@ mod tests {
             assert!(a.perform_semantic_action(
                 &format!("feeds.reader-tag:{key}"),
                 &A11yAction::Activate,
-                &mut st.doc,
+                &mut ui::widget::Edits::lend(&mut st.doc),
                 &st.root,
             ));
             assert_eq!(a.active_filter(), Filter::Tag(key));

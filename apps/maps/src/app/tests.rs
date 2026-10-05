@@ -1,4 +1,5 @@
 use super::*;
+use automerge::AutoCommit;
 
 /// Effects answer from the window's state: locating reports what the
 /// location service really answered, and is unavailable while it can't be
@@ -563,7 +564,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
                 &mut a,
                 "maps.offline.download",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ),
             "no actionable Download target while saving areas is refused"
@@ -2675,7 +2676,7 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
             &mut a,
             "maps.navigation.end",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(a.model.route.is_none());
@@ -2998,7 +2999,7 @@ fn semantic_controls_are_stable_modal_and_operable() {
             &mut a,
             "maps.control:traffic",
             &ui::a11y::Action::ToggleCheck,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(a.map_controls.traffic_enabled());
@@ -3040,7 +3041,7 @@ fn semantic_controls_are_stable_modal_and_operable() {
             &mut a,
             "maps.offline.close",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(!a.offline_panel.is_open());

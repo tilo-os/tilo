@@ -838,7 +838,12 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
         let path = vec![Pane::Inspector.key(), NumField::Opacity.a11y_key()];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(&ui::a11y::Action::Decrement, &path, &mut doc, &root),
+            app.perform_action_at(
+                &ui::a11y::Action::Decrement,
+                &path,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root
+            ),
             "the opacity slider answers a reader's decrement",
         );
         settle(&mut app, &mut doc);
@@ -879,7 +884,10 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
 
         app.focus.pane = Pane::Inspector;
         app.focus.inspector = switch;
-        assert!(app.activate_focused(&mut doc), "Enter switches it on");
+        assert!(
+            app.activate_focused(&mut ui::widget::Edits::lend(&mut doc)),
+            "Enter switches it on"
+        );
 
         settle(&mut app, &mut doc);
         assert!(
@@ -913,7 +921,10 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
             .expect("the shape buttons are focus stops");
         app.focus.pane = Pane::Inspector;
         app.focus.inspector = at;
-        assert!(app.activate_focused(&mut doc), "Enter chooses the shape");
+        assert!(
+            app.activate_focused(&mut ui::widget::Edits::lend(&mut doc)),
+            "Enter chooses the shape"
+        );
         settle(&mut app, &mut doc);
         assert_eq!(
             VideoDoc::load_project(&doc)
@@ -950,7 +961,7 @@ fn nav_key(app: &mut VideoEditorApp, doc: &mut AutoCommit, key: Key, shift: bool
             .actions
             .as_ref()
             .map(ui::framework::Dispatcher::begin_group);
-        app.handle_key(&key, mods, doc, &r)
+        app.handle_key(&key, mods, &mut ui::widget::Edits::lend(doc), &r)
     };
     settle(app, doc);
     handled
@@ -2999,7 +3010,12 @@ fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: boo
             .actions
             .as_ref()
             .map(ui::framework::Dispatcher::begin_group);
-        app.handle_key(&WKey::Character(ch.into()), mods, doc, &r)
+        app.handle_key(
+            &WKey::Character(ch.into()),
+            mods,
+            &mut ui::widget::Edits::lend(doc),
+            &r,
+        )
     };
     settle(app, doc);
     handled
@@ -3030,7 +3046,7 @@ fn key_press_mods(
         app.handle_key(
             &WKey::Character(ch.into()),
             winit::event::Modifiers::from(mods),
-            doc,
+            &mut ui::widget::Edits::lend(doc),
             &r,
         )
     };
@@ -4147,7 +4163,12 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
         let r = app.regions();
         // Shift+Delete ripples.
-        app.handle_key(&WKey::Named(NamedKey::Delete), mods, &mut doc, &r);
+        app.handle_key(
+            &WKey::Named(NamedKey::Delete),
+            mods,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &r,
+        );
         settle(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
         assert!(
@@ -4171,7 +4192,12 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         let r = app.regions();
         // Shift = one-second nudge right.
         let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
-        app.handle_key(&WKey::Named(NamedKey::ArrowRight), shift, &mut doc, &r);
+        app.handle_key(
+            &WKey::Named(NamedKey::ArrowRight),
+            shift,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &r,
+        );
         settle(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().start;
         assert!(
@@ -4496,7 +4522,7 @@ fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -4638,7 +4664,7 @@ fn dispatch_mods(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::from(mods),
-            state: doc.reborrow(),
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -6412,7 +6438,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         app.handle_key(
             &Key::Named(NamedKey::Escape),
             winit::event::Modifiers::default(),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &r,
         );
         app.inspector_flap.snap(false);
@@ -6474,7 +6500,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_BIN_KEY),
             ],
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(app.bin_flap.is_open(app.bin_layout()));
@@ -6485,7 +6511,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                     ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                     ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
                 ],
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ),
             "the open bin scrim makes other topbar actions unavailable"
@@ -6496,7 +6522,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_BIN_KEY),
             ],
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(!app.bin_flap.is_open(app.bin_layout()));
@@ -6506,7 +6532,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
             ],
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(app.inspector_flap.is_open(app.inspector_split()));
@@ -8209,7 +8235,12 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         ];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(&ui::a11y::Action::Increment, &path, &mut doc, &root),
+            app.perform_action_at(
+                &ui::a11y::Action::Increment,
+                &path,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root
+            ),
             "the mask's rotation answers a reader's increment",
         );
         settle(&mut app, &mut doc);
@@ -9063,7 +9094,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             app.perform_action_at(
                 &ui::a11y::Action::Activate,
                 &path,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ),
             "the marker node is addressable",
@@ -9099,7 +9130,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         assert!(app.perform_action_at(
             &ui::a11y::Action::SetValue("mind the skyline".into()),
             &verb(0),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &root,
         ));
         settle(&mut app, &mut doc);
@@ -9115,7 +9146,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         assert!(app.perform_action_at(
             &ui::a11y::Action::SetValue("act three".into()),
             &verb(1),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &root,
         ));
         settle(&mut app, &mut doc);
@@ -9131,14 +9162,19 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             !app.perform_action_at(
                 &ui::a11y::Action::SetValue("   ".into()),
                 &verb(1),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ),
             "a nameless marker is a dot nobody can find, and the verb says so",
         );
 
         // Activating the delete control removes it, exactly as the X does.
-        assert!(app.perform_action_at(&ui::a11y::Action::Activate, &verb(2), &mut doc, &root));
+        assert!(app.perform_action_at(
+            &ui::a11y::Action::Activate,
+            &verb(2),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root
+        ));
         settle(&mut app, &mut doc);
         assert!(
             VideoDoc::load_project(&doc).marker(m.id).is_none(),
@@ -9180,7 +9216,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         assert!(app.perform_action_at(
             &ui::a11y::Action::Activate,
             &held,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -9579,7 +9615,10 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
 
         // And Enter on it runs the row's own verb.
         app.playhead = 0.0;
-        assert!(app.activate_focused(&mut doc), "Enter is answered");
+        assert!(
+            app.activate_focused(&mut ui::widget::Edits::lend(&mut doc)),
+            "Enter is answered"
+        );
         assert!(
             (app.playhead - 12.0).abs() < 1e-6,
             "playhead at {}",
@@ -9692,7 +9731,7 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
                 ui::a11y::hash_key(&TOPBAR_EXPORT_KEY),
             ],
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(

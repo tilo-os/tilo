@@ -743,14 +743,22 @@ mod tests {
             assert!(node.children[2].state.selected);
 
             let mut doc = automerge::AutoCommit::new();
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
             assert!(matches!(
                 sink.borrow().last(),
                 Some(FileCommand::Navigate(path)) if path == Path::new("/home/u/Documents")
             ));
 
             bar.keyboard_index = Some(2);
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
             assert!(
                 bar.take_edit_requested(),
                 "current crumb enters path editing"

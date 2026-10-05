@@ -379,7 +379,7 @@ mod tests {
             assert!(Continuable::restore_continuation_metadata(
                 &mut target,
                 &metadata,
-                &mut target_doc,
+                &mut ui::widget::Edits::lend(&mut target_doc),
                 &ROOT,
             ));
             assert!(!target.call.active, "restore must not join or start media");
@@ -395,7 +395,7 @@ mod tests {
             assert!(!Continuable::restore_continuation_metadata(
                 &mut target,
                 &unknown,
-                &mut target_doc,
+                &mut ui::widget::Edits::lend(&mut target_doc),
                 &ROOT,
             ));
         }
