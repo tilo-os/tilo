@@ -194,10 +194,15 @@ fn kinds_resolve_to_what_each_face_supports() {
     let ui_face = face_caps(&fs, UI_SANS_FAMILY, 400, Style::Normal);
     assert!(ui_face.kind_features(TextKind::Prose).is_empty());
     assert_eq!(ui_face.kind_features(TextKind::Numeric), [*b"tnum"]);
-    // The shipped Tilo Sans holds back its slashed zero and distinct I/l:
-    // degrade quietly.
-    assert_eq!(ui_face.kind_features(TextKind::Secret), [*b"tnum"]);
-    assert!(ui_face.kind_features(TextKind::Identifier).is_empty());
+    // The shipped Tilo Sans has a slashed zero and a distinct I and l.
+    assert_eq!(
+        ui_face.kind_features(TextKind::Secret),
+        [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
+    );
+    assert_eq!(
+        ui_face.kind_features(TextKind::Identifier),
+        [*b"cv01", *b"cv02", *b"ss13"]
+    );
     let noto = face_caps(&fs, "Noto Sans", 400, Style::Normal);
     assert_eq!(
         noto.kind_features(TextKind::Secret),

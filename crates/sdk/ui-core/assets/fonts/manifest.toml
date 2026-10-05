@@ -1,19 +1,19 @@
 schema = 1
-catalog_id = "tilo-fonts-fedora44-tilo-sans-reading-2026-10-03"
-product_bytes = 54113192
-os_bytes = 54830780
-fixture_bytes = 55710576
+catalog_id = "tilo-fonts-fedora44-tilo-sans-reading-2026-10-04"
+product_bytes = 54174180
+os_bytes = 54891768
+fixture_bytes = 55771564
 
 [[font]]
 scope = "product"
 browser_startup = true
 file = "TiloSans[wdth,wght].ttf"
-bytes = 296124
-sha256 = "140edddcc0ee4953e5120ac208757e88f48c786788bfdd092d2dba1bb49abef4"
-source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.001/TiloSans%5Bwdth,wght%5D.ttf"
-source_tag = "tilo/tilo-sans v1.001"
-source_commit = "a30688acf80960aac72dd91f7e42f53b37b110c4"
-source_metadata = "Tilo Sans; Regular; PS `TiloSans-Regular`; v1.001; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek; Cyrillic and the distinct I/l features held back)"
+bytes = 325400
+sha256 = "903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6"
+source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.002/TiloSans%5Bwdth,wght%5D.ttf"
+source_tag = "tilo/tilo-sans v1.002"
+source_commit = "025d4613d723e0da70d0d2d99e39fbb781f9f45f"
+source_metadata = "Tilo Sans; Regular; PS `TiloSans-Regular`; v1.002; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek, the distinct I/l and slashed zero features; Cyrillic held back)"
 reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
 license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
@@ -27,12 +27,12 @@ style = "normal"
 scope = "product"
 browser_startup = true
 file = "TiloSans-Italic[wdth,wght].ttf"
-bytes = 306512
-sha256 = "a4ca118abf92d41fa93f46a6833436bea98869eada3f07634a3594104dfad09c"
-source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.001/TiloSans-Italic%5Bwdth,wght%5D.ttf"
-source_tag = "tilo/tilo-sans v1.001"
-source_commit = "a30688acf80960aac72dd91f7e42f53b37b110c4"
-source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.001; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek; Cyrillic and the distinct I/l features held back)"
+bytes = 338224
+sha256 = "72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743"
+source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.002/TiloSans-Italic%5Bwdth,wght%5D.ttf"
+source_tag = "tilo/tilo-sans v1.002"
+source_commit = "025d4613d723e0da70d0d2d99e39fbb781f9f45f"
+source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.002; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek, the distinct I/l and slashed zero features; Cyrillic held back)"
 reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
 license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
@@ -743,7 +743,7 @@ sha256 = "459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81"
 
 [[license]]
 file = "LICENSES/Tilo-Sans-OFL.txt"
-source_url = "https://code.tilo.so/tilo/tilo-sans/src/commit/a30688acf80960aac72dd91f7e42f53b37b110c4/OFL.txt"
+source_url = "https://code.tilo.so/tilo/tilo-sans/src/commit/025d4613d723e0da70d0d2d99e39fbb781f9f45f/OFL.txt"
 sha256 = "63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98"
 
 [[license]]
@@ -759,7 +759,7 @@ sha256 = "aca6a428580965d2297d1b718042dd427c2a9443ece3b0d02d758e161e0c4030"
 [[license]]
 file = "LICENSES/FONT-COPYRIGHT-NOTICES.txt"
 source_in_license_scratch = "licenses/../font-name-notices.txt"
-sha256 = "533cf73f26eb7085ab87e37db5fb70d2e4137d25d75cd3efca089fd540ad2373"
+sha256 = "750407c0700455977166db73c9bb6bd0b661638f23faa0b9d5e98e50236e34d0"
 
 [[license]]
 file = "LICENSES/New-Computer-Modern-License.txt"
