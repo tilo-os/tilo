@@ -423,7 +423,7 @@ fn legacy_cards() -> Element {
             )))
             .push(Box::new(Card::titled_with_action(
                 "Email",
-                Box::new(Button::new("add-account", "Add account", None)),
+                Box::new(Button::new("add-account", "Add account")),
                 Box::new(Text::new("No email accounts yet.")),
             ))),
     )

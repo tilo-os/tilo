@@ -364,6 +364,15 @@ impl NotesDoc {
     /// The Notes formatting and page links of one page, per block, as UTF-8
     /// byte ranges.
     pub fn page_block_marks(doc: &AutoCommit, page: PageId) -> Vec<(String, Vec<InlineMarkSpan>)> {
+        Self::page_stored_blocks(doc, page)
+            .into_iter()
+            .map(|block| (block.id, block.marks))
+            .collect()
+    }
+
+    /// Every block of one page with its Notes formatting and page links, as
+    /// the notebook stores them, in order.
+    pub fn page_stored_blocks(doc: &AutoCommit, page: PageId) -> Vec<crate::actions::StoredBlock> {
         Self::page_blocks(doc, page)
             .into_iter()
             .map(|block| {
@@ -379,7 +388,14 @@ impl NotesDoc {
                         inline_mark_rank(&b.mark),
                     ))
                 });
-                (block.id, marks)
+                crate::actions::StoredBlock {
+                    id: block.id,
+                    kind: block.kind,
+                    text: block.text,
+                    marks,
+                    nesting: block.nesting,
+                    code_group: block.code_group,
+                }
             })
             .collect()
     }

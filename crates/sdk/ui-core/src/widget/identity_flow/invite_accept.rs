@@ -232,7 +232,7 @@ impl InviteAcceptScreen {
                 &mut crate::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled,
                     focus_target: ctx.focus_target,
@@ -454,7 +454,7 @@ impl InviteAcceptScreen {
 }
 
 impl Widget for InviteAcceptScreen {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,
@@ -682,7 +682,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s.url,
                 &crate::a11y::Action::SetValue(url.clone()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(s.url(), url, "the value landed in the shared field");

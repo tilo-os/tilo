@@ -5,14 +5,16 @@
 //! the handful of fields the UI promotes to columns plus every remaining
 //! field kept verbatim in [`LogEntry::extra`] for the detail pane.
 
+use ui::prelude::{Model, tilo_resource};
 use vello::peniko::Color;
 
 use crate::theme_ext::ThemeColors;
 
 /// The eight syslog severities, ordered most-severe (`Emerg`, level 0) to
 /// least-severe (`Debug`, level 7). Level numbers match RFC 5424 and the
-/// integer in the journal's `PRIORITY` field.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord, serde::Serialize)]
+/// integer in the journal's `PRIORITY` field. As a filter threshold, the
+/// default `Debug` shows everything.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, PartialOrd, Ord, serde::Serialize, Model)]
 pub enum Priority {
     Emerg,
     Alert,
@@ -21,6 +23,7 @@ pub enum Priority {
     Warning,
     Notice,
     Info,
+    #[default]
     Debug,
 }
 

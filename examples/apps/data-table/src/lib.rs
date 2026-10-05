@@ -215,13 +215,10 @@ impl ResourceApp for App {
                 .with_text(|row| row.status.label()),
             ColumnDef::<Row>::new("actions", "data-actions-column", ColumnWidth::Fixed(120.0))
                 .with_widget(move |row, _| {
-                    Box::new(
-                        actions.bind_invocation(
-                            Button::new(&format!("open-{}", row.id), "data-open", None)
-                                .fit_content(28.0),
-                            Review::OPEN.with(row.id),
-                        ),
-                    )
+                    Box::new(actions.bind_invocation(
+                        Button::new(&format!("open-{}", row.id), "data-open").fit_content(28.0),
+                        Review::OPEN.with(row.id),
+                    ))
                 }),
         ];
         let mut table = DataTable::from_model(columns, Rows::new())

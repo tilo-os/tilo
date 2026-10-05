@@ -63,6 +63,16 @@ impl Track {
     }
 }
 
+/// A track from the streaming catalogue (a search hit, a chart entry, an
+/// album page) with the album and artist it belongs to: what the library
+/// imports once the track is played.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogueTrack {
+    pub track: Track,
+    pub album: Album,
+    pub artist: Artist,
+}
+
 /// A user-curated playlist: an ordered list of track ids.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {
@@ -83,7 +93,7 @@ pub struct Playlist {
 }
 
 impl Playlist {
-    const ORDER_STEP: i64 = 1_048_576;
+    pub(crate) const ORDER_STEP: i64 = 1_048_576;
 
     /// Absolute sparse rank for appending a new membership.
     pub fn append_rank(&self) -> i64 {
@@ -225,7 +235,6 @@ pub struct Library {
     pub albums: BTreeMap<AlbumId, Album>,
     pub tracks: BTreeMap<TrackId, Track>,
     pub playlists: Vec<Playlist>,
-    pub cache: BTreeMap<TrackId, CacheState>,
     /// Track ids the user has liked ("Liked Songs"). Ordered set so the
     /// virtual Liked playlist is stable across devices.
     pub liked: BTreeSet<TrackId>,
@@ -255,9 +264,6 @@ impl Library {
         self.albums
             .get(id)
             .map_or("Unknown Album", |a| a.title.as_str())
-    }
-    pub fn cache_state(&self, id: &str) -> CacheState {
-        self.cache.get(id).copied().unwrap_or_default()
     }
 
     /// Tracks of an album, ordered by track number.
@@ -320,17 +326,6 @@ impl Library {
         let mut v: Vec<&Track> = self.tracks.values().collect();
         v.sort_by_key(|t| std::cmp::Reverse(t.plays));
         v.into_iter().take(n).collect()
-    }
-
-    /// Cached (offline) tracks.
-    pub fn downloaded_tracks(&self) -> Vec<&Track> {
-        let mut v: Vec<&Track> = self
-            .tracks
-            .values()
-            .filter(|t| matches!(self.cache_state(&t.id), CacheState::Cached))
-            .collect();
-        v.sort_by(|a, b| a.title.cmp(&b.title));
-        v
     }
 
     /// Case-insensitive substring search across tracks, albums and artists.

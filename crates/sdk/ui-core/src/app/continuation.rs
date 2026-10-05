@@ -363,7 +363,7 @@ impl App {
                         {
                             let _ = continuable.restore_continuation_metadata(
                                 &metadata,
-                                &mut self.state.doc,
+                                &mut crate::widget::Edits::lend(&mut self.state.doc),
                                 &root,
                             );
                         }
@@ -386,7 +386,7 @@ impl App {
             {
                 let _ = continuable.restore_continuation_metadata(
                     &metadata,
-                    &mut self.state.doc,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
                     &root,
                 );
             }

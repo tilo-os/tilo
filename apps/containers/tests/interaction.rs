@@ -133,7 +133,7 @@ impl Driver {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -348,22 +348,11 @@ fn container_resources_open_terminal_and_log_detail() {
     {
         let mut d = Driver::offline();
         let id = sample_engine().containers[1].id.clone();
-        let payload = serde_json::to_vec(&vec!["logs", id.as_str()]).unwrap();
-        let (app, doc) = d.parts();
-        assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    ui::tilo_actions::OperationKind::View,
-                    "containers.logs",
-                    &payload,
-                ),
-                doc,
-                &automerge::ROOT,
-            )
-            .map(|started| started.is_some())
-            .unwrap()
-        );
+        let (app, _doc) = d.parts();
+        app.perform_effect(containers::resource::ContainersEffect::OpenLogs {
+            container: id.clone(),
+        })
+        .unwrap();
         assert_eq!(d.app().section(), Section::Containers);
         assert_eq!(d.app().selected(), Some(id.as_str()));
         assert_eq!(d.app().tab(), DetailTab::Logs);
@@ -468,7 +457,7 @@ fn keyboard_pointer_and_semantic_navigation() {
         assert!(app.perform_semantic_action(
             &target,
             &ui::a11y::Action::Activate,
-            doc,
+            &mut ui::widget::Edits::lend(doc),
             &automerge::ROOT,
         ));
         assert_eq!(d.app().selected(), Some(expected.as_str()));

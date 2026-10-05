@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use example_background_task::{App, MAX_LIMIT, Search, count_primes, is_prime};
+use example_background_task::{App, MAX_LIMIT, Search, Task, count_primes, is_prime};
 use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Replica, TestApp};
@@ -36,7 +36,7 @@ fn counting_runs_in_the_background_on_the_resource_input() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     assert!(
         app.harness().resources().iter().any(|resource| {
-            resource.id.as_str() == "example.prime-count:root"
+            resource.kind == "example.prime-search"
                 && ["run", "cancel"]
                     .iter()
                     .all(|id| resource.actions.iter().any(|action| action.id == *id))
@@ -74,6 +74,19 @@ fn a_running_count_can_be_cancelled() {
     app.harness()
         .expect(&SemanticExpectation::named("task-status").name("Press Count to start."))
         .expect("the task is idle again");
+}
+
+/// An agent's Run answers with the count once the worker finishes.
+#[test]
+fn an_agent_runs_the_count_as_a_job() {
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    app.invoke(Search::SET_LIMIT.with(100))
+        .expect("set the limit");
+    let output = app.effect(&Task::Run).expect("the count finishes");
+    assert_eq!(output.value, Some(ui::serde_json::json!(25)));
+    app.harness()
+        .expect(&SemanticExpectation::named("task-result").name("Found 25 primes below 100."))
+        .expect("the view shows the agent's run too");
 }
 
 #[test]

@@ -12,11 +12,11 @@
 //!   remotes, with fetch / pull / push actions and ahead/behind tracking.
 //!
 //! The live binary reads a real repository through [`repo`] (libgit2 via
-//! `git2`). When no repository is reachable it opens an empty repository
-//! picker. The explicit `--shots` renderer uses a bundled [`sample`]
-//! so the screenshot shows a fully populated state offline. All rendering
-//! is theme-driven; durable UI preferences live in the CRDT via
-//! [`settings`].
+//! `git2`): the one the record opens, a path on the command line, else the
+//! one around the working directory. When none is reachable it opens an
+//! empty repository picker. Screenshots use a bundled [`sample`] so they
+//! show a fully populated state offline. All rendering is theme-driven;
+//! durable UI preferences live in the CRDT via [`settings`].
 //!
 //! Git mutations against the on-disk repository are Effects. Shared CRDT state
 //! is durable view preferences plus a repository projection (branches, commits,
@@ -46,8 +46,6 @@
     )
 )]
 
-use ui::widget::Widget;
-
 pub mod actions;
 pub mod app;
 pub mod changes;
@@ -69,35 +67,9 @@ mod transport;
 
 pub use app::{GitClientApp, Screen};
 
-/// Build and return the app's root widget tree. This is the single
-/// integration point used by both the live event loop and the `--shots`
-/// offscreen renderer.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(GitClientApp::new())
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<GitClientShell>()
 }
 
-/// Every `--scenario` name the screenshot renderer can stage. Declared to
-/// `LaunchSpec::scenarios` so an unknown name is an error listing these.
-pub const SCENARIOS: &[&str] = &[
-    "changes", "split", "history", "branches", "commit", "discard", "empty",
-];
-
-/// Build the `--shots` root staged for `scenario` over the bundled sample
-/// (or the honest empty state for `empty`). `None` is the default Changes
-/// screen, the same frame `--shots` rendered before scenarios existed.
-pub fn app_root_shot(scenario: Option<&str>) -> Box<dyn Widget> {
-    if scenario == Some("empty") {
-        return Box::new(GitClientApp::open_empty());
-    }
-    let mut app = GitClientApp::new();
-    match scenario {
-        Some("split") => app.shot_split_diff(),
-        Some("history") => app.shot_screen(Screen::History),
-        Some("branches") => app.shot_screen(Screen::Panels),
-        Some("commit") => app.shot_commit_message("Flush the blur pass before presenting"),
-        Some("discard") => app.shot_arm_discard(),
-        _ => {}
-    }
-    Box::new(app)
-}
-pub use resource::{GitClient, GitClientShell, launch_spec};
+pub use resource::{GitClient, GitClientShell, SCENARIOS};

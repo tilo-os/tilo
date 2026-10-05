@@ -1,85 +1,140 @@
-//! Automerge document model for the diff/merge session.
+//! The diff/merge session's document.
 //!
-//! The collaboratively-editable surface is the *merged buffer* — the running
-//! result of a three-way merge that the user keeps tuning. It lives as a single
-//! Automerge `Text` so two peers resolving the same conflict converge, and so
-//! the toolkit's undo/redo (full-CRDT snapshots) covers merge edits for free.
+//! What is open — the two files of a comparison, the three inputs of a merge
+//! — and the merge result everyone edits live in one document, so a
+//! collaborator, a reload and history see the same session:
 //!
 //! ```text
 //! root
-//! ├── "merged"        (Text)   # the editable merged result
-//! ├── "resolutions"   (Map)    # "<hunk index>" -> "ours" | "theirs" | "both"
-//! ├── "session"       (Str)    # which sample/session is loaded (for late joiners)
-//! └── "shared_merge"  (Str)    # JSON projection of the three-way inputs
+//! ├── "comparison"   (Map)    # left_label, left, right_label, right
+//! ├── "merge"        (Map)    # base, ours, theirs and their labels
+//! ├── "merged"       (Text)   # the editable merged result
+//! └── "resolutions"  (Map)    # "<hunk index>" -> "ours" | "theirs" | "both"
 //! ```
 //!
-//! The `resolutions` map records the per-hunk take-a-side choice a user made so
-//! the chip state converges across peers and survives a reload; it is cleared
-//! when a fresh set of inputs is loaded (the hunk indices no longer correspond).
-//!
-//! The shared merge projection carries the base/ours/theirs texts collaborators
-//! need to rebuild conflict children for [`tilo_resource::publish`]. Two-way
-//! local comparisons stay device-local and are never written here.
+//! Opening inputs replaces their map whole, so two people opening different
+//! files at once end with one of the two sets, never a mix. The merged result
+//! is a text two people type into character by character. `resolutions`
+//! records the side taken for each hunk; opening a new merge clears it, since
+//! the old hunk indices no longer correspond.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
-use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use std::fmt::Write as _;
 
 use ui::doc::read_str;
 
 use crate::actions::HunkChoice;
-use crate::model::MergeModel;
+use crate::model::{DiffModel, MergeModel};
 
-/// Document keys beside the merged buffer.
+/// Document keys.
 pub mod keys {
-    pub const SHARED_MERGE: &str = "shared_merge";
+    pub const COMPARISON: &str = "comparison";
+    pub const MERGE: &str = "merge";
+    pub const MERGED: &str = "merged";
+    pub const RESOLUTIONS: &str = "resolutions";
 }
 
-/// Framework resource state: merged buffer, session label, and the shared
-/// three-way projection (with resolutions applied onto the model).
-#[derive(Clone, Debug, Default)]
-pub struct MergeState {
-    pub merged: String,
-    pub session: String,
-    pub title: String,
-    pub model: MergeModel,
+/// The two files of a two-way comparison.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Comparison {
+    pub left_label: String,
+    pub left: String,
+    pub right_label: String,
+    pub right: String,
 }
 
-impl MergeState {
-    pub fn from_doc(doc: &AutoCommit) -> Self {
-        let shared = SharedMerge::read(doc);
-        let title = shared
-            .as_ref()
-            .map_or_else(|| "Diff & Merge".into(), SharedMerge::title);
-        let mut model = shared
-            .as_ref()
-            .map(SharedMerge::into_model)
-            .unwrap_or_default();
-        apply_resolutions(&mut model, doc);
-        Self {
-            merged: MergeDoc::merged_text(doc),
-            session: MergeDoc::session(doc).unwrap_or_default(),
-            title,
-            model,
+impl Comparison {
+    const FIELDS: [&'static str; 4] = ["left_label", "left", "right_label", "right"];
+
+    fn values(&self) -> [&str; 4] {
+        [&self.left_label, &self.left, &self.right_label, &self.right]
+    }
+
+    fn read(doc: &AutoCommit) -> Option<Self> {
+        let [left_label, left, right_label, right] =
+            read_fields(doc, keys::COMPARISON, Self::FIELDS)?;
+        Some(Self {
+            left_label,
+            left,
+            right_label,
+            right,
+        })
+    }
+
+    pub(crate) fn write(&self, doc: &mut AutoCommit) -> Result<(), automerge::AutomergeError> {
+        write_fields(doc, keys::COMPARISON, Self::FIELDS, self.values())
+    }
+
+    /// The comparison's line-aligned diff.
+    pub fn model(&self) -> DiffModel {
+        DiffModel::compute(&self.left, &self.right)
+    }
+
+    /// `left ↔ right`, as the palette names the comparison.
+    pub fn title(&self) -> String {
+        if self.left_label.is_empty() && self.right_label.is_empty() {
+            "Comparison".into()
+        } else {
+            format!("{} ↔ {}", self.left_label, self.right_label)
         }
     }
 }
 
-/// Three-way inputs collaborators share so conflict children can be published
-/// from document state. Local two-way comparisons are omitted.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SharedMerge {
-    pub base: String,
-    pub ours: String,
-    pub theirs: String,
+/// The three inputs of a three-way merge.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeInputs {
     pub base_label: String,
+    pub base: String,
     pub ours_label: String,
+    pub ours: String,
     pub theirs_label: String,
+    pub theirs: String,
 }
 
-impl SharedMerge {
+impl MergeInputs {
+    const FIELDS: [&'static str; 6] = [
+        "base_label",
+        "base",
+        "ours_label",
+        "ours",
+        "theirs_label",
+        "theirs",
+    ];
+
+    fn values(&self) -> [&str; 6] {
+        [
+            &self.base_label,
+            &self.base,
+            &self.ours_label,
+            &self.ours,
+            &self.theirs_label,
+            &self.theirs,
+        ]
+    }
+
+    fn read(doc: &AutoCommit) -> Option<Self> {
+        let [base_label, base, ours_label, ours, theirs_label, theirs] =
+            read_fields(doc, keys::MERGE, Self::FIELDS)?;
+        Some(Self {
+            base_label,
+            base,
+            ours_label,
+            ours,
+            theirs_label,
+            theirs,
+        })
+    }
+
+    pub(crate) fn write(&self, doc: &mut AutoCommit) -> Result<(), automerge::AutomergeError> {
+        write_fields(doc, keys::MERGE, Self::FIELDS, self.values())
+    }
+
+    /// The merge of the inputs, before any side is taken.
+    pub fn model(&self) -> MergeModel {
+        MergeModel::compute(&self.base, &self.ours, &self.theirs)
+    }
+
+    /// `Merge · ours ↔ theirs`, as the palette and history name the merge.
     pub fn title(&self) -> String {
         if self.ours_label.is_empty() && self.theirs_label.is_empty() {
             "Merge result".into()
@@ -87,27 +142,71 @@ impl SharedMerge {
             format!("Merge · {} ↔ {}", self.ours_label, self.theirs_label)
         }
     }
+}
 
-    pub fn into_model(&self) -> MergeModel {
-        MergeModel::compute(&self.base, &self.ours, &self.theirs)
+fn read_fields<const N: usize>(
+    doc: &AutoCommit,
+    key: &str,
+    fields: [&str; N],
+) -> Option<[String; N]> {
+    let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, key) else {
+        return None;
+    };
+    Some(fields.map(|field| read_str(doc, &map, field).unwrap_or_default()))
+}
+
+fn write_fields<const N: usize>(
+    doc: &mut AutoCommit,
+    key: &str,
+    fields: [&str; N],
+    values: [&str; N],
+) -> Result<(), automerge::AutomergeError> {
+    let map = doc.put_object(&ROOT, key, ObjType::Map)?;
+    for (field, value) in fields.into_iter().zip(values) {
+        doc.put(&map, field, value)?;
     }
+    Ok(())
+}
 
-    pub fn write(doc: &mut AutoCommit, shared: &Self) {
-        let json = serde_json::to_string(shared).unwrap_or_else(|_| "{}".into());
-        Self::write_json(doc, &json);
-    }
+/// The session as the views read it.
+#[derive(Clone, Debug, Default)]
+pub struct MergeState {
+    /// The open two-way comparison.
+    pub comparison: Option<Comparison>,
+    /// The open three-way merge.
+    pub merge: Option<MergeInputs>,
+    /// The merged result as it stands.
+    pub merged: String,
+    /// The merge's hunks, each with the side recorded for it.
+    pub model: MergeModel,
+    /// Whether the merged result is exactly what the recorded sides compose.
+    /// Once someone edits it by hand, taking a side would overwrite the
+    /// edit, so hunks are resolved in the text from then on.
+    pub composed: bool,
+    pub title: String,
+}
 
-    pub fn write_json(doc: &mut AutoCommit, json: &str) {
-        let _ = doc.put(&ROOT, keys::SHARED_MERGE, json);
-    }
-
-    pub fn read(doc: &AutoCommit) -> Option<Self> {
-        let json = read_str(doc, &ROOT, keys::SHARED_MERGE)?;
-        serde_json::from_str(&json).ok()
-    }
-
-    pub fn fingerprint(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+impl MergeState {
+    pub fn from_doc(doc: &AutoCommit) -> Self {
+        let comparison = Comparison::read(doc);
+        let merge = MergeInputs::read(doc);
+        let mut model = merge.as_ref().map(MergeInputs::model).unwrap_or_default();
+        apply_resolutions(&mut model, doc);
+        let merged = MergeDoc::merged_text(doc);
+        let composed = merge.is_some() && model.merged_text() == merged;
+        let title = merge
+            .as_ref()
+            .map(MergeInputs::title)
+            .or_else(|| comparison.as_ref().map(Comparison::title))
+            .unwrap_or_else(|| "Diff & Merge".into());
+        Self {
+            comparison,
+            merge,
+            merged,
+            model,
+            composed,
+            title,
+        }
     }
 }
 
@@ -122,87 +221,71 @@ pub fn apply_resolutions(model: &mut MergeModel, doc: &AutoCommit) {
     }
 }
 
-/// Stateless helpers over the shared document.
+/// Stateless helpers over the document.
 pub struct MergeDoc;
 
 impl MergeDoc {
-    /// Get-or-create the top-level `merged` Text object.
-    ///
-    /// # Panics
-    ///
-    /// Never in practice: `ROOT` is Automerge's permanent, undeletable root
-    /// Map, so `put_object` on it cannot fail short of a corrupted document.
-    #[allow(
-        clippy::expect_used,
-        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
-    )]
-    pub fn merged_text_obj(doc: &mut AutoCommit) -> ObjId {
-        match doc.get(&ROOT, "merged") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "merged", ObjType::Text)
-                .expect("put_object merged Text never fails"),
+    /// The merged result's text object, if the document has one.
+    pub fn merged_text_id(doc: &AutoCommit) -> Option<ObjId> {
+        match doc.get(&ROOT, keys::MERGED) {
+            Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The merged result's text object, created when the document has none.
+    pub(crate) fn merged_text_obj(
+        doc: &mut AutoCommit,
+    ) -> Result<ObjId, automerge::AutomergeError> {
+        match Self::merged_text_id(doc) {
+            Some(id) => Ok(id),
+            None => doc.put_object(&ROOT, keys::MERGED, ObjType::Text),
         }
     }
 
     /// Read the merged buffer's current contents.
     pub fn merged_text(doc: &AutoCommit) -> String {
-        match doc.get(&ROOT, "merged") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).unwrap_or_default(),
-            _ => String::new(),
-        }
+        Self::merged_text_id(doc)
+            .and_then(|id| doc.text(&id).ok())
+            .unwrap_or_default()
     }
 
-    /// Whether the document has been seeded yet.
-    pub fn has_merged(doc: &AutoCommit) -> bool {
-        matches!(
-            doc.get(&ROOT, "merged"),
-            Ok(Some((Value::Object(ObjType::Text), _)))
-        )
-    }
-
-    /// Replace the entire merged buffer with `text`. Used when the user
-    /// re-resolves a hunk (take-ours/theirs/both) and the whole composed
-    /// output changes. Splices the diff against the current contents so the
-    /// CRDT records a minimal edit rather than a full rewrite.
-    pub fn set_merged(doc: &mut AutoCommit, text: &str) {
-        let id = Self::merged_text_obj(doc);
+    /// Replace the merged buffer with `text`, as the smallest splice that
+    /// turns the current contents into it, so the document records the
+    /// edited span rather than a rewrite and a collaborator's typing
+    /// elsewhere survives.
+    pub(crate) fn set_merged(
+        doc: &mut AutoCommit,
+        text: &str,
+    ) -> Result<(), automerge::AutomergeError> {
+        let id = Self::merged_text_obj(doc)?;
         ui::doc::splice_text_diffed(doc, &id, text);
+        Ok(())
     }
 
-    /// Get-or-create the top-level `resolutions` map.
-    #[allow(
-        clippy::expect_used,
-        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
-    )]
-    fn resolutions_map(doc: &mut AutoCommit) -> ObjId {
-        match doc.get(&ROOT, "resolutions") {
+    /// Record the take-a-side choice for hunk `hunk`.
+    pub(crate) fn set_resolution(
+        doc: &mut AutoCommit,
+        hunk: usize,
+        choice: HunkChoice,
+    ) -> Result<(), automerge::AutomergeError> {
+        let map = match doc.get(&ROOT, keys::RESOLUTIONS) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "resolutions", ObjType::Map)
-                .expect("put_object resolutions Map never fails"),
-        }
-    }
-
-    /// Record the take-a-side choice for hunk `hunk` (`"ours"`/`"theirs"`/
-    /// `"both"`), so peers converge on the same chip state.
-    pub fn set_resolution(doc: &mut AutoCommit, hunk: usize, choice: &str) {
-        let id = Self::resolutions_map(doc);
-        let _ = doc.put(&id, hunk.to_string(), choice);
+            _ => doc.put_object(&ROOT, keys::RESOLUTIONS, ObjType::Map)?,
+        };
+        doc.put(&map, hunk.to_string(), choice.as_str())
     }
 
     /// Every recorded `(hunk index, choice)` pair, in ascending hunk order.
     pub fn resolutions(doc: &AutoCommit) -> Vec<(usize, String)> {
         let mut out = Vec::new();
-        if let Ok(Some((Value::Object(ObjType::Map), id))) = doc.get(&ROOT, "resolutions") {
+        if let Ok(Some((Value::Object(ObjType::Map), id))) = doc.get(&ROOT, keys::RESOLUTIONS) {
             for key in doc.keys(&id) {
                 let Ok(idx) = key.parse::<usize>() else {
                     continue;
                 };
-                if let Ok(Some((Value::Scalar(v), _))) = doc.get(&id, &key)
-                    && let automerge::ScalarValue::Str(s) = v.as_ref()
-                {
-                    out.push((idx, s.to_string()));
+                if let Some(choice) = read_str(doc, &id, &key) {
+                    out.push((idx, choice));
                 }
             }
         }
@@ -210,162 +293,105 @@ impl MergeDoc {
         out
     }
 
-    /// Drop every recorded resolution — called when a fresh set of inputs is
-    /// loaded, since the old hunk indices no longer correspond.
-    pub fn clear_resolutions(doc: &mut AutoCommit) {
-        if let Ok(Some((Value::Object(ObjType::Map), _))) = doc.get(&ROOT, "resolutions") {
-            let _ = doc.delete(&ROOT, "resolutions");
+    /// Drop every recorded resolution.
+    pub(crate) fn clear_resolutions(doc: &mut AutoCommit) -> Result<(), automerge::AutomergeError> {
+        if doc.get(&ROOT, keys::RESOLUTIONS)?.is_some() {
+            doc.delete(&ROOT, keys::RESOLUTIONS)?;
         }
-    }
-
-    /// Read the loaded session label, if any.
-    pub fn session(doc: &AutoCommit) -> Option<String> {
-        match doc.get(&ROOT, "session") {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                automerge::ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    pub fn set_session(doc: &mut AutoCommit, label: &str) {
-        let _ = doc.put(&ROOT, "session", label);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use tilo_automerge::ApplyIncoming;
 
-    /// The merged-output CRDT text: round trip, identical sets commit nothing,
-    /// resolves splice rather than rewrite, and two peers converge. Every phase
-    /// builds its own documents.
+    /// The merged-output text: round trip, identical sets commit nothing,
+    /// resolves splice rather than rewrite, and two peers converge.
     #[test]
     fn merged_buffer_round_trips_edits_minimally_and_converges() {
-        merged_round_trip();
-        set_merged_is_incremental_and_minimal();
-        resolving_hunks_does_not_rewrite_the_whole_buffer();
-        two_peers_converge_on_merged_buffer();
-    }
-
-    fn merged_round_trip() {
         let mut doc = AutoCommit::new();
-        assert!(!MergeDoc::has_merged(&doc));
-        MergeDoc::set_merged(&mut doc, "line one\nline two\n");
-        assert!(MergeDoc::has_merged(&doc));
-        assert_eq!(MergeDoc::merged_text(&doc), "line one\nline two\n");
-    }
-
-    fn set_merged_is_incremental_and_minimal() {
-        let mut doc = AutoCommit::new();
-        MergeDoc::set_merged(&mut doc, "a\nb\nc\n");
+        assert!(MergeDoc::merged_text_id(&doc).is_none());
+        MergeDoc::set_merged(&mut doc, "a\nb\nc\n").unwrap();
+        assert_eq!(MergeDoc::merged_text(&doc), "a\nb\nc\n");
         let before = doc.get_heads();
-        // Setting the same text is a no-op (no new change).
-        MergeDoc::set_merged(&mut doc, "a\nb\nc\n");
+        MergeDoc::set_merged(&mut doc, "a\nb\nc\n").unwrap();
         assert_eq!(before, doc.get_heads(), "identical set must not commit");
-        MergeDoc::set_merged(&mut doc, "a\nB\nc\n");
-        assert_eq!(MergeDoc::merged_text(&doc), "a\nB\nc\n");
-    }
 
-    fn resolving_hunks_does_not_rewrite_the_whole_buffer() {
-        // Re-resolving a hunk hands `set_merged` the entire composed output.
-        // Rewriting it wholesale costs O(len) ops and leaves O(len) tombstones
-        // per resolve; the buffer must grow with the *edited span* instead.
+        // Re-resolving a hunk hands `set_merged` the entire composed output;
+        // the document must grow with the edited span, not the whole text.
         let mut doc = AutoCommit::new();
         let body: String = (0..400).fold(String::new(), |mut s, i| {
             let _ = writeln!(s, "line {i}");
             s
         });
-        MergeDoc::set_merged(&mut doc, &body);
+        MergeDoc::set_merged(&mut doc, &body).unwrap();
         let baseline = doc.save().len();
-
-        // 40 resolves, each flipping one line in the middle of the buffer.
         for i in 0..40 {
             let edited = body.replacen("line 200\n", &format!("line 200 v{i}\n"), 1);
-            MergeDoc::set_merged(&mut doc, &edited);
+            MergeDoc::set_merged(&mut doc, &edited).unwrap();
         }
         let grown = doc.save().len() - baseline;
-
         assert_eq!(
             MergeDoc::merged_text(&doc),
-            body.replacen("line 200\n", "line 200 v39\n", 1),
-            "the buffer must still hold the last resolution exactly"
+            body.replacen("line 200\n", "line 200 v39\n", 1)
         );
         assert!(
             grown < baseline / 4,
             "40 one-line resolves grew the document by {grown} bytes against a \
              {baseline}-byte buffer — set_merged is rewriting the whole text"
         );
-    }
 
-    fn two_peers_converge_on_merged_buffer() {
         let mut a = AutoCommit::new();
-        MergeDoc::set_merged(&mut a, "shared\n");
+        MergeDoc::set_merged(&mut a, "shared\n").unwrap();
         let mut b = AutoCommit::load(&a.save()).unwrap();
-        MergeDoc::set_merged(&mut b, "shared\nfrom-b\n");
+        MergeDoc::set_merged(&mut b, "shared\nfrom-b\n").unwrap();
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
         a.merge_incoming(&mut b_loaded).unwrap();
         assert!(MergeDoc::merged_text(&a).contains("from-b"));
     }
 
-    /// The sidecar state next to the merged buffer: per-hunk resolutions (sorted,
-    /// overwritten, cleared) and the session label. Fresh document per phase.
+    /// Inputs and resolutions round trip, and the state says whether the
+    /// merged result is still what the recorded sides compose.
     #[test]
-    fn resolutions_and_session_round_trip() {
-        resolutions_round_trip_and_clear();
-        session_round_trip();
-    }
-
-    fn resolutions_round_trip_and_clear() {
+    fn inputs_and_resolutions_round_trip_into_the_state() {
         let mut doc = AutoCommit::new();
-        assert!(MergeDoc::resolutions(&doc).is_empty());
-        MergeDoc::set_resolution(&mut doc, 2, "theirs");
-        MergeDoc::set_resolution(&mut doc, 0, "both");
+        assert!(MergeState::from_doc(&doc).merge.is_none());
+        let inputs = MergeInputs {
+            base_label: "base".into(),
+            base: "a\nb\nc\n".into(),
+            ours_label: "ours".into(),
+            ours: "a\nOURS\nc\n".into(),
+            theirs_label: "theirs".into(),
+            theirs: "a\nTHEIRS\nc\n".into(),
+        };
+        inputs.write(&mut doc).unwrap();
+        let comparison = Comparison {
+            left_label: "l".into(),
+            left: "x\n".into(),
+            right_label: "r".into(),
+            right: "y\n".into(),
+        };
+        comparison.write(&mut doc).unwrap();
+        MergeDoc::set_merged(&mut doc, &inputs.model().merged_text()).unwrap();
+        MergeDoc::set_resolution(&mut doc, 2, HunkChoice::Theirs).unwrap();
+        MergeDoc::set_resolution(&mut doc, 0, HunkChoice::Both).unwrap();
         assert_eq!(
             MergeDoc::resolutions(&doc),
             vec![(0, "both".to_string()), (2, "theirs".to_string())],
             "sorted by hunk index"
         );
-        // Overwriting a hunk's choice replaces, not duplicates.
-        MergeDoc::set_resolution(&mut doc, 2, "ours");
-        assert_eq!(
-            MergeDoc::resolutions(&doc),
-            vec![(0, "both".to_string()), (2, "ours".to_string())]
-        );
-        MergeDoc::clear_resolutions(&mut doc);
-        assert!(
-            MergeDoc::resolutions(&doc).is_empty(),
-            "clear drops every choice"
-        );
-    }
+        MergeDoc::clear_resolutions(&mut doc).unwrap();
+        assert!(MergeDoc::resolutions(&doc).is_empty());
 
-    fn session_round_trip() {
-        let mut doc = AutoCommit::new();
-        assert!(MergeDoc::session(&doc).is_none());
-        MergeDoc::set_session(&mut doc, "config.toml");
-        assert_eq!(MergeDoc::session(&doc).as_deref(), Some("config.toml"));
-    }
-}
-
-/// Exact authored values used solely to invalidate unsaved external input context.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AuthoredSnapshot {
-    merged: Option<String>,
-    resolutions: Option<Vec<(usize, String)>>,
-    session: Option<String>,
-    shared_merge: Option<String>,
-}
-pub(crate) fn authored_snapshot(doc: &AutoCommit) -> AuthoredSnapshot {
-    AuthoredSnapshot {
-        merged: MergeDoc::has_merged(doc).then(|| MergeDoc::merged_text(doc)),
-        resolutions: doc
-            .get(ROOT, "resolutions")
-            .ok()
-            .flatten()
-            .map(|_| MergeDoc::resolutions(doc)),
-        session: MergeDoc::session(doc),
-        shared_merge: read_str(doc, &ROOT, keys::SHARED_MERGE),
+        let state = MergeState::from_doc(&doc);
+        assert_eq!(state.merge.as_ref(), Some(&inputs));
+        assert_eq!(state.comparison.as_ref(), Some(&comparison));
+        assert_eq!(state.title, "Merge · ours ↔ theirs");
+        assert!(state.composed);
+        MergeDoc::set_merged(&mut doc, "edited by hand\n").unwrap();
+        assert!(!MergeState::from_doc(&doc).composed);
     }
 }

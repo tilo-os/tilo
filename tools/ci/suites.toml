@@ -665,6 +665,12 @@ readers = ["crates/doc/tilo-doc-codecs/src/bulk_equivalence.rs", "crates/doc/til
            "crates/doc/tilo-doc-codecs/tests/binary_inputs.rs", "crates/doc/tilo-doc-codecs/tests/office_fidelity.rs"]
 
 [[cargo]]
+package = "ush"
+# Native reexec proof reads the actual shipped supervisor unit.
+inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
+readers = ["crates/runtime/ush/tests/serve_handoff.rs"]
+
+[[cargo]]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
@@ -687,7 +693,6 @@ package = "tilo-agent-participant"
 # the browser peer's relay test support.
 inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
 readers = [
-  "crates/agent/agent-participant/tests/common/mod.rs",
   "crates/agent/agent-participant/tests/room_actions.rs",
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
@@ -704,7 +709,8 @@ package = "notes"
 inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
 readers = [
   "apps/notes/src/app.rs", "apps/notes/src/shortcuts_overlay.rs",
-  "apps/notes/src/shots.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/tests/effects.rs",
 ]
 
 [[cargo]]
@@ -724,44 +730,8 @@ readers = [
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
-  "crates/session/shell/src/shell/notes_app.rs",
   "crates/session/shell/src/shell/test_support.rs",
 ]
-
-[[cargo]]
-package = "contacts"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/contacts/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "diffmerge"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/diffmerge/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "photos"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/photos/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "slides"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/slides/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "themes"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/themes/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "typst-editor"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/typst-editor/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "weather"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/weather/src/framework_history_tests.rs"]
 
 [[cargo]]
 package = "chat"

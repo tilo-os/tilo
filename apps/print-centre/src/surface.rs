@@ -3,7 +3,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use taffy::{NodeId, TaffyTree};
-use ui::framework::{Dispatcher, LiveRow};
+use ui::framework::{
+    Dispatcher, Effect as _, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow,
+};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{AppModel, ModelPath};
@@ -31,12 +33,14 @@ use crate::resource::{
 
 pub struct PrintCentre {
     inner: El,
+    /// The page `inner` shows.
+    page: Page,
     refresh: Option<mpsc::Receiver<Snapshot>>,
-    commands_tx: mpsc::Sender<UiCommand>,
-    commands_rx: mpsc::Receiver<UiCommand>,
     snapshot: Option<Snapshot>,
     notice: Option<OperationNotice>,
     pending_cancel: Option<String>,
+    /// What the last search for network printers found.
+    discovered: Option<Result<Vec<os_actions::printing::DiscoveredPrinter>, String>>,
     picker: Option<ui::portal::PortalChannel>,
     pending_document: Option<PathBuf>,
     print_preview: PrintPreview,
@@ -46,13 +50,13 @@ pub struct PrintCentre {
     print_two_sided: ui::LocalState<bool>,
     selected_scanner: Option<String>,
     scan: ScanState,
-    scan_save_picker: Option<ui::portal::PortalChannel>,
-    scan_save_document: bool,
+    /// The scan is being saved where the person chose.
+    scan_saving: bool,
     /// The person's print and scan defaults, as last presented.
     defaults: PrintDefaults,
     /// Where changes to the defaults go.
     pub(crate) dispatcher: Option<Dispatcher<PrintDefaults>>,
-    /// A command replaced the page since the last layout.
+    /// An effect replaced the page since the last layout.
     replaced: bool,
 }
 
@@ -195,49 +199,47 @@ pub(crate) struct Snapshot {
     scanners: Result<Vec<os_actions::printing::Scanner>, String>,
 }
 
-#[derive(Clone)]
-enum UiCommand {
-    Refresh,
+/// Where the page's controls send what they do: the surface's effects and
+/// the person's defaults go through the same door as the palette's and an
+/// agent's.
+#[derive(Clone, Default)]
+struct Door(Option<Dispatcher<PrintDefaults>>);
+
+impl Door {
+    fn effect(&self, effect: &PrintCentreEffect) {
+        if let Some(dispatcher) = &self.0 {
+            dispatcher.effect(effect);
+        }
+    }
+
+    fn invoke(&self, invoke: ui::tilo_resource::Invoke<PrintDefaults>) {
+        if let Some(dispatcher) = &self.0 {
+            dispatcher.invoke(invoke);
+        }
+    }
+}
+
+/// The page the surface shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+enum Page {
+    #[default]
+    Loading,
     Dashboard,
     Queue,
     History,
     Diagnostics,
-    Discover,
-    DiscoveryFinished(Result<Vec<os_actions::printing::DiscoveredPrinter>, String>),
-    AddPrinter(os_actions::printing::DiscoveredPrinter),
     Device(String),
-    SetDefault(String),
-    SetEnabled(String, bool),
-    RequestCancel(String),
-    ConfirmCancel(String),
-    RetryJob(String),
-    EffectFinished(OperationNotice),
-    ChooseDocument,
-    SelectPrinter(String),
-    PrintDocument,
-    CancelPrintSetup,
-    ScanSetup,
-    SelectScanner(String),
-    ScanPage,
-    ScanFinished(Result<ScannedPage, String>),
-    SaveScannedPage,
-    SaveScannedDocument,
-    CopyRecognizedText,
-    ScanAnother,
-    PreviousScanPage,
-    NextScanPage,
-    MoveScanPageEarlier,
-    MoveScanPageLater,
-    DeleteScanPage,
-    RotateScanPage,
-    ApplyScanCrop,
-    RecognizeCurrentPage,
-    RecognitionFinished(Arc<[u8]>, Result<(Option<String>, String), String>),
-    SetTwoSided(bool),
-    SetScanResolution(usize),
-    SetScanColor(usize),
-    SetScanSource(usize),
-    SetOcrLanguage(usize),
+    Discovery,
+    Print,
+    Scan,
+}
+
+/// How saving scanned pages ended.
+enum ScanSaved {
+    Saved(String),
+    Cancelled,
+    NoPicker,
+    Failed,
 }
 
 #[derive(Clone)]
@@ -288,7 +290,7 @@ fn notice_banner(notice: &OperationNotice) -> El {
     Box::new(banner.with_message(&notice.message).dismissible())
 }
 
-fn unavailable_card(areas: &[&str], tx: &mpsc::Sender<UiCommand>) -> Option<El> {
+fn unavailable_card(areas: &[&str], door: &Door) -> Option<El> {
     if areas.is_empty() {
         return None;
     }
@@ -308,8 +310,8 @@ fn unavailable_card(areas: &[&str], tx: &mpsc::Sender<UiCommand>) -> Option<El> 
             "print-centre.service.retry",
             "Try again",
             Icon::Refresh,
-            tx,
-            UiCommand::Refresh,
+            door,
+            PrintCentreEffect::Refresh,
         ),
         copy(&detail),
     )))
@@ -382,11 +384,7 @@ fn save_scanned_page(path: &std::path::Path, bytes: &[u8]) -> Result<(), String>
         .map_err(|error| format!("could not finish saving the scanned page: {error}"))
 }
 fn action(id: &str, label: &str) -> El {
-    Box::new(
-        Button::new(id, label, None)
-            .fit_content(44.0)
-            .on_view(|| {}),
-    )
+    Box::new(Button::new(id, label).fit_content(44.0).on_view(|| {}))
 }
 
 /// Row ids are shell-facing rather than display text. Keep the externally
@@ -448,68 +446,55 @@ fn scanner_row(scanner: &os_actions::printing::Scanner) -> LiveRow {
     })
 }
 
-fn command_action(id: &str, label: &str, tx: &mpsc::Sender<UiCommand>, command: UiCommand) -> El {
-    let tx = tx.clone();
-    Box::new(
-        Button::new(id, label, None)
-            .fit_content(44.0)
-            .on_effect(move || {
-                let _ = tx.send(command.clone());
-            }),
+fn discovered_row(printer: &os_actions::printing::DiscoveredPrinter) -> LiveRow {
+    LiveRow::new(
+        format!("print-centre.found.{}", resource_key(&printer.uri)),
+        "print-centre.found-printer",
+        printer.name.clone(),
     )
+    .effect(&PrintCentreEffect::AddPrinter {
+        printer: printer.uri.clone(),
+    })
+}
+
+fn effect_button(button: Button, door: &Door, effect: PrintCentreEffect) -> El {
+    let door = door.clone();
+    Box::new(
+        button
+            .fit_content(44.0)
+            .on_effect(move || door.effect(&effect)),
+    )
+}
+
+fn command_action(id: &str, label: &str, door: &Door, effect: PrintCentreEffect) -> El {
+    effect_button(Button::new(id, label), door, effect)
 }
 
 fn icon_command_action(
     id: &str,
     label: &str,
     icon: Icon,
-    tx: &mpsc::Sender<UiCommand>,
-    command: UiCommand,
+    door: &Door,
+    effect: PrintCentreEffect,
 ) -> El {
-    let tx = tx.clone();
-    Box::new(
-        Button::new(id, label, None)
-            .with_icon(icon)
-            .fit_content(44.0)
-            .on_effect(move || {
-                let _ = tx.send(command.clone());
-            }),
-    )
+    effect_button(Button::new(id, label).with_icon(icon), door, effect)
 }
 
-fn primary_command_action(
-    id: &str,
-    label: &str,
-    tx: &mpsc::Sender<UiCommand>,
-    command: UiCommand,
-) -> El {
-    let tx = tx.clone();
-    Box::new(
-        Button::new(id, label, None)
-            .fit_content(44.0)
-            .primary()
-            .on_effect(move || {
-                let _ = tx.send(command.clone());
-            }),
-    )
+fn primary_command_action(id: &str, label: &str, door: &Door, effect: PrintCentreEffect) -> El {
+    effect_button(Button::new(id, label).primary(), door, effect)
 }
 
 fn primary_icon_command_action(
     id: &str,
     label: &str,
     icon: Icon,
-    tx: &mpsc::Sender<UiCommand>,
-    command: UiCommand,
+    door: &Door,
+    effect: PrintCentreEffect,
 ) -> El {
-    let tx = tx.clone();
-    Box::new(
-        Button::new(id, label, None)
-            .with_icon(icon)
-            .fit_content(44.0)
-            .primary()
-            .on_effect(move || {
-                let _ = tx.send(command.clone());
-            }),
+    effect_button(
+        Button::new(id, label).with_icon(icon).primary(),
+        door,
+        effect,
     )
 }
 
@@ -540,7 +525,7 @@ fn header(subtitle: &str) -> El {
     )
 }
 
-fn live_header(subtitle: &str, tx: &mpsc::Sender<UiCommand>) -> El {
+fn live_header(subtitle: &str, door: &Door) -> El {
     Box::new(
         // The title and document actions need independently measured rows.
         // A fixed-width, non-wrapping row clipped the primary action at large
@@ -562,15 +547,15 @@ fn live_header(subtitle: &str, tx: &mpsc::Sender<UiCommand>) -> El {
                         "print-centre.add",
                         "Add printer",
                         Icon::Plus,
-                        tx,
-                        UiCommand::Discover,
+                        door,
+                        PrintCentreEffect::FindPrinters,
                     ))
                     .push(primary_icon_command_action(
                         "print-centre.print",
                         "Print a document",
                         Icon::Printer,
-                        tx,
-                        UiCommand::ChooseDocument,
+                        door,
+                        PrintCentreEffect::PrintDocument,
                     )),
             )),
     )
@@ -589,7 +574,7 @@ impl DashboardCard {
 }
 
 impl Widget for DashboardCard {
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -659,7 +644,7 @@ fn dashboard_card(title_text: impl Into<String>, body: El, footer: Option<El>) -
     )))
 }
 
-fn subpage_header(title_text: &str, subtitle: &str, tx: &mpsc::Sender<UiCommand>) -> El {
+fn subpage_header(title_text: &str, subtitle: &str, door: &Door) -> El {
     Box::new(
         Column::new()
             .with_no_padding()
@@ -668,8 +653,8 @@ fn subpage_header(title_text: &str, subtitle: &str, tx: &mpsc::Sender<UiCommand>
                 "print-centre.back",
                 "Print Centre",
                 Icon::ArrowLeft,
-                tx,
-                UiCommand::Dashboard,
+                door,
+                PrintCentreEffect::OpenDashboard,
             ))
             .push(gap(14.0))
             .push(title(title_text, 28.0))
@@ -738,7 +723,7 @@ fn supply_meter(name: &str, level: f32, detail: &str) -> El {
     )
 }
 
-fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiCommand>) -> El {
+fn live_job_card(job: &os_actions::printing::PrintJob, door: &Door) -> El {
     let progress = f32::from(job.progress_percent().unwrap_or(0)) / 100.0;
     let page_count = job.impressions_total.unwrap_or(1).max(1);
     let page = job
@@ -792,15 +777,17 @@ fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiComma
                 .push(command_action(
                     "print-centre.queue",
                     "Open queue",
-                    tx,
-                    UiCommand::Queue,
+                    door,
+                    PrintCentreEffect::OpenQueue,
                 ))
                 .push(gap(10.0))
                 .push(command_action(
                     "print-centre.job.cancel",
                     "Cancel",
-                    tx,
-                    UiCommand::RequestCancel(job.id.clone()),
+                    door,
+                    PrintCentreEffect::ConfirmCancel {
+                        job: job.id.clone(),
+                    },
                 )),
         )),
     )
@@ -810,11 +797,7 @@ fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiComma
     clippy::too_many_lines,
     reason = "dashboard composition keeps the snapshot-derived hierarchy and empty/active states auditable in one place"
 )]
-fn live_view(
-    snapshot: &Snapshot,
-    tx: &mpsc::Sender<UiCommand>,
-    notice: Option<&OperationNotice>,
-) -> El {
+fn live_view(snapshot: &Snapshot, door: &Door, notice: Option<&OperationNotice>) -> El {
     let queues = snapshot.queues.as_deref().unwrap_or(&[]);
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
@@ -844,16 +827,16 @@ fn live_view(
         };
     let mut body = Column::new()
         .with_intrinsic_height()
-        .push(live_header(&subtitle, tx))
+        .push(live_header(&subtitle, door))
         .push(gap(20.0));
     if let Some(notice) = notice {
         body = body.push(notice_banner(notice)).push(gap(14.0));
     }
-    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, true, true), tx) {
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, true, true), door) {
         body = body.push(issue).push(gap(14.0));
     }
     if let Some(job) = active.first() {
-        body = body.push(live_job_card(job, tx)).push(gap(28.0));
+        body = body.push(live_job_card(job, door)).push(gap(28.0));
     }
     let cards: Vec<El> = queues
         .iter()
@@ -890,8 +873,10 @@ fn live_view(
                     &format!("print-centre.device.open.{}", queue.name),
                     "Open",
                     Icon::ArrowRight,
-                    tx,
-                    UiCommand::Device(queue.name.clone()),
+                    door,
+                    PrintCentreEffect::OpenPrinter {
+                        printer: queue.name.clone(),
+                    },
                 )),
             )
         })
@@ -908,8 +893,8 @@ fn live_view(
                         "print-centre.refresh",
                         "Refresh",
                         Icon::Refresh,
-                        tx,
-                        UiCommand::Refresh,
+                        door,
+                        PrintCentreEffect::Refresh,
                     )),
             ))
             .push(gap(10.0));
@@ -920,8 +905,8 @@ fn live_view(
                     "print-centre.discover.empty",
                     "Find a printer",
                     Icon::Search,
-                    tx,
-                    UiCommand::Discover,
+                    door,
+                    PrintCentreEffect::FindPrinters,
                 ),
                 copy("You can still scan documents below. Add a printer whenever you need one."),
             )));
@@ -949,8 +934,8 @@ fn live_view(
                 "print-centre.scan.open",
                 "Start scanning",
                 Icon::Camera,
-                tx,
-                UiCommand::ScanSetup,
+                door,
+                PrintCentreEffect::ScanDocument,
             )),
         ));
     }
@@ -973,8 +958,8 @@ fn live_view(
                         "print-centre.history.open",
                         "See all",
                         Icon::History,
-                        tx,
-                        UiCommand::History,
+                        door,
+                        PrintCentreEffect::OpenHistory,
                     )),
                 ),
             )));
@@ -988,8 +973,8 @@ fn live_view(
                 "print-centre.diagnostics.open",
                 "Check devices",
                 Icon::Info,
-                tx,
-                UiCommand::Diagnostics,
+                door,
+                PrintCentreEffect::RunDiagnostics,
             )),
         ),
     )));
@@ -1000,7 +985,7 @@ fn live_view(
     )
 }
 
-fn history_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
+fn history_view(snapshot: &Snapshot, door: &Door) -> El {
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let terminal: Vec<_> = jobs
         .iter()
@@ -1020,10 +1005,10 @@ fn history_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
         .push(subpage_header(
             "Print history",
             "Documents retained by your print service",
-            tx,
+            door,
         ))
         .push(gap(20.0));
-    if let Some(issue) = unavailable_card(&failed_areas(snapshot, false, true, false), tx) {
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, false, true, false), door) {
         body = body.push(issue).push(gap(14.0));
     }
     if terminal.is_empty() {
@@ -1064,8 +1049,10 @@ fn history_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
                                 &format!("print-centre.history.repeat.{}", job.id),
                                 "Print again",
                                 Icon::Refresh,
-                                tx,
-                                UiCommand::RetryJob(job.id.clone()),
+                                door,
+                                PrintCentreEffect::RetryDocument {
+                                    job: job.id.clone(),
+                                },
                             )),
                     )),
             );
@@ -1108,7 +1095,7 @@ fn friendly_reason(reason: &str) -> &'static str {
     clippy::too_many_lines,
     reason = "diagnostic cards are a linear translation of queue, supply, and scanner state into people-facing checks"
 )]
-fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
+fn diagnostics_view(snapshot: &Snapshot, door: &Door) -> El {
     let queues = snapshot.queues.as_deref().unwrap_or(&[]);
     let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
     let responding = queues
@@ -1149,7 +1136,7 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
             "{} {scanner_word} available",
             scanners.len()
         )));
-    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, false, true), tx) {
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, false, true), door) {
         summary = summary.push(gap(14.0)).push(issue);
     }
     let mut body = Column::new()
@@ -1157,7 +1144,7 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
         .push(subpage_header(
             "Device help",
             "Useful checks without printer jargon",
-            tx,
+            door,
         ))
         .push(gap(20.0))
         .push(Box::new(Card::titled_with_action(
@@ -1165,8 +1152,8 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
             command_action(
                 "print-centre.diagnostics.refresh",
                 "Check again",
-                tx,
-                UiCommand::Refresh,
+                door,
+                PrintCentreEffect::Refresh,
             ),
             Box::new(summary),
         )))
@@ -1200,8 +1187,10 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
         checks = checks.push(gap(12.0)).push(command_action(
             "print-centre.diagnostics.device",
             "Open printer controls",
-            tx,
-            UiCommand::Device(queue.name.clone()),
+            door,
+            PrintCentreEffect::OpenPrinter {
+                printer: queue.name.clone(),
+            },
         ));
         body = body
             .push(Box::new(
@@ -1231,15 +1220,15 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
                         command_action(
                             "print-centre.diagnostics.refresh",
                             "Check again",
-                            tx,
-                            UiCommand::Refresh,
+                            door,
+                            PrintCentreEffect::Refresh,
                         )
                     } else {
                         command_action(
                             "print-centre.diagnostics.scan",
                             "Start scanning",
-                            tx,
-                            UiCommand::ScanSetup,
+                            door,
+                            PrintCentreEffect::ScanDocument,
                         )
                     },
                     copy(scanner_copy),
@@ -1258,7 +1247,7 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
 )]
 fn queue_view(
     snapshot: &Snapshot,
-    tx: &mpsc::Sender<UiCommand>,
+    door: &Door,
     pending_cancel: Option<&str>,
     notice: Option<&OperationNotice>,
 ) -> El {
@@ -1268,13 +1257,13 @@ fn queue_view(
         .push(subpage_header(
             "Print queue",
             "Every document, in one place",
-            tx,
+            door,
         ))
         .push(gap(20.0));
     if let Some(notice) = notice {
         body = body.push(notice_banner(notice)).push(gap(14.0));
     }
-    if let Some(issue) = unavailable_card(&failed_areas(snapshot, false, true, false), tx) {
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, false, true, false), door) {
         body = body.push(issue).push(gap(14.0));
     }
     if pending_cancel.is_some() {
@@ -1313,8 +1302,10 @@ fn queue_view(
                 actions = actions.push(command_action(
                     "print-centre.job.retry",
                     "Try again",
-                    tx,
-                    UiCommand::RetryJob(job.id.clone()),
+                    door,
+                    PrintCentreEffect::RetryDocument {
+                        job: job.id.clone(),
+                    },
                 ));
             }
             if !matches!(
@@ -1332,11 +1323,15 @@ fn queue_view(
                     } else {
                         "Cancel"
                     },
-                    tx,
+                    door,
                     if confirming {
-                        UiCommand::ConfirmCancel(job.id.clone())
+                        PrintCentreEffect::CancelDocument {
+                            job: job.id.clone(),
+                        }
                     } else {
-                        UiCommand::RequestCancel(job.id.clone())
+                        PrintCentreEffect::ConfirmCancel {
+                            job: job.id.clone(),
+                        }
                     },
                 ));
             }
@@ -1386,7 +1381,7 @@ fn queue_view(
     )
 }
 
-fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<UiCommand>) -> El {
+fn device_view(queue: &os_actions::printing::PrinterQueue, door: &Door) -> El {
     let enabled =
         queue.accepting_jobs && !matches!(queue.state, os_actions::printing::QueueState::Paused);
     let mut actions = Row::new().push(command_action(
@@ -1396,29 +1391,39 @@ fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<UiC
         } else {
             "Resume printer"
         },
-        tx,
-        UiCommand::SetEnabled(queue.name.clone(), !enabled),
+        door,
+        if enabled {
+            PrintCentreEffect::PausePrinter {
+                printer: queue.name.clone(),
+            }
+        } else {
+            PrintCentreEffect::ResumePrinter {
+                printer: queue.name.clone(),
+            }
+        },
     ));
     if !queue.default {
         actions = actions.push(command_action(
             "print-centre.device.default",
             "Make preferred",
-            tx,
-            UiCommand::SetDefault(queue.name.clone()),
+            door,
+            PrintCentreEffect::SetDefaultPrinter {
+                printer: queue.name.clone(),
+            },
         ));
     }
     actions = actions
         .push(command_action(
             "print-centre.device.queue",
             "View print queue",
-            tx,
-            UiCommand::Queue,
+            door,
+            PrintCentreEffect::OpenQueue,
         ))
         .push(command_action(
             "print-centre.device.diagnostics",
             "Check printer",
-            tx,
-            UiCommand::Diagnostics,
+            door,
+            PrintCentreEffect::RunDiagnostics,
         ));
     let supplies: El = match &queue.telemetry.supplies {
         Some(items) if !items.is_empty() => {
@@ -1457,7 +1462,7 @@ fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<UiC
         .push(subpage_header(
             &display_name(&queue.name),
             "Status, supplies, and controls",
-            tx,
+            door,
         ))
         .push(gap(20.0))
         .push(Box::new(Card::new(hero)))
@@ -1476,25 +1481,25 @@ fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<UiC
 
 fn discovery_view(
     result: Option<&Result<Vec<os_actions::printing::DiscoveredPrinter>, String>>,
-    tx: &mpsc::Sender<UiCommand>,
+    door: &Door,
 ) -> El {
     let mut body = Column::new()
         .with_intrinsic_height()
         .push(subpage_header(
             "Add a printer",
             "Nearby printers appear automatically",
-            tx,
+            door,
         ))
         .push(gap(20.0));
     match result {
         None => body = body.push(Box::new(Card::titled("Looking nearby", Box::new(ProgressBar::indeterminate().with_label("Finding nearby printers"))))),
-        Some(Ok(printers)) if printers.is_empty() => body = body.push(Box::new(Card::titled("No printers found", copy("Make sure the printer is awake and connected to the same network, then search again.")))).push(gap(12.0)).push(command_action("print-centre.discover.retry", "Search again", tx, UiCommand::Discover)),
+        Some(Ok(printers)) if printers.is_empty() => body = body.push(Box::new(Card::titled("No printers found", copy("Make sure the printer is awake and connected to the same network, then search again.")))).push(gap(12.0)).push(command_action("print-centre.discover.retry", "Search again", door, PrintCentreEffect::FindPrinters)),
         Some(Ok(printers)) => {
             for printer in printers {
                 let add_id = format!("print-centre.discover.add.{}", printer.name);
                 body = body.push(Box::new(Card::titled_with_action(
                     &printer.name,
-                    primary_icon_command_action(&add_id, "Add", Icon::Plus, tx, UiCommand::AddPrinter(printer.clone())),
+                    primary_icon_command_action(&add_id, "Add", Icon::Plus, door, PrintCentreEffect::AddPrinter { printer: printer.uri.clone() }),
                     Box::new(
                         Row::new()
                             .push(Box::new(IconWidget::new(Icon::Printer, 34.0).dim()))
@@ -1511,7 +1516,7 @@ fn discovery_view(
                 ))).push(gap(12.0));
             }
         }
-        Some(Err(_)) => body = body.push(Box::new(Card::titled("Could not search right now", copy("Check your network connection and try again.")))).push(gap(12.0)).push(command_action("print-centre.discover.retry", "Try again", tx, UiCommand::Discover)),
+        Some(Err(_)) => body = body.push(Box::new(Card::titled("Could not search right now", copy("Check your network connection and try again.")))).push(gap(12.0)).push(command_action("print-centre.discover.retry", "Try again", door, PrintCentreEffect::FindPrinters)),
     }
     centered_page(
         Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(body))),
@@ -1530,7 +1535,7 @@ fn print_setup_view(
     selected: Option<&str>,
     copies: &ui::LocalState<f64>,
     two_sided: &ui::LocalState<bool>,
-    tx: &mpsc::Sender<UiCommand>,
+    door: &Door,
 ) -> El {
     let filename = path
         .file_name()
@@ -1555,9 +1560,11 @@ fn print_setup_view(
     if let Some(selected) = selected {
         printer_picker.set_selected(selected);
     }
-    let select_tx = tx.clone();
+    let select = door.clone();
     printer_picker = printer_picker.on_change(move |name| {
-        let _ = select_tx.send(UiCommand::SelectPrinter(name.to_owned()));
+        select.effect(&PrintCentreEffect::ChoosePrinter {
+            printer: name.to_owned(),
+        });
     });
     let can_print = selected.is_some();
     let mut actions = Row::new()
@@ -1565,15 +1572,15 @@ fn print_setup_view(
         .push(command_action(
             "print-centre.print.cancel",
             "Cancel",
-            tx,
-            UiCommand::CancelPrintSetup,
+            door,
+            PrintCentreEffect::ClosePrintSetup,
         ));
     if can_print {
         actions = actions.push(primary_command_action(
             "print-centre.print.submit",
             "Print",
-            tx,
-            UiCommand::PrintDocument,
+            door,
+            PrintCentreEffect::SendToPrinter,
         ));
     }
     let preview_widget: El = match preview {
@@ -1645,9 +1652,9 @@ fn print_setup_view(
                         .push(copy("Print on both sides"))
                         .push(Box::new(Spacer::new()))
                         .push(Box::new({
-                            let tx = tx.clone();
+                            let door = door.clone();
                             Toggle::from_state(two_sided).on_change(move |two_sided| {
-                                let _ = tx.send(UiCommand::SetTwoSided(two_sided));
+                                door.invoke(PrintDefaults::SET_TWO_SIDED.with(two_sided));
                             })
                         })),
                 )),
@@ -1688,7 +1695,7 @@ fn print_setup_view(
                 .with_child(printer_card),
         ));
     let mut review = Column::new().with_no_padding().with_intrinsic_height();
-    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, false, false), tx) {
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, false, false), door) {
         review = review.push(issue).push(gap(12.0));
     }
     let review = review.push(Box::new(cards)).push(gap(24.0));
@@ -1713,7 +1720,7 @@ fn print_setup_view(
         .push(subpage_header(
             "Print a document",
             "Review the document and choose a printer",
-            tx,
+            door,
         ))
         .push(gap(16.0))
         .push(Box::new(
@@ -1735,7 +1742,7 @@ fn scan_setup_view(
     selected: Option<&str>,
     scan: &ScanState,
     notice: Option<&OperationNotice>,
-    tx: &mpsc::Sender<UiCommand>,
+    door: &Door,
 ) -> El {
     let ScanState {
         resolution,
@@ -1780,27 +1787,27 @@ fn scan_setup_view(
             .push(primary_command_action(
                 "print-centre.scan.save-document",
                 "Save document",
-                tx,
-                UiCommand::SaveScannedDocument,
+                door,
+                PrintCentreEffect::SaveScannedDocument,
             ))
             .push(command_action(
                 "print-centre.scan.again",
                 "Scan another page",
-                tx,
-                UiCommand::ScanAnother,
+                door,
+                PrintCentreEffect::ScanAnother,
             ));
 
         let mut edit_actions = Row::new().push(command_action(
             "print-centre.scan.rotate",
             "Rotate right",
-            tx,
-            UiCommand::RotateScanPage,
+            door,
+            PrintCentreEffect::RotateScanPage,
         ));
         edit_actions = edit_actions.push(command_action(
             "print-centre.scan.apply-crop",
             "Apply crop",
-            tx,
-            UiCommand::ApplyScanCrop,
+            door,
+            PrintCentreEffect::CropScanPage,
         ));
         if page.ocr_in_progress {
             edit_actions = edit_actions.push(muted("Updating recognized text…"));
@@ -1808,8 +1815,8 @@ fn scan_setup_view(
             edit_actions = edit_actions.push(command_action(
                 "print-centre.scan.recognize",
                 "Update recognized text",
-                tx,
-                UiCommand::RecognizeCurrentPage,
+                door,
+                PrintCentreEffect::RecognizeText,
             ));
         }
         if page
@@ -1820,8 +1827,8 @@ fn scan_setup_view(
             edit_actions = edit_actions.push(command_action(
                 "print-centre.scan.copy-text",
                 "Copy recognized text",
-                tx,
-                UiCommand::CopyRecognizedText,
+                door,
+                PrintCentreEffect::CopyRecognizedText,
             ));
         }
 
@@ -1853,60 +1860,60 @@ fn scan_setup_view(
             page_actions = page_actions.push(command_action(
                 "print-centre.scan.previous",
                 "Previous page",
-                tx,
-                UiCommand::PreviousScanPage,
+                door,
+                PrintCentreEffect::PreviousScanPage,
             ));
         }
         if selected_page.saturating_add(1) < page_count {
             page_actions = page_actions.push(command_action(
                 "print-centre.scan.next",
                 "Next page",
-                tx,
-                UiCommand::NextScanPage,
+                door,
+                PrintCentreEffect::NextScanPage,
             ));
         }
         if selected_page > 0 {
             page_actions = page_actions.push(command_action(
                 "print-centre.scan.move-earlier",
                 "Move before previous page",
-                tx,
-                UiCommand::MoveScanPageEarlier,
+                door,
+                PrintCentreEffect::MoveScanPageEarlier,
             ));
         }
         if selected_page.saturating_add(1) < page_count {
             page_actions = page_actions.push(command_action(
                 "print-centre.scan.move-later",
                 "Move after next page",
-                tx,
-                UiCommand::MoveScanPageLater,
+                door,
+                PrintCentreEffect::MoveScanPageLater,
             ));
         }
         page_actions = page_actions.push(command_action(
             "print-centre.scan.delete-page",
             "Remove this page",
-            tx,
-            UiCommand::DeleteScanPage,
+            door,
+            PrintCentreEffect::RemoveScanPage,
         ));
 
         let finish_actions = Row::new()
             .push(command_action(
                 "print-centre.scan.save-page",
                 "Export this page",
-                tx,
-                UiCommand::SaveScannedPage,
+                door,
+                PrintCentreEffect::SaveScannedPage,
             ))
             .push(command_action(
                 "print-centre.scan.done",
                 "Back to Print Centre",
-                tx,
-                UiCommand::Dashboard,
+                door,
+                PrintCentreEffect::OpenDashboard,
             ));
         let mut body = Column::new()
             .with_intrinsic_height()
             .push(subpage_header(
                 "Scanned document",
                 "Review the page before saving it",
-                tx,
+                door,
             ))
             .push(gap(20.0));
         if let Some(notice) = notice {
@@ -1952,8 +1959,10 @@ fn scan_setup_view(
             devices = devices.push(command_action(
                 "print-centre.scan.device",
                 &label,
-                tx,
-                UiCommand::SelectScanner(scanner.device.clone()),
+                door,
+                PrintCentreEffect::ScanWith {
+                    scanner: scanner.device.clone(),
+                },
             ));
         }
         if scanners.is_empty() {
@@ -1961,7 +1970,7 @@ fn scan_setup_view(
                 "No scanner is available. Check its cable or network connection, then refresh Print Centre.",
             ));
         }
-    } else if let Some(issue) = unavailable_card(&["scanners"], tx) {
+    } else if let Some(issue) = unavailable_card(&["scanners"], door) {
         devices = devices.push(issue);
     }
     let resolution_state = resolution.clone();
@@ -1976,10 +1985,12 @@ fn scan_setup_view(
     .with_flexible_width()
     .with_id("print-centre.scan.resolution")
     .on_view("print-centre.scan.resolution.select", {
-        let tx = tx.clone();
+        let door = door.clone();
         move |index| {
             resolution_state.set(index);
-            let _ = tx.send(UiCommand::SetScanResolution(index));
+            if let Some(dpi) = SCAN_RESOLUTIONS.get(index) {
+                door.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(*dpi));
+            }
         }
     });
     let color_state = color.clone();
@@ -1994,10 +2005,12 @@ fn scan_setup_view(
     .with_flexible_width()
     .with_id("print-centre.scan.color")
     .on_view("print-centre.scan.color.select", {
-        let tx = tx.clone();
+        let door = door.clone();
         move |index| {
             color_state.set(index);
-            let _ = tx.send(UiCommand::SetScanColor(index));
+            if let Some(color) = SCAN_COLORS.get(index) {
+                door.invoke(PrintDefaults::SET_SCAN_COLOR.with((*color).to_owned()));
+            }
         }
     });
     let source_state = source.clone();
@@ -2012,10 +2025,12 @@ fn scan_setup_view(
     .with_flexible_width()
     .with_id("print-centre.scan.source")
     .on_view("print-centre.scan.source.select", {
-        let tx = tx.clone();
+        let door = door.clone();
         move |index| {
             source_state.set(index);
-            let _ = tx.send(UiCommand::SetScanSource(index));
+            if let Some(source) = SCAN_SOURCES.get(index) {
+                door.invoke(PrintDefaults::SET_SCAN_SOURCE.with((*source).to_owned()));
+            }
         }
     });
     let language_state = language.clone();
@@ -2031,10 +2046,12 @@ fn scan_setup_view(
     .with_flexible_width()
     .with_id("print-centre.scan.language")
     .on_view("print-centre.scan.language.select", {
-        let tx = tx.clone();
+        let door = door.clone();
         move |index| {
             language_state.set(index);
-            let _ = tx.send(UiCommand::SetOcrLanguage(index));
+            if let Some((code, _)) = OCR_LANGUAGES.get(index) {
+                door.invoke(PrintDefaults::SET_OCR_LANGUAGE.with((*code).to_owned()));
+            }
         }
     });
     let settings = Column::new()
@@ -2059,15 +2076,15 @@ fn scan_setup_view(
     let mut actions = Row::new().push(command_action(
         "print-centre.scan.cancel",
         "Cancel",
-        tx,
-        UiCommand::Dashboard,
+        door,
+        PrintCentreEffect::OpenDashboard,
     ));
     if can_scan {
         actions = actions.push(primary_command_action(
             "print-centre.scan.start",
             "Scan page",
-            tx,
-            UiCommand::ScanPage,
+            door,
+            PrintCentreEffect::ScanPage,
         ));
     } else if scanning {
         actions = actions.push(copy("Scanning page…"));
@@ -2077,7 +2094,7 @@ fn scan_setup_view(
         .push(subpage_header(
             "Scan a document",
             "Choose the scanner and how this page should look",
-            tx,
+            door,
         ))
         .push(gap(20.0));
     if let Some(notice) = notice {
@@ -2343,16 +2360,15 @@ fn request_snapshot() -> Option<mpsc::Receiver<Snapshot>> {
 
 impl PrintCentre {
     pub fn new() -> Self {
-        let (commands_tx, commands_rx) = mpsc::channel();
         let defaults = PrintDefaults::default();
         Self {
             inner: loading_view(),
+            page: Page::Loading,
             refresh: None,
-            commands_tx,
-            commands_rx,
             snapshot: None,
             notice: None,
             pending_cancel: None,
+            discovered: None,
             picker: None,
             pending_document: None,
             print_preview: PrintPreview::default(),
@@ -2362,17 +2378,25 @@ impl PrintCentre {
             print_two_sided: ui::LocalState::new(defaults.two_sided),
             selected_scanner: None,
             scan: ScanState::default(),
-            scan_save_picker: None,
-            scan_save_document: false,
+            scan_saving: false,
             defaults,
             dispatcher: None,
             replaced: false,
         }
     }
 
+    /// Where the controls send their effects and the defaults' changes.
+    fn door(&self) -> Door {
+        Door(self.dispatcher.clone())
+    }
+
     /// Ask CUPS and SANE what this machine has.
     pub(crate) fn refresh(&mut self) {
-        self.handle_command(UiCommand::Refresh);
+        self.notice = None;
+        self.page = Page::Loading;
+        self.replaced = true;
+        self.inner = loading_view();
+        self.refresh = request_snapshot();
     }
 
     /// Show `snapshot` as if a refresh had just reported it.
@@ -2395,50 +2419,246 @@ impl PrintCentre {
         self.defaults = defaults.clone();
     }
 
-    /// Change the person's defaults through the resource's actions.
-    fn change_defaults(&self, invoke: ui::tilo_resource::Invoke<PrintDefaults>) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.invoke(invoke);
+    /// Answer `effect`, from a control, the palette or an agent.
+    ///
+    /// # Errors
+    /// Returns why the printer, document or scanner it names is not known,
+    /// or why the work it started failed.
+    pub(crate) fn perform(
+        &mut self,
+        effect: PrintCentreEffect,
+        cx: &mut EffectCx<PrintDefaults, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            PrintCentreEffect::Refresh => self.refresh(),
+            PrintCentreEffect::FindPrinters => return Ok(self.discover(cx)),
+            effect @ (PrintCentreEffect::AddPrinter { .. }
+            | PrintCentreEffect::SetDefaultPrinter { .. }
+            | PrintCentreEffect::PausePrinter { .. }
+            | PrintCentreEffect::ResumePrinter { .. }
+            | PrintCentreEffect::CancelDocument { .. }
+            | PrintCentreEffect::RetryDocument { .. }) => return self.device_job(effect, cx),
+            PrintCentreEffect::OpenDashboard => self.open_dashboard(),
+            PrintCentreEffect::OpenQueue => self.open_queue(),
+            PrintCentreEffect::OpenHistory => self.open_history(),
+            PrintCentreEffect::RunDiagnostics => self.open_diagnostics(),
+            PrintCentreEffect::PrintDocument => self.request_document(),
+            PrintCentreEffect::ScanDocument => self.open_scan(),
+            PrintCentreEffect::OpenPrinter { printer } => {
+                let printer = self.known_printer(printer)?;
+                self.open_device(&printer);
+            }
+            PrintCentreEffect::ConfirmCancel { job } => {
+                self.pending_cancel = Some(self.known_job(job)?);
+                self.open_queue();
+            }
+            PrintCentreEffect::ChoosePrinter { printer } => {
+                self.selected_printer = Some(self.known_printer(printer)?);
+                self.rebuild_print_setup();
+            }
+            PrintCentreEffect::SendToPrinter => return self.send_to_printer(cx),
+            PrintCentreEffect::ClosePrintSetup => self.close_print_setup(),
+            PrintCentreEffect::ScanWith { scanner } => {
+                let scanner = self.known_scanner(scanner)?;
+                if self.page != Page::Scan {
+                    self.open_scan();
+                }
+                self.selected_scanner = Some(scanner);
+                self.rebuild_scan_setup();
+            }
+            PrintCentreEffect::ScanPage => return self.scan_page(cx),
+            PrintCentreEffect::ScanAnother => self.scan_another(),
+            PrintCentreEffect::PreviousScanPage => self.previous_scan_page(),
+            PrintCentreEffect::NextScanPage => self.next_scan_page(),
+            PrintCentreEffect::MoveScanPageEarlier => self.move_scan_page_earlier(),
+            PrintCentreEffect::MoveScanPageLater => self.move_scan_page_later(),
+            PrintCentreEffect::RemoveScanPage => self.remove_scan_page(),
+            PrintCentreEffect::RotateScanPage => self.rotate_scan_page(),
+            PrintCentreEffect::CropScanPage => self.crop_scan_page(),
+            PrintCentreEffect::RecognizeText => return self.recognize_text(cx),
+            PrintCentreEffect::CopyRecognizedText => self.copy_recognized_text()?,
+            PrintCentreEffect::SaveScannedPage => return self.save_scan(false, cx),
+            PrintCentreEffect::SaveScannedDocument => return self.save_scan(true, cx),
+        }
+        Ok(Effected::done())
+    }
+
+    /// Start `effect`'s work on a printer or document in the background.
+    fn device_job(
+        &mut self,
+        effect: PrintCentreEffect,
+        cx: &mut EffectCx<PrintDefaults, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            PrintCentreEffect::AddPrinter { printer } => {
+                let printer = self.known_discovery(&printer)?;
+                let shown = display_name(&printer.name);
+                Ok(Self::run(
+                    cx,
+                    "Printer added",
+                    format!("{shown} is ready for your apps."),
+                    "Could not add printer",
+                    format!("Check that {shown} is awake and connected, then try again."),
+                    move || os_actions::printing::add_driverless(&printer.uri, &printer.name),
+                ))
+            }
+            PrintCentreEffect::SetDefaultPrinter { printer } => {
+                let name = self.known_printer(printer)?;
+                let shown = display_name(&name);
+                Ok(Self::run(
+                    cx,
+                    "Preferred printer changed",
+                    format!("New documents will use {shown} unless you choose another printer."),
+                    "Could not change the preferred printer",
+                    format!("{shown} is still available; try again in a moment."),
+                    move || os_actions::printing::set_default(&name),
+                ))
+            }
+            PrintCentreEffect::PausePrinter { printer } => {
+                let name = self.known_printer(printer)?;
+                Ok(Self::run(
+                    cx,
+                    "Printer paused",
+                    "Documents will wait until you resume it.".into(),
+                    "Could not pause printer",
+                    "Nothing changed. Check the printer connection and try again.".into(),
+                    move || os_actions::printing::set_enabled(&name, false),
+                ))
+            }
+            PrintCentreEffect::ResumePrinter { printer } => {
+                let name = self.known_printer(printer)?;
+                Ok(Self::run(
+                    cx,
+                    "Printer resumed",
+                    "Waiting documents can print now.".into(),
+                    "Could not resume printer",
+                    "Nothing changed. Check the printer connection and try again.".into(),
+                    move || os_actions::printing::set_enabled(&name, true),
+                ))
+            }
+            PrintCentreEffect::CancelDocument { job } => {
+                let id = self.known_job(job)?;
+                self.pending_cancel = None;
+                Ok(Self::run(
+                    cx,
+                    "Document canceled",
+                    "It was removed from the printer.".into(),
+                    "Could not cancel document",
+                    "The document may still print. Check the queue and try again.".into(),
+                    move || os_actions::printing::cancel_job(&id),
+                ))
+            }
+            PrintCentreEffect::RetryDocument { job } => {
+                let id = self.known_job(job)?;
+                Ok(Self::run(
+                    cx,
+                    "Document sent again",
+                    "It is back in the print queue.".into(),
+                    "Could not try again",
+                    "Check the printer, then try again.".into(),
+                    move || os_actions::printing::retry_job(&id),
+                ))
+            }
+            _ => Err(format!("`{}` is not printer work", effect.id())),
         }
     }
 
-    /// Answer `effect` the way the matching control does.
-    ///
-    /// # Errors
-    /// Returns why the printer, document or scanner it names is not known.
-    pub(crate) fn perform(&mut self, effect: PrintCentreEffect) -> Result<(), String> {
-        let command = match effect {
-            PrintCentreEffect::Refresh => UiCommand::Refresh,
-            PrintCentreEffect::FindPrinters => UiCommand::Discover,
-            PrintCentreEffect::OpenDashboard => UiCommand::Dashboard,
-            PrintCentreEffect::OpenQueue => UiCommand::Queue,
-            PrintCentreEffect::OpenHistory => UiCommand::History,
-            PrintCentreEffect::RunDiagnostics => UiCommand::Diagnostics,
-            PrintCentreEffect::PrintDocument => UiCommand::ChooseDocument,
-            PrintCentreEffect::ScanDocument => UiCommand::ScanSetup,
-            PrintCentreEffect::OpenPrinter { printer } => {
-                UiCommand::Device(self.known_printer(printer)?)
+    /// The scan and print steps that have nothing to act on right now.
+    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
+        const NO_DOCUMENT: &str = "Choose a document to print first.";
+        const NO_PAGE: &str = "Scan a page first.";
+        let mut statuses = Vec::new();
+        if self.pending_document.is_none() {
+            statuses.push(EffectStatus::unavailable(
+                PrintCentreEffect::CHOOSE_PRINTER,
+                "no-document",
+                NO_DOCUMENT,
+            ));
+            statuses.push(EffectStatus::unavailable(
+                PrintCentreEffect::SEND_TO_PRINTER,
+                "no-document",
+                NO_DOCUMENT,
+            ));
+            statuses.push(EffectStatus::unavailable(
+                PrintCentreEffect::CLOSE_PRINT_SETUP,
+                "no-document",
+                NO_DOCUMENT,
+            ));
+        } else if self.selected_printer.is_none() {
+            statuses.push(EffectStatus::unavailable(
+                PrintCentreEffect::SEND_TO_PRINTER,
+                "no-printer",
+                "Choose a printer first.",
+            ));
+        }
+        if self.page != Page::Scan || self.selected_scanner.is_none() {
+            statuses.push(EffectStatus::unavailable(
+                PrintCentreEffect::SCAN_PAGE,
+                "no-scanner",
+                "Open scanning with a scanner first.",
+            ));
+        } else if self.scan.in_progress {
+            statuses.push(EffectStatus::unavailable(
+                PrintCentreEffect::SCAN_PAGE,
+                "scanning",
+                "A page is being scanned.",
+            ));
+        }
+        if !self
+            .discovered
+            .as_ref()
+            .is_some_and(|found| found.as_ref().is_ok_and(|found| !found.is_empty()))
+        {
+            statuses.push(EffectStatus::unavailable(
+                PrintCentreEffect::ADD_PRINTER,
+                "nothing-found",
+                "Find network printers first.",
+            ));
+        }
+        let page = self.scan.result.as_ref();
+        let reviewing = self.page == Page::Scan && page.is_some();
+        let first = self.scan.selected == 0;
+        let last = self.scan.selected.saturating_add(1) >= self.scan.pages.len();
+        for (effect, available) in [
+            (PrintCentreEffect::SCAN_ANOTHER, reviewing),
+            (PrintCentreEffect::PREVIOUS_SCAN_PAGE, reviewing && !first),
+            (PrintCentreEffect::NEXT_SCAN_PAGE, reviewing && !last),
+            (
+                PrintCentreEffect::MOVE_SCAN_PAGE_EARLIER,
+                reviewing && !first,
+            ),
+            (PrintCentreEffect::MOVE_SCAN_PAGE_LATER, reviewing && !last),
+            (PrintCentreEffect::REMOVE_SCAN_PAGE, reviewing),
+            (PrintCentreEffect::ROTATE_SCAN_PAGE, reviewing),
+            (PrintCentreEffect::CROP_SCAN_PAGE, reviewing),
+            (
+                PrintCentreEffect::RECOGNIZE_TEXT,
+                reviewing && page.is_some_and(|page| !page.ocr_in_progress),
+            ),
+            (
+                PrintCentreEffect::COPY_RECOGNIZED_TEXT,
+                reviewing
+                    && page
+                        .and_then(|page| page.recognized_text.as_deref())
+                        .is_some_and(|text| !text.trim().is_empty()),
+            ),
+            (PrintCentreEffect::SAVE_SCANNED_PAGE, reviewing),
+            (PrintCentreEffect::SAVE_SCANNED_DOCUMENT, reviewing),
+        ] {
+            if !available {
+                statuses.push(EffectStatus::unavailable(effect, "no-page", NO_PAGE));
+            } else if self.scan_saving
+                && (effect.id == PrintCentreEffect::SAVE_SCANNED_PAGE.id
+                    || effect.id == PrintCentreEffect::SAVE_SCANNED_DOCUMENT.id)
+            {
+                statuses.push(EffectStatus::unavailable(
+                    effect,
+                    "saving",
+                    "The scan is being saved.",
+                ));
             }
-            PrintCentreEffect::SetDefaultPrinter { printer } => {
-                UiCommand::SetDefault(self.known_printer(printer)?)
-            }
-            PrintCentreEffect::PausePrinter { printer } => {
-                UiCommand::SetEnabled(self.known_printer(printer)?, false)
-            }
-            PrintCentreEffect::ResumePrinter { printer } => {
-                UiCommand::SetEnabled(self.known_printer(printer)?, true)
-            }
-            PrintCentreEffect::CancelDocument { job } => {
-                UiCommand::ConfirmCancel(self.known_job(job)?)
-            }
-            PrintCentreEffect::RetryDocument { job } => UiCommand::RetryJob(self.known_job(job)?),
-            PrintCentreEffect::ScanWith { scanner } => {
-                self.handle_command(UiCommand::ScanSetup);
-                UiCommand::SelectScanner(self.known_scanner(scanner)?)
-            }
-        };
-        self.handle_command(command);
-        Ok(())
+        }
+        statuses
     }
 
     fn known_printer(&self, printer: String) -> Result<String, String> {
@@ -2468,16 +2688,28 @@ impl PrintCentre {
             .ok_or_else(|| "Print Centre does not know that scanner".to_owned())
     }
 
-    /// Open the page screenshot `scenario` shows, through the same commands
-    /// its controls send.
+    fn known_discovery(
+        &self,
+        uri: &str,
+    ) -> Result<os_actions::printing::DiscoveredPrinter, String> {
+        self.discovered
+            .as_ref()
+            .and_then(|found| found.as_ref().ok())
+            .and_then(|found| found.iter().find(|printer| printer.uri == uri))
+            .cloned()
+            .ok_or_else(|| "The last search did not find that printer".to_owned())
+    }
+
+    /// Open the page screenshot `scenario` shows, the way its effects do.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
-            Some("queue") => self.handle_command(UiCommand::Queue),
-            Some("history") => self.handle_command(UiCommand::History),
-            Some("diagnostics") => self.handle_command(UiCommand::Diagnostics),
-            Some("device") => self.handle_command(UiCommand::Device("Studio_printer".into())),
+            Some("queue") => self.open_queue(),
+            Some("history") => self.open_history(),
+            Some("diagnostics") => self.open_diagnostics(),
+            Some("device") => self.open_device("Studio_printer"),
             Some("discovery") => {
-                self.handle_command(UiCommand::DiscoveryFinished(Ok(demo_discovered_printers())));
+                self.discovered = Some(Ok(demo_discovered_printers()));
+                self.open_discovery();
             }
             Some("print" | "print-narrow") => {
                 self.pending_document = Some(PathBuf::from("Travel itinerary.pdf"));
@@ -2486,29 +2718,32 @@ impl PrintCentre {
                 self.print_two_sided.set(self.defaults.two_sided);
                 self.rebuild_print_setup();
             }
-            Some("scan") => self.handle_command(UiCommand::ScanSetup),
+            Some("scan") => self.open_scan(),
             Some("scan-result" | "scan-result-narrow") => {
-                self.handle_command(UiCommand::ScanSetup);
-                self.handle_command(UiCommand::ScanFinished(Ok(demo_scanned_page())));
+                self.open_scan();
+                self.scan_finished(Ok(demo_scanned_page()));
             }
             _ => {}
         }
     }
 
-    /// Printers, documents and scanners from the last CUPS/SANE snapshot.
+    /// Printers, documents and scanners from the last CUPS/SANE snapshot,
+    /// and the printers the last search found nearby.
     pub(crate) fn device_rows(&self) -> Vec<LiveRow> {
-        let Some(snapshot) = &self.snapshot else {
-            return Vec::new();
-        };
         let mut rows = Vec::new();
-        if let Ok(queues) = &snapshot.queues {
-            rows.extend(queues.iter().map(printer_row));
+        if let Some(snapshot) = &self.snapshot {
+            if let Ok(queues) = &snapshot.queues {
+                rows.extend(queues.iter().map(printer_row));
+            }
+            if let Ok(jobs) = &snapshot.jobs {
+                rows.extend(jobs.iter().map(job_row));
+            }
+            if let Ok(scanners) = &snapshot.scanners {
+                rows.extend(scanners.iter().map(scanner_row));
+            }
         }
-        if let Ok(jobs) = &snapshot.jobs {
-            rows.extend(jobs.iter().map(job_row));
-        }
-        if let Ok(scanners) = &snapshot.scanners {
-            rows.extend(scanners.iter().map(scanner_row));
+        if let Some(Ok(found)) = &self.discovered {
+            rows.extend(found.iter().map(discovered_row));
         }
         rows
     }
@@ -2545,21 +2780,6 @@ impl PrintCentre {
             .spawn(move || {
                 let _ = tx.send(load_print_preview(&path));
             });
-    }
-
-    fn rebuild_print_setup(&mut self) {
-        if let (Some(snapshot), Some(path)) = (&self.snapshot, &self.pending_document) {
-            self.replaced = true;
-            self.inner = print_setup_view(
-                snapshot,
-                path,
-                &self.print_preview,
-                self.selected_printer.as_deref(),
-                &self.print_copies,
-                &self.print_two_sided,
-                &self.commands_tx,
-            );
-        }
     }
 
     fn poll_print_preview(&mut self) -> bool {
@@ -2624,103 +2844,138 @@ impl PrintCentre {
         true
     }
 
+    fn rebuild_print_setup(&mut self) {
+        if let (Some(snapshot), Some(path)) = (&self.snapshot, &self.pending_document) {
+            self.page = Page::Print;
+            self.replaced = true;
+            self.inner = print_setup_view(
+                snapshot,
+                path,
+                &self.print_preview,
+                self.selected_printer.as_deref(),
+                &self.print_copies,
+                &self.print_two_sided,
+                &Door(self.dispatcher.clone()),
+            );
+        }
+    }
+
     fn rebuild_scan_setup(&mut self) {
         if let Some(snapshot) = &self.snapshot {
+            self.page = Page::Scan;
             self.replaced = true;
             self.inner = scan_setup_view(
                 snapshot,
                 self.selected_scanner.as_deref(),
                 &self.scan,
                 self.notice.as_ref(),
-                &self.commands_tx,
+                &Door(self.dispatcher.clone()),
             );
         }
     }
 
-    fn poll_scan_save_picker(&mut self) -> bool {
-        let Some(receiver) = self.scan_save_picker.as_ref() else {
-            return false;
-        };
-        let outcome = match receiver.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                ui::portal::PortalOutcome::Failed("The file picker stopped responding".into())
-            }
-        };
-        self.scan_save_picker = None;
-        let save_document = std::mem::take(&mut self.scan_save_document);
-        match outcome {
-            ui::portal::PortalOutcome::Opened(mut path) => {
-                if path.extension().is_none() {
-                    path.set_extension(if save_document { "pdf" } else { "png" });
-                }
-                let bytes = if save_document {
-                    Arc::<[u8]>::from(scanned_document_pdf(&self.scan.pages))
-                } else if let Some(page) = &self.scan.result {
-                    page.png.clone()
-                } else {
-                    return true;
-                };
-                if !bytes.is_empty() {
-                    self.spawn_effect(
-                        "tilo-save-scanned-page",
-                        if save_document {
-                            "Scanned document saved"
-                        } else {
-                            "Scanned page saved"
-                        },
-                        format!(
-                            "Saved {}.",
-                            path.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("the page")
-                        ),
-                        if save_document {
-                            "Could not save scanned document"
-                        } else {
-                            "Could not save scanned page"
-                        },
-                        "Choose another location and try again.".into(),
-                        move || save_scanned_page(&path, bytes.as_ref()),
-                    );
-                }
-            }
-            ui::portal::PortalOutcome::Cancelled => {}
-            ui::portal::PortalOutcome::Failed(_) => {
-                self.notice = Some(OperationNotice {
-                    success: false,
-                    title: "Could not open the file picker".into(),
-                    message: "Try saving the scanned page again.".into(),
-                });
-                self.rebuild_scan_setup();
-            }
-        }
-        true
-    }
-
     fn rebuild_dashboard(&mut self) {
+        self.page = Page::Dashboard;
         self.replaced = true;
+        let door = self.door();
         self.inner = self.snapshot.as_ref().map_or_else(empty_view, |snapshot| {
-            live_view(snapshot, &self.commands_tx, self.notice.as_ref())
+            live_view(snapshot, &door, self.notice.as_ref())
         });
     }
 
-    fn spawn_effect(
-        &self,
-        name: &'static str,
+    fn open_dashboard(&mut self) {
+        self.scan.result = None;
+        self.scan.in_progress = false;
+        self.rebuild_dashboard();
+    }
+
+    fn open_queue(&mut self) {
+        let door = self.door();
+        if let Some(snapshot) = &self.snapshot {
+            self.page = Page::Queue;
+            self.replaced = true;
+            self.inner = queue_view(
+                snapshot,
+                &door,
+                self.pending_cancel.as_deref(),
+                self.notice.as_ref(),
+            );
+        }
+    }
+
+    fn open_history(&mut self) {
+        let door = self.door();
+        if let Some(snapshot) = &self.snapshot {
+            self.page = Page::History;
+            self.replaced = true;
+            self.inner = history_view(snapshot, &door);
+        }
+    }
+
+    fn open_diagnostics(&mut self) {
+        let door = self.door();
+        if let Some(snapshot) = &self.snapshot {
+            self.page = Page::Diagnostics;
+            self.replaced = true;
+            self.inner = diagnostics_view(snapshot, &door);
+        }
+    }
+
+    fn open_device(&mut self, name: &str) {
+        let door = self.door();
+        if let Some(queue) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.queues.as_ref().ok())
+            .and_then(|queues| queues.iter().find(|q| q.name == name))
+        {
+            self.page = Page::Device(name.to_owned());
+            self.replaced = true;
+            self.inner = device_view(queue, &door);
+        }
+    }
+
+    fn open_discovery(&mut self) {
+        self.page = Page::Discovery;
+        self.replaced = true;
+        self.inner = discovery_view(self.discovered.as_ref(), &self.door());
+    }
+
+    /// Search the network for printers, showing the search while it runs.
+    fn discover(&mut self, cx: &mut EffectCx<PrintDefaults, Self>) -> Effected {
+        self.discovered = None;
+        self.open_discovery();
+        cx.thread(
+            |_| os_actions::printing::discover_driverless(),
+            |app: &mut Self, found: Result<_, String>, _cx| {
+                let answer = match &found {
+                    Ok(_) => Ok(Effected::done()),
+                    Err(_) => Err("Could not search for printers right now".to_owned()),
+                };
+                app.discovered = Some(found);
+                if app.page == Page::Discovery {
+                    app.open_discovery();
+                }
+                answer
+            },
+        )
+    }
+
+    /// Run `work` on a printer or document in the background, then tell the
+    /// person how it went and show what CUPS reports afterwards.
+    fn run(
+        cx: &mut EffectCx<PrintDefaults, Self>,
         success_title: &'static str,
         success_message: String,
         failure_title: &'static str,
         failure_message: String,
-        effect: impl FnOnce() -> Result<(), String> + Send + 'static,
-    ) {
-        let tx = self.commands_tx.clone();
-        let _ = std::thread::Builder::new()
-            .name(name.into())
-            .spawn(move || {
-                let success = effect().is_ok();
-                let _ = tx.send(UiCommand::EffectFinished(OperationNotice {
+        work: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) -> Effected {
+        cx.thread(
+            move |_| work(),
+            move |app: &mut Self, result: Result<(), String>, _cx| {
+                let success = result.is_ok();
+                app.finished(OperationNotice {
                     success,
                     title: if success {
                         success_title
@@ -2731,576 +2986,527 @@ impl PrintCentre {
                     message: if success {
                         success_message
                     } else {
-                        failure_message
+                        failure_message.clone()
                     },
-                }));
-            });
+                });
+                if success {
+                    Ok(Effected::done())
+                } else {
+                    Err(failure_message)
+                }
+            },
+        )
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "all UI command transitions remain centralized so operation feedback and refresh behavior cannot diverge"
-    )]
-    fn handle_command(&mut self, command: UiCommand) {
-        match command {
-            UiCommand::Refresh => {
-                self.notice = None;
-                self.replaced = true;
-                self.inner = loading_view();
-                self.refresh = request_snapshot();
-            }
-            UiCommand::Dashboard => {
-                self.scan.result = None;
-                self.scan.in_progress = false;
-                self.rebuild_dashboard();
-            }
-            UiCommand::Queue => {
-                if let Some(snapshot) = &self.snapshot {
-                    self.replaced = true;
-                    self.inner = queue_view(
-                        snapshot,
-                        &self.commands_tx,
-                        self.pending_cancel.as_deref(),
-                        self.notice.as_ref(),
-                    );
-                }
-            }
-            UiCommand::History => {
-                if let Some(snapshot) = &self.snapshot {
-                    self.replaced = true;
-                    self.inner = history_view(snapshot, &self.commands_tx);
-                }
-            }
-            UiCommand::Diagnostics => {
-                if let Some(snapshot) = &self.snapshot {
-                    self.replaced = true;
-                    self.inner = diagnostics_view(snapshot, &self.commands_tx);
-                }
-            }
-            UiCommand::Device(name) => {
-                if let Some(queue) = self
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.queues.as_ref().ok())
-                    .and_then(|queues| queues.iter().find(|q| q.name == name))
-                {
-                    self.replaced = true;
-                    self.inner = device_view(queue, &self.commands_tx);
-                }
-            }
-            UiCommand::Discover => {
-                self.replaced = true;
-                self.inner = discovery_view(None, &self.commands_tx);
-                let tx = self.commands_tx.clone();
-                let _ = std::thread::Builder::new()
-                    .name("tilo-printer-discovery".into())
-                    .spawn(move || {
-                        let _ = tx.send(UiCommand::DiscoveryFinished(
-                            os_actions::printing::discover_driverless(),
-                        ));
-                    });
-            }
-            UiCommand::DiscoveryFinished(result) => {
-                self.replaced = true;
-                self.inner = discovery_view(Some(&result), &self.commands_tx);
-            }
-            UiCommand::AddPrinter(printer) => {
-                let shown = display_name(&printer.name);
-                self.spawn_effect(
-                    "tilo-add-printer",
-                    "Printer added",
-                    format!("{shown} is ready for your apps."),
-                    "Could not add printer",
-                    format!("Check that {shown} is awake and connected, then try again."),
-                    move || os_actions::printing::add_driverless(&printer.uri, &printer.name),
-                );
-            }
-            UiCommand::SetDefault(name) => {
-                let shown = display_name(&name);
-                self.spawn_effect(
-                    "tilo-default-printer",
-                    "Preferred printer changed",
-                    format!("New documents will use {shown} unless you choose another printer."),
-                    "Could not change the preferred printer",
-                    format!("{shown} is still available; try again in a moment."),
-                    move || os_actions::printing::set_default(&name),
-                );
-            }
-            UiCommand::SetEnabled(name, enabled) => self.spawn_effect(
-                "tilo-toggle-printer",
-                if enabled {
-                    "Printer resumed"
-                } else {
-                    "Printer paused"
-                },
-                if enabled {
-                    "Waiting documents can print now.".into()
-                } else {
-                    "Documents will wait until you resume it.".into()
-                },
-                if enabled {
-                    "Could not resume printer"
-                } else {
-                    "Could not pause printer"
-                },
-                "Nothing changed. Check the printer connection and try again.".into(),
-                move || os_actions::printing::set_enabled(&name, enabled),
-            ),
-            UiCommand::RequestCancel(id) => {
-                self.pending_cancel = Some(id);
-                if let Some(snapshot) = &self.snapshot {
-                    self.replaced = true;
-                    self.inner = queue_view(
-                        snapshot,
-                        &self.commands_tx,
-                        self.pending_cancel.as_deref(),
-                        self.notice.as_ref(),
-                    );
-                }
-            }
-            UiCommand::ConfirmCancel(id) => {
-                self.pending_cancel = None;
-                self.spawn_effect(
-                    "tilo-cancel-print-job",
-                    "Document canceled",
-                    "It was removed from the printer.".into(),
-                    "Could not cancel document",
-                    "The document may still print. Check the queue and try again.".into(),
-                    move || os_actions::printing::cancel_job(&id),
-                );
-            }
-            UiCommand::RetryJob(id) => self.spawn_effect(
-                "tilo-retry-print-job",
-                "Document sent again",
-                "It is back in the print queue.".into(),
-                "Could not try again",
-                "Check the printer, then try again.".into(),
-                move || os_actions::printing::retry_job(&id),
-            ),
-            UiCommand::EffectFinished(notice) => {
-                self.notice = Some(notice);
-                if self.scan.result.is_some() {
-                    // Saving a scan is not a printer-state mutation. Keep the
-                    // page and its OCR visible so the user can confirm success,
-                    // save another copy, or scan the next page without losing
-                    // their place.
-                    self.rebuild_scan_setup();
-                } else {
-                    self.refresh = request_snapshot();
-                }
-            }
-            UiCommand::ChooseDocument => self.request_document(),
-            UiCommand::SetTwoSided(two_sided) => {
-                self.change_defaults(PrintDefaults::SET_TWO_SIDED.with(two_sided));
-            }
-            UiCommand::SetScanResolution(index) => {
-                if let Some(dpi) = SCAN_RESOLUTIONS.get(index) {
-                    self.change_defaults(PrintDefaults::SET_SCAN_RESOLUTION.with(*dpi));
-                }
-            }
-            UiCommand::SetScanColor(index) => {
-                if let Some(color) = SCAN_COLORS.get(index) {
-                    self.change_defaults(PrintDefaults::SET_SCAN_COLOR.with((*color).to_owned()));
-                }
-            }
-            UiCommand::SetScanSource(index) => {
-                if let Some(source) = SCAN_SOURCES.get(index) {
-                    self.change_defaults(PrintDefaults::SET_SCAN_SOURCE.with((*source).to_owned()));
-                }
-            }
-            UiCommand::SetOcrLanguage(index) => {
-                if let Some((code, _)) = OCR_LANGUAGES.get(index) {
-                    self.change_defaults(PrintDefaults::SET_OCR_LANGUAGE.with((*code).to_owned()));
-                }
-            }
-            UiCommand::SelectPrinter(name) => {
-                self.selected_printer = Some(name);
-                self.rebuild_print_setup();
-            }
-            UiCommand::PrintDocument => {
-                let (Some(path), Some(queue)) =
-                    (self.pending_document.take(), self.selected_printer.take())
-                else {
-                    return;
-                };
-                let filename = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("Document")
-                    .to_string();
-                let shown_queue = display_name(&queue);
-                self.print_preview = PrintPreview::Unavailable;
-                self.print_preview_rx = None;
-                let copies = format!("{:.0}", self.print_copies.get().clamp(1.0, 99.0))
-                    .parse::<u16>()
-                    .unwrap_or(1);
-                let two_sided = self.print_two_sided.get();
-                self.spawn_effect(
-                    "tilo-print-document",
-                    "Document sent to printer",
-                    format!("{filename} was sent to {shown_queue}."),
-                    "Could not print document",
-                    format!("{filename} was not sent. Check the printer and try again."),
-                    move || {
-                        os_actions::printing::print_document(
-                            &queue,
-                            &path,
-                            os_actions::printing::PrintSettings { copies, two_sided },
-                        )
-                    },
-                );
-            }
-            UiCommand::CancelPrintSetup => {
-                self.pending_document = None;
-                self.print_preview = PrintPreview::Unavailable;
-                self.print_preview_rx = None;
-                self.selected_printer = None;
-                self.print_copies.set(1.0);
-                self.print_two_sided.set(self.defaults.two_sided);
-                self.rebuild_dashboard();
-            }
-            UiCommand::ScanSetup => {
-                self.notice = None;
-                self.scan.result = None;
-                self.scan.pages.clear();
-                self.scan.selected = 0;
-                self.scan.in_progress = false;
-                self.selected_scanner = self.snapshot.as_ref().and_then(|snapshot| {
-                    snapshot
-                        .scanners
-                        .as_ref()
-                        .ok()
-                        .and_then(|scanners| scanners.first())
-                        .map(|scanner| scanner.device.clone())
-                });
-                self.rebuild_scan_setup();
-            }
-            UiCommand::SelectScanner(device) => {
-                self.selected_scanner = Some(device);
-                self.rebuild_scan_setup();
-            }
-            UiCommand::ScanPage => {
-                let Some(device) = self.selected_scanner.clone() else {
-                    return;
-                };
-                let resolution_dpi = SCAN_RESOLUTIONS
-                    .get(self.scan.resolution.get())
-                    .copied()
-                    .unwrap_or(300);
-                let color = match self.scan.color.get() {
-                    1 => os_actions::printing::ScanColor::Grayscale,
-                    2 => os_actions::printing::ScanColor::LineArt,
-                    _ => os_actions::printing::ScanColor::Color,
-                };
-                let source = match self.scan.source.get() {
-                    1 => os_actions::printing::ScanSource::Feeder,
-                    2 => os_actions::printing::ScanSource::FeederDuplex,
-                    _ => os_actions::printing::ScanSource::Flatbed,
-                };
-                let (ocr_code, ocr_language) = match self.scan.language.get() {
-                    1 => ("deu", "German"),
-                    2 => ("fra", "French"),
-                    3 => ("spa", "Spanish"),
-                    _ => ("eng", "English"),
-                };
-                self.scan.in_progress = true;
-                self.rebuild_scan_setup();
-                let tx = self.commands_tx.clone();
-                let _ = std::thread::Builder::new()
-                    .name("tilo-scan-document".into())
-                    .spawn(move || {
-                        let result = os_actions::printing::scan_page(
-                            &device,
-                            os_actions::printing::ScanSettings {
-                                resolution_dpi,
-                                color,
-                                source,
-                            },
-                        )
-                        .and_then(|png| {
-                            let decoded = image::load_from_memory(&png)
-                                .map_err(|error| format!("scanner returned an invalid image: {error}"))?;
-                            let width = decoded.width();
-                            let height = decoded.height();
-                            let rgba: Arc<[u8]> = Arc::from(decoded.to_rgba8().into_raw());
-                            let (recognized_text, ocr_note) = match tilo_ocr::recognize(&decoded, ocr_code) {
-                                Ok(document) if document.words.is_empty() => {
-                                    (None, "No text was found on this page.".into())
-                                }
-                                Ok(document) => {
-                                    let count = document.words.len();
-                                    (Some(document.plain_text()), format!("Recognized {count} words."))
-                                }
-                                Err(tilo_ocr::Error::Unavailable) => (
-                                    None,
-                                    "Text recognition is not installed; the scanned page is still ready.".into(),
-                                ),
-                                Err(_) => (
-                                    None,
-                                    "Text could not be recognized; the scanned page is still ready.".into(),
-                                ),
-                            };
-                            Ok(ScannedPage {
-                                png: Arc::from(png),
-                                rgba,
-                                width,
-                                height,
-                                recognized_text,
-                                ocr_note,
-                                ocr_language: ocr_language.into(),
-                                ocr_needs_refresh: false,
-                                ocr_in_progress: false,
-                            })
-                        });
-                        let _ = tx.send(UiCommand::ScanFinished(result));
-                    });
-            }
-            UiCommand::ScanFinished(result) => {
-                self.scan.in_progress = false;
-                match result {
-                    Ok(page) => {
-                        self.scan.pages.push(page.clone());
-                        self.scan.selected = self.scan.pages.len().saturating_sub(1);
-                        self.scan.result = Some(page);
-                        self.scan.crop.set(CropSelection::default());
-                    }
-                    Err(_) => {
-                        self.notice = Some(OperationNotice {
-                            success: false,
-                            title: "Could not scan this page".into(),
-                            message: "Check that the scanner is connected and the paper is positioned, then try again.".into(),
-                        });
-                    }
-                }
-                self.rebuild_scan_setup();
-            }
-            UiCommand::SaveScannedPage => {
-                if self.scan.result.is_some() && self.scan_save_picker.is_none() {
-                    self.scan_save_document = false;
-                    self.scan_save_picker = Some(
-                        ui::portal::PickRequest::save(
-                            "Save scanned page",
-                            "Save",
-                            "Scanned page.png",
-                        )
-                        .thread_name("print-centre-scan-save-picker")
-                        .send(),
-                    );
-                }
-            }
-            UiCommand::SaveScannedDocument => {
-                if !self.scan.pages.is_empty() && self.scan_save_picker.is_none() {
-                    self.scan_save_document = true;
-                    self.scan_save_picker = Some(
-                        ui::portal::PickRequest::save(
-                            "Save scanned document",
-                            "Save",
-                            "Scanned document.pdf",
-                        )
-                        .thread_name("print-centre-scan-document-save-picker")
-                        .send(),
-                    );
-                }
-            }
-            UiCommand::CopyRecognizedText => {
-                let Some(text) = self
-                    .scan
-                    .result
-                    .as_ref()
-                    .and_then(|page| page.recognized_text.as_deref())
-                    .filter(|text| !text.trim().is_empty())
-                else {
-                    return;
-                };
-                ui::text_selection::clipboard_copy(text);
-                self.notice = Some(OperationNotice {
-                    success: true,
-                    title: "Text copied".into(),
-                    message: "Paste the recognized text into any app.".into(),
-                });
-                self.rebuild_scan_setup();
-            }
-            UiCommand::ScanAnother => {
-                self.notice = None;
-                self.scan.result = None;
-                self.rebuild_scan_setup();
-            }
-            UiCommand::PreviousScanPage => {
-                self.scan.selected = self.scan.selected.saturating_sub(1);
-                self.scan.result = self.scan.pages.get(self.scan.selected).cloned();
-                self.scan.crop.set(CropSelection::default());
-                self.rebuild_scan_setup();
-            }
-            UiCommand::NextScanPage => {
-                if self.scan.selected.saturating_add(1) < self.scan.pages.len() {
-                    self.scan.selected = self.scan.selected.saturating_add(1);
-                }
-                self.scan.result = self.scan.pages.get(self.scan.selected).cloned();
-                self.scan.crop.set(CropSelection::default());
-                self.rebuild_scan_setup();
-            }
-            UiCommand::MoveScanPageEarlier => {
-                if self.scan.selected > 0 {
-                    let previous = self.scan.selected.saturating_sub(1);
-                    self.scan.pages.swap(self.scan.selected, previous);
-                    self.scan.selected = previous;
-                }
-                self.scan.result = self.scan.pages.get(self.scan.selected).cloned();
-                self.scan.crop.set(CropSelection::default());
-                self.rebuild_scan_setup();
-            }
-            UiCommand::MoveScanPageLater => {
-                let next = self.scan.selected.saturating_add(1);
-                if next < self.scan.pages.len() {
-                    self.scan.pages.swap(self.scan.selected, next);
-                    self.scan.selected = next;
-                }
-                self.scan.result = self.scan.pages.get(self.scan.selected).cloned();
-                self.scan.crop.set(CropSelection::default());
-                self.rebuild_scan_setup();
-            }
-            UiCommand::DeleteScanPage => {
-                if self.scan.selected < self.scan.pages.len() {
-                    self.scan.pages.remove(self.scan.selected);
-                }
-                self.scan.selected = self
-                    .scan
-                    .selected
-                    .min(self.scan.pages.len().saturating_sub(1));
-                self.scan.result = self.scan.pages.get(self.scan.selected).cloned();
-                self.scan.crop.set(CropSelection::default());
-                self.rebuild_scan_setup();
-            }
-            UiCommand::RotateScanPage => {
-                if let Some(page) = self.scan.pages.get_mut(self.scan.selected) {
-                    match page.rotate_clockwise() {
-                        Ok(()) => {
-                            self.scan.result = Some(page.clone());
-                            self.notice = None;
-                        }
-                        Err(message) => {
-                            self.notice = Some(OperationNotice {
-                                success: false,
-                                title: "Could not rotate this page".into(),
-                                message,
-                            });
-                        }
-                    }
-                }
-                self.rebuild_scan_setup();
-            }
-            UiCommand::ApplyScanCrop => {
-                let crop = self.scan.crop.get();
-                if crop == CropSelection::default() {
-                    return;
-                }
-                if let Some(page) = self.scan.pages.get_mut(self.scan.selected) {
-                    match page.crop_to(crop) {
-                        Ok(()) => {
-                            self.scan.result = Some(page.clone());
-                            self.scan.crop.set(CropSelection::default());
-                            self.notice = None;
-                        }
-                        Err(message) => {
-                            self.notice = Some(OperationNotice {
-                                success: false,
-                                title: "Could not crop this page".into(),
-                                message,
-                            });
-                        }
-                    }
-                }
-                self.rebuild_scan_setup();
-            }
-            UiCommand::RecognizeCurrentPage => {
-                let Some(current) = self.scan.pages.get_mut(self.scan.selected) else {
-                    return;
-                };
-                if current.ocr_in_progress {
-                    return;
-                }
-                current.ocr_in_progress = true;
-                let page = current.clone();
-                self.scan.result = Some(page.clone());
-                self.rebuild_scan_setup();
-                let identity = page.png.clone();
-                let tx = self.commands_tx.clone();
-                let _ =
-                    std::thread::Builder::new()
-                        .name("tilo-recognize-scanned-page".into())
-                        .spawn(move || {
-                            let result = image::RgbaImage::from_raw(
-                                page.width,
-                                page.height,
-                                page.rgba.to_vec(),
-                            )
-                            .ok_or_else(|| "The scanned page pixels were incomplete.".to_string())
-                            .and_then(|rgba| {
-                                let code = match page.ocr_language.as_str() {
-                                    "German" => "deu",
-                                    "French" => "fra",
-                                    "Spanish" => "spa",
-                                    _ => "eng",
-                                };
-                                tilo_ocr::recognize(&image::DynamicImage::ImageRgba8(rgba), code)
-                                    .map(|document| {
-                                        let count = document.words.len();
-                                        let text = document.plain_text();
-                                        let recognized = (!text.trim().is_empty()).then_some(text);
-                                        let note = if count == 0 {
-                                            "No text was found on this page.".into()
-                                        } else {
-                                            format!("Recognized {count} words.")
-                                        };
-                                        (recognized, note)
-                                    })
-                                    .map_err(|_| {
-                                        "Text could not be recognized on this page.".into()
-                                    })
-                            });
-                            let _ = tx.send(UiCommand::RecognitionFinished(identity, result));
-                        });
-            }
-            UiCommand::RecognitionFinished(identity, result) => {
-                let Some(index) = self
-                    .scan
-                    .pages
-                    .iter()
-                    .position(|page| Arc::ptr_eq(&page.png, &identity))
-                else {
-                    return;
-                };
-                match result {
-                    Ok((text, note)) => {
-                        let Some(page) = self.scan.pages.get_mut(index) else {
-                            return;
-                        };
-                        page.recognized_text = text;
-                        page.ocr_note = note;
-                        page.ocr_needs_refresh = false;
-                        page.ocr_in_progress = false;
-                        if index == self.scan.selected {
-                            self.scan.result = Some(page.clone());
-                        }
-                    }
-                    Err(message) => {
-                        if let Some(page) = self.scan.pages.get_mut(index) {
-                            page.ocr_in_progress = false;
-                        }
-                        if index == self.scan.selected {
-                            self.scan.result = self.scan.pages.get(index).cloned();
-                        }
-                        self.notice = Some(OperationNotice {
-                            success: false,
-                            title: "Text was not updated".into(),
-                            message,
-                        });
-                    }
-                }
-                self.rebuild_scan_setup();
-            }
+    /// Work in the background finished, as `notice` says.
+    fn finished(&mut self, notice: OperationNotice) {
+        self.notice = Some(notice);
+        if self.scan.result.is_some() {
+            // Saving a scan is not a printer-state mutation. Keep the page
+            // and its OCR visible so the person can confirm success, save
+            // another copy, or scan the next page without losing their
+            // place.
+            self.rebuild_scan_setup();
+        } else {
+            self.refresh = request_snapshot();
         }
     }
+
+    /// Print the document being set up on the chosen printer.
+    fn send_to_printer(&mut self, cx: &mut EffectCx<PrintDefaults, Self>) -> EffectAnswer {
+        let (Some(path), Some(queue)) =
+            (self.pending_document.take(), self.selected_printer.take())
+        else {
+            return Err("Choose a document and a printer first".into());
+        };
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Document")
+            .to_string();
+        let shown_queue = display_name(&queue);
+        self.print_preview = PrintPreview::Unavailable;
+        self.print_preview_rx = None;
+        let copies = format!("{:.0}", self.print_copies.get().clamp(1.0, 99.0))
+            .parse::<u16>()
+            .unwrap_or(1);
+        let two_sided = self.print_two_sided.get();
+        Ok(Self::run(
+            cx,
+            "Document sent to printer",
+            format!("{filename} was sent to {shown_queue}."),
+            "Could not print document",
+            format!("{filename} was not sent. Check the printer and try again."),
+            move || {
+                os_actions::printing::print_document(
+                    &queue,
+                    &path,
+                    os_actions::printing::PrintSettings { copies, two_sided },
+                )
+            },
+        ))
+    }
+
+    fn close_print_setup(&mut self) {
+        self.pending_document = None;
+        self.print_preview = PrintPreview::Unavailable;
+        self.print_preview_rx = None;
+        self.selected_printer = None;
+        self.print_copies.set(1.0);
+        self.print_two_sided.set(self.defaults.two_sided);
+        self.rebuild_dashboard();
+    }
+
+    /// Start a new scanned document with the first scanner.
+    fn open_scan(&mut self) {
+        self.notice = None;
+        self.scan.result = None;
+        self.scan.pages.clear();
+        self.scan.selected = 0;
+        self.scan.in_progress = false;
+        self.selected_scanner = self.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .scanners
+                .as_ref()
+                .ok()
+                .and_then(|scanners| scanners.first())
+                .map(|scanner| scanner.device.clone())
+        });
+        self.rebuild_scan_setup();
+    }
+
+    /// Scan a page with the chosen scanner and settings, recognizing its
+    /// text in the person's language.
+    fn scan_page(&mut self, cx: &mut EffectCx<PrintDefaults, Self>) -> EffectAnswer {
+        let Some(device) = self.selected_scanner.clone() else {
+            return Err("Choose a scanner first".into());
+        };
+        if self.scan.in_progress {
+            return Err("A page is being scanned".into());
+        }
+        let resolution_dpi = SCAN_RESOLUTIONS
+            .get(self.scan.resolution.get())
+            .copied()
+            .unwrap_or(300);
+        let color = match self.scan.color.get() {
+            1 => os_actions::printing::ScanColor::Grayscale,
+            2 => os_actions::printing::ScanColor::LineArt,
+            _ => os_actions::printing::ScanColor::Color,
+        };
+        let source = match self.scan.source.get() {
+            1 => os_actions::printing::ScanSource::Feeder,
+            2 => os_actions::printing::ScanSource::FeederDuplex,
+            _ => os_actions::printing::ScanSource::Flatbed,
+        };
+        let (ocr_code, ocr_language) = match self.scan.language.get() {
+            1 => ("deu", "German"),
+            2 => ("fra", "French"),
+            3 => ("spa", "Spanish"),
+            _ => ("eng", "English"),
+        };
+        self.scan.in_progress = true;
+        self.rebuild_scan_setup();
+        Ok(cx.thread(
+            move |_| {
+                os_actions::printing::scan_page(
+                    &device,
+                    os_actions::printing::ScanSettings {
+                        resolution_dpi,
+                        color,
+                        source,
+                    },
+                )
+                .and_then(|png| decode_scanned_page(png, ocr_code, ocr_language))
+            },
+            |app: &mut Self, result: Result<ScannedPage, String>, _cx| {
+                let answer = match &result {
+                    Ok(_) => Ok(Effected::done()),
+                    Err(error) => Err(error.clone()),
+                };
+                app.scan_finished(result);
+                answer
+            },
+        ))
+    }
+
+    fn scan_finished(&mut self, result: Result<ScannedPage, String>) {
+        self.scan.in_progress = false;
+        match result {
+            Ok(page) => {
+                self.scan.pages.push(page.clone());
+                self.scan.selected = self.scan.pages.len().saturating_sub(1);
+                self.scan.result = Some(page);
+                self.scan.crop.set(CropSelection::default());
+            }
+            Err(_) => {
+                self.notice = Some(OperationNotice {
+                    success: false,
+                    title: "Could not scan this page".into(),
+                    message: "Check that the scanner is connected and the paper is positioned, then try again.".into(),
+                });
+            }
+        }
+        self.rebuild_scan_setup();
+    }
+
+    /// Show the page now selected, with a fresh crop frame.
+    fn show_selected_scan_page(&mut self) {
+        self.scan.result = self.scan.pages.get(self.scan.selected).cloned();
+        self.scan.crop.set(CropSelection::default());
+        self.rebuild_scan_setup();
+    }
+
+    fn scan_another(&mut self) {
+        self.notice = None;
+        self.scan.result = None;
+        self.rebuild_scan_setup();
+    }
+
+    fn previous_scan_page(&mut self) {
+        self.scan.selected = self.scan.selected.saturating_sub(1);
+        self.show_selected_scan_page();
+    }
+
+    fn next_scan_page(&mut self) {
+        if self.scan.selected.saturating_add(1) < self.scan.pages.len() {
+            self.scan.selected = self.scan.selected.saturating_add(1);
+        }
+        self.show_selected_scan_page();
+    }
+
+    fn move_scan_page_earlier(&mut self) {
+        if self.scan.selected > 0 {
+            let previous = self.scan.selected.saturating_sub(1);
+            self.scan.pages.swap(self.scan.selected, previous);
+            self.scan.selected = previous;
+        }
+        self.show_selected_scan_page();
+    }
+
+    fn move_scan_page_later(&mut self) {
+        let next = self.scan.selected.saturating_add(1);
+        if next < self.scan.pages.len() {
+            self.scan.pages.swap(self.scan.selected, next);
+            self.scan.selected = next;
+        }
+        self.show_selected_scan_page();
+    }
+
+    fn remove_scan_page(&mut self) {
+        if self.scan.selected < self.scan.pages.len() {
+            self.scan.pages.remove(self.scan.selected);
+        }
+        self.scan.selected = self
+            .scan
+            .selected
+            .min(self.scan.pages.len().saturating_sub(1));
+        self.show_selected_scan_page();
+    }
+
+    fn rotate_scan_page(&mut self) {
+        if let Some(page) = self.scan.pages.get_mut(self.scan.selected) {
+            match page.rotate_clockwise() {
+                Ok(()) => {
+                    self.scan.result = Some(page.clone());
+                    self.notice = None;
+                }
+                Err(message) => {
+                    self.notice = Some(OperationNotice {
+                        success: false,
+                        title: "Could not rotate this page".into(),
+                        message,
+                    });
+                }
+            }
+        }
+        self.rebuild_scan_setup();
+    }
+
+    fn crop_scan_page(&mut self) {
+        let crop = self.scan.crop.get();
+        if crop == CropSelection::default() {
+            return;
+        }
+        if let Some(page) = self.scan.pages.get_mut(self.scan.selected) {
+            match page.crop_to(crop) {
+                Ok(()) => {
+                    self.scan.result = Some(page.clone());
+                    self.scan.crop.set(CropSelection::default());
+                    self.notice = None;
+                }
+                Err(message) => {
+                    self.notice = Some(OperationNotice {
+                        success: false,
+                        title: "Could not crop this page".into(),
+                        message,
+                    });
+                }
+            }
+        }
+        self.rebuild_scan_setup();
+    }
+
+    /// Recognize the text of the page under review again.
+    fn recognize_text(&mut self, cx: &mut EffectCx<PrintDefaults, Self>) -> EffectAnswer {
+        let Some(current) = self.scan.pages.get_mut(self.scan.selected) else {
+            return Err("Scan a page first".into());
+        };
+        if current.ocr_in_progress {
+            return Err("The text is already being recognized".into());
+        }
+        current.ocr_in_progress = true;
+        let page = current.clone();
+        self.scan.result = Some(page.clone());
+        self.rebuild_scan_setup();
+        let identity = page.png.clone();
+        Ok(cx.thread(
+            move |_| recognize_page(&page),
+            move |app: &mut Self, result: Result<(Option<String>, String), String>, _cx| {
+                let answer = match &result {
+                    Ok(_) => Ok(Effected::done()),
+                    Err(error) => Err(error.clone()),
+                };
+                app.recognition_finished(&identity, result);
+                answer
+            },
+        ))
+    }
+
+    fn recognition_finished(
+        &mut self,
+        identity: &Arc<[u8]>,
+        result: Result<(Option<String>, String), String>,
+    ) {
+        let Some(index) = self
+            .scan
+            .pages
+            .iter()
+            .position(|page| Arc::ptr_eq(&page.png, identity))
+        else {
+            return;
+        };
+        match result {
+            Ok((text, note)) => {
+                let Some(page) = self.scan.pages.get_mut(index) else {
+                    return;
+                };
+                page.recognized_text = text;
+                page.ocr_note = note;
+                page.ocr_needs_refresh = false;
+                page.ocr_in_progress = false;
+                if index == self.scan.selected {
+                    self.scan.result = Some(page.clone());
+                }
+            }
+            Err(message) => {
+                if let Some(page) = self.scan.pages.get_mut(index) {
+                    page.ocr_in_progress = false;
+                }
+                if index == self.scan.selected {
+                    self.scan.result = self.scan.pages.get(index).cloned();
+                }
+                self.notice = Some(OperationNotice {
+                    success: false,
+                    title: "Text was not updated".into(),
+                    message,
+                });
+            }
+        }
+        self.rebuild_scan_setup();
+    }
+
+    fn copy_recognized_text(&mut self) -> Result<(), String> {
+        let text = self
+            .scan
+            .result
+            .as_ref()
+            .and_then(|page| page.recognized_text.as_deref())
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| "This page has no recognized text".to_owned())?;
+        ui::text_selection::clipboard_copy(text);
+        self.notice = Some(OperationNotice {
+            success: true,
+            title: "Text copied".into(),
+            message: "Paste the recognized text into any app.".into(),
+        });
+        self.rebuild_scan_setup();
+        Ok(())
+    }
+
+    /// Ask where to save the page under review as an image, or every
+    /// scanned page as one PDF (`document`), and save it there.
+    fn save_scan(
+        &mut self,
+        document: bool,
+        cx: &mut EffectCx<PrintDefaults, Self>,
+    ) -> EffectAnswer {
+        if self.scan_saving {
+            return Err("The scan is already being saved".into());
+        }
+        let pages = if document {
+            self.scan.pages.clone()
+        } else {
+            self.scan.result.iter().cloned().collect()
+        };
+        if pages.is_empty() {
+            return Err("Scan a page first".into());
+        }
+        self.scan_saving = true;
+        let request = if document {
+            ui::portal::PickRequest::save("Save scanned document", "Save", "Scanned document.pdf")
+                .thread_name("print-centre-scan-document-save-picker")
+        } else {
+            ui::portal::PickRequest::save("Save scanned page", "Save", "Scanned page.png")
+                .thread_name("print-centre-scan-save-picker")
+        };
+        Ok(cx.thread(
+            move |_| {
+                let mut path = match request.send().recv() {
+                    Ok(ui::portal::PortalOutcome::Opened(path)) => path,
+                    Ok(ui::portal::PortalOutcome::Cancelled) => return ScanSaved::Cancelled,
+                    Ok(ui::portal::PortalOutcome::Failed(_)) | Err(_) => {
+                        return ScanSaved::NoPicker;
+                    }
+                };
+                if path.extension().is_none() {
+                    path.set_extension(if document { "pdf" } else { "png" });
+                }
+                let bytes = if document {
+                    Arc::<[u8]>::from(scanned_document_pdf(&pages))
+                } else {
+                    pages
+                        .first()
+                        .map_or_else(|| Arc::from(Vec::new()), |page| page.png.clone())
+                };
+                if bytes.is_empty() {
+                    return ScanSaved::Cancelled;
+                }
+                match save_scanned_page(&path, bytes.as_ref()) {
+                    Ok(()) => ScanSaved::Saved(
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("the page")
+                            .to_owned(),
+                    ),
+                    Err(_) => ScanSaved::Failed,
+                }
+            },
+            move |app: &mut Self, saved: ScanSaved, _cx| {
+                app.scan_saving = false;
+                let (notice, answer) = match saved {
+                    ScanSaved::Saved(name) => (
+                        OperationNotice {
+                            success: true,
+                            title: if document {
+                                "Scanned document saved"
+                            } else {
+                                "Scanned page saved"
+                            }
+                            .into(),
+                            message: format!("Saved {name}."),
+                        },
+                        Ok(Effected::done()),
+                    ),
+                    ScanSaved::Cancelled => return Ok(Effected::done()),
+                    ScanSaved::NoPicker => (
+                        OperationNotice {
+                            success: false,
+                            title: "Could not open the file picker".into(),
+                            message: "Try saving the scanned page again.".into(),
+                        },
+                        Err("Could not open the file picker".into()),
+                    ),
+                    ScanSaved::Failed => (
+                        OperationNotice {
+                            success: false,
+                            title: if document {
+                                "Could not save scanned document"
+                            } else {
+                                "Could not save scanned page"
+                            }
+                            .into(),
+                            message: "Choose another location and try again.".into(),
+                        },
+                        Err("Could not save the scan there".into()),
+                    ),
+                };
+                app.notice = Some(notice);
+                app.rebuild_scan_setup();
+                answer
+            },
+        ))
+    }
+}
+
+/// A page the scanner returned as `png`, with its text recognized in
+/// `ocr_code` (named `ocr_language`).
+fn decode_scanned_page(
+    png: Vec<u8>,
+    ocr_code: &str,
+    ocr_language: &str,
+) -> Result<ScannedPage, String> {
+    let decoded = image::load_from_memory(&png)
+        .map_err(|error| format!("scanner returned an invalid image: {error}"))?;
+    let width = decoded.width();
+    let height = decoded.height();
+    let rgba: Arc<[u8]> = Arc::from(decoded.to_rgba8().into_raw());
+    let (recognized_text, ocr_note) = match tilo_ocr::recognize(&decoded, ocr_code) {
+        Ok(document) if document.words.is_empty() => {
+            (None, "No text was found on this page.".into())
+        }
+        Ok(document) => {
+            let count = document.words.len();
+            (
+                Some(document.plain_text()),
+                format!("Recognized {count} words."),
+            )
+        }
+        Err(tilo_ocr::Error::Unavailable) => (
+            None,
+            "Text recognition is not installed; the scanned page is still ready.".into(),
+        ),
+        Err(_) => (
+            None,
+            "Text could not be recognized; the scanned page is still ready.".into(),
+        ),
+    };
+    Ok(ScannedPage {
+        png: Arc::from(png),
+        rgba,
+        width,
+        height,
+        recognized_text,
+        ocr_note,
+        ocr_language: ocr_language.into(),
+        ocr_needs_refresh: false,
+        ocr_in_progress: false,
+    })
+}
+
+/// `page`'s text, recognized again in the language it was scanned in, with
+/// a note on what was found.
+fn recognize_page(page: &ScannedPage) -> Result<(Option<String>, String), String> {
+    let rgba = image::RgbaImage::from_raw(page.width, page.height, page.rgba.to_vec())
+        .ok_or_else(|| "The scanned page pixels were incomplete.".to_string())?;
+    let code = match page.ocr_language.as_str() {
+        "German" => "deu",
+        "French" => "fra",
+        "Spanish" => "spa",
+        _ => "eng",
+    };
+    tilo_ocr::recognize(&image::DynamicImage::ImageRgba8(rgba), code)
+        .map(|document| {
+            let count = document.words.len();
+            let text = document.plain_text();
+            let recognized = (!text.trim().is_empty()).then_some(text);
+            let note = if count == 0 {
+                "No text was found on this page.".into()
+            } else {
+                format!("Recognized {count} words.")
+            };
+            (recognized, note)
+        })
+        .map_err(|_| "Text could not be recognized on this page.".into())
 }
 impl Default for PrintCentre {
     fn default() -> Self {
@@ -3308,7 +3514,7 @@ impl Default for PrintCentre {
     }
 }
 impl Widget for PrintCentre {
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
             self.inner.sync(state, path);
             return true;
@@ -3317,19 +3523,10 @@ impl Widget for PrintCentre {
             self.inner.sync(state, path);
             return true;
         }
-        if self.poll_scan_save_picker() {
-            self.inner.sync(state, path);
-            return true;
-        }
         if let Some(snapshot) = self.refresh.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.refresh = None;
             self.snapshot = Some(snapshot);
             self.rebuild_dashboard();
-            self.inner.sync(state, path);
-            return true;
-        }
-        if let Ok(command) = self.commands_rx.try_recv() {
-            self.handle_command(command);
             self.inner.sync(state, path);
             return true;
         }
@@ -3372,11 +3569,11 @@ impl Widget for PrintCentre {
         self.inner.get_rect()
     }
     fn take_structure_dirty(&mut self) -> bool {
-        // Commands replace the whole page; the new one needs a new layout.
+        // Effects replace the whole page; the new one needs a new layout.
         self.inner.take_structure_dirty() | std::mem::take(&mut self.replaced)
     }
     fn needs_idle_sync(&self) -> bool {
-        self.refresh.is_some() || self.picker.is_some() || self.scan_save_picker.is_some()
+        self.refresh.is_some() || self.picker.is_some()
     }
 }
 
@@ -3550,6 +3747,25 @@ mod tests {
                 "a printing document can be cancelled"
             );
 
+            // Cancelling from the dashboard asks first, in the queue.
+            app.effect(&PrintCentreEffect::ConfirmCancel {
+                job: "Studio_printer-42".into(),
+            })
+            .unwrap();
+            let frame = app.harness().inspection_json().unwrap();
+            assert!(frame.contains("Confirm cancel"), "{frame}");
+
+            // Steps with nothing to act on are refused: no search found a
+            // printer to add, no page was scanned, no document is set up.
+            assert!(
+                app.effect(&PrintCentreEffect::AddPrinter {
+                    printer: "ipps://studio.local/ipp/print".into()
+                })
+                .is_err()
+            );
+            assert!(app.effect(&PrintCentreEffect::RotateScanPage).is_err());
+            assert!(app.effect(&PrintCentreEffect::SendToPrinter).is_err());
+
             // A printer the snapshot does not list is refused, not guessed.
             assert!(
                 app.effect(&PrintCentreEffect::OpenPrinter {
@@ -3557,6 +3773,57 @@ mod tests {
                 })
                 .is_err()
             );
+        }
+
+        eprintln!("phase scan_review_steps_are_offered_only_with_a_page_to_act_on");
+        {
+            let no_page =
+                |effect| EffectStatus::unavailable(effect, "no-page", "Scan a page first.");
+            let no_scanner = EffectStatus::unavailable(
+                PrintCentreEffect::SCAN_PAGE,
+                "no-scanner",
+                "Open scanning with a scanner first.",
+            );
+            let blocked = |centre: &PrintCentre, status: &EffectStatus| {
+                centre.effect_statuses().contains(status)
+            };
+            let mut centre = PrintCentre::new();
+            centre.show(Some(&demo_snapshot()));
+            centre.open_scan();
+            assert!(!blocked(&centre, &no_scanner));
+            assert!(blocked(
+                &centre,
+                &no_page(PrintCentreEffect::ROTATE_SCAN_PAGE)
+            ));
+            centre.scan_finished(Ok(demo_scanned_page()));
+            assert!(!blocked(
+                &centre,
+                &no_page(PrintCentreEffect::ROTATE_SCAN_PAGE)
+            ));
+            assert!(!blocked(
+                &centre,
+                &no_page(PrintCentreEffect::COPY_RECOGNIZED_TEXT)
+            ));
+            assert!(blocked(
+                &centre,
+                &no_page(PrintCentreEffect::NEXT_SCAN_PAGE)
+            ));
+            centre.rotate_scan_page();
+            assert!(
+                centre
+                    .scan
+                    .result
+                    .as_ref()
+                    .is_some_and(|page| page.ocr_needs_refresh)
+            );
+            centre.scan_another();
+            assert_eq!(centre.scan.pages.len(), 1);
+            assert!(blocked(
+                &centre,
+                &no_page(PrintCentreEffect::ROTATE_SCAN_PAGE)
+            ));
+            centre.open_dashboard();
+            assert!(blocked(&centre, &no_scanner));
         }
 
         eprintln!("phase scan_controls_change_the_person_s_defaults");
@@ -3599,9 +3866,11 @@ mod tests {
                 scanners: Ok(Vec::new()),
             };
             assert!(failed_areas(&empty, true, true, true).is_empty());
-            let (tx, _rx) = mpsc::channel();
-            assert!(unavailable_card(&failed_areas(&unavailable, true, true, true), &tx).is_some());
-            assert!(unavailable_card(&failed_areas(&empty, true, true, true), &tx).is_none());
+            let door = Door::default();
+            assert!(
+                unavailable_card(&failed_areas(&unavailable, true, true, true), &door).is_some()
+            );
+            assert!(unavailable_card(&failed_areas(&empty, true, true, true), &door).is_none());
         }
     }
 
@@ -3941,24 +4210,24 @@ mod tests {
         {
             let mut centre = PrintCentre::new();
             centre.show(Some(&demo_snapshot()));
-            centre.handle_command(UiCommand::ScanSetup);
-            centre.handle_command(UiCommand::ScanFinished(Ok(scanned_page(10))));
-            centre.handle_command(UiCommand::ScanAnother);
+            centre.open_scan();
+            centre.scan_finished(Ok(scanned_page(10)));
+            centre.scan_another();
             assert_eq!(
                 centre.scan.pages.len(),
                 1,
                 "scan another preserves page one"
             );
-            centre.handle_command(UiCommand::ScanFinished(Ok(scanned_page(20))));
+            centre.scan_finished(Ok(scanned_page(20)));
             assert_eq!(centre.scan.selected, 1);
 
-            centre.handle_command(UiCommand::MoveScanPageEarlier);
+            centre.move_scan_page_earlier();
             assert_eq!(centre.scan.selected, 0);
             assert_eq!(centre.scan.pages[0].width, 20);
-            centre.handle_command(UiCommand::NextScanPage);
+            centre.next_scan_page();
             assert_eq!(centre.scan.result.as_ref().map(|page| page.width), Some(10));
 
-            centre.handle_command(UiCommand::DeleteScanPage);
+            centre.remove_scan_page();
             assert_eq!(centre.scan.pages.len(), 1);
             assert_eq!(centre.scan.selected, 0);
             assert_eq!(centre.scan.result.as_ref().map(|page| page.width), Some(20));

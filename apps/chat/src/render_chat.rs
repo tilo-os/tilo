@@ -2874,10 +2874,9 @@ impl ChatApp {
         let scale = f64::from(theme.text_scale);
         let (tw, th) = video_card_size(vid_w, vid_h, f64::from(text_w));
         let rect = Rect::new(x, y, x + tw, y + th);
-        // A dark poster surface with a play affordance. A real decoded
-        // frame needs the media engine's decoder (live-media only); here
-        // the card references the projected file and hydrates its bytes
-        // on demand — honest, not a fabricated still.
+        // A dark poster surface with a play affordance: the card references
+        // the projected file and hydrates its bytes on demand — honest, not
+        // a fabricated still.
         fill_round(scene, tf, rect, 12.0, c.neutral[2]);
         fill_round(
             scene,

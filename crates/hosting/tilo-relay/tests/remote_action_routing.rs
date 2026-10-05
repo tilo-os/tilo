@@ -74,6 +74,7 @@ async fn next(client: &RelayClient, who: &str) -> Envelope {
 
 fn invoke(invocation: InvocationId) -> RemoteActionMessage {
     RemoteActionMessage::Invoke(InvokeRequest {
+        on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
             provider: "app".into(),

@@ -160,9 +160,8 @@ fn main() -> anyhow::Result<()> {
         model_timeout: Duration::from_millis(model_timeout_ms),
         await_document: Duration::from_millis(cli.await_document_ms),
         settle: Duration::from_millis(cli.settle_ms),
-        directory: None,
         permissions,
-        content: tilo_content::ContentStore::for_app(),
+        content: device_content(),
     };
     let mut session = Session::connect(cfg)?;
     if cli.task_runs {
@@ -170,4 +169,14 @@ fn main() -> anyhow::Result<()> {
     } else {
         session.run()
     }
+}
+
+/// The device content store the launcher handed this agent: where the
+/// content addresses the room's apps hand it resolve. An agent started
+/// without one reads only what it stores itself, in memory.
+fn device_content() -> tilo_content::ContentStore {
+    if let Some(device) = tilo_content::ContentStore::device() {
+        return device;
+    }
+    tilo_content::ContentStore::memory()
 }

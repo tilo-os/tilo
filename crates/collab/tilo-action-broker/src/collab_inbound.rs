@@ -79,10 +79,11 @@ pub fn deliver(
                 return false;
             };
             let channel = match payload {
-                collab_types::WholeDocumentPayload::Cleartext(_) => {
+                collab_types::RoutedDocumentPayload::Cleartext(_)
+                | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
                     collab_types::document_channel_id(&app_id, &cluster_id, &record_id)
                 }
-                collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+                collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
             };
             let allowed = if replayed {
                 ch.document_history_allowed(channel, envelope.encryption.as_ref())
@@ -142,15 +143,17 @@ pub fn deliver(
     }
 }
 
-/// The payload `envelope` carries, when it was signed for exactly `route`.
+/// The payload `envelope` carries, when it was signed for exactly `route`:
+/// a whole mutation, one segment of a larger one (endpoints reassemble it),
+/// or a sealed one.
 ///
 /// # Errors
 /// The envelope was signed for another route, or its payload is untyped.
 pub fn validate_route(
     route: &CrdtRoute,
     envelope: &SignedOp,
-) -> Result<collab_types::WholeDocumentPayload, ValidationError> {
-    collab_types::validate_whole_document_payload_route(
+) -> Result<collab_types::RoutedDocumentPayload, ValidationError> {
+    collab_types::validate_document_payload_route(
         &route.app_id,
         &route.cluster_id,
         &route.record_id,
@@ -170,7 +173,7 @@ fn accept(
     let artifact = envelope.artifact;
     if let Ok(mut ch) = channels.lock() {
         let mls_vault = ch.mls_vault.clone();
-        ch.record_history(&envelope);
+        ch.record_history(&route.cluster_id, &envelope);
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
         if envelope.op_class == OpClass::Compaction

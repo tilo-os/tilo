@@ -61,6 +61,7 @@ fn fixture() -> (
 
 fn request() -> InvokeRequest {
     InvokeRequest {
+        on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: "7".into(),
@@ -518,6 +519,207 @@ async fn failed_terminal_journal_barrier_cannot_publish_success() {
         events.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Closed)
     ));
+}
+
+/// A workspace whose agent `scribe` may write to the test app but is denied
+/// its `erase` action, with a second writing person `b2…`, and the app
+/// publishing `update`, `edit` and `erase`.
+fn continuation_fixture() -> (
+    Arc<CapnpBrokerState>,
+    Caller,
+    mpsc::UnboundedReceiver<InvocationEnvelope>,
+) {
+    use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+    let mut workspace = Workspace::new(WorkspaceId(53), "Effect continuation");
+    workspace.set_owner("a1".repeat(32));
+    let room = workspace.room.to_string();
+    workspace.grant_capability(CapOverride::membership(
+        Subject::agent("scribe"),
+        room.clone(),
+        Verb::Write,
+    ));
+    workspace.grant_capability(CapOverride::grant(
+        Subject::agent("scribe"),
+        Scope::App("so.tilo.test".into()),
+        Verb::Write,
+    ));
+    workspace.grant_capability(CapOverride::membership(
+        Subject::person("b2".repeat(32)),
+        room.clone(),
+        Verb::Write,
+    ));
+    workspace.grant_capability(CapOverride::new(
+        Subject::agent("scribe"),
+        Scope::Action {
+            app: "so.tilo.test".into(),
+            action: "erase".into(),
+        },
+        Effect::Restrict,
+        Verb::Read,
+    ));
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let membership = tree.shared();
+    let broker =
+        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    let state = Arc::clone(broker.state());
+    let action = |action: &str, kind: tilo_actions::OperationKind| PublishedAction {
+        resource: "test:block-a".into(),
+        action: action.into(),
+        resource_kind: "test.block".into(),
+        resource_label: "Block".into(),
+        action_label: action.into(),
+        description: None,
+        operation_kind: kind,
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract {
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            result: tilo_actions::ResultSpec::Job,
+            ..Default::default()
+        },
+        input: PublishedInput::None,
+        view: None,
+    };
+    state.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 7,
+        app_id: "so.tilo.test".into(),
+        route: CrdtRoute {
+            app_id: "so.tilo.test".into(),
+            cluster_id: room.clone(),
+            record_id: "record-a".into(),
+        },
+        actions: vec![
+            action("update", tilo_actions::OperationKind::Effect),
+            action("edit", tilo_actions::OperationKind::Effect),
+            action("erase", tilo_actions::OperationKind::Effect),
+        ],
+        live: true,
+    }]);
+    let app = state.capture_invocations_for_test(7);
+    let agent = Caller::local_agent("scribe").in_room(room);
+    (state, agent, app)
+}
+
+/// An edit an effect submits while running for an agent is admitted as
+/// that agent, with their grants: an action their role allows but a grant
+/// denies them stays denied, through the effect as everywhere.
+#[tokio::test]
+async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
+    let (state, agent, mut app) = continuation_fixture();
+    let invoke = |action: &str| InvokeRequest {
+        target: RemoteActionTarget {
+            provider: "7".into(),
+            address: tilo_actions::ActionAddress::new("test:block-a", action),
+        },
+        ..request()
+    };
+
+    assert!(matches!(
+        state
+            .action_invoke(&agent, None, None, &invoke("update"))
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let running = app.try_recv().unwrap();
+    assert_eq!(running.actor, "agent:scribe");
+
+    // The app's connection names the effect it runs; nobody else's does.
+    let continued = state
+        .continuing_caller(7, running.invocation)
+        .expect("the running effect's caller");
+    assert_eq!(continued, agent);
+    assert!(state.continuing_caller(8, running.invocation).is_none());
+
+    // What the role allows is admitted for the agent; what a grant denies
+    // them is refused.
+    assert!(matches!(
+        state
+            .action_invoke(&continued, Some(7), None, &invoke("edit"))
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
+    let refused = state
+        .action_invoke(&continued, Some(7), None, &invoke("erase"))
+        .poll_ready();
+    // An action a grant denies is absent to the caller, as in the catalogue.
+    assert!(
+        matches!(
+            refused,
+            PendingPoll::Ready(Err(tilo_actions::remote::ActionHostError::UnknownAction))
+        ),
+        "the denied edit was refused"
+    );
+    assert!(app.try_recv().is_err(), "the denied edit reaches no app");
+    let owner = Caller::local_person("a1".repeat(32)).in_room(continued.room().unwrap().to_owned());
+    assert!(matches!(
+        state
+            .action_invoke(&owner, Some(7), None, &invoke("erase"))
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    assert!(app.try_recv().is_ok(), "the action itself is offered");
+
+    // Once the effect ended it continues nothing.
+    state
+        .apply_invocation_update(
+            7,
+            running.id,
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation: running.invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(state.continuing_caller(7, running.invocation).is_none());
+}
+
+/// Doors that take the caller's own invocation id can admit two callers'
+/// invocations under one id on the same app. An edit submitted on behalf of
+/// that id names no single caller, so it is admitted for neither, never for
+/// whichever one the registry happens to find first.
+#[test]
+fn an_invocation_id_two_callers_share_continues_neither() {
+    let (state, agent, _app) = continuation_fixture();
+    let room = agent.room().unwrap().to_owned();
+    let other = "b2".repeat(32);
+    state
+        .stable_invocation_subscribers
+        .lock()
+        .unwrap()
+        .insert(7);
+    let shared = tilo_actions::InvocationId::new();
+    let start = |person: &str| {
+        let caller = Caller::local_person(person)
+            .in_room(room.clone())
+            .in_new_execution();
+        state
+            .start_invocation_confirmed_for_origin(
+                7,
+                "test:block-a",
+                "update",
+                InvocationInputs {
+                    caller: Some(&caller),
+                    execution: ExecutionScope::for_call(&caller, shared),
+                    argument: None,
+                    actor: &BrokerActor::person(person),
+                    confirmation_token: None,
+                    context: None,
+                },
+                None,
+            )
+            .unwrap();
+        caller
+    };
+    let first = start(&"a1".repeat(32));
+    assert_eq!(state.continuing_caller(7, shared), Some(first));
+    start(&other);
+    assert!(
+        state.continuing_caller(7, shared).is_none(),
+        "an ambiguous invocation continues for nobody"
+    );
 }
 
 #[test]

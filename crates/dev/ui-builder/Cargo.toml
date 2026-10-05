@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-files = { path = "../../platform/tilo-files" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [lints]
