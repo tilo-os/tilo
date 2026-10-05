@@ -1824,38 +1824,18 @@ impl AppHandler {
             })
             .unwrap_or_default()
         };
-        let native_targets = visible_interactions
-            .iter()
-            .filter_map(|interaction| {
-                crate::action_locus::interaction_bounds(app.semantic_tree(), &bindings, interaction)
-                    .map(|bounds| (interaction.clone(), bounds))
-            })
-            .collect::<Vec<_>>();
-        for (interaction, rect) in native_targets {
-            let user = crate::permissions::UserId(interaction.actor.id);
-            let label = app.presence_ctx.display_name(&user);
-            app.presence_ctx.draw_peer_outline_labeled(
-                &mut crate::paint::PaintCtx::new(
-                    &mut scene,
-                    transform,
-                    &mut app.text_renderer,
-                    &app.theme,
-                ),
-                &user,
-                &label,
-                rect,
-                f64::from(app.theme.tokens.radii.sm),
-            );
-        }
-        // Action/resource callers have no synthetic pointer. Their truthful
-        // semantic lifecycle is painted as an app-level activity rail until a
-        // domain widget projects the stable anchor into native geometry.
-        app.presence_ctx.draw_interactions(
-            &mut scene,
-            transform,
+        crate::action_locus::draw_action_presence(
+            &mut crate::paint::PaintCtx::new(
+                &mut scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+            ),
+            &mut app.presence_ctx,
+            &app.accessibility.semantic_tree,
+            &bindings,
             window_rect,
-            &mut app.text_renderer,
-            &app.theme,
+            app.window.app_id.as_deref().unwrap_or("native-primary"),
             interaction_now,
         );
 
@@ -2915,6 +2895,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.pump_collab_presence() {
             request_primary_redraw();
         }
+        if app.presence_ctx.prune_interactions(crate::time::now()) {
+            request_primary_redraw();
+        }
         if app.poll_model_invocations() {
             request_primary_redraw();
         }
@@ -2987,6 +2970,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(
+                    app.presence_ctx
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -3016,6 +3003,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(
+                    app.presence_ctx
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -3032,16 +3023,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Reduced motion lets the loop go idle since animated widgets
         // already paint their resting state.
-        let needs_frame = app.root_widget.needs_animation_frame();
+        let widget_animation = app.root_widget.needs_animation_frame();
+        let needs_frame = widget_animation
+            || app
+                .presence_ctx
+                .interaction_animation_demand(crate::time::now(), &app.theme);
         let (animation_due, animation_deadline) = self.animation_schedule.poll(
             crate::time::now(),
             any_render_available && animation_pump_needed(needs_frame, app.theme.reduce_motion),
         );
         if animation_due {
-            app.needs_sync = true;
+            app.needs_sync |= widget_animation;
             // Forces `apply_layout` since an animation tick (e.g. momentum
             // fling) can reposition content without an input event.
-            app.layout.layout_dirty = true;
+            app.layout.layout_dirty |= widget_animation;
             request_primary_redraw();
             for surface in &self.floating_windows {
                 if auxiliary_redraw_allowed(surface.render.as_ref()) {
