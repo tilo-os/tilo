@@ -1066,6 +1066,51 @@ impl State {
         }
     }
 
+    /// Content-free focus metadata read from the live Wayland seat for the
+    /// existing state-dump door. Never includes titles, text or held keys.
+    pub fn seat_focus_json(&self) -> serde_json::Value {
+        let describe = |surface: WlSurface| {
+            let id = surface_id(&surface);
+            let root = crate::compositor::foreign::store().sheet_root(id);
+            let owner = self.client_input.surface(root).unwrap_or(&surface);
+            let app_id = owner
+                .client()
+                .and_then(|client| {
+                    client
+                        .get_data::<ClientState>()
+                        .and_then(|data| data.package_id.clone())
+                })
+                .or_else(|| {
+                    wl_compositor::with_states(owner, |states| {
+                        states
+                            .data_map
+                            .get::<XdgToplevelSurfaceData>()
+                            .and_then(|data| data.lock().ok()?.app_id.clone())
+                    })
+                });
+            let role = if self.osk_surface == Some(id) {
+                "on_screen_keyboard"
+            } else if trusted_osk_connection(&surface) {
+                "pending_on_screen_keyboard"
+            } else if crate::compositor::foreign::store().is_sheet(id) {
+                "dialog_sheet"
+            } else if self.client_input.is_known(id) {
+                "toplevel"
+            } else {
+                "other"
+            };
+            serde_json::json!({"surface": id, "root_surface": root, "app_id": app_id, "role": role})
+        };
+        let keyboard = self.seat.get_keyboard();
+        serde_json::json!({
+            "keyboard": keyboard.as_ref().and_then(smithay::input::keyboard::KeyboardHandle::current_focus).map(describe),
+            "routed_keyboard_surface": self.client_input.keyboard_focus(),
+            "text_input": self.seat.text_input().focus().map(describe),
+            "text_input_active": self.text_input_active(),
+            "on_screen_keyboard_surface": self.osk_surface,
+        })
+    }
+
     pub fn text_input_active(&self) -> bool {
         let mut active = false;
         self.seat
@@ -4419,18 +4464,14 @@ impl ShmHandler for State {
 /// id; the exact id prevents another helper on the private connection from
 /// accidentally being promoted.
 fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
-    osk_identity_is_trusted(
-        app_id,
-        surface
-            .client()
-            .and_then(|client| {
-                client
-                    .get_data::<ClientState>()
-                    .map(|data| data.input_method)
-            })
-            .flatten()
-            == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard),
-    )
+    osk_identity_is_trusted(app_id, trusted_osk_connection(surface))
+}
+
+fn trusted_osk_connection(surface: &WlSurface) -> bool {
+    surface
+        .client()
+        .and_then(|client| trusted_input_method(&client))
+        == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard)
 }
 
 fn osk_identity_is_trusted(app_id: Option<&str>, socket_authorized: bool) -> bool {
@@ -5318,6 +5359,12 @@ impl XdgShellHandler for State {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
             self.reannounce_text_input_focus();
+        } else if app_id.is_none() && trusted_osk_connection(surface.wl_surface()) {
+            // get_toplevel precedes set_app_id. The immutable private-socket
+            // role already rules out an ordinary window, so never adopt a
+            // temporary tab or move the person's focus. Overlay authority
+            // still waits for the exact OSK app-id.
+            self.client_input.promote_to_overlay(surface_id);
         } else if !floating && !presentation {
             if let Some(room) = attributed_room {
                 let adopted = {
@@ -5453,6 +5500,12 @@ impl XdgShellHandler for State {
             tracing::warn!(surface_id, "ignored unauthenticated Wayland app-id change");
             return;
         };
+        if trusted_osk_connection(surface.wl_surface()) && app_id != OSK_APP_ID {
+            // A pending private keyboard cannot become an ordinary app by
+            // announcing a different identity after get_toplevel.
+            surface.send_close();
+            return;
+        }
         {
             if trusted_osk_identity(surface.wl_surface(), Some(&app_id)) {
                 // `set_app_id` normally arrives after `new_toplevel`; undo the
