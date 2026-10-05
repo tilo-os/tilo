@@ -86,6 +86,7 @@ pub type Done = mpsc::Sender<Outcome>;
 pub struct Finished {
     pub status: String,
     pub case: Option<registry_types::ModerationCase>,
+    pub launch: Option<crate::actions::ApplicationLaunch>,
 }
 
 impl Finished {
@@ -93,6 +94,7 @@ impl Finished {
         Self {
             status: status.into(),
             case: None,
+            launch: None,
         }
     }
 }
@@ -413,7 +415,11 @@ fn handle(
                 operation_error,
             );
             let finished = if outcome.ok {
-                Ok(Finished::status(outcome.status_line))
+                Ok(Finished {
+                    status: outcome.status_line,
+                    case: None,
+                    launch: outcome.launch,
+                })
             } else {
                 Err(outcome.status_line)
             };
@@ -431,6 +437,7 @@ fn handle(
                         case.case_id
                     ),
                     case: Some(case),
+                    launch: None,
                 }),
                 Err(error) => Err(format!(
                     "Report was not submitted. {error} The collaborative draft is unchanged; check your identity or connection and retry."
@@ -457,6 +464,7 @@ fn handle(
                         crate::app::moderation_status_label(case.status)
                     ),
                     case: Some(case),
+                    launch: None,
                 })
                 .map_err(|error| {
                     format!(
