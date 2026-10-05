@@ -51,6 +51,26 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
+/// Native room membership owner. Public callers choose only a closed typed
+/// command; this host service supplies the private governor signing custody.
+pub trait WorkspaceMemberships: Send + Sync {
+    fn requires_room(&self, room: &str) -> bool;
+
+    /// Confirm that the canonical owner's durable store is still usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic while owner continuity is unavailable or fenced.
+    fn health(&self) -> Result<(), String> {
+        Err("workspace membership owner continuity is unavailable".into())
+    }
+
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture;
+}
+
 pub type DesktopCommandFuture = std::pin::Pin<
     Box<
         dyn std::future::Future<
@@ -130,6 +150,30 @@ pub struct LaunchContent<'a> {
     pub author: Option<&'a str>,
 }
 
+/// Original signed package evidence retained by the host for an actual launch.
+/// This has no wire decoder and is never supplied by the joining application.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationCreationEvidence {
+    pub package_hash: String,
+    pub declared_kinds: Vec<String>,
+}
+
+impl ApplicationCreationEvidence {
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        self.package_hash.len() == 64
+            && self
+                .package_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            && !self.declared_kinds.is_empty()
+            && self.declared_kinds.len() <= 256
+            && self.declared_kinds.iter().all(|kind| {
+                !kind.is_empty() && kind.len() <= 256 && !kind.chars().any(char::is_control)
+            })
+    }
+}
+
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`.
@@ -159,6 +203,21 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Original declarations of this exact live launch, not the currently
+    /// installed replacement package. Unsupported hosts grant no creation.
+    ///
+    /// # Errors
+    ///
+    /// The launch record, process start time or signed package custody changed.
+    fn application_creation_evidence(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<ApplicationCreationEvidence>, String> {
+        let _ = (pid, app, room);
+        Ok(None)
+    }
     /// An action invocation reached `app` in `room`. A person, an agent or
     /// another device drives an app through its actions as much as through
     /// keys and clicks, so a window the app closes after one was closed on
@@ -525,6 +584,7 @@ pub struct HostServices {
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
+    pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     /// Documents proposed into the room and the owner's answers. Without it
     /// nothing can be proposed.
     pub document_imports: Option<Arc<dyn DocumentImports>>,

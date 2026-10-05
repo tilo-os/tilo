@@ -1042,8 +1042,23 @@ fn launch_resolved_installed_app(
     let launched = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        tree.workspace_after_opening_app(package_id)
-            .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
+        let native_room = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+            .filter(|room| tree.requires_native_owner(*room));
+        if let Some(room) = native_room {
+            drop(tree);
+            Some(launcher::queue_native_authoring_launch(
+                app.clone(),
+                st.tree_handle(),
+                room,
+                st.native_app_opening.clone(),
+            ))
+        } else {
+            tree.workspace_after_opening_app(package_id)
+                .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
+        }
     };
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.

@@ -1776,6 +1776,10 @@ impl ShellOverlayHost {
         &mut self,
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
+        if let Some(chrome) = &self.chrome {
+            chrome.borrow_mut().native_app_opening =
+                Some(crate::shell::launcher::NativeAppOpening(broker.clone()));
+        }
         self.room_activity.attach_task_broker(broker.clone());
         self.attach_shortcut_trigger_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(

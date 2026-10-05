@@ -28,6 +28,8 @@ mod invoker;
 mod native_media;
 mod published_invocation;
 mod resolved_invocation;
+#[path = "workspace_memberships.rs"]
+mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
@@ -2643,6 +2645,8 @@ pub struct CapnpBrokerState {
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// The broker's own desktop command surface (not an app connection).
     desktop_command_peer: Mutex<Option<u64>>,
+    /// Broker-owned governed membership surface per native room.
+    workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
@@ -2836,6 +2840,7 @@ impl CapnpBrokerState {
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
         clear!(self.stable_invocation_subscribers);
+        clear!(self.workspace_membership_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
@@ -3345,6 +3350,7 @@ impl CapnpBrokerState {
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 desktop_command_peer: Mutex::new(None),
+                workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -10674,7 +10680,16 @@ async fn serve_broker_thread(
             return;
         }
     };
+    let mut next_membership_refresh = std::time::Instant::now();
     loop {
+        if std::time::Instant::now() >= next_membership_refresh {
+            if let Err(error) = state.refresh_workspace_membership_services() {
+                tracing::debug!(%error, "native membership surface could not be refreshed");
+            }
+            next_membership_refresh = std::time::Instant::now()
+                .checked_add(Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+        }
         #[cfg(test)]
         {
             let callbacks = match state.thread_callbacks.lock() {
@@ -10953,11 +10968,26 @@ async fn authenticate_launcher_handoff(
         if services.launcher.as_ref().is_some_and(|service| {
             service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
         }) {
+            let creation = services
+                .launcher
+                .as_ref()
+                .ok_or_else(|| LaunchRefusal {
+                    error: capnp::Error::failed("launcher custody ended".into()),
+                    peer: peer.clone(),
+                    answerable: true,
+                })?
+                .application_creation_evidence(pid, &handoff.app_id, &handoff.workspace_id)
+                .map_err(|error| LaunchRefusal {
+                    error: capnp::Error::failed(error),
+                    peer: peer.clone(),
+                    answerable: true,
+                })?;
             return Ok(media_process.and_then(|process| {
                 native_media::LocalAppConnection::attested(
                     handoff.app_id,
                     handoff.workspace_id,
                     process,
+                    creation,
                 )
             }));
         }

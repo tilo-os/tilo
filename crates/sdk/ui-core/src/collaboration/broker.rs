@@ -478,6 +478,11 @@ impl CollabTransport for BrokerTransport {
 }
 
 enum SdkCommand {
+    Initialize {
+        route: RouteSpec,
+        request: runtime_collab::committed_document::Request,
+        reply: mpsc::SyncSender<Result<[u8; 32], String>>,
+    },
     /// Announce the primary route; the shovel abandons the join at `deadline`.
     Hello(PrimaryHello),
     Primary(CollabRequest),
@@ -887,6 +892,21 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
 
 fn command_bytes(command: &SdkCommand) -> Option<usize> {
     match command {
+        SdkCommand::Initialize { route, request, .. } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            if let runtime_collab::committed_document::Request::Initialize {
+                kind, document, ..
+            } = request
+            {
+                meter.string_capacity(kind);
+                meter.add(document.capacity());
+            }
+            meter.finish()
+        }
         SdkCommand::Hello(hello) => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&hello.route.app_id);
@@ -2483,7 +2503,7 @@ impl CollaborationManager {
     }
 
     #[cfg(feature = "native")]
-    pub(crate) fn for_native_launch() -> Result<Self, String> {
+    pub(crate) fn for_native_launch(kind: &crate::record::RecordKind) -> Result<Self, String> {
         if runtime_portal::service_fd("collab").is_none() {
             if crate::host::environment()
                 .identity
@@ -2495,15 +2515,29 @@ impl CollaborationManager {
         }
         let (app, room) = auto_hello_env();
         super::channel_settings::install(&app);
-        Self::for_route_from(
-            SdkConnectSource::Env,
-            app,
-            room,
-            None,
+        Self::connect_native_launch(SdkConnectSource::Env, app, room, kind)
+    }
+
+    #[cfg(feature = "native")]
+    fn connect_native_launch(
+        source: SdkConnectSource,
+        app: String,
+        room: Uuid,
+        kind: &crate::record::RecordKind,
+    ) -> Result<Self, String> {
+        Self::connect_route_kind(
+            source,
+            RouteSpec {
+                app_id: app,
+                cluster_id: room,
+                record: None,
+            },
+            Some(kind.as_str().to_owned()),
             presence_handle_env(),
             None,
             "person",
         )
+        .map(Self::from_connected)
         .map_err(|error| error.to_string())
     }
 
@@ -2573,6 +2607,35 @@ impl CollaborationManager {
         endpoint_identity: Option<SdkJoinIdentity>,
         participant_kind: &'static str,
     ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
+        Self::connect_route_kind(
+            source,
+            RouteSpec {
+                app_id,
+                cluster_id,
+                record,
+            },
+            None,
+            handle,
+            endpoint_identity,
+            participant_kind,
+        )
+    }
+
+    /// Initial native creation needs the application's actual root resource
+    /// kind before the broker can open the default document.
+    fn connect_route_kind(
+        source: SdkConnectSource,
+        route: RouteSpec,
+        record_kind: Option<String>,
+        handle: Option<String>,
+        endpoint_identity: Option<SdkJoinIdentity>,
+        participant_kind: &'static str,
+    ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
+        let RouteSpec {
+            app_id,
+            cluster_id,
+            record,
+        } = route;
         let mut identity = match endpoint_identity {
             Some(identity) => Some(identity),
             None if matches!(&source, SdkConnectSource::Host(_, _)) => None,
@@ -2599,7 +2662,7 @@ impl CollaborationManager {
             app_id,
             cluster_id,
             record,
-            record_kind: None,
+            record_kind,
             handle,
         }));
         await_primary_route_on(&mut transport, &mut primary_route)?;
@@ -3311,6 +3374,24 @@ async fn drive_shovel(
                     published = false;
                     inbound_tx.state.fail_closed("document route join");
                 }
+            }
+            SdkCommand::Initialize {
+                route,
+                request,
+                reply,
+            } => {
+                let result = if let Some(current) = routes.get(&route.channel_id()) {
+                    match current.channel.committed_document(&request).await {
+                        Ok(runtime_collab::committed_document::Reply::Initialized { revision }) => {
+                            Ok(revision)
+                        }
+                        Ok(_) => Err("application initialization reply invalid".into()),
+                        Err(error) => Err(error.to_string()),
+                    }
+                } else {
+                    Err("application initialization route unavailable".into())
+                };
+                let _ = reply.send(result);
             }
             SdkCommand::PrimaryReady(reply) => {
                 let _ = reply.send(primary_result.clone());
