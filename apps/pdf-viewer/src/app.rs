@@ -1242,6 +1242,22 @@ impl PdfApp {
     /// with the Ctrl+K palette — applied to the document this event received,
     /// so the reader reads it back at once. One event's actions are one undo
     /// step.
+    /// Test-only: one frame's sync, then what it submitted applied to `doc`
+    /// as the host applies it, and shown in the same frame.
+    #[cfg(test)]
+    pub(crate) fn sync_settled(&mut self, doc: &mut AutoCommit, root: &automerge::ObjId) {
+        Widget::sync(self, doc, root);
+        let Some(dispatcher) = self.dispatcher.clone() else {
+            return;
+        };
+        if !ui::framework::testing::resolve(&dispatcher, doc)
+            .expect("submitted edits apply")
+            .is_empty()
+        {
+            Widget::sync(self, doc, root);
+        }
+    }
+
     /// Submit `action` through the resource's dispatcher to be applied
     /// after this pass, from a pass that only reads the document (a frame's
     /// sync, a worker's answer). A refusal is reported by the dispatcher.
@@ -1565,8 +1581,12 @@ impl PdfApp {
         let Some((hash, _)) = self.source_blob.clone() else {
             return true;
         };
+        let Some((pinned, _, _)) = PdfDoc::source(state) else {
+            // The source is pinned first; its markup is taken over after.
+            return self.read_only;
+        };
         if self.read_only
-            || PdfDoc::source(state).is_none_or(|(pinned, _, _)| pinned != hash)
+            || pinned != hash
             || PdfDoc::imported_source(state).as_deref() == Some(hash.as_str())
             || self.existing_request.as_deref() == Some(hash.as_str())
         {
@@ -6083,7 +6103,7 @@ mod tests {
 
     /// One frame of the reader over its record.
     fn sync_fixture(app: &mut PdfApp, st: &mut ui::State) {
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
     }
 
     /// The reader launched on `path` on a fresh profile, as
@@ -6519,7 +6539,7 @@ mod tests {
             app.open_search();
             app.search_input.set_text("sandbox");
             app.recompute_matches();
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             let find_provider = searched(&app);
             let find_address = find_provider
                 .search("match 1")
@@ -6543,9 +6563,9 @@ mod tests {
             );
             // The changed find projection refreshes once; its settled successor
             // must remain retained without re-walking the corpus every frame.
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             let refreshes = app.search_projection_refreshes;
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(
                 app.search_projection_refreshes, refreshes,
                 "unchanged sync avoids corpus traversal"
@@ -6554,7 +6574,7 @@ mod tests {
             let stale_resource = "pdf.page:source-1".to_string();
             let action = crate::actions::delete_page_plan_action("source-1");
             app.perform_action(&mut state.doc, &action);
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             let restarted = searched(&app).search_page("", Some(&stale_cursor), 1, 1);
             assert!(
                 restarted.results.len() <= 1,
@@ -6609,8 +6629,8 @@ mod tests {
 
             // Materialising the same shared plan gives both renderers the same
             // address space, independent of their local source/raster instances.
-            a.sync(&mut state_a.doc, &state_a.root);
-            b.sync(&mut state_b.doc, &state_b.root);
+            a.sync_settled(&mut state_a.doc, &state_a.root);
+            b.sync_settled(&mut state_b.doc, &state_b.root);
             assert_eq!(a.resource_page_ids, b.resource_page_ids);
             let source_two_hits: Vec<tilo_actions::ActionAddress> = searched(&a)
                 .search("Per-cluster sandboxing")
@@ -6648,8 +6668,8 @@ mod tests {
             let env = tilo_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
                 .expect("author delete");
             tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
-            a.sync(&mut state_a.doc, &state_a.root);
-            b.sync(&mut state_b.doc, &state_b.root);
+            a.sync_settled(&mut state_a.doc, &state_a.root);
+            b.sync_settled(&mut state_b.doc, &state_b.root);
             assert!(resolve(&a, &state_a.doc, &resource_id).is_none());
             assert!(resolve(&b, &state_b.doc, &resource_id).is_none());
 
@@ -6729,7 +6749,7 @@ mod tests {
                 &mut state.doc,
                 &crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(app.resource_page_ids[1], "imported-occurrence");
             assert!(
                 app.status_note
@@ -6752,7 +6772,7 @@ mod tests {
                 &mut state.doc,
                 &move_page_plan_action("imported-occurrence", Some("source-3")),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(
                 app.annotations
                     .iter()
@@ -6783,7 +6803,7 @@ mod tests {
                 &mut state.doc,
                 &crate::actions::delete_page_plan_action("imported-occurrence"),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert!(
                 app.annotations
                     .iter()
@@ -7263,6 +7283,11 @@ mod tests {
     /// do it itself or the rail/second page would be half-rasterised), then
     /// write the PNG `out` names when `PDF_SHOTS=1`.
     fn settle_and_shoot(app: &mut Framed<PdfApp>, (w, h): (u32, u32), out: Option<&str>) {
+        // What the frame submitted lands, as a host applies it.
+        {
+            let (reader, st) = Framed::split(app);
+            reader.sync_settled(&mut st.doc, &st.root);
+        }
         for _ in 1..32 {
             if !app.pending_raster {
                 break;
@@ -8912,7 +8937,7 @@ mod tests {
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
             let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && ui::time::now() < deadline {
-                app.sync(&mut st.doc, &st.root);
+                app.sync_settled(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
             }
             if !app.has_document {
@@ -8945,7 +8970,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(5));
                 let (reader, st) = Framed::split(&mut app);
-                reader.sync(&mut st.doc, &st.root);
+                reader.sync_settled(&mut st.doc, &st.root);
             };
             let placement = placement.expect("the worker filled the viewport with tiles");
             assert!(
@@ -9396,6 +9421,7 @@ mod tests {
                 "import: {:?}",
                 app.status_note
             );
+            app.sync_settled(&mut st.doc, &st.root);
             assert_eq!(app.doc.page_count(), n + 1, "the image import added a page");
             assert!(app.pages_dirty());
 
@@ -9415,6 +9441,7 @@ mod tests {
                 "import: {:?}",
                 app.status_note
             );
+            app.sync_settled(&mut st.doc, &st.root);
             assert_eq!(
                 app.doc.page_count(),
                 n * 2,

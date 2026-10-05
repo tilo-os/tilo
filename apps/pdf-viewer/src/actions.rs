@@ -1864,7 +1864,6 @@ mod tests {
         ContentBackend, ContentError, ContentReader, ContentState, ContentStore, MemoryBackend,
         Stored,
     };
-    use ui::widget::Widget;
 
     /// Peer B's content backend: its own local content, plus a peer (A) it
     /// fetches from. A miss is not served synchronously; it asks the peer,
@@ -1949,7 +1948,7 @@ mod tests {
     fn open_with_markup() -> (PdfApp, ui::State) {
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         (app, state)
     }
 

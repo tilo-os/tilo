@@ -128,11 +128,11 @@ fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
     let mut app = PdfApp::open(path);
     app.raster.as_ref()?;
     let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
+    app.sync_settled(&mut state.doc, &state.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
     app.sync_viewport_frame();
-    app.sync(&mut state.doc, &state.root);
+    app.sync_settled(&mut state.doc, &state.root);
     Some((app, state))
 }
 
