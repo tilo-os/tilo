@@ -1118,7 +1118,7 @@ impl DisplayPane {
                                     "Night Light warmth is part of the static resource contract",
                                 ),
                         )
-                        .with_placeholder(&temperature_label(
+                        .with_selected(temperature_label(
                             self.initial_prefs.night_light_temperature,
                         )),
                     ),
@@ -1203,7 +1203,7 @@ impl DisplayPane {
                     .map(|candidate| format!("Mirror {}", candidate.label)),
             )
             .collect();
-        let mirror_placeholder = config
+        let mirror_current = config
             .mirror_of
             .as_ref()
             .and_then(|target| {
@@ -1260,7 +1260,7 @@ impl DisplayPane {
                             )
                             .expect("output scale action is part of the resource contract"),
                         )
-                        .with_placeholder(scale_label(config.scale)),
+                        .with_selected(scale_label(config.scale)),
                 ),
             ),
             choice_row(
@@ -1276,7 +1276,7 @@ impl DisplayPane {
                             )
                             .expect("output position action is part of the resource contract"),
                         )
-                        .with_placeholder("Automatic"),
+                        .with_selected("Automatic"),
                 ),
             ),
             choice_row(
@@ -1292,7 +1292,7 @@ impl DisplayPane {
                             )
                             .expect("output mirror action is part of the resource contract"),
                         )
-                        .with_placeholder(&mirror_placeholder),
+                        .with_selected(&mirror_current),
                 ),
             ),
         ]
@@ -1313,7 +1313,7 @@ impl DisplayPane {
             ));
         } else {
             let mode_choices: Vec<String> = output.modes.iter().copied().map(mode_label).collect();
-            let mode_placeholder = config
+            let mode_current = config
                 .mode
                 .or(output.current_mode)
                 .map_or_else(|| "Preferred".into(), mode_label);
@@ -1330,7 +1330,7 @@ impl DisplayPane {
                             )
                             .expect("output mode action is part of the resource contract"),
                         )
-                        .with_placeholder(&mode_placeholder),
+                        .with_selected(&mode_current),
                 ),
             ));
         }
@@ -1349,7 +1349,7 @@ impl DisplayPane {
                         )
                         .expect("output transform action is part of the resource contract"),
                     )
-                    .with_placeholder(&rotation_current),
+                    .with_selected(&rotation_current),
             ),
         ));
         out_rows
@@ -1449,7 +1449,7 @@ impl DisplayPane {
                     .get(id)
                     .map(|label| format!("{label} ({id})"))
             }));
-            let placeholder = config
+            let profile_current = config
                 .color_profile
                 .as_ref()
                 .and_then(|id| {
@@ -1472,7 +1472,7 @@ impl DisplayPane {
                             )
                             .expect("colour profile action is part of the resource contract"),
                         )
-                        .with_placeholder(&placeholder),
+                        .with_selected(&profile_current),
                 ),
             ));
         }

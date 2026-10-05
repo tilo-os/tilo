@@ -1028,7 +1028,7 @@ impl AudioPane {
                 dd = dd.with_enabled(false);
             }
             if let Some(name) = self.devices.default_sink() {
-                dd = dd.with_placeholder(name);
+                dd = dd.with_selected(name);
             }
             output_rows.push(choice_row(&t("sound-output-device"), Box::new(dd)));
         }
@@ -1153,7 +1153,7 @@ impl AudioPane {
                 dd = dd.with_enabled(false);
             }
             if let Some(name) = self.devices.default_source() {
-                dd = dd.with_placeholder(name);
+                dd = dd.with_selected(name);
             }
             input_rows.push(choice_row(&t("sound-input-device"), Box::new(dd)));
         }
@@ -1251,7 +1251,7 @@ impl AudioPane {
                     Dropdown::new(options, &device_profile_key(hw.id))
                         .with_id(&format!("audio.profile.{}", hw.id))
                         .on_action(profile_binding)
-                        .with_placeholder(&active),
+                        .with_selected(&active),
                 ),
             ));
         }
@@ -1309,7 +1309,7 @@ impl AudioPane {
                     )
                     .expect("visible stream routes form a bounded resource action"),
                 )
-                .with_placeholder(&current);
+                .with_selected(&current);
             let route_row =
                 choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
             let vol_row = slider_row(

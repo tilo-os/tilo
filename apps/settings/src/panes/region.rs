@@ -145,19 +145,19 @@ impl RegionPane {
             Currency::ALL.iter().map(|c| c.code().to_string()).collect();
         let currency = Dropdown::new(currency_opts, "region.currency.edit")
             .with_id("region.currency")
-            .with_placeholder(loc.currency.code());
+            .with_selected(loc.currency.code());
 
         let date_current = date_label(loc.date_format);
         let date_opts: Vec<String> = DateStyle::ALL.iter().copied().map(date_label).collect();
         let date = Dropdown::new(date_opts, "region.date_format.edit")
             .with_id("region.date")
-            .with_placeholder(&date_current);
+            .with_selected(&date_current);
 
         let time_current = time_label(loc.time_format);
         let time_opts: Vec<String> = TimeStyle::ALL.iter().copied().map(time_label).collect();
         let time = Dropdown::new(time_opts, "region.time_format.edit")
             .with_id("region.time")
-            .with_placeholder(&time_current);
+            .with_selected(&time_current);
 
         let measure_current = measure_label(loc.measurement);
         let unit_opts: Vec<String> = Measurement::ALL
@@ -167,7 +167,7 @@ impl RegionPane {
             .collect();
         let units = Dropdown::new(unit_opts, "region.measurement.edit")
             .with_id("region.measurement")
-            .with_placeholder(&measure_current);
+            .with_selected(&measure_current);
 
         let number_style = Dropdown::new(
             NumberStyle::ALL
@@ -177,7 +177,7 @@ impl RegionPane {
             "region.number_style.edit",
         )
         .with_id("region.number_style")
-        .with_placeholder(loc.number_style.label());
+        .with_selected(loc.number_style.label());
 
         let weekday_current = weekday_label(loc.first_day_of_week);
         let first_day = Dropdown::new(
@@ -189,7 +189,7 @@ impl RegionPane {
             "region.first_day.edit",
         )
         .with_id("region.first_day")
-        .with_placeholder(&weekday_current);
+        .with_selected(&weekday_current);
 
         let currency_title = t("settings-region-currency");
         let date_title = t("settings-region-date-format");

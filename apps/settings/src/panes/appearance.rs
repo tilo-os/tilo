@@ -410,7 +410,7 @@ impl AppearancePane {
             Box::new(
                 Dropdown::new(options, &Self::draft_key(key))
                     .with_id(id)
-                    .with_placeholder(current),
+                    .with_selected(current),
             ) as Box<dyn Widget>
         };
         let dark_current = self.prefs.theme_name(&self.prefs.dark_theme);
@@ -475,13 +475,13 @@ impl AppearancePane {
         let size_current = text_size_label(self.prefs.text_scale);
         let size = Dropdown::new(size_opts, &size_path)
             .with_id("appearance.text_size")
-            .with_placeholder(&size_current);
+            .with_selected(&size_current);
 
         let ui_scale_opts: Vec<String> = UI_SCALES.iter().map(|(l, _)| l.to_string()).collect();
         let ui_scale_path = Self::draft_key(UI_SCALE_KEY);
         let ui_scale = Dropdown::new(ui_scale_opts, &ui_scale_path)
             .with_id("appearance.ui_scale")
-            .with_placeholder(ui_scale_label(self.prefs.ui_scale));
+            .with_selected(ui_scale_label(self.prefs.ui_scale));
 
         let density_labels: Vec<String> = DENSITY_LABELS
             .iter()
@@ -533,7 +533,7 @@ impl AppearancePane {
             Box::new(
                 Dropdown::new(labels, &Self::draft_key(key))
                     .with_id(id)
-                    .with_placeholder(current),
+                    .with_selected(current),
             ) as Box<dyn Widget>
         };
         let scope_current = scope_label(&self.prefs.wallpaper_scope);
@@ -586,7 +586,7 @@ impl AppearancePane {
             Box::new(
                 Dropdown::new(labels, &Self::draft_key(key))
                     .with_id(id)
-                    .with_placeholder(current),
+                    .with_selected(current),
             ) as Box<dyn Widget>
         };
         let times = || {
