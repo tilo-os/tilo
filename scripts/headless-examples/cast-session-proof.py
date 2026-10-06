@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Observe the real projector's Cast TLS control/HLS/stop path on loopback.
+"""Observe the real projector's same-connection DeviceAuth gate on loopback.
 
-This is an independent bounded Cast-message receiver fixture, using the schema
-in vendor/google-cast-protocol/src/protos.rs. It does not emulate a physical
-Chromecast's device-auth challenge, display decoding, discovery or certification.
-A disposable self-signed TLS certificate deliberately exposes the SDK's present
-endpoint-authentication boundary: TLS encryption is observed, authentication is
-not claimed. The production controller is not replaced or duplicated.
-Requires a prebuilt tilo-projector and openssl; builds use an authorized Cargo drop-in.
+The independent receiver provides an ephemeral self-signed RSA TLS leaf and a
+DeviceAuth error. The production binary must challenge first, disconnect and
+publish no readiness, control or media URL. It changes no trust store or device.
+--legacy-transport-only explicitly selects the historical unauthenticated
+LOAD/HLS/STOP witness for a baseline binary; never use it to qualify DeviceAuth.
+Requires a prebuilt tilo-projector and openssl in the isolated execution host.
 """
 
 import argparse
@@ -52,7 +51,7 @@ def read_varint(data, offset):
     raise AssertionError("oversized protobuf integer")
 
 
-def decode(data):
+def fields_from_proto(data):
     fields, offset = {}, 0
     while offset < len(data):
         tag, offset = read_varint(data, offset)
@@ -64,8 +63,36 @@ def decode(data):
             assert offset + size <= len(data), "truncated Cast protobuf field"
             value, offset = data[offset:offset + size], offset + size
         fields[tag >> 3] = value
-    assert fields[1] == 0 and fields[5] == 0, "Cast v2 string envelope required"
+    return fields
+
+
+def decode(data):
+    fields = fields_from_proto(data)
+    assert fields[1] == 0, "Cast v2 envelope required"
+    if fields[5] == 1:
+        assert fields[4] == (PREFIX + "tp.deviceauth").encode()
+        assert fields[2] == b"sender-0" and fields[3] == b"receiver-0"
+        assert 6 not in fields, "binary auth must not contain a string payload"
+        auth = fields_from_proto(fields[7])
+        assert set(auth) == {1}, "DeviceAuth request must contain only a challenge"
+        challenge = fields_from_proto(auth[1])
+        assert challenge[1] == 1 and challenge[3] == 1, "explicit RSA PKCS1/SHA256 required"
+        assert len(challenge[2]) == 16, "fresh 16-byte nonce required"
+        return fields[2].decode(), fields[4].decode(), {"type": "DEVICE_AUTH_CHALLENGE"}
+    assert fields[5] == 0, "known Cast payload type required"
     return fields[2].decode(), fields[4].decode(), json.loads(fields[6])
+
+
+def send_auth_error(stream, destination):
+    data = b"\x08\x00"
+    for tag, value in ((2, "receiver-0"), (3, destination), (4, PREFIX + "tp.deviceauth")):
+        encoded = value.encode()
+        data += varint(tag << 3 | 2) + varint(len(encoded)) + encoded
+    # DeviceAuthMessage.error -> AuthError.NO_TLS. This receiver cannot prove
+    # a manufacturer identity; the production controller must reject it.
+    error = b"\x1a\x02\x08\x01"
+    data += b"\x28\x01\x3a" + varint(len(error)) + error
+    stream.sendall(struct.pack(">I", len(data)) + data)
 
 
 def send(stream, destination, namespace, payload):
@@ -99,6 +126,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--projector", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--legacy-transport-only", action="store_true")
     args = parser.parse_args()
     binary = args.projector.resolve()
     if not binary.is_file():
@@ -131,6 +159,11 @@ def main():
                         source, namespace, payload = decode(receive(stream, size))
                         kind = payload["type"]
                         observed.append((namespace, kind))
+                        if not args.legacy_transport_only:
+                            assert observed == [(PREFIX + "tp.deviceauth", "DEVICE_AUTH_CHALLENGE")], "no control or media before authentication"
+                            send_auth_error(stream, source)
+                            continue
+                        assert kind != "DEVICE_AUTH_CHALLENGE", "legacy witness cannot qualify a DeviceAuth binary"
                         if namespace == PREFIX + "tp.heartbeat" and kind == "PING":
                             send(stream, source, namespace, {"type": "PONG"})
                         elif namespace == PREFIX + "receiver" and kind in ("GET_STATUS", "LAUNCH"):
@@ -180,9 +213,26 @@ def main():
             "--device", "isolated fixture"], env=env, stdout=log, stderr=log, start_new_session=True)
         try:
             deadline = time.monotonic() + 20
-            while not loaded.is_set() and time.monotonic() < deadline and process.poll() is None and not errors:
+            while not (loaded.is_set() if args.legacy_transport_only else disconnected.is_set()) and time.monotonic() < deadline and process.poll() is None and not errors:
                 time.sleep(0.1)
             assert not errors, errors
+            if not args.legacy_transport_only:
+                assert disconnected.wait(5), "authentication failure must close the same TLS connection"
+                assert process.wait(timeout=10) != 0, "authentication failure must fail the session"
+                thread.join(timeout=5)
+                assert not thread.is_alive() and not errors, errors
+                assert observed == [(PREFIX + "tp.deviceauth", "DEVICE_AUTH_CHALLENGE")]
+                assert not loaded.is_set() and not fetched, "no media URL or HLS fetch after failed authentication"
+                assert not (session / "ready").exists(), "failed authentication must not report streaming"
+                assert not (session / "session.pid").exists(), "failed session must release its runtime ownership"
+                report = {"schema": 2, "artifact_sha256": file_sha256(binary), "tls": tls, "messages": observed,
+                          "fetched": fetched, "receiver_authenticated": False, "device_auth_challenge_observed": True,
+                          "control_or_media_before_authentication": False, "media_url_disclosed": False,
+                          "physical_receiver": False, "media_decoded": False, "clean_disconnect": True}
+                args.evidence.parent.mkdir(parents=True, exist_ok=True)
+                args.evidence.write_text(json.dumps(report, indent=2) + "\n")
+                print("PASS real projector DeviceAuth challenge, fail-closed disconnect, no readiness/control/media URL")
+                return
             assert loaded.is_set(), "production LOAD and protected HLS fetch must be observed"
             assert (session / "ready").is_file(), "real projector must publish readiness"
             (session / "stop").write_bytes(b"stop")

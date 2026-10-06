@@ -22,7 +22,7 @@ autotests = false
 autobenches = false
 description = "An SDK for easily creating senders for FCast and Google cast"
 readme = "README.md"
-license = "MIT"
+license = "MIT AND BSD-3-Clause"
 repository = "https://gitlab.futo.org/videostreaming/fcast"
 
 [features]
@@ -45,6 +45,7 @@ _uniffi_csharp = [
     "discovery",
 ]
 chromecast = [
+    "dep:getrandom", "dep:rand_core", "dep:sha2", "dep:webpki", "dep:x509-parser", "dep:prost",
     "dep:serde",
     "dep:serde_json",
     "dep:rustls-pki-types",
@@ -163,3 +164,33 @@ optional = true
 version = "0.14"
 default-features = false
 features = ["ring"]
+
+[dependencies.getrandom]
+version = "0.4"
+features = ["sys_rng"]
+optional = true
+[dependencies.rand_core]
+version = "0.10"
+optional = true
+[dependencies.sha2]
+version = "0.11"
+optional = true
+[dependencies.webpki]
+package = "rustls-webpki"
+version = "0.103.15"
+default-features = false
+features = ["ring", "std"]
+optional = true
+[dependencies.x509-parser]
+version = "0.18.1"
+optional = true
+[dependencies.prost]
+version = "0.14.4"
+optional = true
+
+[dev-dependencies.rsa]
+version = "=0.10.0-rc.18"
+features = ["encoding", "sha2"]
+
+[dev-dependencies.time]
+version = "0.3"
