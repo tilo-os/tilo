@@ -252,16 +252,21 @@ certificate rejection before metadata, and a deliberate fresh-consent recovery.
 It fails on missing prerequisites or observations. Certificates, runtime signing
 identity, application registry, profile, grants, receiver and owned process groups
 are removed on completion. JSON evidence includes artifact hashes and a real
-presented Files frame; it contains no credentials. Active-phase/cancel capability
-is observed; per-chunk byte progress remains unimplemented.
+presented Files frame; it contains no credentials. Files publishes a read-only `status` action on every visible transfer, including
+terminal transfers. It returns the broker-issued phase, total and confirmed byte
+counts with no paths, filesystem authority or network work; expired rows fail
+closed. The native proof reads awaiting consent, sending, cancellation/failure and
+completed byte counts through that action. AirDrop confirms bytes at completion;
+per-chunk byte progress remains unimplemented.
 
-Build these artifacts with **rcargo**, using the pinned toolchain, before running:
+Build these artifacts with the pinned toolchain before running. Set `CARGO` to
+your authorized Cargo drop-in for remote builds:
 
 ```bash
-rcargo build --locked -p shell -p file-explorer -p launcher -p install -p app-cli \
+$CARGO build --locked -p shell -p file-explorer -p launcher -p install -p app-cli \
   --bin shell --bin file-explorer --bin tilo-launcher --bin tilo-install --bin app \
   --example serve-test-registry
-rcargo build --locked --profile thin-app --features file-explorer/thin \
+$CARGO build --locked --profile thin-app --features file-explorer/thin \
   --config 'build.rustc-workspace-wrapper="/ABSOLUTE/CHECKOUT/tools/ci/rustc-thin-app-wrapper.sh"' \
   --config 'env.TILO_THIN_BIN_CRATES="file_explorer"' \
   -p runtime-dylib -p file-explorer --bin file-explorer
@@ -269,7 +274,7 @@ rcargo build --locked --profile thin-app --features file-explorer/thin \
 
 Run on the remote builder using its matching `libstd` and supported OS
 `tilo-runtime-bundle` binary, and the disposable OpenDrop Python environment
-specified above. A remote rcargo snapshot has no `.git`; record the full source
+specified above. A remote source snapshot may have no `.git`; record the full source
 commit before syncing, passing it explicitly. Artifact hashes distinguish rebuilt
 candidates from that source base.
 
@@ -299,7 +304,7 @@ stop and socket disconnect. The fixture supplies HLS bytes; it does **not** clai
 compositor capture, valid decoded video or physical receiver interoperability.
 
 ```bash
-rcargo build --locked -p tilo-projector --bin tilo-projector
+$CARGO build --locked -p tilo-projector --bin tilo-projector
 python3 scripts/headless-examples/cast-session-proof.py \
   --projector target/debug/tilo-projector --evidence target/cast-session-proof.json
 ```
@@ -316,23 +321,49 @@ provide a primary reference for a separate challenge/certificate/revocation
 qualification gate. Audit and implement that adapter boundary before claiming
 secure Cast pairing; retain the existing controller and explicit capture consent.
 
-### Immutable image AirPlay codec gate
+### Current immutable image AirPlay codec gate
 
-The encrypted-session test was actually invoked in a disposable read-only
-container from `registry.tilo.so/tilo/tilo-ci:main-562018e-x86_64`, digest
-`sha256:bba30c3412c197bfd3c21ca8219f66aaff96be34c255c91ba14236a444b9e3df`
-(source `562018eccdf820561ab2c03617219b46e46f0517`). It failed plugin discovery:
-`openh264enc is not available`. This is a failed prerequisite, not an encrypted
-interoperability pass. The image intentionally excludes publisher-only Cisco
-codec bytes; do not bake them into the image to make this proof green.
+The current qualified x86 image from successful build `72677` is
+`registry.tilo.so/tilo/tilo-ci:main-12f4dfb-x86_64`, digest
+`sha256:7a733a3f1a9fc79ca96f61a667f1b813c91251e822d93a999a5a9c240984cbce`
+(source `12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3`). Its encrypted-session
+test was actually invoked in a disposable read-only, network-isolated container.
+It failed plugin discovery: `openh264enc is not available`. This supersedes the
+earlier cached-image prerequisite result; it is not an encryption pass.
 
-The production `tilo-extension` consumer was then invoked against the image's
+The production `tilo-extension` consumer was also invoked against that image's
 exact RPM base fingerprint
 `8742f72a2365f83e615ae3e3782cfeba809a31287212f49d8a32a14363048c09`, copying only
 its public catalog/trust key into an ephemeral layout. The exact-base manifest
 request returned `Unpublished` (“Not available for this version of Tilo yet”).
-No extension was activated, no new trust was installed and no device was changed.
-The remaining gate is an available signed, exact-base publisher-download codec
-extension followed by the real encrypted-session test and selected-source native
-capture. Cancelled/skipped image workflows and subprocess substitutes do not
-qualify this gate.
+
+A concrete candidate was then prepared with the existing supported
+`tools/extensions/resolve.py` and `media-codecs/recipe.toml`, inside that exact
+immutable image. Dedicated temporary volumes preserve shared-source labels;
+DNF has temporary bookkeeping storage and the image's RPM database remains
+read-only. All upstream RPM signatures, pinned signing-key fingerprints,
+package compatibility rules and HTTPS artifact hashes remain enforced.
+Both parts resolved: 15 artifacts in `tilo-codecs` and one matching Mesa artifact
+in `tilo-codecs-mesa`. The unsigned candidate's SHA-256 is
+`bc87df63715dbc947013d132702c055dd6d32ad4a91654cb971e464b1e9fe7c2`;
+its revision is `20261006071645` and `resolve.py check` passes.
+
+The encoder uses publisher-served `openh264-2.6.0-3.fc44.x86_64.rpm`, 445460 bytes,
+SHA-256 `ddd3123c507f08d9ff1962371ada5dc555742dfa16d4543f87a53c1303c9da6c`,
+from `https://ciscobinary.openh264.org/openh264-2.6.0-3.fc44.x86_64.rpm`.
+The resolver refused Fedora's downgrade to an HTTP redirect. The GStreamer
+plugin is `gstreamer1-plugin-openh264-1.28.1-1.fc44.x86_64`, compatible with the
+base under the existing rule. Tilo redistributes neither publisher's RPM bytes.
+
+The remaining publication step is the existing main-only
+`extension-manifests.yml` workflow with `images` set to this immutable image.
+It resolves, signs through the existing non-exportable extension-manifest KMS
+key, verifies that key against `keys/extensions.pub`, and publishes metadata and
+detached signatures. No new trust key or signer access is needed. Publication
+is separately gated by the delegation's deployment limit because enabled
+extensions can consume updates. The unsigned candidate cannot substitute for
+the image-trusted signature. No extension has been activated and no device
+changed. After authorized publication, the next proof must use the production
+consumer to verify/stage those exact bytes, then run the real encrypted AirPlay
+session and selected-source capture. Cancelled/skipped image workflows and
+subprocess substitutes do not qualify that gate.

@@ -3,7 +3,7 @@
 
 Requires prebuilt debug shell/app/install/launcher/test-registry binaries, thin
 Files plus its matching runtime library and Rust libstd, and the OS runtime-bundle
-CLI. Build with rcargo before running; this script never builds or configures
+CLI. Build with an authorized Cargo drop-in before running; this script never builds or configures
 interfaces. The pinned GPL-3.0 OpenDrop checkout and its Python dependencies are
 external test prerequisites, never shipped components. Missing prerequisites,
 missing observable actions/frames, and timeouts fail rather than skip.
@@ -100,14 +100,38 @@ class Desktop:
         return self.request("actions_invoke", provider=action["provider"],
                             id=action["id"], args=args or {})
 
+    def output(self, reply):
+        receipt = reply["answer"]["receipt"]
+        update = receipt["update"]
+        if update["state"] not in ("succeeded", "failed", "cancelled"):
+            invocation = receipt["broker_invocation_id"]
+            def finished():
+                current = self.request("actions_status", invocation_id=invocation)["answer"]["receipt"]["update"]
+                return current if current["state"] in ("succeeded", "failed", "cancelled") else None
+            update = wait_for(finished, "structured action answer")
+        assert update["state"] == "succeeded", update
+        return update.get("output", {}).get("value")
+
+    def transfer_phase(self, action, expected):
+        def observed():
+            status = self.output(self.invoke(action))["transfer"]
+            assert status["total_bytes"] == len(PAYLOAD)
+            assert 0 <= status["transferred_bytes"] <= len(PAYLOAD)
+            return status if status["phase"] == expected else None
+        return wait_for(observed, "public transfer phase " + expected)
+
     def dialog(self):
         return self.request("state_dump")["state"]["chrome"]["portal_dialog"]
 
     def start(self, port):
         action = wait_for(lambda: self.action("send-airdrop"), "Files send-airdrop")
+        before = {row["id"] for row in self.actions()}
         self.invoke(action, {"address": "127.0.0.1", "port": port, "confirm": True})
         sheet = wait_for(self.dialog, "new trusted verification sheet")
         assert sheet["handle"].startswith("airdrop:") and sheet.get("value") == ""
+        self.transfer = wait_for(lambda: self.action("status", before), "public transfer status")
+        waiting = self.transfer_phase(self.transfer, "awaiting-consent")
+        assert waiting["transferred_bytes"] == 0
         return sheet
 
     def enter_pin(self, value):
@@ -234,13 +258,17 @@ def journeys(desktop, fixture, destination):
         assert (destination / "approved.txt").read_bytes() == PAYLOAD
         assert observed == ["/Discover", "/Ask", "/Upload"]
         wait_for(lambda: desktop.dialog() is None, "consent withdrawal")
-        record("native exact transfer and wrong-pin metadata exclusion")
+        complete = desktop.transfer_phase(desktop.transfer, "completed")
+        assert complete["transferred_bytes"] == len(PAYLOAD)
+        record("native exact transfer, semantic completion progress and wrong-pin metadata exclusion")
     with fixture.receiver() as (port, observed, _):
         desktop.start(port)
         desktop.request("key", key="Escape")
         wait_for(lambda: desktop.dialog() is None, "cancelled consent withdrawal")
         time.sleep(0.5)
         assert observed == []
+        cancelled = desktop.transfer_phase(desktop.transfer, "cancelled")
+        assert cancelled["transferred_bytes"] == 0
         record("consent cancellation excludes metadata")
     held, release = threading.Event(), threading.Event()
     def hold_ask():
@@ -252,6 +280,8 @@ def journeys(desktop, fixture, destination):
             desktop.start(port)
             desktop.enter_pin(fixture.pins[0])
             wait_for(held.is_set, "receiver Ask")
+            sending = desktop.transfer_phase(desktop.transfer, "transferring")
+            assert sending["transferred_bytes"] == 0, "held Ask has confirmed no payload bytes"
             cancel = wait_for(lambda: desktop.action("cancel", before), "public active transfer cancel")
             desktop.invoke(cancel)
             time.sleep(0.7)
@@ -259,7 +289,8 @@ def journeys(desktop, fixture, destination):
             release.set()
         time.sleep(0.5)
         assert observed == ["/Discover", "/Ask"] and desktop.dialog() is None
-        record("public transfer cancellation prevents upload")
+        desktop.transfer_phase(desktop.transfer, "cancelled")
+        record("public transfer cancellation and semantic progress prevent upload")
     before = {row["id"] for row in desktop.actions()}
     with fixture.receiver("decline") as (port, observed, _):
         desktop.start(port)
@@ -268,6 +299,8 @@ def journeys(desktop, fixture, destination):
         desktop.invoke(retry)
         time.sleep(0.7)
         assert observed == ["/Discover", "/Ask"] and desktop.dialog() is None
+        failed = desktop.transfer_phase(desktop.transfer, "failed")
+        assert failed["transferred_bytes"] == 0
         record("receiver decline and generic retry do not reuse consent")
     before = {row["id"] for row in desktop.actions()}
     with fixture.receiver() as (port, observed, rotation):
@@ -276,6 +309,7 @@ def journeys(desktop, fixture, destination):
         desktop.enter_pin(fixture.pins[0])
         wait_for(lambda: desktop.action("retry", before), "changed-certificate failure")
         assert observed == []
+        desktop.transfer_phase(desktop.transfer, "failed")
         record("certificate rotation excludes metadata")
     (destination / "approved.txt").unlink()
     with fixture.receiver() as (port, observed, _):
@@ -285,6 +319,8 @@ def journeys(desktop, fixture, destination):
         wait_for(lambda: (destination / "approved.txt").is_file(), "recovered transfer")
         assert (destination / "approved.txt").read_bytes() == PAYLOAD
         assert observed == ["/Discover", "/Ask", "/Upload"]
+        recovered = desktop.transfer_phase(desktop.transfer, "completed")
+        assert recovered["transferred_bytes"] == len(PAYLOAD)
         record("fresh-consent failure recovery delivers exact bytes")
     return passed
 
@@ -298,7 +334,7 @@ def main():
     if not __debug__:
         raise RuntimeError("proof requires enabled Python assertions")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-commit", required=True, help="source commit recorded outside the rcargo source snapshot")
+    parser.add_argument("--source-commit", required=True, help="source commit recorded outside the remote source snapshot")
     parser.add_argument("--opendrop", type=Path, required=True)
     parser.add_argument("--runtime-bundle", type=Path, required=True)
     parser.add_argument("--libstd", type=Path, required=True, help="exact thin build toolchain's libstd .so")
@@ -320,6 +356,8 @@ def main():
     if revision != REVISION:
         parser.error("OpenDrop revision does not match the pinned oracle")
     subprocess.run(["git", "-C", str(args.opendrop), "diff", "--quiet", "HEAD"], check=True)
+    if subprocess.check_output(["git", "-C", str(args.opendrop), "status", "--porcelain", "--untracked-files=normal"], text=True).strip():
+        parser.error("OpenDrop checkout contains extra or modified files")
     sys.path.insert(0, str(args.opendrop))
     spec = importlib.util.spec_from_file_location("opendrop_oracle", REPO / "tools/ci/test_airdrop_sender.py")
     oracle = importlib.util.module_from_spec(spec)
@@ -349,6 +387,9 @@ def main():
             report = {"schema": 1, "revision": args.source_commit,
                 "artifact_sha256": {name: file_sha256(args.debug_bin / name)
                     for name in ("shell", "app", "tilo-install", "tilo-launcher")},
+                "thin_files_sha256": file_sha256(args.thin_dir / "file-explorer"),
+                "runtime_sha256": file_sha256(args.thin_dir / "libruntime_dylib.so"),
+                "libstd_sha256": file_sha256(args.libstd),
                 "opendrop_revision": REVISION, "journeys": passed, "files_frame": frame,
                 "bytes": len(PAYLOAD), "sha256": hashlib.sha256(PAYLOAD).hexdigest(),
                 "physical_receiver": False, "release_availability": False}

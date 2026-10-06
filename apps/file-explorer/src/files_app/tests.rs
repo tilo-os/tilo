@@ -2355,6 +2355,93 @@ mod command_path_tests {
     }
 
     #[test]
+    fn nearby_status_action_reports_progress_and_terminal_phases_without_authority() {
+        use ui::collaboration::{
+            NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase,
+            NearbyTransferSnapshot, NearbyTransferStatus,
+        };
+        use ui::tilo_actions::ActionInput;
+
+        let transfer = NearbyTransferHandle::from_issued_bytes([0x62; 16]);
+        let (mut widget, _config) = hermetic();
+        let mut document = automerge::AutoCommit::new();
+        for (phase, bytes) in [
+            (NearbyTransferPhase::AwaitingConsent, 0),
+            (NearbyTransferPhase::Transferring, 8),
+            (NearbyTransferPhase::Completed, 16),
+            (NearbyTransferPhase::Failed, 8),
+            (NearbyTransferPhase::Cancelled, 8),
+        ] {
+            let expected = NearbyTransferStatus {
+                handle: transfer,
+                name: "report.txt".into(),
+                device_label: "Verified fixture".into(),
+                direction: NearbyTransferDirection::Sending,
+                phase,
+                transferred_bytes: bytes,
+                total_bytes: 16,
+            };
+            widget
+                .nearby_send
+                .install_snapshot_for_test(NearbyTransferSnapshot {
+                    transfers: vec![expected.clone()],
+                    ..Default::default()
+                });
+            let rows = crate::files_app::published::tree(&widget, &document);
+            let resource = rows[0]
+                .children
+                .iter()
+                .find(|resource| resource.kind == "files.nearby-transfer")
+                .expect("terminal transfers remain semantic resources");
+            let status = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "status")
+                .expect("a read-only status action exists in every phase");
+            assert_eq!(status.contract.permission, PermissionRequirement::Read);
+            assert_eq!(status.contract.confirmation, ConfirmationPolicy::None);
+            let ActionInput::Immediate(encoded) = &status.input else {
+                panic!("status uses the app's opaque row payload")
+            };
+            let Some(ui::framework::Effected::Done(output)) = crate::files_app::published::start(
+                &mut widget,
+                status.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &mut document,
+                &automerge::ROOT,
+            )
+            .expect("read status through the production effect door") else {
+                panic!("status must return an immediate structured answer")
+            };
+            assert_eq!(
+                output.value,
+                Some(serde_json::json!({"transfer": expected}))
+            );
+            assert!(
+                widget.nearby_send.take_requests().is_empty(),
+                "inspection grants no authority or network work"
+            );
+            widget
+                .nearby_send
+                .install_snapshot_for_test(NearbyTransferSnapshot::default());
+            assert!(
+                crate::files_app::published::start(
+                    &mut widget,
+                    status.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &mut document,
+                    &automerge::ROOT,
+                )
+                .expect_err("an expired row cannot inspect another transfer")
+                .contains("no longer available")
+            );
+            assert!(widget.nearby_send.take_requests().is_empty());
+        }
+    }
+
+    #[test]
     fn nearby_recovered_receive_decline_is_available_without_a_destination() {
         use ui::collaboration::{
             CollabRequest, NearbyTransferCommand, NearbyTransferDirection, NearbyTransferHandle,

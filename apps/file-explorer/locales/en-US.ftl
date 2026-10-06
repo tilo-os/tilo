@@ -592,3 +592,7 @@ files-airdrop-verifying = Waiting for receiver verification and permission to se
 files-airdrop-address = Receiver's literal IP address
 files-airdrop-port = Receiver's TLS port
 files-airdrop-action-detail = Verify a manually selected lab receiver on the compositor's sheet before sending this file once.
+
+files-nearby-status = Transfer status
+files-nearby-transfer-unavailable = This transfer is no longer available in this Files window.
+files-nearby-status-detail = Read this transfer’s phase and confirmed byte counts.
