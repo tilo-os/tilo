@@ -2851,6 +2851,9 @@ pub struct CapnpBrokerState {
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
+    /// Serialize delivery decisions through the owner acknowledgement. This is
+    /// not execution authority: the owner still admits every exact `StartRun`.
+    task_delivery_order: AsyncMutex<()>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
     task_run_id: AtomicU64,
     invocation_id: AtomicU64,
@@ -3617,6 +3620,7 @@ impl CapnpBrokerState {
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
+                task_delivery_order: AsyncMutex::new(()),
                 pending_task_runs: Mutex::new(HashMap::new()),
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(next_invocation),
@@ -8495,7 +8499,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             subscribers.insert(
                 self.peer_id,
                 TaskSubscription {
-                    agent_id,
+                    agent_id: agent_id.clone(),
                     cluster_id: self.route().cluster_id,
                     tx,
                 },
@@ -8514,7 +8518,16 @@ impl channel_handle::Server for CapnpChannelHandle {
             rx: Rc::new(AsyncMutex::new(rx)),
         });
         results.get().set_stream(client);
-        Promise::ok(())
+        Promise::from_future(async move {
+            if let Err(error) = self
+                .state
+                .dispatch_queued_workspace_task(&self.route().cluster_id, &agent_id)
+                .await
+            {
+                tracing::warn!(%error, "queued task delivery deferred after Agent subscription");
+            }
+            Ok(())
+        })
     }
 
     fn report_task_run(

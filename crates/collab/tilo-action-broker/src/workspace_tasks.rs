@@ -6,6 +6,7 @@ use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
 };
+use std::sync::atomic::Ordering;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand};
 
@@ -253,6 +254,7 @@ impl CapnpBrokerState {
         task_id: &str,
         service: &dyn crate::services::WorkspaceTasks,
     ) -> Result<Option<u64>, String> {
+        let _delivery = self.task_delivery_order.lock().await;
         let snapshot = checked_snapshot(service, room)?;
         let task = snapshot
             .tasks
@@ -267,13 +269,18 @@ impl CapnpBrokerState {
             .as_deref()
             .filter(|_| task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual)
             .ok_or("queued task has no Agent route")?;
+        // The Agent executor is serial. Do not label its next instruction as
+        // working while another owner-backed run is still active.
+        if agent_has_active_run(&snapshot, agent)
+            || next_queued_task(&snapshot.tasks, agent) != Some(task_id)
+        {
+            return Ok(None);
+        }
         let control = snapshot
             .controls
             .get(task_id)
             .ok_or("queued task has no owner control")?;
-        if control.instruction_required && control.instruction.is_none() {
-            return Err("queued task lost its required instruction".into());
-        }
+        require_retained_task_instruction(control)?;
         let Some((peer_id, tx)) = self.live_task_subscriber(room, agent)? else {
             return Ok(None);
         };
@@ -312,9 +319,7 @@ impl CapnpBrokerState {
             .as_ref()
             .filter(|active| active.epoch == epoch && active.agent_id == agent)
             .ok_or("owner did not retain the exact started run")?;
-        let run_id = self
-            .task_run_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let run_id = self.task_run_id.fetch_add(1, Ordering::Relaxed);
         let lease = uuid::Uuid::new_v4().to_string();
         let context = task.action_context();
         let envelope = super::TaskRunEnvelope {
@@ -348,6 +353,23 @@ impl CapnpBrokerState {
                 },
             );
         Ok(Some(run_id))
+    }
+
+    pub(super) async fn dispatch_queued_workspace_task(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Option<u64>, String> {
+        let Some(service) = self.services.workspace_tasks.as_ref() else {
+            // Legacy task streams have their own delivery contract.
+            return Ok(None);
+        };
+        let snapshot = checked_snapshot(service.as_ref(), room)?;
+        let Some(task_id) = next_queued_task(&snapshot.tasks, agent) else {
+            return Ok(None);
+        };
+        self.dispatch_live_workspace_task(room, task_id, service.as_ref())
+            .await
     }
 
     fn live_task_subscriber(
@@ -483,19 +505,30 @@ impl CapnpBrokerState {
         if applied {
             return Ok(());
         }
-        let mut runs = self
-            .pending_task_runs
-            .lock()
-            .map_err(|_| "task run registry unavailable")?;
-        let current = runs
-            .get_mut(&run_id)
-            .filter(|current| current.lease == run.lease && current.task_epoch == Some(epoch))
-            .ok_or("task run changed before terminal owner receipt")?;
-        if current.terminal {
-            return Err("task run is already terminal".into());
+        {
+            let mut runs = self
+                .pending_task_runs
+                .lock()
+                .map_err(|_| "task run registry unavailable")?;
+            let current = runs
+                .get_mut(&run_id)
+                .filter(|current| current.lease == run.lease && current.task_epoch == Some(epoch))
+                .ok_or("task run changed before terminal owner receipt")?;
+            if current.terminal {
+                return Err("task run is already terminal".into());
+            }
+            current.terminal = true;
+            drop(runs);
         }
-        current.terminal = true;
-        drop(runs);
+        // The terminal owner receipt, not a UI status or a disconnected stream,
+        // releases the next instruction. A failed delivery must not turn this
+        // already-durable completion into a failed acknowledgement.
+        if let Err(error) = self
+            .dispatch_queued_workspace_task(&run.cluster_id, &run.agent_id)
+            .await
+        {
+            tracing::warn!(%error, "queued task delivery deferred after terminal owner receipt");
+        }
         Ok(())
     }
 
@@ -596,6 +629,42 @@ impl CapnpBrokerState {
         }
         Ok(())
     }
+}
+
+fn require_retained_task_instruction(
+    control: &tilo_desktop_model::WorkspaceTaskControl,
+) -> Result<(), String> {
+    if control.instruction_required && control.instruction.is_none() {
+        return Err("queued task lost its required instruction".into());
+    }
+    Ok(())
+}
+
+fn agent_has_active_run(snapshot: &crate::services::WorkspaceTaskSnapshot, agent: &str) -> bool {
+    snapshot.tasks.iter().any(|task| {
+        task.status == tilo_desktop_model::WorkspaceTaskStatus::InProgress
+            && snapshot.controls.get(&task.id).is_some_and(|control| {
+                control
+                    .active_run
+                    .as_ref()
+                    .is_some_and(|run| run.agent_id == agent)
+            })
+    })
+}
+
+fn next_queued_task<'a>(
+    tasks: &'a [tilo_desktop_model::WorkspaceTask],
+    agent: &str,
+) -> Option<&'a str> {
+    tasks
+        .iter()
+        .filter(|task| {
+            task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
+                && task.assigned_agent.as_deref() == Some(agent)
+                && task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual
+        })
+        .min_by_key(|task| (task.created_at, task.id.as_str()))
+        .map(|task| task.id.as_str())
 }
 
 fn owner_update_command(
@@ -894,10 +963,12 @@ fn read_current_tasks(
                         "title": task.title,
                         "assigned_agent": task.assigned_agent,
                         "status": task.status,
+                        "route": task.route,
                         "run_epoch": active.epoch,
                         "active_agent": active.agent_id,
                         "after_revision": control.directions.last().map_or(0, |value| value.revision),
                         "applied_revision": active.applied_direction_revision,
+                        "cancellation_requested": control.cancellation.as_ref().is_some_and(|value| value.run_epoch == active.epoch),
                     })
                 })
         })
@@ -1402,6 +1473,175 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn native_offline_queue_drains_one_run_after_each_owner_receipt() {
+        let NativeRunFixture {
+            _directory,
+            service,
+            state,
+            receiver: _offline_receiver,
+            caller,
+        } = native_run_fixture();
+        let room = tilo_joined_room::testing::ROOM;
+        state.task_subscribers.lock().unwrap().clear();
+        let first = queue_native_task(service.as_ref(), room, caller.clone()).await;
+        assert!(
+            state
+                .dispatch_queued_workspace_task(room, "scribe")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            service.snapshot(room).unwrap().tasks[0].status,
+            tilo_desktop_model::WorkspaceTaskStatus::Queued
+        );
+        assert!(state.pending_task_runs.lock().unwrap().is_empty());
+
+        let mut receiver = register_scribe_subscriber(&state, room, 72);
+        let (left, right) = tokio::join!(
+            state.dispatch_queued_workspace_task(room, "scribe"),
+            state.dispatch_queued_workspace_task(room, "scribe"),
+        );
+        let starts = [left.unwrap(), right.unwrap()];
+        assert_eq!(starts.iter().filter(|run| run.is_some()).count(), 1);
+        let run_id = starts.into_iter().flatten().next().unwrap();
+        let delivered = receiver.try_recv().unwrap();
+        assert_eq!(delivered.task_id, first);
+        assert_eq!(
+            delivered.instruction.as_deref(),
+            Some("Line one.\n\nKeep all details.")
+        );
+        assert_eq!(delivered.run_id, run_id);
+
+        let second = queue_second_native_task(service.as_ref(), room, caller, &first).await;
+        let (left, right) = tokio::join!(
+            state.dispatch_queued_workspace_task(room, "scribe"),
+            state.dispatch_queued_workspace_task(room, "scribe"),
+        );
+        assert!(left.unwrap().is_none());
+        assert!(right.unwrap().is_none());
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            service
+                .snapshot(room)
+                .unwrap()
+                .tasks
+                .iter()
+                .find(|task| task.id == second)
+                .unwrap()
+                .status,
+            tilo_desktop_model::WorkspaceTaskStatus::Queued
+        );
+
+        let run = state.pending_task_runs.lock().unwrap()[&run_id].clone();
+        state
+            .record_owner_task_run_update(
+                run_id,
+                &run,
+                runtime_collab::TaskRunUpdate::Succeeded {
+                    message: "First task finished".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let next = receiver.try_recv().unwrap();
+        assert_eq!(next.task_id, second);
+        assert_eq!(
+            next.instruction.as_deref(),
+            Some("Do the second task only after the first.")
+        );
+        assert_ne!(next.run_id, run_id);
+        assert_ne!(next.lease, delivered.lease);
+        assert!(receiver.try_recv().is_err());
+        let snapshot = service.snapshot(room).unwrap();
+        assert_eq!(
+            snapshot
+                .tasks
+                .iter()
+                .find(|task| task.id == first)
+                .unwrap()
+                .status,
+            tilo_desktop_model::WorkspaceTaskStatus::Done
+        );
+        assert_eq!(
+            snapshot
+                .tasks
+                .iter()
+                .find(|task| task.id == second)
+                .unwrap()
+                .status,
+            tilo_desktop_model::WorkspaceTaskStatus::InProgress
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_current_read_retains_stopping_until_owner_terminal() {
+        let NativeRunFixture {
+            _directory,
+            service,
+            state,
+            mut receiver,
+            caller,
+        } = native_run_fixture();
+        let room = tilo_joined_room::testing::ROOM;
+        let task_id = queue_native_task(service.as_ref(), room, caller.clone()).await;
+        let run_id = state
+            .dispatch_queued_workspace_task(room, "scribe")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receiver.try_recv().unwrap().run_id, run_id);
+        let query = envelope(
+            COLLECTION,
+            "read-current",
+            Some(serde_json::json!({"agent":"scribe"})),
+        );
+        let current = read_current_tasks(room, &query, service.as_ref()).unwrap();
+        assert_eq!(current["tasks"][0]["route"], "model");
+        assert_eq!(current["tasks"][0]["cancellation_requested"], false);
+        commit_person_command(
+            service.as_ref(),
+            room,
+            WorkspaceTaskCommand::CancelRun {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                after_revision: 0,
+            },
+            303,
+            caller,
+        )
+        .await;
+        let stopping = read_current_tasks(room, &query, service.as_ref()).unwrap();
+        assert_eq!(stopping["tasks"][0]["status"], "in_progress");
+        assert_eq!(stopping["tasks"][0]["cancellation_requested"], true);
+        let run = state.pending_task_runs.lock().unwrap()[&run_id].clone();
+        state
+            .record_owner_task_run_update(
+                run_id,
+                &run,
+                runtime_collab::TaskRunUpdate::Cancelled {
+                    message: "Cancellation acknowledged".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let terminal = read_current_tasks(room, &query, service.as_ref()).unwrap();
+        assert_eq!(terminal["total"], 0);
+        assert_eq!(
+            service.snapshot(room).unwrap().tasks[0].status,
+            tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+        );
+        assert!(
+            state
+                .dispatch_queued_workspace_task(room, "scribe")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn native_owner_run_delivers_direction_ack_and_exact_stop() {
         let NativeRunFixture {
             service,
@@ -1522,6 +1762,53 @@ mod tests {
         assert!(result.get("instruction").is_none());
         request.argument = Some("{}".into());
         assert!(read_task("room-a", &request, &service).is_err());
+    }
+
+    fn register_scribe_subscriber(
+        state: &CapnpBrokerState,
+        room: &str,
+        peer_id: u64,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<super::super::TaskRunEnvelope> {
+        let (tx, receiver) = tokio::sync::mpsc::unbounded_channel();
+        state.task_subscribers.lock().unwrap().insert(
+            peer_id,
+            super::super::TaskSubscription {
+                agent_id: "scribe".into(),
+                cluster_id: room.into(),
+                tx,
+            },
+        );
+        receiver
+    }
+
+    async fn queue_second_native_task(
+        service: &dyn crate::services::WorkspaceTasks,
+        room: &str,
+        caller: tilo_user_identity::DeviceCert,
+        first: &str,
+    ) -> String {
+        commit_person_command(
+            service,
+            room,
+            WorkspaceTaskCommand::QueueTask {
+                title: "Next instruction".into(),
+                instruction: "Do the second task only after the first.".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+            202,
+            caller,
+        )
+        .await;
+        service
+            .snapshot(room)
+            .unwrap()
+            .tasks
+            .into_iter()
+            .find(|task| task.id != first)
+            .unwrap()
+            .id
     }
 
     async fn queue_native_task(
