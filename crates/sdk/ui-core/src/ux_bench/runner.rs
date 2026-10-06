@@ -754,7 +754,7 @@ fn capture(
     driver.relayout();
     let screenshot = format!("{name}.png");
     let png = out.join(&screenshot);
-    driver.render_window_png(&png);
+    driver.render_png(&png);
     let current = targets(driver);
     let state = state();
     write_json(

@@ -28,8 +28,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             crate::State::new(),
             Box::new(fixed(Box::new(
                 Button::new("action", "A very long action title")
-                    .on_click(crate::testing::record_click("clicked"))
-                    .fit_content(40.0),
+                    .on_click(crate::testing::record_click("clicked")),
             ))),
             (400, 300),
         );
@@ -82,12 +81,20 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
 
     fn row_and_column_keep_authored_allocation_separate_from_overflow() {
         for child in [
-            Box::new(Column::new().with_no_padding().push(Box::new(
-                Button::new("large", "Large").with_size(250.0, 90.0),
-            ))) as Element,
-            Box::new(Row::new().no_wrap().push(Box::new(
-                Button::new("large", "Large").with_size(250.0, 90.0),
-            ))) as Element,
+            Box::new(
+                Column::new().with_no_padding().push(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(250.0, 90.0),
+                )),
+            ) as Element,
+            Box::new(
+                Row::new().no_wrap().push(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(250.0, 90.0),
+                )),
+            ) as Element,
         ] {
             let harness =
                 FrameHarness::new(crate::State::new(), Box::new(fixed(child)), (400, 300));
@@ -413,7 +420,11 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
                 height: 60.0,
             })
         })
-        .child(Box::new(Button::new("fixed", "OK").with_size(96.5, 44.25)));
+        .child(Box::new(
+            crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(96.5, 44.25),
+        ));
         let _ = FrameHarness::new(crate::State::new(), Box::new(region), (300, 200));
     }
 

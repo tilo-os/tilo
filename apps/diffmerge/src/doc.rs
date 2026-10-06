@@ -91,6 +91,26 @@ pub struct MergeInputs {
     pub theirs: String,
 }
 
+/// What a merge of `ours` and `theirs` is called: the file when both sides
+/// are the same file, else both names.
+pub fn merge_title(ours: &str, theirs: &str) -> String {
+    use crate::i18n::{t, t_args, text};
+    let (ours_name, theirs_name) = (
+        crate::highlight::file_name(ours),
+        crate::highlight::file_name(theirs),
+    );
+    if ours.is_empty() && theirs.is_empty() {
+        t("merge-title-empty")
+    } else if ours_name == theirs_name {
+        t_args("merge-title", &[("name", text(ours_name))])
+    } else {
+        t_args(
+            "merge-title-pair",
+            &[("ours", text(ours_name)), ("theirs", text(theirs_name))],
+        )
+    }
+}
+
 impl MergeInputs {
     const FIELDS: [&'static str; 6] = [
         "base_label",
@@ -136,11 +156,7 @@ impl MergeInputs {
 
     /// `Merge · ours ↔ theirs`, as the palette and history name the merge.
     pub fn title(&self) -> String {
-        if self.ours_label.is_empty() && self.theirs_label.is_empty() {
-            "Merge result".into()
-        } else {
-            format!("Merge · {} ↔ {}", self.ours_label, self.theirs_label)
-        }
+        merge_title(&self.ours_label, &self.theirs_label)
     }
 }
 
@@ -389,7 +405,7 @@ mod tests {
         let state = MergeState::from_doc(&doc);
         assert_eq!(state.merge.as_ref(), Some(&inputs));
         assert_eq!(state.comparison.as_ref(), Some(&comparison));
-        assert_eq!(state.title, "Merge · ours ↔ theirs");
+        assert_eq!(state.title, "Merge of ours and theirs");
         assert!(state.composed);
         MergeDoc::set_merged(&mut doc, "edited by hand\n").unwrap();
         assert!(!MergeState::from_doc(&doc).composed);

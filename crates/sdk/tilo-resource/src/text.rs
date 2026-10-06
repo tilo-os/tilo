@@ -287,13 +287,7 @@ impl Resource for PlainText {
         if title.is_empty() {
             return Vec::new();
         }
-        vec![SearchEntry {
-            anchor: None,
-            title: title.to_owned(),
-            text: state.clone(),
-            action: None,
-            ..Default::default()
-        }]
+        vec![SearchEntry::new(title, state.clone())]
     }
 }
 

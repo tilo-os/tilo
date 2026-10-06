@@ -2500,7 +2500,9 @@ impl Widget for IdentityFlow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        match self.current {
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| match self.current {
             IdentityFlowScreen::CreateIdentity => {
                 self.create_identity
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -2539,7 +2541,7 @@ impl Widget for IdentityFlow {
                     self.rect,
                 );
             }
-        }
+        });
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

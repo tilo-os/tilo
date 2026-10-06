@@ -13,7 +13,8 @@
 //! `SystemTime::now` everywhere else in the crate.
 
 pub use tilo_clock::{
-    Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH, from_std, now, to_std, wall,
+    Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH, freeze_wall, from_std, now, to_std,
+    wall, wall_frozen,
 };
 
 /// A file-system timestamp, as `std::fs::Metadata::modified` reports it, in

@@ -20,7 +20,7 @@
 //!   is not persisted to the document either.
 //!
 //! - **Presentation — never actions.** Which screen is showing, the selected
-//!   file or commit, scroll offsets, the sidebar flap, the armed-discard
+//!   file or commit, scroll offsets, the list drawer, a pending discard
 //!   confirmation, keyboard focus — all local, per-instance view state.
 //!
 //! ## What genuinely lives in the shared document
@@ -39,6 +39,7 @@
 //! live rows. The diff preferences are the person's settings
 //! ([`crate::settings`]), switched by the surface's effects.
 
+use crate::i18n::t;
 use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 
@@ -412,7 +413,12 @@ pub(crate) fn working_tree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
 pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
     let mut children = Vec::new();
     children.push(
-        Resource::new("git_client.history", "git_client.collection", "History").with_children(
+        Resource::new(
+            "git_client.history",
+            "git_client.collection",
+            t("git-screen-history"),
+        )
+        .with_children(
             model
                 .commits
                 .iter()
@@ -421,7 +427,12 @@ pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
         ),
     );
     children.push(
-        Resource::new("git_client.branches", "git_client.collection", "Branches").with_children(
+        Resource::new(
+            "git_client.branches",
+            "git_client.collection",
+            t("git-section-branches"),
+        )
+        .with_children(
             model
                 .branches
                 .iter()
@@ -430,15 +441,18 @@ pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
         ),
     );
     children.push(
-        Resource::new("git_client.tags", "git_client.collection", "Tags").with_children(
-            model.tags.iter().take(MAX_CONTEXT_REFS).map(|tag| {
-                Resource::new(
-                    tag_resource_id(&tag.name),
-                    "git_client.tag",
-                    tag.name.clone(),
-                )
-            }),
-        ),
+        Resource::new(
+            "git_client.tags",
+            "git_client.collection",
+            t("git-section-tags"),
+        )
+        .with_children(model.tags.iter().take(MAX_CONTEXT_REFS).map(|tag| {
+            Resource::new(
+                tag_resource_id(&tag.name),
+                "git_client.tag",
+                tag.name.clone(),
+            )
+        })),
     );
     children.push(
         Resource::new("git_client.stashes", "git_client.collection", "Stashes").with_children(
@@ -450,7 +464,12 @@ pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
         ),
     );
     children.push(
-        Resource::new("git_client.remotes", "git_client.collection", "Remotes").with_children(
+        Resource::new(
+            "git_client.remotes",
+            "git_client.collection",
+            t("git-section-remotes"),
+        )
+        .with_children(
             model
                 .remotes
                 .iter()
@@ -464,7 +483,7 @@ pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
 pub(crate) fn repo_label(model: &RepoModel) -> String {
     let repo_name = model.name.as_str();
     if repo_name.trim().is_empty() {
-        "Repository".to_string()
+        t("git-collection-repository")
     } else {
         repo_name.to_string()
     }

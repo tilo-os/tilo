@@ -161,6 +161,7 @@ pub struct DrmPresenter {
     /// hard reset still leaves exact phase costs in the flight record.
     profile_phases: bool,
     profile_seq: u64,
+    frame_phases: Option<crate::shell::present::FramePhaseTiming>,
     /// Bounded aggregate diagnostics are always collected. They make a slow physical session
     /// actionable even when its wrapper forgot the opt-in per-frame trace environment: one log
     /// record every two seconds is cheap enough for production and survives a hard reset.
@@ -314,6 +315,7 @@ struct PhaseWindow {
     gpu_readback_map_us: u128,
     settle_us: u128,
     cpu_swizzle_us: u128,
+    backdrop_us: u128,
     /// Render-thread time from a direct frame's start to its completed GPU
     /// work, summed and at most, over the window's direct frames.
     direct_us: u128,
@@ -347,6 +349,7 @@ impl Default for PhaseWindow {
             gpu_readback_map_us: 0,
             settle_us: 0,
             cpu_swizzle_us: 0,
+            backdrop_us: 0,
             readback_bytes: 0,
             output_bytes: 0,
             bridge_us: 0,
@@ -362,6 +365,10 @@ impl Default for PhaseWindow {
 impl PhaseWindow {
     fn record(&mut self, timing: paint::BridgePhaseTiming) {
         self.frames = self.frames.saturating_add(1);
+        self.accumulate(timing);
+    }
+
+    fn accumulate(&mut self, timing: paint::BridgePhaseTiming) {
         self.submit_us = self.submit_us.saturating_add(timing.submit_us);
         self.gpu_readback_map_us = self
             .gpu_readback_map_us
@@ -370,6 +377,7 @@ impl PhaseWindow {
         self.cpu_swizzle_us = self
             .cpu_swizzle_us
             .saturating_add(timing.cpu_copy_swizzle_us);
+        self.backdrop_us = self.backdrop_us.saturating_add(timing.backdrop_us);
         self.readback_bytes = self.readback_bytes.saturating_add(timing.readback_bytes);
         self.output_bytes = self.output_bytes.saturating_add(timing.cpu_output_bytes);
     }
@@ -405,7 +413,15 @@ impl PhaseWindow {
         }
     }
 
-    fn record_direct_submit(&mut self, render_us: u128, sparse: bool) {
+    fn record_direct_submit(
+        &mut self,
+        render_us: u128,
+        sparse: bool,
+        timing: Option<paint::BridgePhaseTiming>,
+    ) {
+        if let Some(timing) = timing {
+            self.accumulate(timing);
+        }
         self.frames = self.frames.saturating_add(1);
         self.direct_frames = self.direct_frames.saturating_add(1);
         self.direct_us = self.direct_us.saturating_add(render_us);
@@ -474,6 +490,7 @@ mod phase_window_tests {
             cpu_copy_swizzle_us: u128::from(value.saturating_mul(4)),
             readback_bytes: value.saturating_mul(5),
             cpu_output_bytes: value.saturating_mul(6),
+            backdrop_us: u128::from(value.saturating_mul(7)),
         }
     }
 
@@ -493,6 +510,7 @@ mod phase_window_tests {
             assert_eq!(window.gpu_readback_map_us, 10);
             assert_eq!(window.settle_us, 15);
             assert_eq!(window.cpu_swizzle_us, 20);
+            assert_eq!(window.backdrop_us, 35);
             assert_eq!(window.readback_bytes, 25);
             assert_eq!(window.output_bytes, 30);
             assert_eq!(window.bridge_us, 0);
@@ -521,13 +539,27 @@ mod phase_window_tests {
         // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
         {
             let mut window = PhaseWindow::default();
-            window.record_direct_submit(7_000, false);
-            window.record_direct_submit(3_000, true);
+            window.record_direct_submit(
+                7_000,
+                false,
+                Some(paint::BridgePhaseTiming {
+                    submit_us: 2,
+                    completed_readback_map_us: 4,
+                    settle_us: 6,
+                    backdrop_us: 14,
+                    ..Default::default()
+                }),
+            );
+            window.record_direct_submit(3_000, true, None);
             window.record_direct_drop();
             window.record_flip_completions(2);
 
             assert_eq!(window.frames, 2);
             assert_eq!(window.direct_frames, 2);
+            assert_eq!(window.submit_us, 2);
+            assert_eq!(window.gpu_readback_map_us, 4);
+            assert_eq!(window.settle_us, 6);
+            assert_eq!(window.backdrop_us, 14);
             assert_eq!(window.direct_us, 10_000);
             assert_eq!(window.max_direct_us, 7_000);
             assert_eq!(window.direct_sparse_frames, 1);
@@ -741,6 +773,7 @@ impl DrmPresenter {
                 workspace_id: None,
                 workspace_hold: false,
                 workspace_clip: None,
+                backdrop: None,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -756,6 +789,10 @@ impl DrmPresenter {
         &mut self,
         frame: &FramePaint,
     ) -> Option<crate::shell::present::PhysicalPresentation> {
+        self.frame_phases = None;
+        if let Some(bridge) = &mut self.paint {
+            let _ = bridge.take_phase_timing();
+        }
         self.drain_commands();
         if self.blanked || self.paused {
             return None;
@@ -781,10 +818,19 @@ impl DrmPresenter {
                 workspace_id: frame.workspace_id,
                 workspace_hold: frame.workspace_hold,
                 workspace_clip: frame.workspace_clip,
+                backdrop: frame.backdrop.as_ref(),
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
+        let retirement_started = self.profile_phases.then(Instant::now);
+        let retirement_attempted = sample.direct_queued
+            || (self.scanouts.len() == 1
+                && self
+                    .scanouts
+                    .first()
+                    .map(|entry| entry.scanout.flip_submission())
+                    != before);
         let physical = if sample.direct_queued {
             self.retire_direct_flip()
         } else if self.scanouts.len() == 1
@@ -798,7 +844,24 @@ impl DrmPresenter {
         } else {
             None
         };
+        if let Some(started) = retirement_started {
+            self.frame_phases = self
+                .paint
+                .as_ref()
+                .and_then(paint::VelloDrmBridge::last_phase_timing)
+                .map(|paint| crate::shell::present::FramePhaseTiming {
+                    paint,
+                    kms_retirement_us: if retirement_attempted {
+                        started.elapsed().as_micros()
+                    } else {
+                        0
+                    },
+                });
+        }
         self.emit_phase_profile(sample);
+        if let Some(bridge) = &mut self.paint {
+            let _ = bridge.take_phase_timing();
+        }
         report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
         physical
     }
@@ -897,7 +960,7 @@ impl DrmPresenter {
                 "frames={} direct_frames={} direct_dropped={} flip_completions={} \
                  unprofiled_frames={} window_us={} avg_submit_us={} \
                  avg_gpu_readback_map_us={} avg_settle_us={} avg_cpu_swizzle_us={} \
-                 readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
+                 avg_backdrop_us={} readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
                  avg_direct_us={} max_direct_us={} direct_sparse_frames={} \
                  direct_failures={} \
                  direct_scanout_status={} direct_scanout_reason={:?} \
@@ -922,6 +985,10 @@ impl DrmPresenter {
                     .unwrap_or(0),
                 self.phase_window
                     .cpu_swizzle_us
+                    .checked_div(u128::from(frames))
+                    .unwrap_or(0),
+                self.phase_window
+                    .backdrop_us
                     .checked_div(u128::from(frames))
                     .unwrap_or(0),
                 summary.readback_bytes,
@@ -961,12 +1028,13 @@ impl DrmPresenter {
         self.profile_seq = self.profile_seq.saturating_add(1);
         eprintln!(
             "seq={} submit_us={} gpu_readback_map_us={} settle_us={} cpu_swizzle_us={} \
-             readback_bytes={} output_bytes={} DRM render frame phases",
+             backdrop_us={} readback_bytes={} output_bytes={} DRM render frame phases",
             self.profile_seq,
             timing.submit_us,
             timing.completed_readback_map_us,
             timing.settle_us,
             timing.cpu_copy_swizzle_us,
+            timing.backdrop_us,
             timing.readback_bytes,
             timing.cpu_output_bytes,
         );
@@ -1120,6 +1188,8 @@ struct ScanoutFrame<'a> {
     workspace_id: Option<u64>,
     workspace_hold: bool,
     workspace_clip: Option<vello::FineDamageRect>,
+    /// What the scene's floating surfaces are drawn over.
+    backdrop: Option<&'a std::sync::Arc<ui::backdrop::BackdropFrame>>,
 }
 
 /// An unchanged frame, or an overview fade that carries its own panel patch,
@@ -1402,6 +1472,7 @@ fn paint_scanouts(
         let Some(bridge) = paint.as_mut() else {
             return PaintScanoutSample::default();
         };
+        bridge.set_backdrop(frame.backdrop.cloned());
         if bridge.size() != target_size {
             bridge_resized = true;
             if let Err(e) = bridge.resize(target_size.0, target_size.1) {
@@ -1605,6 +1676,7 @@ fn paint_scanouts(
                                                 render_us,
                                                 stats.sparse_attempts > 0
                                                     && stats.full_attempts == 0,
+                                                bridge.last_phase_timing(),
                                             );
                                         }
                                         let degradation = if want_hdr {
@@ -1802,6 +1874,7 @@ fn render_combined_readback(
         workspace_id,
         workspace_hold,
         workspace_clip,
+        backdrop: _,
     } = frame;
     let unchanged = damage.is_some_and(|damage| {
         damage
@@ -2430,6 +2503,10 @@ impl Presenter for DrmPresenter {
         self.render(scene);
     }
 
+    fn frame_phase_timing(&self) -> Option<crate::shell::present::FramePhaseTiming> {
+        self.frame_phases
+    }
+
     /// Mesa's CPU Vulkan driver compiles each pipeline on its first dispatch, seconds of work
     /// the bridge's warm-up pays up front. Starting it here overlaps the compositor's startup.
     fn prepare(&mut self) {
@@ -2519,6 +2596,7 @@ impl Backend for DrmBackend {
                 workspace_id: None,
                 workspace_hold: false,
                 workspace_clip: None,
+                backdrop: None,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -2548,6 +2626,7 @@ impl Backend for DrmBackend {
                 workspace_id: frame.workspace_id,
                 workspace_hold: frame.workspace_hold,
                 workspace_clip: frame.workspace_clip,
+                backdrop: frame.backdrop.as_ref(),
             },
             None,
             &mut self.direct_bypass_reported,
@@ -2624,7 +2703,9 @@ impl Backend for DrmBackend {
             // The scanouts and the commands addressed to them travel together: whoever owns one owns the other.
             commands: self.commands.take(),
             present_gate: self.inner.dispatch.present_gate.clone(),
-            profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some(),
+            profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some()
+                || std::env::var_os("TILO_PROFILE_GPU_STAGES").is_some_and(|value| value == "1"),
+            frame_phases: None,
             profile_seq: 0,
             phase_window: PhaseWindow::default(),
             direct_bypass_reported: false,

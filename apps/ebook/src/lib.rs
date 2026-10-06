@@ -37,12 +37,12 @@
 
 pub mod actions;
 pub mod app;
-pub mod chrome;
 mod comment_overlay;
 pub mod component;
 pub mod content;
 pub mod doc;
 pub mod epub;
+mod hosted_dropdown;
 mod input_controls;
 mod local_library;
 pub mod model;

@@ -353,9 +353,18 @@ pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
 pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), String> {
     match scenario {
         Some("drawer") => {
-            let rect = semantic_target_rect(driver, |target| target == "notes.drawer")
+            let rect = driver
+                .targets()
+                .get("nav-shell-sidebar")
+                .copied()
                 .ok_or("narrow drawer toggle missing")?;
             driver.click_at(rect.center().x, rect.center().y);
+            if !driver.control_failures().is_empty() {
+                return Err(format!(
+                    "drawer control was refused: {:?}",
+                    driver.control_failures()
+                ));
+            }
         }
         Some("drag") => {
             let from = semantic_name_rect(driver, LAUNCH).ok_or("sidebar drag source missing")?;
@@ -641,7 +650,7 @@ fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
 /// Open the narrow drawer when the notes tree is hidden behind it.
 fn reveal_sidebar(driver: &mut FrameHarness) {
     if semantic_name_rect(driver, LAUNCH).is_none()
-        && let Some(toggle) = semantic_target_rect(driver, |target| target == "notes.drawer")
+        && let Some(toggle) = driver.targets().get("nav-shell-sidebar").copied()
     {
         driver.click_at(toggle.center().x, toggle.center().y);
         driver.relayout();

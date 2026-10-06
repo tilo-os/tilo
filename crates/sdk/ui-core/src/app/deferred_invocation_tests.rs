@@ -223,6 +223,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
         unreachable!()
     };
     let target = crate::bound_dispatch::BoundActionTarget {
+        physical_text: false,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,

@@ -14,9 +14,11 @@ fn encoded_color_positions(scene: &Scene, color: vello::peniko::Color) -> Vec<us
         .enumerate()
         .filter_map(|(position, tag)| {
             let found = (*tag == vello_encoding::DrawTag::COLOR
-                && encoding.draw_data[data_offset] == expected)
-                .then_some(position);
-            data_offset += usize::try_from(tag.info_size()).expect("draw info size fits usize");
+                && encoding.draw_data.get(data_offset) == Some(&expected))
+            .then_some(position);
+            // The scene data a tag carries (the shader's `scene_offset`), which
+            // differs from its info size for images and blurred rects.
+            data_offset += usize::try_from((tag.0 >> 2) & 0x07).expect("draw data size fits usize");
             found
         })
         .collect()
@@ -66,9 +68,10 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
         .push(Box::new(
             crate::widget::Dropdown::new(vec!["First".into(), "Second".into()], "choice").open(),
         ))
-        .push(Box::new(
-            Container::new().with_fill(blocker).with_size(240.0, 80.0),
-        ));
+        .push(Box::new(Blocker {
+            color: blocker,
+            rect: Rect::ZERO,
+        }));
     let frame = frame(Box::new(root));
     let scene = frame.frame_output().scene;
 
@@ -76,16 +79,80 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
         .into_iter()
         .next()
         .expect("the later sibling paints its fixture color");
-    // The open list paints the panel ground (HIG §9.5), not the raised field.
-    let overlay_position = encoded_color_positions(scene, crate::chrome::panel_ground(&theme))
+    // The open list is the floating material (HIG §9.2): the panel ground,
+    // opaque or as the tint over a blurred backdrop.
+    let ground = crate::chrome::panel_ground(&theme);
+    let tint = ground.with_alpha(theme.tokens.colors.surfaces.material_opacity);
+    let overlay_position = encoded_color_positions(scene, ground)
         .into_iter()
-        .rfind(|position| *position > blocker_position)
-        .expect("the real open dropdown paints its raised menu after the later sibling");
+        .chain(encoded_color_positions(scene, tint))
+        .filter(|position| *position > blocker_position)
+        .max()
+        .expect("the real open dropdown paints its menu after the later sibling");
 
     assert!(
         overlay_position > blocker_position,
         "overlay paint must occupy the top layer"
     );
+}
+
+/// A later sibling that paints one fixture colour over its rect.
+struct Blocker {
+    color: vello::peniko::Color,
+    rect: Rect,
+}
+
+impl Widget for Blocker {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let node = taffy
+            .new_leaf(taffy::Style {
+                size: taffy::Size {
+                    width: taffy::style_helpers::length(240.0_f32),
+                    height: taffy::style_helpers::length(80.0_f32),
+                },
+                ..Default::default()
+            })
+            .expect("leaf");
+        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::from_origin_size(
+            (
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+            ),
+            (f64::from(l.size.width), f64::from(l.size.height)),
+        );
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: vello::kurbo::Affine,
+        _text: &mut crate::text_render::TextRenderer,
+        _theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            self.color,
+            None,
+            &self.rect,
+        );
+    }
+    fn name(&self) -> &'static str {
+        "Blocker"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 struct OverlayProbe {
@@ -735,4 +802,126 @@ fn full_relayout_valve_forces_the_rebuild_path() {
         !frame.last_relayout().rebuilt,
         "clearing the override restores retention"
     );
+}
+
+#[test]
+fn raw_root_dispatch_maps_history_composition_to_retained_input_and_returns_focus() {
+    let registration = crate::history_mode::HistoryRegistration::new(
+        &PORTABLE_HISTORY,
+        vec![
+            crate::history_mode::HistorySourceRegistration::Unversioned {
+                scope: "document",
+                reason: "fixture history is unavailable",
+            },
+        ],
+    )
+    .unwrap();
+    let value = crate::local_state::LocalState::new(String::new());
+    let root = Column::new().push(Box::new(
+        crate::widget::TextInput::from_state(&value).with_id("raw-input"),
+    ));
+    let mut frame = FrameHarness::from_managed_root(
+        State::new(),
+        crate::history_mode::ManagedRoot::new(Box::new(root), registration),
+        (600, 360),
+    )
+    .unwrap();
+    let rect = *frame
+        .targets()
+        .get("raw-input")
+        .expect("retained input target");
+    assert!(rect.width() > 0.0 && rect.height() > 0.0);
+    let center = rect.center();
+    let modifiers = winit::event::Modifiers::default();
+    let frames = frame.relayout_frames();
+    let heads = frame.state.doc.get_heads();
+    let focused = frame.focused;
+    frame.dispatch_to_root_outcome(&move_to(center.x, center.y), &modifiers);
+    let result = frame.dispatch_to_root_outcome(
+        &WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        &modifiers,
+    );
+    assert!(
+        result.handled,
+        "wrapped input receives the actual pointer press"
+    );
+    let input_node = result.focus_target.expect("input requests focus");
+    assert!(frame.node_map.contains_key(&input_node));
+    assert_ne!(
+        input_node, frame.child_node,
+        "focus belongs to the retained input"
+    );
+    assert_eq!(
+        frame.focused, focused,
+        "raw dispatch reports focus without host routing"
+    );
+    assert_eq!(
+        frame.relayout_frames(),
+        frames,
+        "raw dispatch runs no frame"
+    );
+    assert_eq!(frame.state.doc.get_heads(), heads);
+    assert!(value.get().is_empty());
+}
+
+#[test]
+fn history_composition_keeps_app_modal_typing_and_focus_inside_the_dialog() {
+    use crate::widget::{ModalDialog, TextInput};
+    let registration = crate::history_mode::HistoryRegistration::new(
+        &PORTABLE_HISTORY,
+        vec![
+            crate::history_mode::HistorySourceRegistration::Unversioned {
+                scope: "document",
+                reason: "fixture history is unavailable",
+            },
+        ],
+    )
+    .unwrap();
+    let value = crate::local_state::LocalState::new(String::new());
+    let dialog = ModalDialog::new(
+        "Add item",
+        Column::new()
+            .push(Box::new(
+                TextInput::from_state(&value)
+                    .with_id("dialog-input")
+                    .with_accessible_name("Item name"),
+            ))
+            .push(Box::new(Button::new("dialog-last", "Last"))),
+    );
+    let root = Column::new()
+        .push(Box::new(Button::new("background", "Background")))
+        .push(Box::new(dialog));
+    let mut frame = FrameHarness::from_managed_root(
+        State::new(),
+        crate::history_mode::ManagedRoot::new(Box::new(root), registration),
+        (600, 400),
+    )
+    .unwrap();
+    frame
+        .perform_named("background", &crate::a11y::Action::Focus)
+        .unwrap();
+    frame
+        .with_widget_mut::<ModalDialog<Column>, _>(|dialog| dialog.set_open(true))
+        .unwrap();
+    assert_eq!(
+        frame.focused_access_node().unwrap().name.as_deref(),
+        Some("Item name")
+    );
+    frame.type_text("Harbour");
+    assert_eq!(value.get(), "Harbour");
+    for _ in 0..6 {
+        frame.tab(false);
+        assert!(matches!(
+            frame.focused_access_node().unwrap().name.as_deref(),
+            Some("Item name" | "Last")
+        ));
+    }
+    frame
+        .with_widget_mut::<ModalDialog<Column>, _>(|dialog| dialog.set_open(false))
+        .unwrap();
+    assert!(focused(&frame, "background"));
 }

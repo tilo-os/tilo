@@ -61,6 +61,9 @@ mod inner {
 pub mod sessions;
 
 mod app_widget_impl;
+mod view;
+
+pub use view::TerminalView;
 
 /// A short scripted session, typed into a freshly spawned login shell, that
 /// prints a few recognisable lines in that shell's own syntax. Hosts use it to
@@ -389,7 +392,8 @@ pub use resource::{Terminal, TerminalEffect, TerminalShell};
 /// tab: for a host's test that types into the terminal it shows.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut TerminalWidget> {
-    ui::framework::testing::surface_in_root::<TerminalShell, TerminalWidget>(widget)
+    ui::framework::testing::surface_in_root::<TerminalShell, TerminalView>(widget)
+        .map(TerminalView::terminal_mut)
 }
 
 /// The terminal's application definition: the one every host mounts.

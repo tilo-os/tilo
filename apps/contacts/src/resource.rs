@@ -30,6 +30,7 @@ use crate::model::{Birthday, Contact, Labeled, sample_contacts};
 #[derive(Clone, Debug, Default)]
 pub struct ContactsState {
     pub contacts: Vec<Contact>,
+    pub removed: Vec<Uuid>,
 }
 
 /// The contacts book resource.
@@ -50,6 +51,7 @@ impl Resource for Contacts {
     fn read(doc: &Doc) -> Result<ContactsState, ModelError> {
         Ok(ContactsState {
             contacts: ContactsDoc::list_contacts(doc),
+            removed: ContactsDoc::removed_contacts(doc),
         })
     }
 
@@ -188,8 +190,12 @@ impl ResourceApp for ContactsShell {
     const OPENS: &'static [&'static str] = &["text/vcard", "text/x-vcard"];
     const ARGUMENTS: usize = 1;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::account_editor::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
-        cx.surface(ContactsApp::new())
+        crate::account_editor::build(cx)
     }
 
     /// `new`, `edit`, `editfocus` and `edit-lower` show the contact form;
@@ -265,11 +271,16 @@ impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
 
     fn present(&mut self, state: &Rc<ContactsState>) {
         self.present_book(state);
+        self.project_identities(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Contacts>) {
         self.attach_dispatcher(cx.dispatcher());
         self.jobs = Some(cx.jobs());
+        if cx.mode().is_live() {
+            self.identity_directory =
+                cx.shared_person::<tilo_contact_directory::ContactDirectory>();
+        }
         // A vCard file the app was opened with ("open with", a dropped
         // file) is imported into the address book.
         if let Some(file) = cx.launch().file() {
@@ -278,17 +289,63 @@ impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
+        self.stage_capture(scenario);
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.import_conflict_rows()
+        let mut rows = self.import_conflict_rows();
+        if let Some(editor) = &self.account_editor {
+            rows.extend(crate::account_editor::review_rows(editor));
+        }
+        rows
     }
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.import_conflict_rows()
-            .into_iter()
-            .find(|row| row.id() == id)
+        self.live_rows().into_iter().find(|row| row.id() == id)
+    }
+}
+
+impl ContactsApp {
+    /// Labels are a projection of this book's stable UUIDs. Service endpoints
+    /// are independently confirmed in the shared person-owned directory and
+    /// never inferred from matching names, emails or telephone numbers.
+    fn project_identities(&self, state: &ContactsState) {
+        use tilo_contact_directory::ContactDirectory;
+        use ui::tilo_resource::Id;
+        let Some(directory) = &self.identity_directory else {
+            return;
+        };
+        let current = directory.get();
+        for contact in &state.contacts {
+            let id = Id::from_raw(contact.id.to_string());
+            let label = contact.display_name();
+            if current
+                .people
+                .get(&id)
+                .is_none_or(|person| !person.removed && person.label != label)
+            {
+                let _ =
+                    directory.invoke(&ContactDirectory::PROJECT_CONTACT.with((id.clone(), label)));
+            }
+            let phones = contact
+                .phones
+                .iter()
+                .map(|phone| phone.value.clone())
+                .collect::<Vec<_>>();
+            if current
+                .people
+                .get(&id)
+                .is_none_or(|person| !person.removed && person.phones.0 != phones)
+            {
+                let _ = directory.invoke(&ContactDirectory::PROJECT_PHONES.with((id, phones)));
+            }
+        }
+        for removed in &state.removed {
+            let id = Id::from_raw(removed.to_string());
+            if current.people.get(&id).is_none_or(|person| !person.removed) {
+                let _ = directory.invoke(&ContactDirectory::REMOVE_CONTACT.with(id));
+            }
+        }
     }
 }
 
@@ -301,6 +358,66 @@ mod tests {
     };
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
+
+    #[test]
+    fn stable_contacts_project_without_inferred_endpoints_and_deletions_disable_identity() {
+        use tilo_contact_directory::ContactDirectory;
+        use ui::tilo_resource::Id;
+        let mut app = TestApp::<ContactsShell>::for_person("contacts-fixture-owner").unwrap();
+        let directory = app.shared_person::<ContactDirectory>().unwrap();
+        let mut first = Contact::new();
+        first.first = "Alex".into();
+        first.phones.push(Labeled::new("mobile", "+12025550123"));
+        let mut second = Contact::new();
+        second.first = "Alex".into();
+        app.invoke(Invoke::apply(&create_contact_action(&first)).unwrap())
+            .unwrap();
+        app.invoke(Invoke::apply(&create_contact_action(&second)).unwrap())
+            .unwrap();
+        app.settle();
+        let projected = directory.get();
+        assert_eq!(projected.people.len(), 2);
+        for contact in [&first, &second] {
+            let identity = projected
+                .people
+                .get(&Id::from_raw(contact.id.to_string()))
+                .unwrap();
+            assert_eq!(identity.label, "Alex");
+            assert!(
+                identity.endpoints.is_empty(),
+                "telephone fields require confirmation"
+            );
+            assert!(!identity.removed);
+        }
+        assert_eq!(
+            projected.phone_candidates("+12025550123"),
+            vec![Id::from_raw(first.id.to_string())]
+        );
+        assert!(projected.resolve("sms", "+12025550123").is_err());
+        app.invoke_confirmed(
+            Invoke::apply(&ContactsAction::DeleteContact {
+                id: first.id.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.settle();
+        let projected = directory.get();
+        assert!(
+            projected
+                .people
+                .get(&Id::from_raw(first.id.to_string()))
+                .unwrap()
+                .removed
+        );
+        assert!(
+            !projected
+                .people
+                .get(&Id::from_raw(second.id.to_string()))
+                .unwrap()
+                .removed
+        );
+    }
 
     fn has_control(app: &mut TestApp<ContactsShell>, label: &str) -> bool {
         app.harness()
@@ -352,10 +469,7 @@ mod tests {
 
         let mut edit = TestApp::<ContactsShell>::capture(Some("edit")).unwrap();
         assert_eq!(edit.state().contacts.len(), sample_book().len());
-        assert!(
-            has_control(&mut edit, "Save changes"),
-            "the edit form is open"
-        );
+        assert!(has_control(&mut edit, "Save"), "the edit form is open");
 
         let mut duplicates = TestApp::<ContactsShell>::capture(Some("duplicates")).unwrap();
         assert_eq!(duplicates.state().contacts.len(), sample_book().len() + 1);
@@ -366,16 +480,20 @@ mod tests {
         );
 
         let mut groups = TestApp::<ContactsShell>::capture(Some("groups")).unwrap();
-        let options = groups
-            .with_surface::<crate::app::ContactsApp, _>(|app| app.group_filter_options())
-            .unwrap();
+        let options: Vec<_> = groups
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == ui::accesskit::Role::TreeItem)
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
         assert_eq!(
             options
                 .iter()
                 .filter(|option| *option == "Favorites")
                 .count(),
             1,
-            "the group menu lists Favorites once: {options:?}"
+            "the shared sidebar lists Favorites once: {options:?}"
         );
 
         let mut detail = TestApp::<ContactsShell>::capture(Some("detail")).unwrap();
@@ -402,7 +520,10 @@ mod tests {
         late.first = "Late".into();
         late.groups = vec![crate::model::GroupEntry::new("Late group")];
         contacts.push(late.clone());
-        let state = ContactsState { contacts };
+        let state = ContactsState {
+            contacts,
+            ..ContactsState::default()
+        };
 
         let book = ui::tilo_resource::publish::<Contacts>(Contacts::KIND, "Contacts", &state);
         assert!(
@@ -504,7 +625,10 @@ mod tests {
     /// it back.
     #[test]
     fn the_window_edits_the_book_through_its_door() {
-        let mut app = TestApp::<ContactsShell>::capture(None).unwrap();
+        let mut app = TestApp::<ContactsShell>::new().unwrap();
+        for invoke in ContactsShell::scenario(None) {
+            app.invoke(invoke).unwrap();
+        }
         let id = sample_book()[1].id;
         let favorite = |app: &TestApp<ContactsShell>| {
             app.state()
@@ -515,14 +639,18 @@ mod tests {
                 .favorite
         };
         let before = favorite(&app);
-        for target in [
-            format!("contacts.select:{id}"),
-            format!("contacts.detail.favorite:{id}"),
-        ] {
-            app.harness()
-                .perform_semantic_named("contacts", Some(&target), &ui::a11y::Action::Activate)
-                .unwrap();
-        }
+        app.effect_on(
+            &crate::actions::contact_resource_id(id),
+            &ContactsEffect::Open { contact: id },
+        )
+        .unwrap();
+        let favorite_control = app
+            .harness()
+            .a11y_node_named("Favorite")
+            .expect("the shared Favorite control is present");
+        app.harness()
+            .perform_a11y_action(favorite_control, &ui::a11y::Action::Activate)
+            .unwrap();
         app.settle();
         assert_ne!(favorite(&app), before, "the star reached the document");
         assert!(app.undo());

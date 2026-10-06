@@ -105,7 +105,7 @@ impl ImageViewport {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.base,
+            theme.tokens.colors.media.letterbox,
             None,
             &self.rect,
         );

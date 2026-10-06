@@ -404,11 +404,22 @@ impl ResourceApp for HexEditorShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["empty", "search", "error"]
+        &[
+            "empty",
+            "find",
+            "goto",
+            "edited",
+            "saved",
+            "error",
+            "narrow",
+            "narrow-inspector",
+        ]
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| name.starts_with("narrow").then_some((640, 720)))
+            .unwrap_or((1280, 800))
     }
 
     /// Every capture but the empty state shows the bundled sample.
@@ -418,7 +429,7 @@ impl ResourceApp for HexEditorShell {
         }
         Invoke::apply(&HexEditorAction::Open {
             name: SAMPLE_NAME.into(),
-            bytes: crate::sample::png_header(),
+            bytes: crate::sample::png_image(),
         })
         .into_iter()
         .collect()

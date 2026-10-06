@@ -70,13 +70,12 @@ pub struct OutputMode {
 }
 
 impl OutputMode {
+    /// How a person reads the mode: `1920 × 1080 at 60 Hz`, with the rate's
+    /// fraction only when it has one (`59.94 Hz`).
     pub fn label(self) -> String {
-        format!(
-            "{} × {} · {:.2} Hz",
-            self.width,
-            self.height,
-            f64::from(self.refresh_mhz) / 1000.0
-        )
+        let hz = format!("{:.2}", f64::from(self.refresh_mhz) / 1000.0);
+        let hz = hz.trim_end_matches('0').trim_end_matches('.');
+        format!("{} × {} at {hz} Hz", self.width, self.height)
     }
 }
 
@@ -1672,6 +1671,8 @@ pub enum ShortcutAction {
     FocusNextWindow,
     PreviousTab,
     NextTab,
+    /// Show the focused tab's shell context menu.
+    TabMenu,
     PreviousStrip,
     NextStrip,
     PreviousWorkspace,
@@ -2120,6 +2121,7 @@ impl KeyChord {
             "space" => "Space",
             "delete" => "Delete",
             "f1" => "F1",
+            "f10" => "F10",
             other => other,
         };
         ["Super", "Ctrl", "Alt", "Shift"]
@@ -2244,7 +2246,7 @@ impl Default for ShortcutConfig {
             }
         }
         let bindings = [
-            (ShortcutAction::Search, super_chord("k")),
+            (ShortcutAction::Search, super_chord("space")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
@@ -2261,6 +2263,7 @@ impl Default for ShortcutConfig {
             // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
+            (ShortcutAction::TabMenu, super_chord("f10")),
             // Arrows move focus across the plane; Shift carries the focused
             // group the same way (docs/architecture/window-management.md).
             (ShortcutAction::PreviousStrip, super_chord("up")),
@@ -2343,6 +2346,7 @@ const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
     (ShortcutAction::PreviousStrip, &["Shift", "Super"], "up"),
     (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
     (ShortcutAction::ToggleMaximize, &["Super"], "up"),
+    (ShortcutAction::Search, &["Super"], "k"),
 ];
 
 impl ShortcutConfig {
@@ -2351,17 +2355,11 @@ impl ShortcutConfig {
     /// caller cannot install ambiguous ownership in a running session.
     /// # Errors
     ///
-    /// Returns an error when a chord is invalid or reserved, when the lock
-    /// shortcut differs from its immutable safety binding, or when two
+    /// Returns an error when a chord is invalid or reserved, or when two
     /// actions claim the same chord.
     pub fn validate(&self) -> Result<(), ShortcutConfigError> {
-        let defaults = Self::default();
-        let default_lock = defaults.bindings.get(&ShortcutAction::Lock);
         let mut seen = BTreeMap::<&KeyChord, ShortcutAction>::new();
         for (action, chord) in &self.bindings {
-            if *action == ShortcutAction::Lock && Some(chord) != default_lock {
-                return Err(ShortcutConfigError::InvalidChord);
-            }
             if chord.is_reserved_system_key() {
                 return Err(ShortcutConfigError::ReservedSystemKey);
             }
@@ -2470,11 +2468,6 @@ impl ShortcutConfig {
         chord: KeyChord,
     ) -> Result<(), ShortcutConfigError> {
         let defaults = Self::default();
-        if action == ShortcutAction::Lock
-            && defaults.bindings.get(&ShortcutAction::Lock) != Some(&chord)
-        {
-            return Err(ShortcutConfigError::InvalidChord);
-        }
         if chord.is_reserved_system_key() {
             return Err(ShortcutConfigError::ReservedSystemKey);
         }
@@ -2532,9 +2525,6 @@ impl ShortcutConfig {
         let defaults = Self::default();
         let mut effective = defaults.clone();
         for (action, chord) in loaded.bindings {
-            if action == ShortcutAction::Lock {
-                continue;
-            }
             if RETIRED_DEFAULTS.iter().any(|(retired, modifiers, key)| {
                 *retired == action
                     && chord.key == *key
@@ -2867,6 +2857,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
         assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
+        assert_eq!(shown(ShortcutAction::TabMenu), "Super+F10");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
     }
@@ -2938,8 +2929,11 @@ mod tests {
             let mut cfg = ShortcutConfig::default();
             let old = cfg.bindings[&ShortcutAction::Lock].clone();
             assert_eq!(
-                cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
-                Err(ShortcutConfigError::InvalidChord)
+                cfg.set(
+                    ShortcutAction::Lock,
+                    KeyChord::parse("Super+Space").unwrap()
+                ),
+                Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
             );
             assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
         }
@@ -2990,13 +2984,13 @@ mod tests {
             let repaired = ShortcutConfig::normalise(corrupt);
             assert_eq!(
                 repaired.bindings[&ShortcutAction::Search].display(),
-                "Super+k",
+                "Super+Space",
                 "reserved persisted keys revert to their action default"
             );
             assert_eq!(
                 repaired.bindings[&ShortcutAction::Lock].display(),
-                "Super+l",
-                "the native lock chord is immutable"
+                "Alt+l",
+                "the lock chord is rebindable like every other action"
             );
             assert_eq!(
                 repaired.bindings[&ShortcutAction::PreviousTab].display(),
@@ -3064,7 +3058,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 46);
+            assert_eq!(cfg.bindings.len(), 47);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -3120,7 +3114,7 @@ mod tests {
         );
         assert_eq!(
             cfg.set_action(
-                KeyChord::parse("Super+K").unwrap(),
+                KeyChord::parse("Super+Space").unwrap(),
                 target("shortcuts.shortcut:b"),
                 "Run B"
             ),

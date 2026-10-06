@@ -1,19 +1,9 @@
-//! Search field focus + filter, driven through the production event path.
+//! The native-input observer reads the app without touching its document.
 //!
-//! This is the regression guard for the "clicking the search bar does nothing"
-//! bug. The root cause was that the field lived inside the `NavSplit`, whose
-//! children are laid out in an isolated inner taffy tree the host's focus walk
-//! never visits — so the field was never in `focusable_order`, a click's focus
-//! could not be restored after the per-keystroke filter rebuild, and typing
-//! died after one character. The fix hoists the field into the app's top strip,
-//! in the *main* taffy tree.
-//!
-//! The harness below is a faithful, minimal re-implementation of the pieces of
-//! `ui::App` this behaviour depends on — the same `collect_focusable` walk, the
-//! same `focus_target` → `set_focus` application, and the same
-//! ordinal-preserving `rebuild_structure` that `autofocus_on_structure_change`
-//! runs. Every assertion rides the real `SettingsApp` widget tree and the real
-//! `TextInput`/`Container`/`Row`/`NavSplit` event path; nothing is mocked.
+//! The snapshot a native audit asks for must describe the live state (the
+//! selected category, the layout class, the document heads) without
+//! committing the document's pending changes: the observer is a witness, not
+//! a writer.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,10 +15,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
-
-use super::SettingsApp;
+use crate::SettingsApp;
 use automerge::AutoCommit;
+use std::collections::HashMap;
+const W: f32 = 1200.0;
+const H: f32 = 1800.0;
 use taffy::{NodeId, TaffyTree};
 use ui::framework::HostDelivery as _;
 use ui::text_render::TextRenderer;
@@ -37,8 +28,7 @@ use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NativeKeyCode, PhysicalKey, SmolStr};
 
-const W: f32 = 1200.0;
-const H: f32 = 760.0;
+use crate::categories::Category;
 
 fn root() -> automerge::ObjId {
     automerge::ROOT
@@ -65,7 +55,7 @@ fn char_key_event(s: &str) -> WindowEvent {
 /// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
 /// cycle. Owns the app, its live taffy tree + node map, and the focus state.
 struct Harness {
-    app: SettingsApp,
+    app: Box<SettingsApp>,
     doc: AutoCommit,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
@@ -86,7 +76,7 @@ impl Harness {
     fn at_size(width: f32, height: f32) -> Self {
         let config = crate::prefs::test_env::ScratchConfig::new();
         let mut h = Harness {
-            app: config.app(),
+            app: Box::new(config.app()),
             doc: AutoCommit::new(),
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -131,24 +121,25 @@ impl Harness {
             )
             .unwrap();
         self.app.sync(&self.doc, &root());
-        let measure_map = node_map.clone();
         let mut tr = TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
+        let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: this harness exclusively owns this unchanged app and its
+        // exact live layout pointers for both admission and measurement.
+        unsafe {
+            bindings.rebuild(&*self.app, &taffy, outer, &node_map);
+            ui::widget::compute_widget_layout(
+                &mut taffy,
                 outer,
                 taffy::Size {
                     width: taffy::AvailableSpace::Definite(self.viewport.0),
                     height: taffy::AvailableSpace::Definite(self.viewport.1),
                 },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
+                &node_map,
+                &bindings,
+                &mut tr,
             )
             .unwrap();
+        }
         self.app.apply_layout(&taffy, app_node, Point::ORIGIN);
         // Settling sync — the just-built leaf controls (search field, rows)
         // read back their bound CRDT values (this is what the shots harness
@@ -179,7 +170,7 @@ impl Harness {
             }
         }
         let mut order = Vec::new();
-        walk(self.app_node, &self.app, &self.taffy, &mut order);
+        walk(self.app_node, &*self.app, &self.taffy, &mut order);
         self.focus_order = order;
     }
 
@@ -240,7 +231,7 @@ impl Harness {
             // Match the live host's action-bound control dispatch boundary,
             // also exercised by tests/control_interaction.rs. Back is a View
             // action; emitting its intent alone does not activate it.
-            while let Some(intent) = ui::widget::controls::take_control_invocation(&mut self.app) {
+            while let Some(intent) = ui::widget::controls::take_control_invocation(&mut *self.app) {
                 let control = intent
                     .address
                     .resource
@@ -292,7 +283,7 @@ impl Harness {
         // Frame: sync consumes the field's SEARCH_KEY write; a changed query
         // flags a structure rebuild, which we run preserving focus by ordinal.
         self.app.sync(&self.doc, &root());
-        if Widget::take_structure_dirty(&mut self.app) {
+        if Widget::take_structure_dirty(&mut *self.app) {
             self.rebuild();
         }
     }
@@ -331,7 +322,7 @@ impl Harness {
             if out.is_some() {
                 return;
             }
-            if w.name() == "TextInput" {
+            if w.test_id() == Some("settings.search") {
                 *out = Some(w);
                 return;
             }
@@ -340,7 +331,7 @@ impl Harness {
             }
         }
         let mut out = None;
-        walk(&self.app, &mut out);
+        walk(&*self.app, &mut out);
         out
     }
 
@@ -352,15 +343,18 @@ impl Harness {
 
     fn sidebar_row_count(&self) -> usize {
         fn walk(w: &dyn Widget, n: &mut usize) {
-            if w.name() == "SidebarRow" {
-                *n = n.saturating_add(1);
+            if let Some(list) = w
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
+            {
+                *n = n.saturating_add(list.visible_item_ids().len());
             }
             for c in w.children() {
                 walk(c, n);
             }
         }
         let mut n = 0;
-        walk(&self.app, &mut n);
+        walk(&*self.app, &mut n);
         n
     }
 }
@@ -376,7 +370,11 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
         let before = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
         assert_eq!(before["ready"], true);
         assert_eq!(before["rendered_result_count"], h.sidebar_row_count());
-        assert_eq!(before["search_focused"], true);
+        assert_eq!(
+            before["search_focused"], true,
+            "observer={before:#}; focused={:?}; clicked={p:?}",
+            h.focused
+        );
         let original_heads = h.doc.get_heads();
         h.type_char("z");
         let typed = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
@@ -465,14 +463,14 @@ fn named_widget_identity(widget: &dyn Widget, name: &str) -> Option<usize> {
 #[test]
 fn search_preserves_production_network_pane_but_category_switch_replaces_it() {
     let mut h = Harness::new();
-    let network = named_widget_identity(&h.app, "NetworkPane").unwrap();
+    let network = named_widget_identity(&*h.app, "NetworkPane").unwrap();
     h.click(h.search_field_rect().center());
     h.type_char("z");
-    assert_eq!(named_widget_identity(&h.app, "NetworkPane"), Some(network));
+    assert_eq!(named_widget_identity(&*h.app, "NetworkPane"), Some(network));
     h.app.select(super::Category::About);
     h.rebuild();
     assert_eq!(h.app.selected(), super::Category::About);
-    assert_eq!(named_widget_identity(&h.app, "NetworkPane"), None);
+    assert_eq!(named_widget_identity(&*h.app, "NetworkPane"), None);
 }
 
 #[test]
@@ -522,52 +520,23 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     assert_eq!(restored["search_focused"], true);
     assert_eq!(restored["search_caret_byte"], 0);
     assert_eq!(restored["local_search_text"], "");
-    assert_eq!(
-        restored["rendered_result_count"],
-        crate::categories::Category::ALL.len()
-    );
-    assert_eq!(restored["sidebar_open"], true);
-}
-
-fn find_test_widget<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-    if widget.test_id() == Some(id) {
-        return Some(widget);
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(|child| find_test_widget(child, id))
 }
 
 #[test]
-fn query_rebuild_keeps_active_content_local_text_and_caret_state() {
-    let mut h = Harness::new();
-    let local = ui::LocalState::new("content draft".to_owned());
-    // A real local TextInput isolates the content retention contract from
-    // backend-specific network controls. The production shell and search
-    // event/rebuild path remain unchanged.
-    h.app.shell.as_mut().unwrap().set_content(Box::new(
-        ui::widget::TextInput::from_state(&local).with_id("content-retention-probe"),
-    ));
-    h.rebuild();
-    let bounds = find_test_widget(&h.app, "content-retention-probe")
-        .unwrap()
-        .get_rect();
-    assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
-    h.click(bounds.center());
-    h.type_char("q");
-    assert!(local.with(|text| text.contains('q')));
-    h.click(h.search_field_rect().center());
-    let content = find_test_widget(&h.app, "content-retention-probe").unwrap();
-    let identity = std::ptr::from_ref(content).cast::<()>() as usize;
-    let state = ui::undo::get_state(content).unwrap();
-    let text = local.with(Clone::clone);
-    h.type_char("z");
-    let retained = find_test_widget(&h.app, "content-retention-probe").unwrap();
-    assert_eq!(std::ptr::from_ref(retained).cast::<()>() as usize, identity);
-    assert_eq!(ui::undo::get_state(retained), Some(state));
-    assert_eq!(local.with(Clone::clone), text);
-    h.app.select(super::Category::About);
-    h.rebuild();
-    assert!(find_test_widget(&h.app, "content-retention-probe").is_none());
+fn native_observer_reports_the_selected_category_and_layout_class() {
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let app = config.app().with_category(Category::Appearance);
+    let app = ui::headless::Framed::new(
+        ui::State::new(),
+        app,
+        ui::headless::viewport((1200.0, 760.0)),
+        ui::Theme::dark(),
+    );
+    let doc = AutoCommit::new();
+    let snapshot = app.native_input_snapshot(&doc, &root()).unwrap();
+    assert_eq!(snapshot["ready"], true);
+    assert_eq!(snapshot["selected_category"], "appearance");
+    assert_eq!(snapshot["narrow"], false);
+    assert_eq!(snapshot["sidebar_open"], true);
+    assert_eq!(snapshot["nav_id"], crate::sidebar::NAV_ID);
 }

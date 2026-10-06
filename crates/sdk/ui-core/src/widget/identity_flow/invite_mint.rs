@@ -36,7 +36,7 @@ use crate::widget::identity_flow::sheet::{
     wrap_chars,
 };
 use crate::widget::identity_flow::{InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::qr::QrWidget;
 
 const EXPIRY_LABEL: &str = "Expires after";
@@ -515,75 +515,79 @@ impl Widget for InviteMintScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let title = self.title();
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: &title,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let title = self.title();
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: &title,
+                max_width: FORM_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.expiry_label,
-            EXPIRY_LABEL,
-            Role::Label,
-            Align::Start,
-            false,
-        );
-        let labels: Vec<&str> = EXPIRIES.iter().map(super::InviteExpiry::label).collect();
-        let hovered = plan
-            .segments
-            .iter()
-            .position(|r| r.contains(self.last_cursor));
-        paint_segments(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &plan.segments,
-            &labels,
-            self.selected_index(),
-            hovered,
-        );
-        self.draw_minted(scene, transform, text_renderer, theme, plan);
-        if let Some(rect) = plan.hint {
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
             paint_text(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                EMPTY_HINT,
-                Role::Caption,
+                plan.expiry_label,
+                EXPIRY_LABEL,
+                Role::Label,
                 Align::Start,
-                true,
+                false,
             );
-        }
-        if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_msg.as_deref()) {
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                msg,
-                Role::Caption,
-                Align::Start,
-                true,
+            let labels: Vec<&str> = EXPIRIES.iter().map(super::InviteExpiry::label).collect();
+            let hovered = plan
+                .segments
+                .iter()
+                .position(|r| r.contains(self.last_cursor));
+            paint_segments(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &plan.segments,
+                &labels,
+                self.selected_index(),
+                hovered,
             );
-        }
-        if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                err,
-                Role::Error,
-                Align::Start,
-                true,
-            );
-        }
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            self.draw_minted(scene, transform, text_renderer, theme, plan);
+            if let Some(rect) = plan.hint {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    EMPTY_HINT,
+                    Role::Caption,
+                    Align::Start,
+                    true,
+                );
+            }
+            if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_msg.as_deref()) {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    msg,
+                    Role::Caption,
+                    Align::Start,
+                    true,
+                );
+            }
+            if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    err,
+                    Role::Error,
+                    Align::Start,
+                    true,
+                );
+            }
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {

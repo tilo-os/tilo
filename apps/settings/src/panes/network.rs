@@ -326,7 +326,7 @@ fn radio_shown(radio: Radio) -> String {
 
 fn profile_label(profile: &SavedNetworkProfile) -> String {
     let short_uuid: String = profile.uuid.chars().take(8).collect();
-    format!("{} · {}", profile.name, short_uuid)
+    format!("{} ({})", profile.name, short_uuid)
 }
 
 /// A comma-separated list, trimmed, at most 17 entries.
@@ -1994,7 +1994,7 @@ impl NetworkModel {
     fn button_row(&self, id: &str, label: &str, effect: NetworkEffect) -> El {
         Box::new(
             Row::new()
-                .push(Box::new(self.button(id, label, effect).content_sized()))
+                .push(Box::new(self.button(id, label, effect)))
                 .push(Box::new(Spacer::new())),
         )
     }
@@ -2119,16 +2119,13 @@ impl NetworkModel {
         } else if self.snapshot.is_some() {
             wifi_rows.push(caption(&t("net-refreshing")));
         }
-        wifi_rows.push(Box::new(
-            Row::new().push(Box::new(Spacer::new())).push(Box::new(
-                self.button(
-                    "settings.network.refresh",
-                    &t("net-refresh"),
-                    NetworkEffect::RefreshNetworks,
-                )
-                .content_sized(),
+        wifi_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
+            Box::new(self.button(
+                "settings.network.refresh",
+                &t("net-refresh"),
+                NetworkEffect::RefreshNetworks,
             )),
-        ));
+        )));
         wifi_rows.push(caption(&t("net-wifi-caption")));
 
         card_with_action(&t("net-wifi"), wifi_toggle, rows(wifi_rows))
@@ -2236,30 +2233,24 @@ impl NetworkModel {
             ),
             Box::new(
                 Row::new()
-                    .push(Box::new(
-                        self.button(
-                            "settings.network.hotspot.apply",
-                            &t("net-apply-start"),
-                            NetworkEffect::StartHotspot {
-                                name: None,
-                                password: None,
-                                band: None,
-                            },
-                        )
-                        .content_sized(),
-                    ))
-                    .push(Box::new(
-                        self.button(
-                            "settings.network.hotspot.qr",
-                            &if self.hotspot_code_shown {
-                                t("net-hide-qr")
-                            } else {
-                                t("net-share-qr")
-                            },
-                            NetworkEffect::ShowHotspotCode,
-                        )
-                        .content_sized(),
-                    ))
+                    .push(Box::new(self.button(
+                        "settings.network.hotspot.apply",
+                        &t("net-apply-start"),
+                        NetworkEffect::StartHotspot {
+                            name: None,
+                            password: None,
+                            band: None,
+                        },
+                    )))
+                    .push(Box::new(self.button(
+                        "settings.network.hotspot.qr",
+                        &if self.hotspot_code_shown {
+                            t("net-hide-qr")
+                        } else {
+                            t("net-share-qr")
+                        },
+                        NetworkEffect::ShowHotspotCode,
+                    )))
                     .push(Box::new(Spacer::new())),
             ),
         ];
@@ -2307,18 +2298,15 @@ impl NetworkModel {
     fn profile_card(&self) -> El {
         card_with_action(
             &t("net-profiles"),
-            Box::new(
-                self.button(
-                    "settings.network.advanced",
-                    &if self.policy_open {
-                        t("net-hide-policy")
-                    } else {
-                        t("net-show-policy")
-                    },
-                    NetworkEffect::ShowConnectionPolicy,
-                )
-                .content_sized(),
-            ),
+            Box::new(self.button(
+                "settings.network.advanced",
+                &if self.policy_open {
+                    t("net-hide-policy")
+                } else {
+                    t("net-show-policy")
+                },
+                NetworkEffect::ShowConnectionPolicy,
+            )),
             rows(match &self.read_errors.profiles {
                 Some(error) => vec![error_caption(&t_args(
                     "net-profiles-error",
@@ -2343,7 +2331,9 @@ impl NetworkModel {
             let uuid = profile.uuid.clone();
             rows_out.push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(&profile.name).with_size(13.0)))
+                    .push(Box::new(
+                        Text::new(&profile.name).with_role(ui::TextRole::Body),
+                    ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(self.button(
                         &format!("settings.network.profile.share.{}", profile.uuid),
@@ -2670,34 +2660,28 @@ impl NetworkModel {
         let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
         let cta_id = format!("settings.network.connect.{}", net.ssid);
         let cta: El = if net.connected {
-            Box::new(Button::new(&cta_id, &t("net-connected")).content_sized())
+            Box::new(Button::new(&cta_id, &t("net-connected")))
         } else if self.expanded.as_deref() == Some(net.ssid.as_str()) {
-            Box::new(
-                self.button(
-                    &cta_id,
-                    &t("net-cancel"),
-                    NetworkEffect::CancelConnect {
-                        ssid: net.ssid.clone(),
-                    },
-                )
-                .content_sized(),
-            )
+            Box::new(self.button(
+                &cta_id,
+                &t("net-cancel"),
+                NetworkEffect::CancelConnect {
+                    ssid: net.ssid.clone(),
+                },
+            ))
         } else {
-            Box::new(
-                self.button(
-                    &cta_id,
-                    &t("net-connect"),
-                    NetworkEffect::ConnectNetwork {
-                        ssid: net.ssid.clone(),
-                        password: None,
-                    },
-                )
-                .content_sized(),
-            )
+            Box::new(self.button(
+                &cta_id,
+                &t("net-connect"),
+                NetworkEffect::ConnectNetwork {
+                    ssid: net.ssid.clone(),
+                    password: None,
+                },
+            ))
         };
         Box::new(
             Row::new()
-                .push(Box::new(Text::new(&label).with_size(13.0)))
+                .push(Box::new(Text::new(&label).with_role(ui::TextRole::Body)))
                 .push(Box::new(Spacer::new()))
                 .push(cta),
         )
@@ -2715,23 +2699,19 @@ impl NetworkModel {
             .with_id(&format!("settings.network.password.{ssid}"))
             .with_external_buffer(buffer)
             .with_secret(true)
-            .with_placeholder(&t("net-password"))
-            .with_font_size(13.0);
+            .with_placeholder(&t("net-password"));
         Box::new(
             Row::new()
                 .push(Box::new(field))
                 .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    self.button(
-                        &format!("settings.network.join.{ssid}"),
-                        &t("net-join"),
-                        NetworkEffect::ConnectNetwork {
-                            ssid: ssid.to_owned(),
-                            password: None,
-                        },
-                    )
-                    .content_sized(),
-                )),
+                .push(Box::new(self.button(
+                    &format!("settings.network.join.{ssid}"),
+                    &t("net-join"),
+                    NetworkEffect::ConnectNetwork {
+                        ssid: ssid.to_owned(),
+                        password: None,
+                    },
+                ))),
         )
     }
 
@@ -2822,14 +2802,13 @@ impl NetworkModel {
             return vec![
                 caption(&t("net-vpn-empty")),
                 Box::new(
-                    Row::new().push(Box::new(Spacer::new())).push(Box::new(
-                        self.button(
+                    Row::new()
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(self.button(
                             "settings.network.vpn.studio.open",
                             &t("net-open-vpn-studio"),
                             NetworkEffect::OpenVpnStudio { vpn: None },
-                        )
-                        .content_sized(),
-                    )),
+                        ))),
                 ),
             ];
         }
@@ -2838,18 +2817,15 @@ impl NetworkModel {
             let name = vpn.name.clone();
             out.push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(&vpn.name).with_size(13.0)))
+                    .push(Box::new(Text::new(&vpn.name).with_role(ui::TextRole::Body)))
                     .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        self.button(
-                            &format!("settings.network.vpn.studio.{}", vpn.name),
-                            &t("net-open-vpn-studio"),
-                            NetworkEffect::OpenVpnStudio {
-                                vpn: Some(vpn.name.clone()),
-                            },
-                        )
-                        .content_sized(),
-                    ))
+                    .push(Box::new(self.button(
+                        &format!("settings.network.vpn.studio.{}", vpn.name),
+                        &t("net-open-vpn-studio"),
+                        NetworkEffect::OpenVpnStudio {
+                            vpn: Some(vpn.name.clone()),
+                        },
+                    )))
                     .push(Box::new(
                         self.cx.bind(
                             Toggle::from_state(&LocalState::new(vpn.active))

@@ -75,3 +75,31 @@ fn manifest_paths_stay_inside_the_catalog() {
         root.join("a/b.ttf")
     );
 }
+
+#[test]
+fn the_standalone_catalog_carries_only_new_computer_modern_s_gust_cuts() {
+    let manifest = manifest().unwrap();
+    let scope = |file: &str| {
+        manifest
+            .font
+            .iter()
+            .find(|asset| asset.file == file)
+            .unwrap_or_else(|| panic!("{file} is in the catalog"))
+            .scope
+    };
+    // NewCM10-Regular is GPL-3.0-or-later with the font exception: the Tilo
+    // OS ships it, a third-party app's bundle does not.
+    assert_eq!(scope("NewCM10-Regular.otf"), Scope::Os);
+    assert!(Scope::Os.os() && !Scope::Os.standalone());
+    for file in [
+        "NewCM10-Book.otf",
+        "NewCM10-BookItalic.otf",
+        "NewCM10-Italic.otf",
+        "NewCM10-Bold.otf",
+        "NewCM10-BoldItalic.otf",
+        "NewCM08-Book.otf",
+    ] {
+        assert!(scope(file).standalone(), "{file} is GUST-licensed");
+    }
+    assert!(!Scope::Fixture.os() && !Scope::Fixture.standalone());
+}

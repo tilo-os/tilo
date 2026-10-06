@@ -136,7 +136,9 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         );
     }
 
-    eprintln!("phase bottom_scroll_reveals_the_last_row_just_above_the_actual_status_pill");
+    eprintln!(
+        "phase bottom_scroll_leaves_one_gutter_under_the_last_row_and_the_page_runs_to_the_window_bottom"
+    );
     {
         for scale in [1.0, 2.0] {
             let mut app = note_at(&tall_body(), 1000, 1000, scale);
@@ -146,15 +148,22 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
                 .unwrap();
             let mut renderer = crate::component_support::renderer();
             renderer.set_text_scale(scale);
-            let (_, pill_height) = ui::status_bubble::pill_size("Saved", &mut renderer, 12.0, 0.0);
+            let (_, pill_height) = ui::status_bubble::pill_size(
+                "Saved",
+                &mut renderer,
+                &Theme::dark().with_text_scale(scale),
+                0.0,
+            );
             let window_bottom = surface(&mut app, |notes| notes.get_rect().y1);
-            let pill_top = window_bottom - 14.0 - pill_height;
+            let pill_top = window_bottom
+                - f64::from(Theme::dark().with_text_scale(scale).tokens.spacing.s4)
+                - pill_height;
             let content_bottom = panel(&mut app, |panel| panel.editor().content_bottom());
             let gap = pill_top - content_bottom;
             let theme = Theme::dark().with_text_scale(scale);
             assert!(
-                (gap - f64::from(theme.tokens.spacing.s2)).abs() <= 1.0,
-                "at {scale}x, last row ends at {content_bottom}, pill starts at {pill_top}: {gap}px gap wastes space or overlaps the status"
+                (gap - f64::from(theme.tokens.spacing.rhythm.group)).abs() <= 1.0,
+                "at {scale}x, last row ends at {content_bottom} of {pill_top}: {gap}px is not one gutter"
             );
         }
     }

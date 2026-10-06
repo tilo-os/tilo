@@ -283,6 +283,9 @@ impl App {
                 Some(crate::platform::HostShortcut::History) => {
                     handled = app.invoke_host_shortcut(crate::platform::HostShortcut::History);
                 }
+                Some(crate::platform::HostShortcut::Sidebar) => {
+                    handled = app.invoke_host_shortcut(crate::platform::HostShortcut::Sidebar);
+                }
                 None => {}
             }
             if handled {
@@ -441,6 +444,10 @@ impl App {
         // If no widget consumed Enter/Space (text inputs do), activate
         // the focused control the same way a mouse click would.
         app.handle_unconsumed_activation_key(&event, &mut handled);
+
+        if !handled && app.handle_unconsumed_search_key(&event) {
+            handled = true;
+        }
 
         // Ctrl+T / Ctrl+W / Ctrl+Shift+T nobody consumed are the desktop's
         // tab chords.

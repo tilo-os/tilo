@@ -294,7 +294,7 @@ impl App {
             tracing::warn!(%error, "legacy control availability refused");
         }
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
-        self.refresh_history_controls();
+        let history_door = self.refresh_history_controls();
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -304,8 +304,11 @@ impl App {
         .unwrap_or_default();
         trace.finish(CacheResult::NotObserved);
         let trace = self.trace_resource_stage(Stage::BoundControlProjection);
-        let _ =
-            crate::bound_dispatch::refresh_bound_controls(self.root_widget.as_mut(), &snapshots);
+        let _ = crate::bound_dispatch::refresh_bound_controls(
+            self.root_widget.as_mut(),
+            &snapshots,
+            &history_door,
+        );
         trace.finish(CacheResult::NotApplicable);
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
@@ -325,7 +328,7 @@ impl App {
         let trace = self.trace_resource_stage(Stage::ControlRefresh);
         // Clone only the compact address set so the cache borrow does not
         // span a mutable call into the retained widget tree.
-        let allowed = self
+        let mut allowed = self
             .actions
             .local_resource_cache
             .borrow()
@@ -333,6 +336,10 @@ impl App {
             .map_or_else(std::collections::HashSet::new, |cache| {
                 cache.allowed.clone()
             });
+        // Opening search is the host's, and this host always answers it.
+        allowed.insert(crate::search::search_address());
+        // So is the window's History door, wherever History serves it.
+        allowed.extend(history_door);
         crate::widget::controls::refresh_control_action_availability(
             self.root_widget.as_mut(),
             &allowed,
@@ -416,13 +423,26 @@ impl App {
         &self,
         resources: &[tilo_actions::Resource],
     ) -> Vec<ControlBindingCoverage> {
+        // Shared chrome invokes doors served by this host, rather than by
+        // the app's resource provider. Audit those exact declarations too.
+        let mut host_resources = vec![crate::search::search_resource()];
+        if let Some(history) = &self.history {
+            host_resources.push(history.door_resource());
+        } else if self.history_chrome_enabled {
+            host_resources.push(crate::standalone_history_host::history_resource(
+                true,
+                self.document_history.is_open(),
+            ));
+        }
         let mut seen = std::collections::HashSet::new();
         crate::widget::controls::control_action_bindings(self.root_widget.as_ref())
             .into_iter()
             .map(|binding| {
                 let status = match &binding.kind {
                     crate::widget::ControlBindingKind::Action(address) => {
-                        if tilo_actions::door::resolve(resources, address).is_none() {
+                        if tilo_actions::door::resolve(resources, address).is_none()
+                            && tilo_actions::door::resolve(&host_resources, address).is_none()
+                        {
                             ControlBindingStatus::StaleAddress
                         } else if !seen.insert(address.clone()) {
                             ControlBindingStatus::SharedAddress
@@ -1397,7 +1417,7 @@ impl App {
             // request to `max_results` provider steps.
             let room = 1;
             let page = providers[provider_index].search_page(
-                &query.needle,
+                &crate::search::SearchQuery::new(query.needle.as_str()),
                 provider_cursor.as_ref(),
                 work_left,
                 room,
@@ -3149,6 +3169,10 @@ impl App {
             tracing::warn!(%error, "legacy control drain refused");
         }
         for (target, intent) in registered.into_iter().chain(batch.controls) {
+            if self.take_history_invocation(&intent, Some(target.owner.clone())) {
+                dispatched = dispatched.saturating_add(1);
+                continue;
+            }
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -3230,6 +3254,13 @@ impl App {
             .map(|(target, intent)| (target, intent, None))
             .chain(bound.pending)
         {
+            if on_behalf_of.is_none()
+                && target.binding.enter().is_ok()
+                && self.take_search_invocation(&intent, Some(&target.binding))
+            {
+                dispatched = dispatched.saturating_add(1);
+                continue;
+            }
             if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of) {
                 dispatched = dispatched.saturating_add(1);
             }
@@ -3246,6 +3277,14 @@ impl App {
                 )
             })
         {
+            if on_behalf_of.is_none() && self.take_history_invocation(&intent, None) {
+                dispatched = dispatched.saturating_add(1);
+                continue;
+            }
+            if on_behalf_of.is_none() && self.take_search_invocation(&intent, None) {
+                dispatched = dispatched.saturating_add(1);
+                continue;
+            }
             // An edit an effect submitted is applied for the effect's
             // invoker, in its context, as long as the effect runs.
             let acting = on_behalf_of.and_then(|id| self.actions.acting_for.get(&id).cloned());
@@ -3802,6 +3841,117 @@ impl App {
         self.rebuild_action_palette_admission();
     }
 
+    /// Open search the way `request` asks: this app, or one part of it, with
+    /// the query already typed. A standalone window shows its own palette;
+    /// inside the Tilo shell the component hands the request to the shell.
+    pub fn open_search(&mut self, request: crate::search::SearchRequest) {
+        self.open_action_palette();
+        if let Some(palette) = self.actions.action_palette.as_mut() {
+            palette.set_scope(request.resource_scope().cloned());
+            if let Some(query) = &request.query {
+                palette.set_query(query);
+                palette.select_query();
+            }
+        }
+    }
+
+    /// `/` pressed with nothing focused that types it: open search of this
+    /// app. A text field consumes `/` before this runs, and a focused widget
+    /// that takes text (a terminal, a canvas with an IME) keeps it, so
+    /// typing a path or a fraction never opens search.
+    #[cfg(feature = "native")]
+    pub(crate) fn handle_unconsumed_search_key(
+        &mut self,
+        event: &winit::event::WindowEvent,
+    ) -> bool {
+        let winit::event::WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Character(character),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let modifiers = self.input.modifiers.state();
+        if character.as_str() != "/"
+            || modifiers.control_key()
+            || modifiers.alt_key()
+            || modifiers.super_key()
+            || !self.presents_search()
+            || self.actions.action_palette.is_some()
+            || self.ime_window_state().is_some()
+        {
+            return false;
+        }
+        self.open_search(crate::search::SearchRequest::this_app());
+        true
+    }
+
+    /// Whether this window presents search itself. A shell hosting the app
+    /// presents it instead, and receives the request as a host intent.
+    fn presents_search(&self) -> bool {
+        self.document_history.has_search()
+    }
+
+    /// A control in the app's tree bound to the window's History door (the
+    /// History control in the app's header row) runs there, as the History
+    /// shortcut does, never as an app action. An app `owner` hosted in a tile
+    /// opens that tile's History. Returns whether it was one.
+    fn take_history_invocation(
+        &mut self,
+        intent: &tilo_actions::ControlInvocation,
+        owner: Option<crate::history_mode::HistoryOwner>,
+    ) -> bool {
+        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE {
+            return false;
+        }
+        let embedded = owner.and_then(|owner| {
+            crate::history_mode::embedded::invoke_door(self.root_widget.as_mut(), &owner, intent)
+        });
+        let result = if let Some(result) = embedded {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+            result.map(|()| {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            })
+        } else {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(intent.arguments.clone())
+            );
+            self.invoke_history_address_local(&intent.address, Some(&argument))
+                .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())))
+        };
+        crate::widget::controls::on_control_invocation_result(
+            self.root_widget.as_mut(),
+            &intent.address,
+            &result,
+        );
+        true
+    }
+
+    fn take_search_invocation(
+        &mut self,
+        intent: &tilo_actions::ControlInvocation,
+        owner: Option<&crate::bound_dispatch::CallbackBinding>,
+    ) -> bool {
+        let Some(request) = crate::search::SearchRequest::from_invocation(intent) else {
+            return false;
+        };
+        match owner {
+            Some(binding) if !self.presents_search() => binding.request_search(request),
+            _ => self.open_search(request),
+        }
+        true
+    }
+
     fn rebuild_action_palette_admission(&mut self) {
         // A synchronous action may need the current canonical widget map
         // before the next redraw. Retire the old tree through the normal
@@ -3848,6 +3998,22 @@ impl App {
         let Ok(request) = request else {
             return false;
         };
+        if self.actions.action_palette.is_none() {
+            // Native semantic focus is authoritative even before the next
+            // retained render propagates the widget's focused flag.
+            // SAFETY: modal admission has not retired either map; both still
+            // describe this exclusively held, live background widget tree.
+            self.actions.ordinary_palette_return_focus = unsafe {
+                crate::widget::layout::CompositionFocus::capture(
+                    self.focused_node,
+                    &self.layout.node_map,
+                    &self.bindings,
+                )
+            }
+            .or_else(|| {
+                crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+            });
+        }
         self.open_action_palette();
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -3957,6 +4123,34 @@ impl App {
         self.focused_node = None;
         self.layout.structure_dirty = true;
         self.actions.action_palette = None;
+        if self.actions.ordinary_palette_return_focus.is_some() {
+            self.rebuild_action_palette_admission();
+            // Admission still requires a measured structural rebuild. Keep the
+            // stable opener identity until that final tree has settled, rather
+            // than restoring a NodeId that the next rebuild invalidates.
+        }
+    }
+
+    #[cfg(feature = "native")]
+    pub(super) fn restore_ordinary_palette_focus(&mut self) {
+        if self.actions.action_palette.is_some() {
+            return;
+        }
+        let Some(focus) = self.actions.ordinary_palette_return_focus.take() else {
+            return;
+        };
+        if self.accessibility.focus_trap_active {
+            return;
+        }
+        // SAFETY: the layout solve has settled the exclusively owned tree and
+        // its current custody map. Removed or ambiguous openers cannot match.
+        self.focused_node = unsafe {
+            focus.restore(
+                &self.layout.node_map,
+                &self.bindings,
+                Some(&self.focusable_order),
+            )
+        };
     }
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {

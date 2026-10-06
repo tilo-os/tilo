@@ -89,6 +89,7 @@ pub(crate) struct AuditEntry {
 }
 
 impl AuditEntry {
+    /// What changed, in words: `Clipboard allowed`, `All Continuity stopped`.
     pub(crate) fn summary(&self) -> String {
         let subject = self
             .capability
@@ -99,13 +100,7 @@ impl AuditEntry {
             } else {
                 "continuity-audit-stopped"
             },
-            &[
-                ("subject", subject.into()),
-                (
-                    "at",
-                    i64::try_from(self.recorded_at_secs).unwrap_or(0).into(),
-                ),
-            ],
+            &[("subject", subject.into())],
         )
     }
 }

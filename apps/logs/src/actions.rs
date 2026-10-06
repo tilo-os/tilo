@@ -7,6 +7,7 @@
 //! published with stable ids and metadata only, never their payloads.
 
 use ui::prelude::*;
+use ui::tilo_actions::ResourcePresentation;
 
 use crate::model::{Filter, LogEntry};
 
@@ -60,17 +61,13 @@ pub fn entry_resource_id(entry: &LogEntry) -> String {
 /// One entry as a live row, offering to show its details.
 pub fn entry_row(entry: &LogEntry) -> LiveRow {
     let id = entry_resource_id(entry);
-    LiveRow::new(
-        id.clone(),
-        "logs.entry",
-        format!(
-            "{} · {} · {}",
-            entry.time_hms(),
-            entry.priority.long(),
-            entry.unit_short()
-        ),
-    )
-    .operation(JournalEffect::SelectEntry { entry_id: id }.bound())
+    LiveRow::new(id.clone(), "logs.entry", entry.unit_short())
+        .presentation(ResourcePresentation {
+            detail: Some(entry.time_hms()),
+            badge: Some(entry.priority.long().to_string()),
+            ..Default::default()
+        })
+        .operation(JournalEffect::SelectEntry { entry_id: id }.bound())
 }
 
 /// The first entries `filter` shows, as live rows.

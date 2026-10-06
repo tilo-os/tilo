@@ -1717,9 +1717,9 @@ fn photo_edit_actions(photo: &PhotoResourceSeed) -> Vec<ActionSpec> {
             spec.returns(ResultSpec::Resource {
                 resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
             })
-            .with_description(
-                "Render this photograph's current crop and rotation into immutable PNG content",
-            ),
+            .with_description(crate::strings::tr(
+                "photos-act-render-this-photograph-s-current-crop-and",
+            )),
         );
     }
     actions
@@ -1746,7 +1746,7 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
         <crate::resource::Photos as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
     let root = ui::tilo_resource::publish::<crate::resource::Photos>(
         "photos.library",
-        "Photo library",
+        &crate::strings::tr("photos-act-photo-library"),
         &state,
     );
     vec![root]
@@ -2138,7 +2138,7 @@ pub(crate) fn library_analysis_resource() -> Resource {
     let mut resource = Resource::new(
         "photos.library-analysis",
         "photos.library-analysis",
-        "Photo analysis",
+        crate::strings::tr("photos-act-photo-analysis"),
     );
     for (label, description, op) in [
         (
@@ -2755,13 +2755,21 @@ impl PhotoResourceSeed {
     fn metadata_summary(&self) -> String {
         let mut parts = Vec::new();
         if let Some(folder) = &self.folder {
-            parts.push(format!("Folder: {folder}"));
+            parts.push(format!("{}: {folder}", crate::strings::tr("photos-folder")));
         }
         if !self.people.is_empty() {
-            parts.push(format!("People: {}", self.people.join(", ")));
+            parts.push(format!(
+                "{}: {}",
+                crate::strings::tr("photos-people"),
+                self.people.join(", ")
+            ));
         }
         if !self.tags.is_empty() {
-            parts.push(format!("Tags: {}", self.tags.join(", ")));
+            parts.push(format!(
+                "{}: {}",
+                crate::strings::tr("photos-tags"),
+                self.tags.join(", ")
+            ));
         }
         if let Some(captured_at) = &self.captured_at {
             parts.push(format!(
@@ -2770,20 +2778,36 @@ impl PhotoResourceSeed {
             ));
         }
         if let Some(location) = &self.location {
-            parts.push(format!("Place: {}", location.display_name()));
+            parts.push(format!(
+                "{}: {}",
+                crate::strings::tr("photos-place"),
+                location.display_name()
+            ));
         }
         if let Some(analysis) = &self.analysis {
             if !analysis.description.is_empty() {
-                parts.push(format!("Description: {}", analysis.description));
+                parts.push(format!(
+                    "{}: {}",
+                    crate::strings::tr("photos-description"),
+                    analysis.description
+                ));
             }
             if !analysis.objects.is_empty() {
-                parts.push(format!("Objects: {}", analysis.objects.join(", ")));
+                parts.push(format!(
+                    "{}: {}",
+                    crate::strings::tr("photos-objects"),
+                    analysis.objects.join(", ")
+                ));
             }
             if !analysis.pets.is_empty() {
-                parts.push(format!("Pets: {}", analysis.pets.join(", ")));
+                parts.push(format!(
+                    "{}: {}",
+                    crate::strings::tr("photos-pets"),
+                    analysis.pets.join(", ")
+                ));
             }
         }
-        parts.join(" · ")
+        parts.join(". ")
     }
 }
 
@@ -2815,7 +2839,7 @@ fn analysis_text_resource(id: &str, kind: &str, label: &str, text: &str) -> Reso
         id,
         kind,
         format!(
-            "{label} · {} character{} · {} part{}",
+            "{label}, {} character{} in {} part{}",
             text.chars().count(),
             if text.chars().count() == 1 { "" } else { "s" },
             chunks.len(),
@@ -2854,7 +2878,7 @@ fn analysis_labels_resource(id: &str, kind: &str, label: &str, values: &[String]
 
 fn analysis_scalar_resource(id: &str, kind: &str, field: &str, value: &str) -> Resource {
     let value = if value.is_empty() {
-        "Not recorded"
+        &crate::strings::tr("photos-act-not-recorded")
     } else {
         value
     };
@@ -2888,10 +2912,10 @@ fn analysis_provenance_resource(
         resource = resource.with_child(analysis_scalar_resource(
             &format!("{id}/{field}"),
             &format!("photos.analysis.provenance.{field}"),
-            match field {
-                "model" => "Model",
-                "revision" => "Model revision",
-                _ => field,
+            &match field {
+                "model" => crate::strings::tr("photos-act-model"),
+                "revision" => crate::strings::tr("photos-act-model-revision"),
+                _ => field.to_owned(),
             },
             value,
         ));
@@ -2918,16 +2942,28 @@ fn analysis_component_provenance(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "each analysis component and its actions are declared side by side with their translated labels"
+)]
 fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
     let id = format!("{photo_id}#analysis");
-    let mut root = Resource::new(&id, "photos.analysis", "Shared image intelligence");
+    let mut root = Resource::new(
+        &id,
+        "photos.analysis",
+        crate::strings::tr("photos-act-shared-image-intelligence"),
+    );
 
     let ocr_id = format!("{id}/ocr");
-    let mut ocr = Resource::new(&ocr_id, "photos.analysis.ocr", "Recognized text");
+    let mut ocr = Resource::new(
+        &ocr_id,
+        "photos.analysis.ocr",
+        crate::strings::tr("photos-act-recognized-text"),
+    );
     ocr = ocr.with_child(analysis_text_resource(
         &format!("{ocr_id}/text"),
         "photos.analysis.ocr.text",
-        "Recognized text",
+        &crate::strings::tr("photos-act-recognized-text"),
         &analysis.ocr_text,
     ));
     if let Some(provenance) = analysis_component_provenance(analysis, false) {
@@ -2956,35 +2992,39 @@ fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
     root = root.with_child(ocr);
 
     let vision_id = format!("{id}/vision");
-    let mut vision = Resource::new(&vision_id, "photos.analysis.vision", "Visual analysis")
-        .with_child(analysis_text_resource(
-            &format!("{vision_id}/description"),
-            "photos.analysis.description",
-            "Description",
-            &analysis.description,
-        ))
-        .with_child(analysis_labels_resource(
-            &format!("{vision_id}/objects"),
-            "photos.analysis.objects",
-            "object",
-            &analysis.objects,
-        ))
-        .with_child(analysis_labels_resource(
-            &format!("{vision_id}/pets"),
-            "photos.analysis.pets",
-            "pet",
-            &analysis.pets,
-        ))
-        .with_child(analysis_labels_resource(
-            &format!("{vision_id}/people"),
-            "photos.analysis.people",
-            "person",
-            &analysis.people,
-        ));
+    let mut vision = Resource::new(
+        &vision_id,
+        "photos.analysis.vision",
+        crate::strings::tr("photos-act-visual-analysis"),
+    )
+    .with_child(analysis_text_resource(
+        &format!("{vision_id}/description"),
+        "photos.analysis.description",
+        &crate::strings::tr("photos-act-description"),
+        &analysis.description,
+    ))
+    .with_child(analysis_labels_resource(
+        &format!("{vision_id}/objects"),
+        "photos.analysis.objects",
+        "object",
+        &analysis.objects,
+    ))
+    .with_child(analysis_labels_resource(
+        &format!("{vision_id}/pets"),
+        "photos.analysis.pets",
+        "pet",
+        &analysis.pets,
+    ))
+    .with_child(analysis_labels_resource(
+        &format!("{vision_id}/people"),
+        "photos.analysis.people",
+        "person",
+        &analysis.people,
+    ));
     if let Some(provenance) = analysis_component_provenance(analysis, true) {
         vision = vision.with_child(analysis_provenance_resource(
             &format!("{vision_id}/provenance"),
-            "Visual analysis",
+            &crate::strings::tr("photos-act-visual-analysis"),
             provenance,
         ));
     }
@@ -2997,8 +3037,10 @@ fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
         );
         let unavailable = local_vision_unavailable_reason();
         let spec = spec.with_description(match unavailable.as_deref() {
-            Some(reason) => format!("Unavailable: {reason}"),
-            None => "Replace only the shared description and recognized-object components after a signed local analysis job".to_owned(),
+            Some(reason) => crate::strings::tr_with("photos-unavailable", "reason", reason),
+            None => {
+                crate::strings::tr("photos-act-replace-only-the-shared-description-and-recognized")
+            }
         });
         vision = vision.with_action(match unavailable {
             Some(reason) => spec.unavailable("local_vision_unavailable", reason),
@@ -3091,10 +3133,7 @@ pub(crate) fn photo_resource(photo: &LibraryPhoto) -> Resource {
 pub(crate) fn local_vision_unavailable_reason() -> Option<String> {
     tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
         .is_none()
-        .then(|| {
-            "No verified local image-analysis model is ready. Install and start one in Settings."
-                .to_owned()
-        })
+        .then(|| crate::strings::tr("photos-act-no-verified-local-image-analysis-model-is"))
 }
 
 #[allow(
@@ -3124,7 +3163,7 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
             format!("{}#location", photo.id),
             "photos.location",
             format!(
-                "{} · explicitly shared from {}",
+                "{}, explicitly shared from {}",
                 location.display_name(),
                 location.provenance.source
             ),
@@ -3206,9 +3245,9 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
         );
         let unavailable = local_vision_unavailable_reason();
         let description = if let Some(reason) = unavailable.as_deref() {
-            format!("Unavailable: {reason}")
+            crate::strings::tr_with("photos-unavailable", "reason", reason)
         } else {
-            "Use the signed local model to describe this image, extract generic labels and recognize text; explicitly share only the bounded result".to_owned()
+            crate::strings::tr("photos-act-use-the-signed-local-model-to-describe")
         };
         let spec = spec.with_description(description);
         item = item.with_action(match unavailable {

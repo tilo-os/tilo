@@ -166,7 +166,7 @@ fn index_relation(
             &[connection_id, &schema.name, &relation.name, &column.name],
         );
         let result = hit(&column.name, ActionAddress::new(&column_id, "browse")).subtitled(
-            format!("{}.{} · {}", schema.name, relation.name, column.decl_type),
+            format!("{} in {}.{}", column.decl_type, schema.name, relation.name),
         );
         let mut column_resource = Resource::new(&column_id, "database.column", &column.name);
         column_resource.actions.clone_from(&resource.actions);
@@ -273,7 +273,7 @@ fn index_query_history(
             "query-history-entry",
             &[connection_id, &entry.generation.to_string()],
         );
-        let title = format!("Query {} · {}", entry.generation, entry.summary);
+        let title = format!("Query {}: {}", entry.generation, entry.summary);
         let rerun = DbEffect::Rerun {
             connection: connection.id,
             generation: entry.generation,
@@ -494,7 +494,7 @@ mod tests {
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
             let provider = source(&index);
-            let page = provider.search_page("albums", None, 20, 20);
+            let page = provider.search_page(&ui::search::SearchQuery::new("albums"), None, 20, 20);
             assert!(page.inspected <= 20);
             let hit = page
                 .results
@@ -529,7 +529,12 @@ mod tests {
             );
             assert_eq!(
                 provider
-                    .search_page("", None, usize::MAX, usize::MAX)
+                    .search_page(
+                        &ui::search::SearchQuery::new(""),
+                        None,
+                        usize::MAX,
+                        usize::MAX
+                    )
                     .results
                     .len(),
                 DEFAULT_SEARCH_RESULT_LIMIT

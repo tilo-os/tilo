@@ -1,10 +1,11 @@
 //! The show/hide control every single-line secret [`super::TextInput`] carries
 //! at its trailing edge.
 //!
-//! It is a retained child of the field, so Tab reaches it after the text,
-//! assistive technology sees a named button, and Enter/Space or an AT
-//! activation toggle it like any other button. A pointer press toggles
-//! without taking focus, so typing continues in the field. Only the field's
+//! It is a retained child of the field, so assistive technology sees a named
+//! button that an AT or agent activation toggles. Like every inline accessory
+//! of a field it is not a Tab stop: Tab moves from field to field, as on macOS
+//! with full keyboard access off. A pointer press toggles without taking
+//! focus, so typing continues in the field. Only the field's
 //! paint changes: the value never reaches the accessibility tree, a log, the
 //! clipboard or persisted state because of a reveal.
 
@@ -12,7 +13,7 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 
 use crate::color_compat::ColorCompat;
@@ -167,29 +168,29 @@ impl Widget for RevealToggle {
         let side = f64::from(metrics.bar_control_height).min(self.rect.height());
         let face = RoundedRect::from_rect(
             Rect::from_center_size(self.rect.center(), (side, side)),
-            f64::from(theme.tokens.radii.sm),
+            f64::from(theme.tokens.radii.item),
         );
         let glyph = f64::from(metrics.icon_md).min(side);
         if self.enabled && (self.hovered || self.pressed) {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                if self.pressed {
-                    theme.bg_active
-                } else {
-                    theme.bg_hover
-                },
+                // The field is the raised face; the control lifts off it.
+                theme.tokens.colors.lift_on(
+                    theme.tokens.colors.surfaces.raised,
+                    if self.pressed { 1.0 } else { 0.5 },
+                ),
                 None,
                 &face,
             );
         }
         if self.enabled && self.focused {
-            scene.stroke(
-                &Stroke::new(2.0),
+            crate::widget::paint_focus_ring(
+                scene,
                 transform,
-                theme.border_focus,
-                None,
-                &face,
+                face.rect(),
+                face.radii().top_left,
+                theme,
             );
         }
         let color = if !self.enabled {
@@ -299,8 +300,10 @@ impl Widget for RevealToggle {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
+    /// An inline accessory is not a Tab stop; the pointer, assistive
+    /// technology and agents reach it.
     fn is_focusable(&self) -> bool {
-        self.enabled
+        false
     }
 
     fn is_enabled(&self) -> bool {
@@ -334,7 +337,6 @@ impl Widget for RevealToggle {
                 .with_name(crate::i18n!(self.label()))
                 .with_state(AccessState {
                     focused: self.focused,
-                    focusable: self.enabled,
                     disabled: !self.enabled,
                     ..Default::default()
                 }),

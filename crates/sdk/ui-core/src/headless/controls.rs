@@ -813,7 +813,7 @@ mod locus_tests {
                     .join(name)
                     .join(format!("{}x{}", viewport.0, viewport.1));
                 std::fs::create_dir_all(&path).unwrap();
-                frame.render_window_png(&path.join("before.png"));
+                frame.render_png(&path.join("before.png"));
                 frame
                     .invoke_action(
                         &tilo_actions::ActionAddress::new("first", "edit"),
@@ -832,7 +832,7 @@ mod locus_tests {
                     presence.apply_interaction_at(event.clone(), at).unwrap()
                 });
                 assert!(frame.poll_frame().unwrap());
-                frame.render_window_png(&path.join("after.png"));
+                frame.render_png(&path.join("after.png"));
                 assert_eq!(calls.get(), 1);
                 for file in ["before.png", "after.png"] {
                     assert!(std::fs::metadata(path.join(file)).unwrap().len() > 0);

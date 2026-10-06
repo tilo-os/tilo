@@ -1388,7 +1388,7 @@ fn anno_label(a: &Annotation) -> String {
         AnnoKind::Note { .. } => "Note",
         AnnoKind::FreeText { .. } => "Text",
     };
-    format!("{kind} · p.{}", a.page)
+    format!("{kind} on page {}", a.page)
 }
 
 /// One-line comment preview for the palette label.
@@ -1563,7 +1563,7 @@ fn search_result_row(ctx: &PdfResourceCtx, index: usize, page: usize) -> LiveRow
             ctx.doc_id, ctx.search_token
         ),
         "pdf.search-result",
-        format!("Match {} · page {page}", index + 1),
+        format!("Match {} on page {page}", index + 1),
     )
     .effect(&PdfEffect::GoToMatch {
         query: ctx.search_query.clone(),
@@ -1702,7 +1702,10 @@ fn signature_resource(signature: &Signature) -> Resource {
     let mut resource = Resource::new(
         format!("pdf.signature:{}", signature.id),
         "pdf.signature",
-        format!("Signature by {} · p.{}", signature.signer, signature.page),
+        format!(
+            "Signature by {} on page {}",
+            signature.signer, signature.page
+        ),
     );
     if let Some(spec) = encode_spec(
         "delete",

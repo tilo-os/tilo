@@ -38,6 +38,7 @@ fn reference_block_runs(block: &BlockView) -> BlockRuns {
             color,
             background,
             baseline,
+            kind: None,
         });
         i = j;
     }
@@ -111,6 +112,7 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
             color,
             background,
             baseline,
+            kind: None,
         });
         i = j;
     }

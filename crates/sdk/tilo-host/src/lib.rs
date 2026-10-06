@@ -38,6 +38,7 @@
 //! under the same path (`ui::portal`, `ui::host`, `ui::time`, …), and
 //! `tilo-app` turns every service on by default.
 
+pub mod action_authority;
 pub mod background;
 pub mod capture;
 pub mod clipboard;

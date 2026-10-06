@@ -114,6 +114,9 @@ pub enum RenderRequest {
         damage_regions: Vec<Rect>,
         /// Resize, relayout, structure, or untracked overlay invalidation.
         full_redraw: bool,
+        /// The backdrops the scene's floating surfaces were recorded over
+        /// (`crate::backdrop`), in physical pixels. Empty draws no blur.
+        backdrop: crate::backdrop::BackdropFrame,
         /// Called with the time this frame, or the first later one, is
         /// presented.
         on_present: Option<PresentHook>,
@@ -422,6 +425,10 @@ pub(crate) fn spawn_render_thread_for_window(
             let mut bump_recovery = bump_recovery::BumpRecovery::default();
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             let mut keep_renderer = false;
+            // Built with the first frame that draws a floating surface over
+            // the blurred material.
+            let mut backdrop_blur: Option<crate::backdrop::BackdropBlur> = None;
+            let mut had_backdrop = false;
             loop {
                 let wait = bump_recovery.wait();
                 let (message, receive_bounds) =
@@ -461,6 +468,7 @@ pub(crate) fn spawn_render_thread_for_window(
                     mut damage_regions,
                     full_redraw,
                     cpu_frame_id,
+                    backdrop,
                 ) = match msg {
                     RenderRequest::Frame {
                         scene,
@@ -470,6 +478,7 @@ pub(crate) fn spawn_render_thread_for_window(
                         damage_regions,
                         full_redraw,
                         cpu_frame_id,
+                        backdrop,
                         on_present,
                     } => {
                         present_hooks.extend(on_present);
@@ -481,6 +490,7 @@ pub(crate) fn spawn_render_thread_for_window(
                             damage_regions,
                             full_redraw,
                             cpu_frame_id,
+                            backdrop,
                         )
                     }
                     RenderRequest::Shutdown {
@@ -562,13 +572,20 @@ pub(crate) fn spawn_render_thread_for_window(
                     &surface,
                     &mut renderer,
                     &mut damage_cache,
+                    &mut backdrop_blur,
                     FrameContent {
                         scene: &scene,
                         width,
                         height,
                         base_color,
                         damage_regions: &damage_regions,
-                        full_redraw,
+                        // A blurred surface samples everything under it, and
+                        // the frame after one repaints what it covered.
+                        full_redraw: full_redraw
+                            || !target_valid
+                            || !backdrop.is_empty()
+                            || had_backdrop,
+                        backdrop: &backdrop,
                     },
                     FramePresentation {
                         frame_ix,
@@ -606,6 +623,8 @@ pub(crate) fn spawn_render_thread_for_window(
                 // length at typical refresh rates, nowhere near `u64::MAX`.
                 frame_ix = frame_ix.saturating_add(1);
                 target_valid = outcome == FrameOutcome::Presented;
+                had_backdrop = !backdrop.is_empty();
+                drop(backdrop);
                 if target_valid && !present_hooks.is_empty() {
                     let presented = crate::time::wall();
                     for hook in std::mem::take(&mut present_hooks) {
@@ -870,6 +889,7 @@ fn rasterize_damage(
         base_color,
         damage_regions,
         full_redraw,
+        ..
     } = *frame;
     let full_pixels = u64::from(width).saturating_mul(u64::from(height));
     let render_full = |renderer: &mut Renderer| {
@@ -1151,6 +1171,7 @@ struct FrameContent<'a> {
     base_color: Color,
     damage_regions: &'a [Rect],
     full_redraw: bool,
+    backdrop: &'a crate::backdrop::BackdropFrame,
 }
 
 /// How a presented frame is identified and observed.
@@ -1171,6 +1192,7 @@ fn render_one_frame(
     surface: &RenderSurface<'static>,
     renderer: &mut Renderer,
     damage_cache: &mut DamageCache,
+    backdrop_blur: &mut Option<crate::backdrop::BackdropBlur>,
     frame: FrameContent<'_>,
     present: FramePresentation<'_>,
 ) -> FrameOutcome {
@@ -1248,7 +1270,21 @@ fn render_one_frame(
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-raster-start");
     }
-    let raster_pixels = match rasterize_damage(
+    // Floating surfaces over the blurred material: render, blur and
+    // substitute each one's backdrop before the frame that draws it.
+    let backdrop_stats = (!frame.backdrop.is_empty()).then(|| {
+        backdrop_blur
+            .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(&device_handle.device))
+            .prepare(
+                &device_handle.device,
+                &device_handle.queue,
+                renderer,
+                frame.backdrop,
+                (width, height),
+                frame.base_color,
+            )
+    });
+    let rasterized = rasterize_damage(
         (&device_handle.device, &device_handle.queue),
         RetainedTarget {
             texture: &surface.target_texture,
@@ -1257,11 +1293,22 @@ fn render_one_frame(
         renderer,
         damage_cache,
         &FrameContent {
+            backdrop: &crate::backdrop::BackdropFrame::default(),
             full_redraw: frame.full_redraw
                 || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
             ..frame
         },
-    ) {
+    );
+    if let Some(blur) = backdrop_blur.as_mut() {
+        blur.release(renderer);
+    }
+    if present_dbg && let Some(stats) = backdrop_stats {
+        eprintln!(
+            "present-backdrop {frame_ix}: substituted={} skipped={} encode={}us",
+            stats.substituted, stats.skipped, stats.encode_us
+        );
+    }
+    let raster_pixels = match rasterized {
         Ok(pixels) => pixels,
         Err(err) => {
             // A programmer bug (bad encoding / ran out of GPU resources); log and
@@ -1871,6 +1918,9 @@ mod retained_damage_tests {
         scene
     }
 
+    static EMPTY_BACKDROP: std::sync::OnceLock<crate::backdrop::BackdropFrame> =
+        std::sync::OnceLock::new();
+
     fn content<'a>(
         scene: &'a Scene,
         base_color: Color,
@@ -1878,6 +1928,7 @@ mod retained_damage_tests {
         full_redraw: bool,
     ) -> FrameContent<'a> {
         FrameContent {
+            backdrop: EMPTY_BACKDROP.get_or_init(crate::backdrop::BackdropFrame::default),
             scene,
             width: WIDTH,
             height: HEIGHT,
@@ -2147,6 +2198,7 @@ mod retained_damage_tests {
             }
             let scene = scene_of(&items);
             let content = FrameContent {
+                backdrop: &crate::backdrop::BackdropFrame::default(),
                 scene: &scene,
                 width: WIDTH,
                 height: HEIGHT,
@@ -2174,6 +2226,7 @@ mod retained_damage_tests {
                 &mut oracle,
                 &mut oracle_cache,
                 &FrameContent {
+                    backdrop: &crate::backdrop::BackdropFrame::default(),
                     full_redraw: true,
                     ..content
                 },

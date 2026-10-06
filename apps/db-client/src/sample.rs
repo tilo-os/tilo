@@ -1,6 +1,6 @@
 //! The bundled sample database — a compact music-catalog schema in the
 //! spirit of the well-known "chinook" example. It ships with the app so the
-//! schema browser, SQL editor and results grid all work with zero external
+//! sidebar, SQL editor and results table all work with zero external
 //! setup, both in the live window and in headless `--shots` rendering.
 //!
 //! The schema deliberately exercises every feature of the UI: primary keys,
@@ -167,6 +167,10 @@ pub fn starter_queries() -> &'static [(&'static str, &'static str)] {
         (
             "Catalog view",
             "SELECT track, artist, album, genre, unit_price\nFROM track_catalog\nORDER BY artist, album\nLIMIT 50;",
+        ),
+        (
+            "Track listing",
+            "SELECT t.name AS track, ar.name AS artist,\n       al.title AS album, t.unit_price AS price,\n       g.name AS genre\nFROM tracks t\nJOIN albums al ON al.album_id = t.album_id\nJOIN artists ar ON ar.artist_id = al.artist_id\nJOIN genres g ON g.genre_id = t.genre_id\nORDER BY ar.name, al.title, t.track_id;",
         ),
         (
             "Tracks per genre",

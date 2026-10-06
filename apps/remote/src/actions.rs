@@ -456,7 +456,7 @@ mod tests {
         palette: [
             "Rename connection",
             "Open connection settings",
-            "Set favourite",
+            "Pin connection",
             "Delete connection",
         ],
         replay: [
@@ -783,13 +783,13 @@ mod tests {
                 &connect.contract.availability,
                 tilo_actions::Availability::Unavailable { code, reason }
                     if code == "transport_backend_unavailable"
-                        && reason.contains("no RDP client backend")
+                        && reason.contains("but not RDP")
             ));
             assert!(
                 connect
                     .description
                     .as_deref()
-                    .is_some_and(|description| description.contains("no RDP client backend")),
+                    .is_some_and(|description| description.contains("but not RDP")),
                 "search and agents receive the actionable reason"
             );
         }

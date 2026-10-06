@@ -323,6 +323,8 @@ const SCENARIOS: &[&str] = &[
     "summary",
     "multiselect",
     "tabmenu",
+    "tabcolour",
+    "tabrename",
     "fbarselect",
     "commandpalette",
     "fillseries",
@@ -333,6 +335,7 @@ const SCENARIOS: &[&str] = &[
     "reducedmotion",
     "charts",
     "comments",
+    "bold",
 ];
 
 /// When the sample workbook of the annotated scenarios was written.
@@ -504,7 +507,8 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let paste = TestApp::<SheetsShell>::capture(Some("pasteformula")).unwrap();
-        assert_eq!(raw(&paste, "F2").as_deref(), Some("=SUM(C2:E2)"));
+        // E2's `=SUM(B2:D2)` pasted one row down reads its own row.
+        assert_eq!(raw(&paste, "E3").as_deref(), Some("=SUM(B3:D3)"));
     }
 
     /// A change re-reads what it touched: an edit to one cell keeps every

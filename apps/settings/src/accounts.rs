@@ -696,8 +696,8 @@ impl AccountKind {
     pub fn label(self) -> &'static str {
         match self {
             AccountKind::Mail => "Email",
-            AccountKind::CalDav => "Calendar (CalDAV)",
-            AccountKind::WebDav => "Files (WebDAV)",
+            AccountKind::CalDav => "Calendar",
+            AccountKind::WebDav => "Files",
             AccountKind::Nextcloud => "Nextcloud",
             AccountKind::GoogleDrive => "Google Drive",
             AccountKind::OneDrive => "OneDrive",
@@ -854,10 +854,7 @@ impl AccountDirectory {
                     id: a.id.clone(),
                     kind,
                     label: a.label().to_string(),
-                    summary: format!(
-                        "{} · {}:{}",
-                        a.config.email, a.config.imap_host, a.config.imap_port
-                    ),
+                    summary: a.config.email.clone(),
                     enabled: true,
                     tint: a.tint,
                 })
@@ -883,7 +880,7 @@ fn dav_view_caldav(a: &DavAccount) -> AccountView {
         id: a.id.clone(),
         kind: AccountKind::CalDav,
         label: a.label.clone(),
-        summary: format!("CalDAV · {}", short_url(&a.base_url)),
+        summary: short_url(&a.base_url),
         enabled: a.enabled,
         tint: a.tint,
     }
@@ -894,28 +891,18 @@ fn dav_view_webdav(a: &DavAccount) -> AccountView {
         id: a.id.clone(),
         kind: AccountKind::WebDav,
         label: a.label.clone(),
-        summary: format!("WebDAV · {}", short_url(&a.base_url)),
+        summary: short_url(&a.base_url),
         enabled: a.enabled,
         tint: a.tint,
     }
 }
 
 fn nextcloud_view(a: &NextcloudAccount) -> AccountView {
-    let mut svc = Vec::new();
-    if a.use_mail {
-        svc.push("Mail");
-    }
-    if a.use_calendar {
-        svc.push("Calendar");
-    }
-    if a.use_files {
-        svc.push("Files");
-    }
     AccountView {
         id: a.id.clone(),
         kind: AccountKind::Nextcloud,
         label: a.label.clone(),
-        summary: format!("{} · {}", short_url(&a.server_url), svc.join(", ")),
+        summary: short_url(&a.server_url),
         enabled: a.enabled,
         tint: a.tint,
     }
@@ -928,11 +915,9 @@ fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
         .and_then(serde_json::Value::as_str)
         .filter(|identity| !identity.is_empty());
     let summary = match (identity, kind.oauth_cloud()) {
-        (Some(identity), _) => format!("{} · {identity}", kind.label()),
-        (None, Some(cloud)) => {
-            format!("{} · signed in with {}", kind.label(), cloud.sign_in_with())
-        }
-        (None, None) => format!("{} · Apple ID", kind.label()),
+        (Some(identity), _) => identity.to_string(),
+        (None, Some(cloud)) => format!("Signed in with {}", cloud.sign_in_with()),
+        (None, None) => "Apple ID".to_string(),
     };
     AccountView {
         id: account.id.to_string(),
@@ -1091,7 +1076,7 @@ pub fn config_root() -> Option<PathBuf> {
 pub fn sample_directory() -> AccountDirectory {
     let mut work = MailAccount::new(AccountConfig {
         email: "ada@example.com".into(),
-        display_name: "Work — Fastmail".into(),
+        display_name: "Work email".into(),
         imap_host: "imap.fastmail.com".into(),
         imap_port: 993,
         imap_tls: true,
@@ -1105,7 +1090,7 @@ pub fn sample_directory() -> AccountDirectory {
 
     let mut personal = MailAccount::new(AccountConfig {
         email: "ada.personal@gmail.com".into(),
-        display_name: "Personal — Gmail".into(),
+        display_name: "Personal email".into(),
         imap_host: "imap.gmail.com".into(),
         imap_port: 993,
         imap_tls: true,
@@ -1118,7 +1103,7 @@ pub fn sample_directory() -> AccountDirectory {
     personal.tint = 5;
 
     let mut cal = DavAccount::new(
-        "Team Calendar",
+        "Team calendar",
         "https://dav.example.com/calendars/ada/",
         "ada",
     );
@@ -1291,12 +1276,10 @@ mod tests {
             assert_eq!(dir.views_of(kind).len(), want, "{kind:?} views");
         }
         let mail = &dir.views_of(AccountKind::Mail)[0];
-        assert!(mail.summary.contains("imap.fastmail.com"));
+        assert_eq!(mail.summary, "ada@example.com");
+        assert_eq!(dir.mail.accounts[0].config.imap_host, "imap.fastmail.com");
         let cloud = &dir.views_of(AccountKind::Nextcloud)[0];
-        // mail disabled in the sample.
-        assert!(cloud.summary.contains("Calendar"));
-        assert!(cloud.summary.contains("Files"));
-        assert!(!cloud.summary.contains("Mail"));
+        assert_eq!(cloud.summary, "cloud.example.com");
 
         // (email, recognised provider, resulting IMAP host)
         for (email, known, host) in [

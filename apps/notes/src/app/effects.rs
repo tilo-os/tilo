@@ -15,8 +15,13 @@ type Cx = EffectCx<Notebook, NotesApp>;
 impl NotesApp {
     /// Answer `effect`, however it was invoked.
     pub(crate) fn answer_effect(&mut self, effect: NotesEffect, cx: &mut Cx) -> EffectAnswer {
+        if effect == NotesEffect::InspectEditor {
+            let document = cx.document().ok_or("the editor document is unavailable")?;
+            return Ok(Effected::value(self.editor_observation(&document)));
+        }
         let state = cx.live().get();
         match effect {
+            NotesEffect::InspectEditor => Err("the editor document is unavailable".into()),
             NotesEffect::ImportMarkdown => Ok(Self::choose_markdown(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();

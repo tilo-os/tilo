@@ -563,7 +563,7 @@ fn continuity_key(capability: Capability) -> String {
 }
 
 fn origin_summary(origin: &Origin) -> String {
-    format!("{} · revision {}", origin.device_label, origin.counter)
+    format!("{} at revision {}", origin.device_label, origin.counter)
 }
 
 fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
@@ -1267,14 +1267,10 @@ impl DeviceMeshModel {
         } else {
             t("mesh-pair-home")
         };
-        let approve = Box::new(
-            self.cx.bind_invocation(
-                Button::new("device_mesh.approve_enrollment", &pair_label)
-                    .content_sized()
-                    .with_enabled(!pairing),
-                DeviceMeshEffect::PairHomeServer,
-            ),
-        );
+        let approve = Box::new(self.cx.bind_invocation(
+            Button::new("device_mesh.approve_enrollment", &pair_label).with_enabled(!pairing),
+            DeviceMeshEffect::PairHomeServer,
+        ));
         let personal_label = if pairing && self.pairing_target == PairingTarget::PersonalDevice {
             t("mesh-pairing")
         } else if self.pairing_target == PairingTarget::PersonalDevice {
@@ -1296,7 +1292,6 @@ impl DeviceMeshModel {
         let approve_personal = Box::new(
             self.cx.bind_invocation(
                 Button::new("device_mesh.approve_personal_device", &personal_label)
-                    .content_sized()
                     .with_enabled(!pairing),
                 DeviceMeshEffect::AddPersonalDevice,
             ),
@@ -1517,11 +1512,10 @@ impl DeviceMeshModel {
             let name = TextInput::local()
                 .with_id(&rename_key)
                 .with_external_buffer(Arc::clone(&typed))
-                .with_placeholder(&peer.label)
-                .with_font_size(13.0);
+                .with_placeholder(&peer.label);
             let renamed = device.clone();
             let rename = Box::new(self.cx.bind(
-                Button::new(&peer_key("rename", device), &t("mesh-rename")).content_sized(),
+                Button::new(&peer_key("rename", device), &t("mesh-rename")),
                 effect(DeviceMeshEffect::RENAME_HOME_SERVER).map(move |()| {
                     (
                         renamed.clone(),
@@ -1533,7 +1527,7 @@ impl DeviceMeshModel {
                 }),
             ));
             let remove = Box::new(self.cx.bind_invocation(
-                Button::new(&peer_key("remove", device), &t("mesh-revoke-remove")).content_sized(),
+                Button::new(&peer_key("remove", device), &t("mesh-revoke-remove")),
                 DeviceMeshEffect::RemoveHomeServer {
                     device: device.clone(),
                 },
@@ -1826,7 +1820,7 @@ impl DeviceMeshModel {
             }
             Err(error) => {
                 self.home_peer_health
-                    .insert(peer.device_node_id.clone(), format!("Offline · {error}"));
+                    .insert(peer.device_node_id.clone(), format!("Offline: {error}"));
             }
         }
         self.changed = true;
@@ -1987,9 +1981,9 @@ impl DeviceMeshModel {
                             if removed {
                                 "Removed".into()
                             } else if ready {
-                                "Online · Files ready".into()
+                                "Online. Files ready".into()
                             } else {
-                                "Online · Syncing files".into()
+                                "Online. Syncing files".into()
                             },
                         );
                         let now_ms = ui::time::wall()
@@ -2005,7 +1999,7 @@ impl DeviceMeshModel {
                 } else {
                     let detail = command_error(&output.stderr, "not reachable");
                     let label = self.home_peer_last_seen.get(&device).map_or_else(
-                        || format!("Offline · {detail}"),
+                        || format!("Offline: {detail}"),
                         |last_seen| last_seen_label(*last_seen),
                     );
                     self.home_peer_health.insert(device, label);
@@ -2016,7 +2010,7 @@ impl DeviceMeshModel {
                 self.management_child = None;
                 if let Some(device) = self.management_device.take() {
                     self.home_peer_health
-                        .insert(device, format!("Offline · {error}"));
+                        .insert(device, format!("Offline: {error}"));
                 }
                 self.changed = true;
             }
@@ -2167,11 +2161,11 @@ mod tests {
                 vec![
                     (
                         "tilo.appearance.theme".into(),
-                        "Resolved to Laptop · revision 8; differs from Desktop".into()
+                        "Resolved to Laptop at revision 8; differs from Desktop".into()
                     ),
                     (
-                        "Wi-Fi · Home".into(),
-                        "Sealed WPA2 profile. From Laptop · revision 9".into()
+                        "Wi-Fi: Home".into(),
+                        "Sealed WPA2 profile. From Laptop at revision 9".into()
                     )
                 ]
             );
@@ -2420,9 +2414,9 @@ mod tests {
     fn device_health_and_workspace_status_reflect_fresh_facts() {
         // Case `peer_health_is_a_compact_visual_state_with_detail_beside_it`.
         {
-            assert_eq!(peer_health_badge("Online · Files ready"), "Online");
-            assert_eq!(peer_health_badge("Online · Syncing files"), "Syncing");
-            assert_eq!(peer_health_badge("Offline · Last seen 4 h ago"), "Offline");
+            assert_eq!(peer_health_badge("Online. Files ready"), "Online");
+            assert_eq!(peer_health_badge("Online. Syncing files"), "Syncing");
+            assert_eq!(peer_health_badge("Offline: Last seen 4 h ago"), "Offline");
             assert_eq!(peer_health_badge("Checking…"), "Checking");
         }
 

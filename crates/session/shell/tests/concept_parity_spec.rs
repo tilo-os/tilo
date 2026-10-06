@@ -246,7 +246,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
 
         // Assert on the theme's own accent, not a literal fill count: counting
         // indigo-500 pixels incentivized a decorative second fill over a fix.
-        let accent = theme.tokens.colors.accent[5];
+        let accent = theme.tokens.colors.intent.inverted;
         let acc = accent.to_rgba8();
         let count_accent = |fills: &[(u8, u8, u8, u8)]| {
             fills
@@ -348,7 +348,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     {
         let tree = WorkspaceTree::bootstrap_demo();
 
-        let (mut host_a, chrome_a) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host_a, chrome_a) = build_settled_workspace_settings_host(&tree);
         {
             let mut st = chrome_a.borrow_mut();
             st.overlays.ws_settings = true;
@@ -360,7 +360,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
 
         // Post-migration, Members must ignore `editing_workspace_name` entirely,
         // so this render's fill count must match `fills_a` exactly.
-        let (mut host_b, chrome_b) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host_b, chrome_b) = build_settled_workspace_settings_host(&tree);
         {
             let mut st = chrome_b.borrow_mut();
             st.overlays.ws_settings = true;
@@ -389,7 +389,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     {
         let tree = WorkspaceTree::bootstrap_demo();
 
-        let (mut host_a, chrome_a) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host_a, chrome_a) = build_settled_workspace_settings_host(&tree);
         {
             let mut st = chrome_a.borrow_mut();
             st.overlays.ws_settings = true;
@@ -401,7 +401,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
 
         // A leaking General body would re-emit the Name-input rect fill, the
         // editing-mode caret fill, and a thicker stroke.
-        let (mut host_b, chrome_b) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host_b, chrome_b) = build_settled_workspace_settings_host(&tree);
         {
             let mut st = chrome_b.borrow_mut();
             st.overlays.ws_settings = true;
@@ -426,11 +426,47 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     }
 }
 
+#[test]
+fn workspace_settings_invariance_fixture_keeps_its_scene_across_row_transitions() {
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, chrome) = build_settled_workspace_settings_host(&tree);
+    {
+        let mut state = chrome.borrow_mut();
+        state.overlays.ws_settings = true;
+        state.ws_settings_tab = WsTab::Members;
+    }
+    let first = collect_solid_colors(&render_host_to_scene(&mut host));
+    std::thread::sleep(ui::time::Duration::from_millis(2300));
+    let later = collect_solid_colors(&render_host_to_scene(&mut host));
+    assert_eq!(
+        first, later,
+        "the same settled pane must keep its full scene"
+    );
+}
+
+/// Apply real reduced-motion preferences to the embedded apps as well as the
+/// shell. A theme alone is insufficient: `EmbeddedApp` preserves its own a11y
+/// preferences, so Notes' page-tree row transitions could change unrelated fills
+/// between the two pane renders. Warm through the ordinary production draw.
+fn build_settled_workspace_settings_host(
+    tree: &WorkspaceTree,
+) -> (shell::shell::overlay_host::ShellOverlayHost, Chrome) {
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
+    host.set_motion_reduced(true);
+    let _ = render_host_to_scene(&mut host);
+    (host, chrome)
+}
+
 /// Layout + draw an already-configured `ShellOverlayHost`, sharing plumbing
 /// with `render_with_ws_settings_tab`.
 #[must_use]
-fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
-    let theme = Theme::dark();
+fn render_host_to_scene(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> Scene {
+    // Compare pane content, not the wall-clock sample of its entrance.
+    // The real reduced-motion path opens the same production lens at its
+    // settled geometry before either name-buffer invariant is measured.
+    let theme = Theme::dark().with_reduce_motion(true);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let child = host.build_layout(&mut taffy, &theme, &mut node_map);
@@ -728,7 +764,7 @@ fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
 
         // Assert the theme's own accent — no theme's accent need equal the
         // mockup's literal indigo-500.
-        let accent = theme.tokens.colors.accent[5].to_rgba8();
+        let accent = theme.tokens.colors.intent.inverted.to_rgba8();
         let has_accent = contains_color_close(&fills, (accent.r, accent.g, accent.b), 4);
         let has_slate_600_fill = contains_color_close(&fills, (71, 85, 105), 4);
 
@@ -896,7 +932,7 @@ fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
              indigo fills, open={open_indigo_count}, delta={added_indigo}. \
              Audit row `concept-coverage.md:22,132-139`: 'no `bg-white` filled \
              ramp — just `accent[5]` (indigo) bars'. Fix: swap \
-             `colors.accent[5]` for `colors.text_primary` (white in dark theme) \
+             `colors.intent.inverted` for `colors.text_primary` (white in dark theme) \
              in the slider-fill paint call in `draw_quick_settings`."
         );
     }
@@ -1380,11 +1416,21 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         );
 
         let fills = collect_solid_colors(&scene);
-        // Alice cursor color: `#ec4899` (Tailwind pink-500) = (236, 72, 153).
-        // Bob cursor color: `#f97316` (Tailwind orange-500) = (249, 115, 22).
-        // Plan-spec tolerance: ±8 per channel.
-        let has_alice = contains_color_close(&fills, (236, 72, 153), 8);
-        let has_bob = contains_color_close(&fills, (249, 115, 22), 8);
+        // Each peer's cursor colour (`#ec4899` for Alice, `#f97316` for
+        // Bob) is painted as its presence mark: the theme's presence
+        // palette keeps the hue and normalises lightness and chroma.
+        // Tolerance: ±8 per channel.
+        let presence_mark = |r, g, b| {
+            let rgba = theme
+                .tokens
+                .colors
+                .presence
+                .of(Color::from_rgb8(r, g, b))
+                .to_rgba8();
+            (rgba.r, rgba.g, rgba.b)
+        };
+        let has_alice = contains_color_close(&fills, presence_mark(0xec, 0x48, 0x99), 8);
+        let has_bob = contains_color_close(&fills, presence_mark(0xf9, 0x73, 0x16), 8);
         assert!(
             has_alice && has_bob,
             "TopBar right cluster must paint both peers in their own colour \
@@ -1749,20 +1795,21 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
         let fills = collect_solid_colors(&scene);
-        // Each chip uses its own cursor hue via `ui::presence::user_color`
-        // (alice=pink-500, bob=orange-500, charlie=emerald-500).
-        assert!(
-            contains_color_close(&fills, (236, 72, 153), 8),
-            "cluster must paint alice's pink chip through the shared avatar; fills: {fills:?}",
-        );
-        assert!(
-            contains_color_close(&fills, (249, 115, 22), 8),
-            "cluster must paint bob's orange chip through the shared avatar; fills: {fills:?}",
-        );
-        assert!(
-            contains_color_close(&fills, (16, 185, 129), 8),
-            "cluster must paint charlie's emerald chip through the shared avatar; fills: {fills:?}",
-        );
+        // Each chip wears its own identity hue (`ui::presence::user_color`),
+        // painted through the theme's presence palette: one lightness and
+        // chroma for everybody.
+        for who in ["alice", "bob", "charlie"] {
+            let c = theme
+                .tokens
+                .colors
+                .presence
+                .of_rgb(ui::presence::user_color(who))
+                .to_rgba8();
+            assert!(
+                contains_color_close(&fills, (c.r, c.g, c.b), 8),
+                "cluster must paint {who}'s chip through the shared avatar; fills: {fills:?}",
+            );
+        }
         assert!(
             !scene.encoding().resources.glyph_runs.is_empty(),
             "cluster must paint initials and the overflow label as glyph runs",

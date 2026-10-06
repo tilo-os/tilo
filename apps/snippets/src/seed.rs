@@ -56,7 +56,7 @@ fn ops_snippets() -> Vec<Snippet> {
             language: Language::Shell,
             folder: "Ops",
             tags: &["k8s", "deploy"],
-            description: "Roll a Kubernetes deployment in the given namespace.",
+            description: "Roll a Kubernetes deployment in a namespace.",
             body: "kubectl -n ${namespace} rollout restart deployment/${deployment}\n\
              kubectl -n ${namespace} rollout status deployment/${deployment} --timeout=120s",
             favorite: true,
@@ -94,7 +94,7 @@ fn git_snippets() -> Vec<Snippet> {
             language: Language::Git,
             folder: "Git",
             tags: &["commit", "fixup"],
-            description: "Reword the most recent commit without changing its contents.",
+            description: "Reword the last commit, keeping its changes.",
             body: "git commit --amend -m \"${message}\"",
             favorite: true,
             uses: 21,
@@ -115,7 +115,7 @@ fn git_snippets() -> Vec<Snippet> {
             language: Language::Git,
             folder: "Git",
             tags: &["reset", "danger"],
-            description: "Discard all local changes and match the upstream branch exactly.",
+            description: "Drop local changes and match the upstream.",
             body: "git reset --hard origin/${branch}\n\
              git clean -fd",
             favorite: false,
@@ -203,7 +203,7 @@ fn container_snippets() -> Vec<Snippet> {
             language: Language::Dockerfile,
             folder: "Containers",
             tags: &["docker", "rust"],
-            description: "Cargo build in a builder image, copy the binary into a slim runtime.",
+            description: "Build in a Rust image, ship a slim runtime.",
             body: "FROM rust:1 AS builder\n\
              WORKDIR /app\n\
              COPY . .\n\
@@ -220,7 +220,7 @@ fn container_snippets() -> Vec<Snippet> {
             language: Language::Yaml,
             folder: "Containers",
             tags: &["docker", "compose"],
-            description: "A service definition with a healthcheck and a named volume.",
+            description: "A service with a healthcheck and a volume.",
             body: "services:\n\
              \x20 ${name}:\n\
              \x20   image: ${image}\n\

@@ -620,7 +620,18 @@ impl Workspace {
     /// on their membership capability, so "in the room" and "allowed
     /// to do something" can't drift apart. `None` means not a member.
     pub fn role_of_at(&self, user: &UserId, now: u64) -> Option<CapRole> {
-        if self.owner.as_deref() == Some(user.as_str()) {
+        Self::role_for_membership_at(self.owner.as_deref(), &self.capabilities, user, now)
+    }
+
+    /// Evaluate a current accepted membership projection using the same
+    /// policy as the workspace itself. Expiry is sampled at each decision.
+    pub fn role_for_membership_at(
+        owner: Option<&str>,
+        capabilities: &[CapOverride],
+        user: &UserId,
+        now: u64,
+    ) -> Option<CapRole> {
+        if owner == Some(user.as_str()) {
             return Some(CapRole::Owner);
         }
         // A person with a signing key is named by its lowercase hex, so a
@@ -633,7 +644,7 @@ impl Workspace {
         let live_at = Some(now);
         let mut best: Option<Verb> = None;
         let mut blocked = false;
-        for c in &self.capabilities {
+        for c in capabilities {
             if !subject_is_user(c) || !c.is_live_at(live_at) {
                 continue;
             }

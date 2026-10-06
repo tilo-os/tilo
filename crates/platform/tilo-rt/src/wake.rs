@@ -141,6 +141,25 @@ impl WakeScope {
         ))
     }
 
+    /// Drain the owner's coalesced wake flags, including wakes delivered to
+    /// its event sink. An embedded application uses these flags to distinguish
+    /// presentation frames from model changes. Sink delivery and receiver-side
+    /// authorization still run normally. A closed scope returns `None`.
+    pub fn take_pending(&self) -> Option<(bool, bool)> {
+        let mut destination = self
+            .route
+            .destination
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.route.open.load(Ordering::Acquire) {
+            return None;
+        }
+        Some((
+            std::mem::take(&mut destination.pending),
+            std::mem::take(&mut destination.pending_sync),
+        ))
+    }
+
     /// Receiver-side validation remains mandatory after sender-side checks.
     pub fn accepts(&self, event: &WakeEvent) -> bool {
         self.route.open.load(Ordering::Acquire)
@@ -313,13 +332,9 @@ impl WakeHandle {
             if !route.open.load(Ordering::Acquire) {
                 return;
             }
-            if let Some(sink) = &destination.sink {
-                Some(Arc::clone(sink))
-            } else {
-                destination.pending = true;
-                destination.pending_sync |= requires_sync;
-                None
-            }
+            destination.pending = true;
+            destination.pending_sync |= requires_sync;
+            destination.sink.as_ref().map(Arc::clone)
         };
         if let Some(sink) = sink {
             sink(WakeEvent {
@@ -364,6 +379,26 @@ impl<T> Reply<T> {
 mod tests {
     use super::*;
     use std::sync::mpsc::{self, Receiver, TryRecvError};
+
+    #[test]
+    fn a_bound_owner_observes_model_wakes_without_losing_sink_delivery() {
+        let (mut scope, rx) = bound_scope();
+        assert_eq!(scope.take_pending(), Some((false, false)));
+        scope.handle().notify_events();
+        assert!(!rx.recv().unwrap().requires_sync());
+        assert_eq!(scope.take_pending(), Some((true, false)));
+        scope.handle().wake();
+        scope.handle().notify_events();
+        assert!(rx.recv().unwrap().requires_sync());
+        assert!(!rx.recv().unwrap().requires_sync());
+        assert_eq!(scope.take_pending(), Some((true, true)));
+        assert_eq!(scope.take_pending(), Some((false, false)));
+        assert_eq!(scope.take_unbound(), None);
+        scope.close();
+        scope.handle().wake();
+        assert_eq!(scope.take_pending(), None);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
 
     #[test]
     fn wakes_coalesce_before_binding_and_bind_only_once() {

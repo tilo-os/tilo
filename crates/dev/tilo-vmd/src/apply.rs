@@ -116,11 +116,13 @@ pub trait Apply {
     fn start_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     fn stop_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
+    /// Restart a declared component unit only if it is already running.
+    fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     /// Restart a login's desktop in place: ask its `tilo-session` (SIGUSR1)
     /// and wait until the old compositor has exited. The login, its user
     /// manager and its services stay.
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError>;
-    /// `systemctl --user restart <unit>` in `user`'s running user manager.
+    /// Reload the running user manager and try-restart an existing component unit.
     fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError>;
     /// `systemctl is-active` output, e.g. `active`, `inactive`, `failed`.
     fn unit_state(&mut self, unit: &str) -> String;
@@ -272,7 +274,7 @@ pub fn check_scope(
 pub struct Restarts {
     /// System units of changed VM-wide components.
     pub units: Vec<String>,
-    /// User units of changed session components, which a login that keeps
+    /// User units of changed VM or session components, which a login that keeps
     /// its user manager restarts one by one.
     pub user_units: Vec<String>,
 }
@@ -289,14 +291,19 @@ impl Restarts {
     }
 
     fn add(&mut self, info: &ComponentInfo) {
-        let (list, names) = match info.scope {
-            Scope::Vm => (&mut self.units, &info.units),
-            Scope::Session => (&mut self.user_units, &info.user_units),
-            Scope::App => return,
-        };
-        for unit in names {
-            if !list.contains(unit) {
-                list.push(unit.clone());
+        if info.scope == Scope::App {
+            return;
+        }
+        if info.scope == Scope::Vm {
+            for unit in &info.units {
+                if !self.units.contains(unit) {
+                    self.units.push(unit.clone());
+                }
+            }
+        }
+        for unit in &info.user_units {
+            if !self.user_units.contains(unit) {
+                self.user_units.push(unit.clone());
             }
         }
     }
@@ -406,7 +413,7 @@ pub fn activate(
         apply.sysext_refresh()?;
         actions.push(Action::SysextRefresh);
         for unit in &restarts.units {
-            apply.restart_unit(unit)?;
+            apply.try_restart_unit(unit)?;
             actions.push(Action::RestartUnit { unit: unit.clone() });
         }
         return Ok(actions);
@@ -740,6 +747,12 @@ impl Apply for RecordingApply {
         self.units.insert(unit.to_owned(), true);
         Ok(())
     }
+    fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        self.call(format!("try-restart {unit}"));
+        // An inactive or failed service remains stopped. The actual manager
+        // validates installed units; this recorder has no installed-unit DB.
+        Ok(())
+    }
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError> {
         self.call(format!("restart_desktop {}", session.user));
         Ok(())
@@ -954,6 +967,33 @@ mod tests {
     }
 
     #[test]
+    fn component_refresh_does_not_start_inactive_services() {
+        let mut apply = RecordingApply::default();
+        apply.units.insert("fs.service".into(), true);
+        apply.units.insert("tilo-fs-replica.service".into(), false);
+        let mut vm = record("vm", SlotKind::Vm);
+        activate(
+            &mut apply,
+            &mut vm,
+            &Generation::default(),
+            &[PathBuf::from("/layers/fs")],
+            Policy::VmRefresh,
+            &Restarts {
+                units: vec!["fs.service".into(), "tilo-fs-replica.service".into()],
+                ..Restarts::default()
+            },
+            SessionChange::Keep,
+        )
+        .unwrap();
+        assert_eq!(apply.units.get("fs.service"), Some(&true));
+        assert_eq!(
+            apply.units.get("tilo-fs-replica.service"),
+            Some(&false),
+            "updating an executable must not enable an optional replica"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1088,7 +1128,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 apply.calls,
-                ["link_sysext 1", "sysext_refresh", "restart fs.service"]
+                ["link_sysext 1", "sysext_refresh", "try-restart fs.service"]
             );
         }
     }

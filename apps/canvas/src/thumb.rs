@@ -10,7 +10,7 @@ use std::rc::Rc;
 use ui::framework::ResourceSurface;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use ui::vello::peniko::Fill;
 use ui::widget::{AppModel, ModelPath, Widget};
 use ui::{LocalState, PresenceCtx, TextRenderer, Theme};
@@ -120,7 +120,7 @@ impl Widget for Thumb {
         if self.rect.width() < 1.0 || self.art.width <= 0.0 || self.art.height <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.item);
         let frame = RoundedRect::from_rect(self.rect, radius);
         scene.push_layer(
             Fill::NonZero,
@@ -129,7 +129,13 @@ impl Widget for Thumb {
             transform,
             &frame,
         );
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &self.rect,
+        );
         let (art, region, bare) = match &self.framing {
             Some(framing) => {
                 framing(&self.art).unwrap_or_else(|| (Rc::clone(&self.art), Rect::ZERO, false))
@@ -174,29 +180,8 @@ impl Widget for Thumb {
             .target
             .as_ref()
             .is_some_and(|(chosen, id)| chosen.with(|chosen| chosen == id));
-        if ringed {
-            // Outside the picture, so none of it is hidden by the ring.
-            // Two of the chrome's rules: heavy enough to say "this one".
-            let ring = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
-            scene.stroke(
-                &Stroke::new(ring),
-                transform,
-                theme.accent_primary,
-                None,
-                &frame
-                    .rect()
-                    .inflate(ring / 2.0, ring / 2.0)
-                    .to_rounded_rect(radius + ring / 2.0),
-            );
-        } else {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &frame,
-            );
-        }
+        ui::surface::ContentFrame::Thumbnail { selected: ringed }
+            .draw(scene, transform, self.rect, theme);
     }
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
@@ -221,7 +206,13 @@ impl Widget for Thumb {
 fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
     // The checker's square is a step of the theme's spacing.
     let square_side = f64::from(theme.tokens.spacing.s2);
-    scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &area);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &area,
+    );
     let columns = (area.width() / square_side).ceil() as usize;
     let rows = (area.height() / square_side).ceil() as usize;
     for row in 0..rows {
@@ -234,7 +225,13 @@ fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
                 (x + square_side).min(area.x1),
                 (y + square_side).min(area.y1),
             );
-            scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &square);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &square,
+            );
         }
     }
 }

@@ -65,12 +65,41 @@ impl Error {
     }
 }
 
-/// Whether a font ships in the product or only in controlled test fixtures.
+/// Where a font ships.
+///
+/// | Scope | Tilo OS image | SDK standalone catalog | test fixtures |
+/// |---|---|---|---|
+/// | `Product` | yes | yes | yes |
+/// | `Os` | yes | no | yes |
+/// | `Fixture` | no | no | yes |
+///
+/// The standalone catalog is the one the SDK ships next to a third-party
+/// app's Windows, macOS, Android and web builds. It carries only fonts whose
+/// licence lets any app bundle them (OFL, GUST); a font under another
+/// licence, such as New Computer Modern's GPL-licensed Regular cut, is
+/// `Os`. A catalog directory without its `Os` files is a standalone
+/// catalog, and the toolkit sets text in the faces it has.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
     Product,
+    Os,
     Fixture,
+}
+
+impl Scope {
+    /// Whether the SDK's standalone catalog for third-party app builds
+    /// carries fonts of this scope.
+    #[must_use]
+    pub const fn standalone(self) -> bool {
+        matches!(self, Self::Product)
+    }
+
+    /// Whether the Tilo OS image installs fonts of this scope.
+    #[must_use]
+    pub const fn os(self) -> bool {
+        matches!(self, Self::Product | Self::Os)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,9 +128,17 @@ pub struct Asset {
 #[derive(Debug, Deserialize)]
 pub struct Face {
     pub index: u32,
+    /// The family the file itself names.
     pub family: String,
     pub post_script_name: String,
     pub style: String,
+    /// The families Tilo sets this face under, in place of the file's own,
+    /// when that name cannot tell the face apart from its siblings: every
+    /// New Computer Modern file says `NewComputerModern` at weight 400,
+    /// whether it is the Book, Regular or 8 pt cut. Empty keeps the file's
+    /// own family. The file's bytes are never changed.
+    #[serde(default)]
+    pub tilo_families: Vec<String>,
 }
 
 /// The compiled-in manifest, parsed once.

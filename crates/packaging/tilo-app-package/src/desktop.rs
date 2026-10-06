@@ -8,6 +8,45 @@ use crate::id::Kind;
 use crate::manifest::{Entrypoint, EntrypointType, IsaRequirements, Manifest, Target};
 use crate::validate::{ManifestError, validate_manifest};
 
+/// A desktop target links the named toolkit release into its executable;
+/// a Tilo OS app instead needs the declared shared runtime installed.
+#[must_use]
+pub fn runtime_dependency(manifest: &Manifest) -> Option<&str> {
+    if manifest
+        .target
+        .as_ref()
+        .is_some_and(|target| registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str()))
+    {
+        None
+    } else {
+        manifest.package.runtime.as_deref()
+    }
+}
+
+/// Validate the signed target before a native installer or launcher uses
+/// its desktop size/runtime contract. Web and foreign native targets are
+/// artifacts for their own host, never native executables on this one.
+///
+/// # Errors
+///
+/// Returns a schema error or a target incompatible with the native host.
+pub fn validate_native_host(manifest: &Manifest) -> Result<(), ManifestError> {
+    validate_manifest(manifest)?;
+    if let Some(target) = &manifest.target
+        && (target.platform != std::env::consts::OS
+            || target.architecture != std::env::consts::ARCH)
+    {
+        return Err(ManifestError::BadTarget(format!(
+            "{}/{} cannot run on {}/{}",
+            target.platform,
+            target.architecture,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )));
+    }
+    Ok(())
+}
+
 /// The manifest a `platform` (`linux`, `windows`, `macos` or `android`) build
 /// of `authored` is packed with: `module` is the executable's payload path (an
 /// `.apk` or `.aab` for `android`) and `isa` the native feature level it was

@@ -10,6 +10,12 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "notes.effect")]
 pub enum NotesEffect {
+    /// Inspect editor
+    ///
+    /// Read the selected and bound page identities, content-free body hashes,
+    /// editor focus and caret without selecting a note or changing its body.
+    #[effect(view, returns, permission = "read")]
+    InspectEditor,
     /// Back
     ///
     /// Return to the note shown before this one.

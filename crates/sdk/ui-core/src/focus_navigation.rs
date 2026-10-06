@@ -111,6 +111,44 @@ pub(crate) fn order(
     collect_focusable(root, widget, taffy, &mut order);
     (order, false)
 }
+
+/// The same deepest-trap policy through an admitted composition map. History
+/// and component roots add layout nodes that are not Widget children.
+pub(crate) fn mapped_order(
+    root: NodeId,
+    taffy: &TaffyTree<()>,
+    inspect: impl Fn(NodeId) -> (bool, bool, bool),
+) -> (Vec<NodeId>, bool) {
+    fn trap(
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+        inspect: &impl Fn(NodeId) -> (bool, bool, bool),
+    ) -> Option<NodeId> {
+        if inspect(node).2 {
+            return None;
+        }
+        for child in taffy.children(node).unwrap_or_default() {
+            if let Some(found) = trap(child, taffy, inspect) {
+                return Some(found);
+            }
+        }
+        inspect(node).1.then_some(node)
+    }
+    let trapped = trap(root, taffy, &inspect);
+    let mut pending = vec![trapped.unwrap_or(root)];
+    let mut order = Vec::new();
+    while let Some(node) = pending.pop() {
+        let (focusable, _, hidden) = inspect(node);
+        if hidden {
+            continue;
+        }
+        if focusable {
+            order.push(node);
+        }
+        pending.extend(taffy.children(node).unwrap_or_default().into_iter().rev());
+    }
+    (order, trapped.is_some())
+}
 /// None means keep focus; Some(None) means blur all controls.
 #[expect(
     clippy::option_option,

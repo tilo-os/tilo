@@ -12,7 +12,7 @@
 //! [`replay_prefix`] rebuilds the document a position names.
 
 use std::collections::{BinaryHeap, HashMap};
-use tilo_clock::{SystemTime, UNIX_EPOCH};
+use tilo_clock::UNIX_EPOCH;
 
 use automerge::ChangeHash;
 use automerge::transaction::{CommitOptions, Transactable};
@@ -80,8 +80,10 @@ pub fn committed_versions(doc: &Doc) -> Vec<Version> {
         .collect()
 }
 
+/// Now on the toolkit's wall clock, so a capture that pins the clock stamps
+/// its commits at the pinned time like everything else it shows.
 fn unix_now_secs() -> i64 {
-    SystemTime::now()
+    tilo_clock::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0))
 }

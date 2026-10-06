@@ -245,17 +245,24 @@ pub(crate) fn drive_row(drive: &Drive, names: &BTreeMap<String, String>) -> Live
 /// The framework app.
 pub struct DisksShell;
 
-/// Screenshot scenarios: the sample machine, staged.
+/// Screenshot scenarios: the sample machine, staged. A phone-sized capture
+/// stages the same state as its wide twin.
 const SCENARIOS: &[&str] = &[
-    "smart",
+    "health",
     "partitions",
     "partition",
-    "removable",
+    "usb",
+    "failing",
     "named",
-    "status-ok",
-    "status-fail",
-    "narrow",
+    "toast",
+    "toast-error",
     "empty",
+    "narrow",
+    "drawer",
+    "phone",
+    "phone-drawer",
+    "phone-health",
+    "phone-partitions",
 ];
 
 impl ResourceApp for DisksShell {
@@ -269,12 +276,15 @@ impl ResourceApp for DisksShell {
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        // Below the 900px breakpoint the drive list collapses to an overlay.
-        if scenario == Some("narrow") {
-            (640, 800)
-        } else {
-            (1280, 800)
-        }
+        scenario
+            .and_then(|name| match name {
+                "narrow" => Some((800, 600)),
+                // Narrow enough that the drive list collapses into a drawer.
+                "drawer" => Some((640, 600)),
+                _ if name.starts_with("phone") => Some((520, 820)),
+                _ => None,
+            })
+            .unwrap_or((1280, 800))
     }
 
     fn fixture(fixture: &mut Fixture<Disks>) {
@@ -510,37 +520,10 @@ mod tests {
         );
     }
 
-    /// The accessibility node named `name`, depth first.
-    fn announced(node: &serde_json::Value, name: &str) -> Option<serde_json::Value> {
-        if node.get("name").and_then(serde_json::Value::as_str) == Some(name) {
-            return Some(node.clone());
-        }
-        match node {
-            serde_json::Value::Object(fields) => {
-                fields.values().find_map(|child| announced(child, name))
-            }
-            serde_json::Value::Array(items) => {
-                items.iter().find_map(|child| announced(child, name))
-            }
-            _ => None,
-        }
-    }
-
     #[test]
     fn an_action_bar_button_runs_the_operation_its_row_offers() {
         let mut app = TestApp::<SampleDisks>::new().unwrap();
-        let inspection: serde_json::Value =
-            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        let bounds =
-            announced(&inspection, "Benchmark").expect("the Benchmark button")["bounds"].clone();
-        let middle = |low: &str, high: &str| {
-            f64::midpoint(
-                bounds[low].as_f64().unwrap(),
-                bounds[high].as_f64().unwrap(),
-            )
-        };
-        let (x, y) = (middle("x0", "x1"), middle("y0", "y1"));
-        app.harness().click_at(x, y);
+        app.harness().click_named("disks-action-benchmark").unwrap();
         app.settle();
         app.harness().relayout();
         assert!(
@@ -605,12 +588,11 @@ mod tests {
     fn every_scenario_captures_the_sample_machine_without_touching_it() {
         for scenario in std::iter::once(None).chain(SCENARIOS.iter().copied().map(Some)) {
             let mut app = TestApp::<DisksShell>::capture(scenario).unwrap();
-            let inspection = app.harness().inspection_json().unwrap();
-            if scenario == Some("empty") {
-                assert!(!inspection.contains("nvme0n1"), "{scenario:?}");
-            } else {
-                assert!(inspection.contains("nvme0n1"), "{scenario:?}");
-            }
+            let resources = app.harness().resources();
+            let sample = find(&resources, "disk:nvme0n1").is_some();
+            assert_eq!(sample, scenario != Some("empty"), "{scenario:?}");
+            let audit = app.harness().native_app_audit();
+            assert!(audit.is_certified(), "{scenario:?}: {audit:#?}");
         }
         let mut named = TestApp::<DisksShell>::capture(Some("named")).unwrap();
         assert!(
@@ -620,7 +602,7 @@ mod tests {
                 .unwrap()
                 .contains("Workstation")
         );
-        let mut failed = TestApp::<DisksShell>::capture(Some("status-fail")).unwrap();
+        let mut failed = TestApp::<DisksShell>::capture(Some("toast-error")).unwrap();
         assert!(
             failed
                 .harness()

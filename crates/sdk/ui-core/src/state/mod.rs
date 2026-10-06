@@ -555,24 +555,6 @@ impl UndoLog {
         )
     }
 
-    pub(crate) fn record_committed_span_in(
-        &mut self,
-        before: Vec<ChangeHash>,
-        after: Vec<ChangeHash>,
-        metadata: Option<String>,
-        author: UserId,
-        instance: InstanceId,
-    ) -> bool {
-        self.record_committed_span_owned(
-            before,
-            after,
-            None,
-            metadata,
-            Some(author),
-            Some(instance),
-        )
-    }
-
     fn record_committed_span_owned(
         &mut self,
         before: Vec<ChangeHash>,

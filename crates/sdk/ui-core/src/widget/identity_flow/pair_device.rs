@@ -49,7 +49,7 @@ use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
     format_pairing_code,
 };
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 /// The pairing code is exactly six digits, one per input box.
@@ -662,12 +662,7 @@ impl PairDeviceScreen {
         for (cell, rect) in self.cells.iter_mut().zip(resolved.plan.boxes.iter()) {
             place_code_cell(cell, *rect, text_renderer, theme);
         }
-        place_field(
-            &mut self.payload,
-            resolved.plan.payload,
-            text_renderer,
-            theme,
-        );
+        place_field(&mut self.payload, resolved.plan.payload);
         for (slot, rect) in self
             .code_box_rects
             .iter_mut()
@@ -880,57 +875,61 @@ impl Widget for PairDeviceScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: TITLE,
+                max_width: FORM_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.status,
-            &self.status,
-            Role::Body,
-            Align::Start,
-            true,
-        );
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.code_label,
-            CODE_LABEL,
-            Role::Label,
-            Align::Start,
-            false,
-        );
-        self.draw_code_boxes(scene, transform, text_renderer, theme, presence, plan);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.payload_label,
-            PAYLOAD_LABEL,
-            Role::Label,
-            Align::Start,
-            false,
-        );
-        self.payload
-            .draw(scene, transform, text_renderer, theme, presence);
-        if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
             paint_text(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                err,
-                Role::Error,
+                plan.status,
+                &self.status,
+                Role::Body,
                 Align::Start,
                 true,
             );
-        }
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                plan.code_label,
+                CODE_LABEL,
+                Role::Label,
+                Align::Start,
+                false,
+            );
+            self.draw_code_boxes(scene, transform, text_renderer, theme, presence, plan);
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                plan.payload_label,
+                PAYLOAD_LABEL,
+                Role::Label,
+                Align::Start,
+                false,
+            );
+            self.payload
+                .draw(scene, transform, text_renderer, theme, presence);
+            if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    err,
+                    Role::Error,
+                    Align::Start,
+                    true,
+                );
+            }
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {

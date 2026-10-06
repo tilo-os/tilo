@@ -19,6 +19,41 @@ fn page_count(app: &TestApp<NotesShell>) -> usize {
 }
 
 #[test]
+fn numeric_order_notebook_reopens_through_the_saved_application_view() {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let page = PageId::new_v4();
+    let original_body;
+    {
+        let mut app = TestApp::<NotesShell>::open_data_dir(directory.path()).unwrap();
+        app.invoke(
+            Invoke::apply(&new_page_action(page, None, "a".into(), "Existing note")).unwrap(),
+        )
+        .unwrap();
+        let mut peer = app.peer_document();
+        let (_, pages) = peer.get(ROOT, "pages").unwrap().unwrap();
+        let (_, entry) = peer.get(&pages, page.to_string()).unwrap().unwrap();
+        peer.put(&entry, "order", 12_i64).unwrap();
+        original_body = NotesDoc::page_block_snapshots(&peer, page);
+        app.merge_peer(&mut peer).unwrap();
+        app.flush().unwrap();
+    }
+    let mut reopened = TestApp::<NotesShell>::open_data_dir(directory.path()).unwrap();
+    reopened.settle();
+    assert!(reopened.harness().targets().contains_key("block_editor"));
+    reopened.read_document(|doc| {
+        assert_eq!(NotesDoc::list_pages(doc)[0].id, page);
+        assert_eq!(NotesDoc::page_block_snapshots(doc, page), original_body);
+        let (_, pages) = doc.get(ROOT, "pages").unwrap().unwrap();
+        let (_, entry) = doc.get(&pages, page.to_string()).unwrap().unwrap();
+        assert!(matches!(doc.get(&entry, "order").unwrap(),
+            Some((automerge::Value::Scalar(value), _))
+                if value.as_ref() == &automerge::ScalarValue::Int(12)));
+    });
+}
+
+#[test]
 fn the_empty_state_button_creates_a_note() {
     let mut app = fresh();
     assert_eq!(page_count(&app), 0);
@@ -65,21 +100,9 @@ fn activating_new_note_as_assistive_technology_does_opens_a_document() {
 #[test]
 fn the_sidebar_plus_creates_a_root_note() {
     let mut app = fresh();
-    let tree = app.harness().targets()["page_tree"];
-    // The heading's "+" is the sidebar's own "New note" button; the empty
-    // state's button of the same name sits outside the sidebar.
-    let plus = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .filter(|(_, node)| node.label() == Some("New note"))
-        .filter_map(|(_, node)| node.bounds())
-        .find(|bounds| tree.contains(ui::kurbo::Point::new(bounds.x0, bounds.y0)))
-        .expect("the sidebar shows a New note button");
-    let (x, y) = (
-        f64::midpoint(plus.x0, plus.x1),
-        f64::midpoint(plus.y0, plus.y1),
-    );
+    // The heading action is a retained control outside the page tree's body.
+    let plus = app.harness().targets()["new-note"];
+    let (x, y) = (plus.center().x, plus.center().y);
     app.harness().click_at(x, y);
     assert_eq!(page_count(&app), 1, "the sidebar's + creates a page");
     app.harness().click_at(x, y);

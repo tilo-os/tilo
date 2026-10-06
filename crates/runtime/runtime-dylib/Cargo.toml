@@ -40,6 +40,9 @@ comemo = "0.5"
 # their feature-gated paths.
 tilo-callstream = { path = "../../collab/tilo-callstream" }
 rustypipe.workspace = true
+# Music keeps its library and controls in the tapp; native playback belongs
+# beside the other versioned media engines in the shared runtime.
+tilo-spotify = { path = "../../platform/tilo-spotify", features = ["native"] }
 iroh.workspace = true
 # Desktop-owned service implementations are shared runtime code, not app
 # payload. Settings composes all of these control surfaces and would otherwise

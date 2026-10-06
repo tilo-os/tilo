@@ -423,8 +423,8 @@ fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     let mut handled = false;
     let mut focus = None;
     let modifiers = Modifiers::default();
-    let taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy::NodeId::new(0);
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
         device_id: fake_device_id(),
         state: ElementState::Pressed,
@@ -451,8 +451,8 @@ fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     let mut handled = false;
     let mut focus = None;
     let modifiers = Modifiers::default();
-    let taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy::NodeId::new(0);
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
         device_id: fake_device_id(),
         state: ElementState::Released,
@@ -480,8 +480,8 @@ fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y
     let mut handled = false;
     let mut focus = None;
     let modifiers = Modifiers::default();
-    let taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy::NodeId::new(0);
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::CursorMoved {
         device_id: fake_device_id(),
         position: PhysicalPosition::new(x, y),
@@ -518,7 +518,8 @@ fn send_mouse_button_mods(
     };
     let mut handled = false;
     let mut focus = None;
-    let taffy = taffy::TaffyTree::<()>::new();
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
         device_id: fake_device_id(),
         state,
@@ -533,7 +534,7 @@ fn send_mouse_button_mods(
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
-            node_id: taffy::NodeId::new(0),
+            node_id: node,
             taffy: &taffy,
         },
     );
@@ -544,7 +545,8 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
     use winit::event::{Modifiers, WindowEvent};
     let mut handled = false;
     let mut focus = None;
-    let taffy = taffy::TaffyTree::<()>::new();
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     widget.handle_event(
         &WindowEvent::Focused(focused),
         &mut ui::widget::EventCtx {
@@ -554,14 +556,14 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
-            node_id: taffy::NodeId::new(0),
+            node_id: node,
             taffy: &taffy,
         },
     );
 }
 
 fn send_key(
-    widget: &mut TerminalWidget,
+    widget: &mut impl ui::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     ctrl: bool,
@@ -571,7 +573,7 @@ fn send_key(
 }
 
 fn send_key_mods(
-    widget: &mut TerminalWidget,
+    widget: &mut impl ui::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     ctrl: bool,
@@ -594,20 +596,19 @@ fn send_key_mods(
 }
 
 fn send_key_with_modifiers(
-    widget: &mut TerminalWidget,
+    widget: &mut impl ui::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     state: winit::keyboard::ModifiersState,
 ) {
-    use ui::widget::Widget;
     use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{KeyLocation, PhysicalKey};
 
     let modifiers: Modifiers = state.into();
     let mut handled = false;
     let mut focus = None;
-    let taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy::NodeId::new(0);
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
 
     // Construct over a zeroed buffer because winit's `KeyEventExtra`
     // is `pub(crate)` — same trick `ui::widget::modal_dialog`'s tests
@@ -661,8 +662,8 @@ pub(crate) fn send_key_without_text(
     let modifiers = Modifiers::default();
     let mut handled = false;
     let mut focus = None;
-    let taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy::NodeId::new(0);
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = key;
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
@@ -979,6 +980,87 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
     }
 }
 
+/// The session banner stands above the grid and the grid starts under it, at
+/// every text scale.
+#[test]
+fn ended_session_banner_reserves_its_own_band_above_the_grid() {
+    use ui::widget::Widget;
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+
+    let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
+        .expect("spawn short-lived pty command");
+    let doc = AutoCommit::new();
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline && !widget.is_disconnected() {
+        widget.sync(&doc, &ROOT);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(widget.is_disconnected());
+
+    let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
+    let mut text = TextRenderer::new();
+    for scale in [1.0, 2.0] {
+        widget.force_geometry(viewport, 10.0, 20.0);
+        let theme = Theme::dark().with_text_scale(scale);
+        let mut scene = Scene::new();
+        widget.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let banner = widget.banner_test_rect();
+        assert!(banner.width() > 0.0, "an ended session shows its banner");
+        assert!(banner.x0 >= viewport.x0 && banner.x1 <= viewport.x1);
+        assert!(
+            banner.y1 <= widget.grid_rect().y0,
+            "the grid starts under the banner at text scale {scale}"
+        );
+    }
+}
+
+/// Find honours the bar's options: literal by default only in that case counts,
+/// and a whole word is not matched inside a longer one.
+#[test]
+fn find_matches_follow_case_and_whole_word_options() {
+    use ui::widget::{FindOptions, Findable};
+
+    let (mut widget, _) = build_test_widget();
+    widget.force_grid(vec![
+        "Cat cat concat".to_string(),
+        "no match here".to_string(),
+        "CAT".to_string(),
+    ]);
+    let count = |widget: &mut TerminalWidget, options: FindOptions| {
+        Findable::find(widget, "cat", options).len()
+    };
+    assert_eq!(count(&mut widget, FindOptions::default()), 4);
+    assert_eq!(
+        count(
+            &mut widget,
+            FindOptions {
+                match_case: true,
+                ..FindOptions::default()
+            }
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &mut widget,
+            FindOptions {
+                whole_word: true,
+                ..FindOptions::default()
+            }
+        ),
+        3
+    );
+    Findable::clear_find(&mut widget);
+    assert!(widget.find_test_matches().is_empty());
+}
+
 /// The ANSI palette follows theme swaps and never hard-codes colours.
 #[test]
 #[expect(
@@ -1111,14 +1193,15 @@ fn terminal_palette_tracks_the_theme() {
         use ui::theme::Theme;
         let rgb = |c: vello::peniko::Color| (c.r(), c.g(), c.b());
 
-        // Default dark theme: graphite ground, near-white text — never the old
-        // pure-black / green-400 scheme.
+        // Default dark theme: neutral ground, near-white text — never the old
+        // pure-black / green-400 scheme. The grid's default background is the
+        // window ground the framework paints, so a default cell is invisible.
         let dark = Theme::dark();
-        let p = &dark.tokens.terminal_palette;
+        let p = &crate::inner::TerminalWidget::grid_palette(&dark);
         assert_eq!(
             rgb(p.bg_default),
-            rgb(dark.bg_app),
-            "terminal bg is the theme ground"
+            rgb(dark.tokens.colors.surfaces.content),
+            "terminal bg is the window ground"
         );
         assert_eq!(
             rgb(p.fg_default),
@@ -1138,10 +1221,10 @@ fn terminal_palette_tracks_the_theme() {
 
         // Light theme: fg/bg follow that theme's (much lighter) ground.
         let light = Theme::light();
-        let lp = &light.tokens.terminal_palette;
+        let lp = &crate::inner::TerminalWidget::grid_palette(&light);
         assert_eq!(
             rgb(lp.bg_default),
-            rgb(light.bg_app),
+            rgb(light.tokens.colors.surfaces.content),
             "light terminal bg is that theme's ground"
         );
         let (r, g, b) = rgb(lp.bg_default);
@@ -1649,6 +1732,8 @@ fn scrollback_viewport_and_scrollbar_track_output() {
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
 fn find_in_terminal_is_local_discoverable_and_reflows() {
+    use crate::TerminalView;
+
     // Case `find_shortcut_preserves_foreground_control_f_on_every_platform`.
     {
         use ui::{Platform, PlatformConventions};
@@ -1662,22 +1747,18 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                     vec![0x1b, 0x06],
                 ),
             ] {
-                let (mut widget, writes) = build_test_widget();
-                widget.set_platform_conventions(PlatformConventions::new(platform));
+                let (widget, writes) = build_test_widget();
+                let mut view = TerminalView::new(widget);
+                view.set_platform_conventions(PlatformConventions::new(platform));
                 let mut doc = AutoCommit::new();
-                send_key_with_modifiers(
-                    &mut widget,
-                    &mut doc,
-                    Key::Character("f".into()),
-                    modifiers,
-                );
+                send_key_with_modifiers(&mut view, &mut doc, Key::Character("f".into()), modifiers);
                 assert_eq!(
                     drain_writes(&writes),
                     expected,
                     "{platform:?}: shell editing bytes"
                 );
                 assert!(
-                    !widget.find_test_state().0,
+                    !view.find_is_open(),
                     "{platform:?}: shell chord must not open Find"
                 );
             }
@@ -1698,22 +1779,26 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 Platform::Linux,
                 ModifiersState::CONTROL | ModifiersState::SHIFT,
             ),
-            (Platform::MacOs, ModifiersState::SUPER),
+            (
+                Platform::MacOs,
+                ModifiersState::SUPER | ModifiersState::SHIFT,
+            ),
         ] {
-            let (mut widget, writes) = build_test_widget();
-            widget.set_platform_conventions(PlatformConventions::new(platform));
+            let (widget, writes) = build_test_widget();
+            let mut view = TerminalView::new(widget);
+            view.set_platform_conventions(PlatformConventions::new(platform));
             let mut doc = AutoCommit::new();
-            send_key_with_modifiers(&mut widget, &mut doc, Key::Character("F".into()), modifiers);
+            send_key_with_modifiers(&mut view, &mut doc, Key::Character("F".into()), modifiers);
             assert!(
-                widget.find_test_state().0,
-                "{platform:?}: native terminal Find chord"
+                view.find_is_open(),
+                "{platform:?}: the find scope's terminal chord"
             );
             assert!(
                 drain_writes(&writes).is_empty(),
                 "Find must not type into the process"
             );
             send_key(
-                &mut widget,
+                &mut view,
                 &mut doc,
                 Key::Character("query".into()),
                 false,
@@ -1723,21 +1808,24 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 drain_writes(&writes).is_empty(),
                 "private Find query must not reach the process"
             );
+            // A key the query has no use for stays the bar's too.
             send_key(
-                &mut widget,
+                &mut view,
+                &mut doc,
+                Key::Named(NamedKey::ArrowUp),
+                false,
+                false,
+            );
+            assert!(drain_writes(&writes).is_empty());
+            send_key(
+                &mut view,
                 &mut doc,
                 Key::Named(NamedKey::Escape),
                 false,
                 false,
             );
-            assert!(!widget.find_test_state().0);
-            send_key(
-                &mut widget,
-                &mut doc,
-                Key::Character("f".into()),
-                true,
-                false,
-            );
+            assert!(!view.find_is_open());
+            send_key(&mut view, &mut doc, Key::Character("f".into()), true, false);
             assert_eq!(drain_writes(&writes), vec![0x06]);
         }
     }
@@ -1749,11 +1837,15 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        let mut view = TerminalView::new(widget);
         let heads_before = doc.get_heads();
-        let transcript = widget.accessibility().expect("terminal transcript");
+        let transcript = view
+            .terminal()
+            .accessibility()
+            .expect("terminal transcript");
         assert!(transcript.state.context_menu);
         assert!(
-            widget.perform_semantic_action(
+            view.terminal_mut().perform_semantic_action(
                 transcript
                     .action_target
                     .as_deref()
@@ -1763,7 +1855,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 &ROOT,
             )
         );
-        let semantics = widget.accessibility().expect("terminal with menu");
+        let semantics = view.terminal().accessibility().expect("terminal with menu");
         let menu = semantics
             .children
             .iter()
@@ -1779,40 +1871,42 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|item| item.name.as_deref() == Some(find_label.as_str()))
             .expect("Find entry");
-        assert!(widget.perform_semantic_action(
+        assert!(view.terminal_mut().perform_semantic_action(
             find.action_target.as_deref().expect("Find target"),
             &Action::Activate,
             &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
-        assert!(widget.find_test_state().0);
-        let semantics = widget.accessibility().expect("terminal with Find");
-        let query = semantics
-            .children
-            .iter()
-            .flat_map(|child| &child.children)
-            .find(|child| child.role == Role::TextInput)
-            .expect("discoverable query");
-        assert!(widget.perform_semantic_action(
-            query.action_target.as_deref().expect("query target"),
-            &Action::SetValue("private search".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
+        view.sync(&doc, &ROOT);
+        assert!(view.find_is_open());
+        let mut state = State::new();
+        assert!(state.adopt_doc(doc));
+        let mut framed = ui::headless::Framed::new(state, view, (800, 480), ui::Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut framed);
+        let query = harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.role() == ui::accesskit::Role::TextInput)
+            .map(|(id, _)| id)
+            .expect("Find publishes its actual retained text input");
+        harness
+            .perform_a11y_action(query, &Action::SetValue("private search".into()))
+            .expect("the hosted Find query owns its text-edit action");
         assert!(
             drain_writes(&writes).is_empty(),
             "Find never writes shell commands"
         );
+        let (view, state) = ui::headless::Framed::split(&mut framed);
         assert_eq!(
             heads_before,
-            doc.get_heads(),
+            state.doc.get_heads(),
             "Find remains private local view state"
         );
         assert!(
-            !widget.perform_semantic_action(
+            !view.terminal_mut().perform_semantic_action(
                 transcript.action_target.as_deref().unwrap(),
                 &Action::SetValue("unreviewed command".into()),
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &ROOT,
             ),
             "transcript actions still cannot execute arbitrary text"
@@ -1820,12 +1914,29 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         assert!(drain_writes(&writes).is_empty());
     }
 
-    // Case `find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text`.
+    // Case `fresh_output_tells_an_open_find_bar_to_find_again`.
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
-        use vello::{Scene, kurbo::Affine};
+        use ui::widget::Findable;
 
         let (mut widget, _writes) = build_test_widget();
+        let doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        widget.sync(&doc, &ROOT);
+        let before = Findable::content_revision(&widget);
+        widget.feed(b"build step 020\r\n");
+        widget.sync(&doc, &ROOT);
+        assert_ne!(
+            Findable::content_revision(&widget),
+            before,
+            "output that reached the grid is a new revision for the bar's counter"
+        );
+    }
+
+    // Case `find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text`.
+    {
+        use ui::{Theme, a11y::Action};
+
+        let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
         widget.force_geometry(viewport, 10.0, 20.0);
@@ -1835,13 +1946,14 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 .collect(),
         );
         let heads_before = doc.get_heads();
+        let mut view = TerminalView::new(widget);
 
-        widget.open_find();
-        widget.set_find_query("build step 020");
-        assert!(widget.find_test_state().0);
-        assert_eq!(widget.find_test_state().1, vec![20]);
+        view.open_find();
+        view.set_find_query("build step 020");
+        assert!(view.find_is_open());
+        assert_eq!(view.find_test_matches(), vec![20]);
         assert!(
-            widget.scroll_offset() > 0,
+            view.scroll_offset() > 0,
             "find reveals a distant history row"
         );
         assert_eq!(
@@ -1850,55 +1962,72 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             "find text/matches stay local rather than mutating the collaborative transcript"
         );
 
-        // The actual draw route computes the 200% compact composition: the shared
-        // input owns one row and all three explicit controls remain disjoint.
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
+        // The real layout and draw at 200%: the scope stands its band above
+        // the terminal, inside the viewport, and the grid starts under it.
         let theme = Theme::high_contrast().with_text_scale(2.0);
-        widget.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
+        let mut state = State::new();
+        assert!(state.adopt_doc(doc));
+        let mut framed = ui::headless::Framed::new(state, view, (390, 844), theme);
+        assert!(
+            !ui::headless::Framed::harness(&framed)
+                .scene()
+                .encoding()
+                .is_empty(),
+            "the real large-text host renders the terminal and its find band"
         );
-        let (panel, input, previous, next, close) = widget.find_test_geometry();
-        assert!(panel.x0 >= viewport.x0 && panel.x1 <= viewport.x1);
-        assert!(panel.y0 >= viewport.y0 && panel.y1 <= viewport.y1);
-        for control in [previous, next, close] {
-            assert!(input.intersect(control).area() <= 0.0);
-            assert!(control.width() >= 28.0 && control.height() >= 28.0);
-        }
+        let view = &framed;
+        let band = view.find_band().expect("find band");
+        assert!(band.x0 >= viewport.x0 && band.x1 <= viewport.x1);
+        assert!(band.y0 >= viewport.y0 && band.y1 <= viewport.y1);
+        assert!(band.height() > 0.0);
+        assert!(
+            view.grid_rect().y0 >= band.y1,
+            "the grid starts under the find band"
+        );
+        assert_eq!(
+            view.find_counter(),
+            Some(("build step 020".to_string(), Some((1, 1))))
+        );
 
-        // Assistive activation uses the same local state path and never makes a
-        // blind terminal keystroke. The target includes the shared pane id so
-        // embedded terminals do not collide.
-        let next = widget.find_test_target("next");
-        assert!(ui::widget::Widget::perform_semantic_action(
-            &mut widget,
-            &next,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
-        let query = widget.find_test_target("query");
-        assert!(ui::widget::Widget::perform_semantic_action(
-            &mut widget,
-            &query,
-            &ui::a11y::Action::SetValue("build step 042".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
-        assert_eq!(widget.find_test_state().1, vec![42]);
-        let close = widget.find_test_target("close");
-        assert!(ui::widget::Widget::perform_semantic_action(
-            &mut widget,
-            &close,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
-        assert!(!widget.find_test_state().0);
+        // Assistive activation resolves the exported controls to their real
+        // FindBar owner rather than sending child targets to TerminalView.
+        let control = |harness: &ui::headless::FrameHarness, key: &str| {
+            let label = ui::i18n::I18nManager::lookup_plain(key);
+            harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some(label.as_str()))
+                .map_or_else(
+                    || panic!("missing exported Find control {label}"),
+                    |(id, _)| id,
+                )
+        };
+        let harness = ui::headless::Framed::harness_mut(&mut framed);
+        let next = control(harness, "find-bar-next");
+        harness
+            .perform_a11y_action(next, &Action::Activate)
+            .expect("the exported next-match control enters the real find scope");
+        let query = control(harness, "find-bar-placeholder");
+        harness
+            .perform_a11y_action(query, &Action::SetValue("build step 042".into()))
+            .expect("the exported query edits local Find state");
+        assert_eq!(framed.find_test_matches(), vec![42]);
+        let harness = ui::headless::Framed::harness_mut(&mut framed);
+        let close = control(harness, "find-bar-close");
+        harness
+            .perform_a11y_action(close, &Action::Activate)
+            .expect("the exported close control closes the real find scope");
+        assert!(!framed.find_is_open());
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "Find never writes to the PTY"
+        );
+        let (_, state) = ui::headless::Framed::split(&mut framed);
+        assert_eq!(
+            state.doc.get_heads(),
+            heads_before,
+            "hosted Find actions leave the collaborative transcript unchanged"
+        );
     }
 }
 
@@ -1981,7 +2110,10 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
                 false,
                 false,
             );
-            assert!(widget.find_test_state().0);
+            assert!(
+                widget.take_find_request(),
+                "the Find row asks the hosting find scope for its bar"
+            );
             assert!(
                 ui::widget::controls::take_control_invocation(&mut widget).is_none(),
                 "Find is local presentation"
@@ -2593,7 +2725,8 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         w.set_focus(true);
         let mut handled = false;
         let mut focus = None;
-        let taffy = taffy::TaffyTree::<()>::new();
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         w.handle_event(
             &WindowEvent::Ime(winit::event::Ime::Commit("漢字".into())),
             &mut ui::widget::EventCtx {
@@ -2603,7 +2736,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
-                node_id: taffy::NodeId::new(0),
+                node_id: node,
                 taffy: &taffy,
             },
         );
@@ -3528,8 +3661,8 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
         state |= ModifiersState::SHIFT;
     }
     let modifiers: Modifiers = state.into();
-    let taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy::NodeId::new(0);
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
         device_id: fake_device_id(),
         state: ElementState::Pressed,
@@ -3557,8 +3690,8 @@ fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     let mut handled = false;
     let mut focus = None;
     let modifiers = Modifiers::default();
-    let taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy::NodeId::new(0);
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
         device_id: fake_device_id(),
         state: ElementState::Pressed,
@@ -3756,8 +3889,8 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         // back whether it was `handled` (the App's incremental-redraw gate only
         // repaints a pointer move when the widget reports it, so a drag that
         // isn't handled would leave the highlight invisible until the next tick).
-        let taffy = taffy::TaffyTree::<()>::new();
-        let node = taffy::NodeId::new(0);
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         let modifiers = Modifiers::default();
         let mut handled = false;
         let mut focus = None;
@@ -4491,4 +4624,50 @@ fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
         "row 1: {:?}",
         w.grid_row(1)
     );
+}
+
+#[test]
+fn the_cursor_is_an_opaque_inverted_cell() {
+    let palette = ui::tokens::TerminalPalette::dark();
+    let cursor = crate::inner::cursor_from_palette(&palette);
+    assert!(
+        (cursor.components[3] - 1.0).abs() < f32::EPSILON,
+        "the block cursor is fully opaque, not a translucent wash"
+    );
+    assert_eq!(
+        cursor.components[..3],
+        palette.fg_default.components[..3],
+        "the cursor is the default foreground"
+    );
+}
+
+#[test]
+fn cell_fills_snap_to_device_pixels_and_adjacent_cells_tile() {
+    use crate::inner::snap_to_device_pixels;
+    use vello::kurbo::Affine;
+
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        let transform = Affine::scale(scale);
+        // Fractional advances and an offset, as in a real grid.
+        let (char_w, x0) = (8.43, 12.0);
+        for cell in 0..40 {
+            let left = x0 + f64::from(cell) * char_w;
+            let a = snap_to_device_pixels(transform, Rect::new(left, 20.0, left + char_w, 40.0));
+            let b = snap_to_device_pixels(
+                transform,
+                Rect::new(left + char_w, 20.0, left + 2.0 * char_w, 40.0),
+            );
+            for edge in [a.x0, a.x1, a.y0, a.y1] {
+                let device = edge * scale;
+                assert!(
+                    (device - device.round()).abs() < 1e-9,
+                    "edge {edge} at scale {scale} is not on a device pixel"
+                );
+            }
+            assert!(
+                (a.x1 - b.x0).abs() < 1e-9,
+                "neighbouring cells meet without a seam or overlap"
+            );
+        }
+    }
 }

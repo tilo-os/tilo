@@ -76,23 +76,6 @@ fn draw_frame_content(
     // Everything from here on paints outside the widgets' layout boxes, where
     // their damage cannot describe it.
     let layer_start = scene.encoding().draw_tags.len();
-    // Widgets whose visual extent escapes their layout box (an open
-    // `Dropdown`, a popover) composite above every later-drawn sibling here.
-    // No-op by default.
-    if app
-        .history
-        .as_ref()
-        .is_none_or(|history| history.live_visible())
-        && app.history_layout.is_none_or(|layout| layout.app_visible)
-    {
-        app.root_widget.draw_overlay(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
-    }
     // The overlay pass sees the whole window too: what escapes a scrolled
     // list's box (a menu opened in it) may go anywhere in the window.
     app.presence_ctx.pop_viewport(prev_vp);
@@ -120,8 +103,17 @@ fn draw_frame_content(
             app.layout.layout_dirty = true;
         }
     }
-    if let Some(dialog) = app.close_admission.dialog.as_mut() {
-        dialog.draw(
+    // The window's top layer, after the app and the window's own chrome:
+    // open menus, popovers and modals composite above everything drawn so
+    // far, so a modal's scrim covers the History bar and every region. The
+    // window stays the presence viewport: a modal covers all of it.
+    if app
+        .history
+        .as_ref()
+        .is_none_or(|history| history.live_visible())
+        && app.history_layout.is_none_or(|layout| layout.app_visible)
+    {
+        app.root_widget.draw_overlay(
             scene,
             transform,
             &mut app.text_renderer,
@@ -129,6 +121,34 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
+    if let Some(history) = &mut app.history {
+        history.draw_overlay(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
+    if app.history_chrome_enabled {
+        app.document_history.draw_overlay(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
+    if let Some(dialog) = app.close_admission.dialog.as_mut() {
+        dialog.draw_overlay(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
+    app.presence_ctx.pop_viewport(prev_vp);
     if let Some(ap) = app
         .actions
         .action_palette
@@ -416,6 +436,7 @@ fn run_layout_pass(
         app.update_focusable_order();
     }
     app.restore_history_focus();
+    app.restore_ordinary_palette_focus();
     if app
         .focused_node
         .is_some_and(|node| !app.focusable_order.contains(&node))
@@ -516,6 +537,10 @@ mod fullscreen_tests;
 #[cfg(test)]
 #[path = "action_palette_tests.rs"]
 mod action_palette_tests;
+
+#[cfg(test)]
+#[path = "search_open_tests.rs"]
+mod search_open_tests;
 
 // See `crate::view` for the (de)serialize-as-a-whole design this implements.
 impl crate::view::FreezeThaw for App {

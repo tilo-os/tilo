@@ -9,6 +9,9 @@
 //! CRDT so collaboration and undo come for free.
 
 use std::collections::{HashMap, HashSet};
+use ui::chrome::{NavCount, NavRowFace};
+use ui::icons::Icon;
+use ui::tokens::TextRole;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
@@ -16,8 +19,8 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ChangeHash};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill, ImageData as PenikoImage};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{BlendMode, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -33,17 +36,20 @@ use ui::portal::{
 
 use ui::chrome::SelectionState;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::surface::Region;
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::tooltip::Tooltip;
 use ui::widget::{
-    Avatar, ContextMenu as SharedContextMenu, MenuItem, SegmentedFace, SegmentedStyle,
-    SmallContentAlign, TextInput, ToggleGroup, ViewportState,
+    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ColorSwatch,
+    ColorSwatchPicker, ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
+    DEFAULT_PAN_STEP as KEY_SCROLL_STEP, EmptyState, EmptyStateContent, ListRowFace, MenuItem,
+    PAN_SLOP, RowAction, RowLeading, Segment, SegmentedFace, SegmentedStyle, SmallContentAlign,
+    TextInput, ToggleGroup, ViewportState,
 };
 
-use crate::chrome::{self as chrome, rhythm};
 use crate::doc::{PagePlanEntry, PdfDoc};
 use crate::model::{
     self, AnnoKind, Annotation, Comment, Document, MARGIN, Match, PAGE_H, PAGE_W, PtRect,
@@ -59,36 +65,14 @@ use std::sync::Arc;
 use tilo_content::{ContentState, ContentStore};
 use tilo_rich_text::{Draft, FieldOutcome, RichTextSurface, RichTextView, SubmitKey};
 
-const TOOLBAR_H: f64 = 56.0;
-/// Default width of the thumbnail rail; the user can drag-resize it within
-/// [`RAIL_W_MIN`, `RAIL_W_MAX`] and fully collapse it.
-const RAIL_W: f64 = 144.0;
-const RAIL_W_MIN: f64 = 96.0;
-const RAIL_W_MAX: f64 = 280.0;
-/// Width of the invisible drag strip on the rail's right edge.
-const RAIL_GRIP: f64 = 6.0;
-const SIDEBAR_W: f64 = 324.0;
-const SEARCH_H: f64 = 46.0;
-/// One placed-signature row in the sidebar — the panel row metric; rows are a
-/// sibling step apart.
-const SIG_ROW_H: f64 = ui::tokens::metrics::Metrics::BASE.panel_row_height as f64;
-/// Screen-px padding the viewport reserves around the page stack (top / sides
-/// alike). Handed to [`ViewportState::with_padding`] so the shared kernel and
-/// the reader agree on where the content origin sits.
-const VIEW_PAD: f64 = 28.0;
 /// Gap between stacked pages, in **content (page-point) space** — it scales
 /// with zoom, exactly like the page it separates, because the whole stack is a
 /// single [`ViewportState`] content rect.
-const PAGE_GAP: f64 = 22.0;
+const PAGE_GAP: f64 = 22.0; // page points between pages, not UI spacing
 const ZOOM_MIN: f64 = 0.25;
 /// Zoomed pages are drawn from bounded tiles ([`crate::tiles`]), so the
 /// ceiling is about usefulness, not bitmap size.
 const ZOOM_MAX: f64 = 16.0;
-/// A drag shorter than this (in screen px) is treated as a click, not a pan.
-const PAN_SLOP: f64 = 4.0;
-/// Below this window width the rail + sidebar become closed-by-default
-/// overlays drawn over a full-width canvas instead of reserving columns.
-const OVERLAY_BREAKPOINT: f64 = 900.0;
 /// Rasterise pages at this multiple of their on-screen size so they stay
 /// crisp when the compositor scales the surface (and when zooming in a notch).
 const RASTER_SS: f64 = 2.0;
@@ -189,7 +173,6 @@ const MAX_NEW_THUMB_RASTERS_PER_FRAME: usize = 2;
 /// it snaps to text instead of falling back to a free-form rectangle.
 const SNAP_NEAR: f64 = 18.0;
 /// Screen-px a single arrow-key press scrolls the document.
-const KEY_SCROLL_STEP: f64 = 90.0;
 /// The current UTC date as `YYYY-MM-DD`, read from the system clock. This is
 /// the real signing date stamped on a signature the user places at runtime.
 /// The reader's app id, the scope its permissions are decided in.
@@ -204,12 +187,10 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Today's local date as `YYYY-MM-DD`, through the toolkit clock: the
+/// signing date stamped on a signature placed now (pinned in captures).
 fn today_ymd() -> String {
-    use ui::time::UNIX_EPOCH;
-    let secs = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    ymd_from_unix_secs(secs)
+    ui::clock::today().format("%Y-%m-%d").to_string()
 }
 
 /// The UTC date of a Unix time in milliseconds, as `YYYY-MM-DD`.
@@ -314,18 +295,25 @@ struct ContextMenu {
 }
 
 impl ContextMenu {
-    fn delete(target: DeleteTarget, at: Point, viewport: Rect) -> Self {
+    /// A delete menu for `target`, opened against `anchor` (what it acts on,
+    /// on screen) inside `viewport`.
+    fn delete(target: DeleteTarget, anchor: Rect, viewport: Rect) -> Self {
         let mut widget = SharedContextMenu::new();
         widget.push(MenuItem::destructive_selection("Delete").with_icon(ui::icons::Icon::Trash));
-        widget.open_at_clamped([at.x as f32, at.y as f32], viewport);
+        widget.open_anchored(anchor, viewport);
         Self { target, widget }
     }
 }
 
 #[derive(Clone)]
 enum ToolbarHit {
+    /// A press on the bar that does nothing (a disabled control, a gap).
+    Inert,
+    /// The zoom stepper's value, edited in place.
+    ZoomValue,
     Tool(Tool),
-    Swatch(Swatch),
+    /// Open the marker-colour popover from its well.
+    MarkerColour,
     ZoomIn,
     ZoomOut,
     Fit,
@@ -361,12 +349,6 @@ enum SidebarHit {
     SigMode(SigMode),
     /// Clear the drawn signature strokes.
     SigClear,
-}
-
-#[derive(Clone)]
-enum SearchHit {
-    ToggleWholeWord,
-    ToggleCaseSensitive,
 }
 
 /// What the inline text editor is currently writing into. All three write
@@ -545,6 +527,10 @@ pub struct PdfApp {
     /// Screenshot-only: defer opening the annotation menu until after the
     /// initial CRDT sync has populated its target.
     shots_context_menu: bool,
+    shots_panel: Option<SidebarTab>,
+    shots_colours: bool,
+    shots_no_comments: bool,
+    shots_selection: bool,
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
     comments: Vec<Comment>,
@@ -607,6 +593,8 @@ pub struct PdfApp {
     /// Comments and replies as written, one read-only view each, keyed by
     /// [`comment_view_key`]; measured and drawn by the Comments rail.
     comment_views: std::cell::RefCell<HashMap<String, RichTextView>>,
+    /// The rich-text view's line inset, measured at a text scale.
+    rich_inset: std::cell::Cell<Option<(f32, f64)>>,
     /// The signature whose sidebar row is highlighted/selected (so placing a
     /// signature lands the user on the new entry).
     selected_sig: Option<String>,
@@ -641,9 +629,9 @@ pub struct PdfApp {
 
     // Search.
     search_active: bool,
-    /// Local-only find query. The shared editor owns caret, selection,
-    /// clipboard and IME state; matches remain derived view state below.
-    search_input: TextInput,
+    /// The framework find band: the query, its options, the counter and
+    /// previous/next. Matches remain derived view state below.
+    find_bar: ui::widget::FindBar,
     matches: Vec<Match>,
     active_match: usize,
     search_whole_word: bool,
@@ -696,6 +684,16 @@ pub struct PdfApp {
     /// Some(pointer-x-at-press) while dragging the rail's resize grip.
     rail_drag: Option<f64>,
     context_menu: Option<ContextMenu>,
+    /// The marker-colour popover, while it is open over the toolbar.
+    marker_colours: Option<ui::widget::Popover<ColorSwatchPicker>>,
+    /// The window's command row between the pages toggle and the zoom
+    /// cluster: Open and Save, the annotation tools, the marker colour and
+    /// Fit. What does not fit goes to its More menu.
+    toolbar: ui::widget::Toolbar,
+    /// The band the toolbar is laid out in (see `recompute_regions`).
+    toolbar_band: Rect,
+    /// The reader state last carried onto the toolbar (see `sync_toolbar`).
+    toolbar_synced: String,
     created_counter: i64,
     dirty: bool,
     /// Set by `rasterize_visible` when it hit the per-frame new-raster budget
@@ -722,18 +720,19 @@ pub struct PdfApp {
     /// Suppresses timed fades/reveal animation while preserving immediate
     /// state changes for users who request reduced motion.
     reduce_motion: bool,
-    /// Cached from the toolkit theme during layout. Bespoke PDF chrome uses
-    /// this only for surrounding geometry; glyph scaling remains owned by the
-    /// shared renderer.
-    text_scale: f64,
-    /// Distance from either window edge to the first / last toolbar control,
-    /// cached from the theme's `spacing.s3` during layout because
-    /// `toolbar_layout` is pure geometry shared by paint, hit-testing and the
-    /// accessibility tree and has no `Theme` in scope. Symmetric: the right
-    /// edge used to sit at 16 while the left sat at 12.
-    toolbar_inset: f64,
-    /// Nominal type-scale sizes for the renderer (see `TypePx`).
-    type_px: TypePx,
+    /// The theme of the last layout pass. The pure layout helpers shared by
+    /// paint, hit-testing and the accessibility tree read their tokens from
+    /// it, so geometry and paint agree.
+    layout_theme: Theme,
+    /// The zoom stepper's width, measured in the draw pass (see
+    /// `measure_toolbar`).
+    zoom_w: f64,
+    /// The review panel's tab widths as their labels need them, full and
+    /// short, measured with the toolbar (`None` until then).
+    tab_widths: Option<[[f64; 3]; 2]>,
+    /// The toolbar's zoom stepper, and whether it was built enabled.
+    zoom_input: ui::widget::NumberInput,
+    zoom_input_enabled: bool,
     /// The empty state's "Open a PDF…" pill as last painted (see
     /// `empty_open_button_rect`).
     empty_open_button: std::cell::Cell<Rect>,
@@ -783,9 +782,8 @@ pub struct PdfApp {
     bubble_prev: Rect,
     bubble_next: Rect,
 
-    // Sidebar + search content hit-targets, captured during draw.
+    // Sidebar content hit-targets, captured during draw.
     sidebar_hits: Vec<(SidebarHit, Rect)>,
-    search_hits: Vec<(SearchHit, Rect)>,
     /// Screen rect of the active inline editor, captured during draw so a
     /// click inside it keeps focus while a click outside commits.
     edit_rect: Rect,
@@ -985,11 +983,12 @@ impl PdfApp {
     /// still frame shows the (non-overlapping) find bar.
     pub fn arm_shots_search(&mut self) {
         self.search_active = true;
-        self.search_input.set_text("the");
-        self.search_input.set_cursor_pos("the".len());
-        self.search_input.set_focus(true);
-        self.recompute_matches();
-        self.active_match = 2;
+        self.find_bar.set_query("compositor");
+        ui::widget::Widget::set_focus(&mut self.find_bar, true);
+        self.drive_find_bar();
+        self.find_bar.next();
+        self.find_bar.next();
+        self.drive_find_bar();
     }
 
     /// Screenshot-only: open the Signatures panel in Draw mode with a signature
@@ -1003,33 +1002,61 @@ impl PdfApp {
         self.sig_strokes = crate::scenarios::sample_drawn_signature();
     }
 
-    /// Screenshot-only: stage a settled text selection over page 1 (a synthetic
-    /// glyph layer so it needs no PDF engine) so a still frame shows the
-    /// shared selection HUD — highlight swatches + Copy + Note — over the page.
+    /// Screenshot-only: the Signatures panel composing a typed signature.
+    pub fn arm_shots_sign_type(&mut self) {
+        self.show_sidebar = true;
+        self.shots_panel = Some(SidebarTab::Signatures);
+        self.tool = Tool::Sign;
+        self.sig_mode = SigMode::Type;
+    }
+
+    /// Screenshot-only: the review panel open on `tab`.
+    pub fn arm_shots_panel(&mut self, tab: SidebarTab) {
+        self.show_sidebar = true;
+        self.shots_panel = Some(tab);
+    }
+
+    /// Screenshot-only: the Highlight tool armed with its colour popover
+    /// open under the toolbar's colour well.
+    pub fn arm_shots_marker_colours(&mut self) {
+        self.tool = Tool::Highlight;
+        self.shots_colours = true;
+    }
+
+    /// Screenshot-only: the demonstration markup with no comments yet, so
+    /// the Comments tab shows its empty state.
+    pub fn arm_shots_no_comments(&mut self) {
+        self.shots_no_comments = true;
+        self.arm_shots_panel(SidebarTab::Comments);
+    }
+
+    /// Screenshot-only: stage a settled text selection over a word of page
+    /// 1's first paragraph, so a still frame shows the shared selection HUD —
+    /// highlight swatches + Copy + Note — over the page. The glyph layer is
+    /// laid out from the page itself in the first draw (see
+    /// `stage_shots_selection`), so the selection sits on the printed word.
     pub fn arm_shots_selection(&mut self) {
-        let text = "the keeper climbed the iron stair and set the great wick alight";
-        let cols = 30usize;
-        let glyphs: Vec<(char, PtRect)> = text
-            .chars()
-            .enumerate()
-            .map(|(i, c)| {
-                let (row, col) = (i / cols, i % cols);
-                (
-                    c,
-                    PtRect::new(
-                        70.0 + col as f64 * 12.5,
-                        150.0 + row as f64 * 22.0,
-                        10.5,
-                        15.0,
-                    ),
-                )
-            })
-            .collect();
+        self.shots_selection = true;
+        self.show_sidebar = true;
+    }
+
+    /// Lay out the glyphs of page 1's first body line and select one of its
+    /// words, exactly as a double-click would — via the shared word range.
+    fn stage_shots_selection(&mut self, tr: &mut TextRenderer) {
+        self.shots_selection = false;
+        let Some(page) = self.doc.page(1) else {
+            return;
+        };
+        // A word of the closing quote: the selection bar floats over the
+        // paragraph above it, clear of the section heading.
+        let glyphs = render::line_glyphs(tr, page, "collaborative case");
+        let text: String = glyphs.iter().map(|(c, _)| *c).collect();
         let layer = std::sync::Arc::new(PageText::from_glyphs(glyphs));
         self.raster_text.insert(1, layer.clone());
-        // Select a single word ("keeper") exactly as a double-click would — via
-        // the shared word_range — so the still frame shows a word selection + HUD.
-        let idx = text.find("keeper").map_or(6, |b| b + 2);
+        let Some(byte) = text.find("collaborative") else {
+            return;
+        };
+        let idx = text.get(..byte).map_or(0, |prefix| prefix.chars().count()) + 2;
         let (s, e) = layer.word_range(idx);
         self.selection = Some(TextSelection {
             page: 1,
@@ -1039,7 +1066,6 @@ impl PdfApp {
         });
         self.sel_gran = Granularity::Word;
         self.sel_anchor_range = (s, e);
-        self.show_sidebar = true;
     }
 
     /// Screenshot helper: import a distinctive generated image as a new page
@@ -1112,6 +1138,10 @@ impl PdfApp {
             shots_rail_drag: false,
             shots_page_bubble: false,
             shots_context_menu: false,
+            shots_panel: None,
+            shots_colours: false,
+            shots_no_comments: false,
+            shots_selection: false,
             annotations: Vec::new(),
             comments: Vec::new(),
             signatures: Vec::new(),
@@ -1119,7 +1149,7 @@ impl PdfApp {
             fit: FitMode::Page,
             viewport: ViewportState::new()
                 .with_zoom_bounds(ZOOM_MIN, ZOOM_MAX)
-                .with_padding(VIEW_PAD)
+                .with_padding(DEFAULT_PADDING)
                 .with_alignment(SmallContentAlign::Center, SmallContentAlign::Start),
             current_page: 1,
             resource_page_ids: (1..=page_count)
@@ -1138,15 +1168,14 @@ impl PdfApp {
             sidebar_tab: SidebarTab::Comments,
             show_sidebar: true,
             show_rail: true,
-            rail_w: RAIL_W,
-            page_sidebar: PageSidebar::new(PAGE_H / PAGE_W)
-                .with_header("PAGES")
-                .with_add("Import…"),
+            rail_w: f64::from(ui::tokens::Metrics::BASE.sidebar_min_width),
+            page_sidebar: PageSidebar::new(PAGE_H / PAGE_W).with_add("Import…"),
             pages_dirty: false,
             portal_import_rx: None,
             selected_anno: None,
             editing: None,
             comment_views: std::cell::RefCell::new(HashMap::new()),
+            rich_inset: std::cell::Cell::new(None),
             selected_sig: None,
             sidebar_scroll: 0.0,
             sidebar_reveal: None,
@@ -1159,9 +1188,7 @@ impl PdfApp {
             signature_revision: None,
             sig_pad_rect: Rect::ZERO,
             search_active: false,
-            search_input: TextInput::local()
-                .with_plain_chrome()
-                .with_font_size(TypePx::default().base),
+            find_bar: ui::widget::FindBar::new(),
             matches: Vec::new(),
             active_match: 0,
             search_whole_word: false,
@@ -1183,18 +1210,24 @@ impl PdfApp {
             pan: None,
             rail_drag: None,
             context_menu: None,
+            marker_colours: None,
+            toolbar: build_toolbar(),
+            toolbar_band: Rect::ZERO,
+            toolbar_synced: String::new(),
             created_counter: 100,
             dirty: true,
             pending_raster: false,
             pending_visuals: false,
             text_lines: std::collections::HashMap::new(),
-            tooltip: Tooltip::new("").with_delay(Duration::from_millis(350)),
+            tooltip: Tooltip::new(""),
             tooltip_anchor: Rect::ZERO,
             tooltip_pending: false,
             reduce_motion: false,
-            text_scale: 1.0,
-            toolbar_inset: f64::from(ui::tokens::spacing::Spacing::default().s3),
-            type_px: TypePx::default(),
+            layout_theme: Theme::dark(),
+            zoom_w: 0.0,
+            tab_widths: None,
+            zoom_input: zoom_stepper(100.0, false),
+            zoom_input_enabled: false,
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
             portal_rx: None,
             portal_contents_rx: None,
@@ -1213,7 +1246,6 @@ impl PdfApp {
             bubble_prev: Rect::ZERO,
             bubble_next: Rect::ZERO,
             sidebar_hits: Vec::new(),
-            search_hits: Vec::new(),
             edit_rect: Rect::ZERO,
             sel_hud: None,
             marker_drag: None,
@@ -1396,7 +1428,7 @@ impl PdfApp {
     #[cfg(test)]
     pub(crate) fn stage_find_for_test(&mut self, query: &str) {
         self.open_search();
-        self.search_input.set_text(query);
+        self.find_bar.set_query(query);
         self.recompute_matches();
     }
 
@@ -1743,9 +1775,16 @@ impl PdfApp {
 
     // ---- geometry ---------------------------------------------------
 
+    /// The range a person may drag the page rail's width within.
+    fn rail_width_range(&self) -> (f64, f64) {
+        let m = &self.layout_theme.tokens.metrics;
+        (f64::from(m.rail_width), f64::from(m.sidebar_max_width))
+    }
+
     fn rail_width(&self) -> f64 {
         if self.show_rail {
-            self.rail_w.clamp(RAIL_W_MIN, RAIL_W_MAX)
+            let (lo, hi) = self.rail_width_range();
+            self.rail_w.clamp(lo, hi)
         } else {
             0.0
         }
@@ -1764,10 +1803,19 @@ impl PdfApp {
     /// to closed overlays. Only the *transition* forces state, so the user's
     /// explicit toggles within a size class are respected.
     fn reconcile_overlay(&mut self) {
-        let overlay = self.rect.width() < OVERLAY_BREAKPOINT;
+        // The panels dock while the page canvas keeps its minimum width
+        // beside both of them; below that they float over the canvas.
+        let m = &self.layout_theme.tokens.metrics;
+        let docked = (f64::from(m.sidebar_min_width)
+            + f64::from(m.inspector_width)
+            + f64::from(m.content_min_width))
+            * self.layout_theme.responsive_scale();
+        let overlay = self.rect.width() < docked;
         self.overlay_mode = overlay;
         if self.prev_overlay != Some(overlay) {
-            self.show_sidebar = !overlay;
+            // A screenshot that stages the review panel keeps it on screen,
+            // floating over a narrow window.
+            self.show_sidebar = !overlay || self.shots_panel.is_some();
             self.show_rail = !overlay;
             self.prev_overlay = Some(overlay);
         }
@@ -1787,9 +1835,13 @@ impl PdfApp {
         // A docked review rail gets a modest width increase with enlarged
         // type. This preserves real line length and tab labels instead of
         // forcing every comment into a tall, hard-to-scan single word column.
-        let preferred = SIDEBAR_W * (1.0 + 0.25 * (self.text_scale - 1.0));
+        let theme = &self.layout_theme;
+        let m = &theme.tokens.metrics;
+        let preferred = f64::from(m.inspector_width) * theme.responsive_scale();
         if self.overlay_mode {
-            preferred.min((self.rect.width() - 56.0).max(200.0))
+            preferred
+                .min(self.rect.width() - f64::from(m.header_height))
+                .max(f64::from(m.sidebar_min_width))
         } else {
             preferred
         }
@@ -1797,20 +1849,12 @@ impl PdfApp {
 
     fn recompute_regions(&mut self) {
         let r = self.rect;
-        // The toolbar is one row unless the tool cluster has to wrap under the
-        // edge clusters; the layout decides that from the width alone, so lay
-        // a one-row bar out and size the real bar to the rows it asks for.
-        let one_row = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
-        let toolbar_h = TOOLBAR_H * self.toolbar_layout_for(one_row).rows as f64;
+        // The toolbar is always one row: commands that do not fit go to its
+        // More menu.
+        let toolbar_h = f64::from(self.layout_theme.tokens.metrics.header_height);
         self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
-        let mut mid_top = r.y0 + toolbar_h;
-        if self.search_active {
-            let search_h = SEARCH_H * self.text_scale;
-            self.search_rect = Rect::new(r.x0, mid_top, r.x1, mid_top + search_h);
-            mid_top += search_h;
-        } else {
-            self.search_rect = Rect::ZERO;
-        }
+        self.lay_out_toolbar();
+        let mid_top = r.y0 + toolbar_h;
         // No reserved bottom strip: the page-info bubble floats over the canvas
         // (see `draw_page_bubble`), so the content spans to the window bottom.
         let mid_bottom = r.y1;
@@ -1818,12 +1862,22 @@ impl PdfApp {
         let sidebar_w = self.sidebar_width();
         self.rail_rect = Rect::new(r.x0, mid_top, r.x0 + rail_w, mid_bottom);
         self.sidebar_rect = Rect::new(r.x1 - sidebar_w, mid_top, r.x1, mid_bottom);
-        if self.overlay_mode {
+        let (x0, x1) = if self.overlay_mode {
             // Panels float; the canvas spans the whole mid strip beneath them.
-            self.canvas_rect = Rect::new(r.x0, mid_top, r.x1, mid_bottom);
+            (r.x0, r.x1)
         } else {
-            self.canvas_rect = Rect::new(r.x0 + rail_w, mid_top, r.x1 - sidebar_w, mid_bottom);
+            (r.x0 + rail_w, r.x1 - sidebar_w)
+        };
+        // Find is a band at the top of the page canvas.
+        let mut canvas_top = mid_top;
+        if self.search_active {
+            let find_h = self.find_bar.height(&self.layout_theme);
+            self.search_rect = Rect::new(x0, mid_top, x1, mid_top + find_h);
+            canvas_top += find_h;
+        } else {
+            self.search_rect = Rect::ZERO;
         }
+        self.canvas_rect = Rect::new(x0, canvas_top, x1, mid_bottom);
     }
 
     // ---- viewport (zoom + pan) --------------------------------------
@@ -1873,8 +1927,8 @@ impl PdfApp {
     /// page rather than the whole stack.
     fn fit_page_zoom(&self) -> f64 {
         let r = self.viewport.rect();
-        let avail_w = r.width() - 2.0 * VIEW_PAD;
-        let avail_h = r.height() - 2.0 * VIEW_PAD;
+        let avail_w = r.width() - 2.0 * DEFAULT_PADDING;
+        let avail_h = r.height() - 2.0 * DEFAULT_PADDING;
         if self.pw() <= 0.0 || self.ph() <= 0.0 || avail_w <= 0.0 || avail_h <= 0.0 {
             return self.viewport.zoom();
         }
@@ -2488,12 +2542,18 @@ impl PdfApp {
     }
 
     fn query(&self) -> &str {
-        self.search_input.value()
+        self.find_bar.query()
     }
 
     fn recompute_matches(&mut self) {
-        let opts = self.search_options();
         let query = self.query().to_string();
+        self.recompute_matches_for(&query);
+    }
+
+    /// Find `query` in the open document with the current options.
+    fn recompute_matches_for(&mut self, query: &str) {
+        let opts = self.search_options();
+        let query = query.to_string();
         self.active_match = 0;
         #[cfg(test)]
         if let Some(rz) = self.raster.as_mut() {
@@ -2569,23 +2629,25 @@ impl PdfApp {
         }
     }
 
+    /// Step the find bar's current match by `delta` (wrapping), as its
+    /// previous / next buttons do.
     fn step_match(&mut self, delta: isize) {
-        let n = self.match_count();
-        if n == 0 {
-            return;
+        for _ in 0..delta.unsigned_abs() {
+            if delta < 0 {
+                self.find_bar.previous();
+            } else {
+                self.find_bar.next();
+            }
+            self.drive_find_bar();
         }
-        let n = n as isize;
-        let mut idx = self.active_match as isize + delta;
-        idx = ((idx % n) + n) % n;
-        self.active_match = idx as usize;
-        let page = if self.raster_active() {
-            self.raster_matches.get(self.active_match).map(|m| m.page)
-        } else {
-            self.matches.get(self.active_match).map(|m| m.page)
-        };
-        if let Some(page) = page {
-            self.go_to_page(page);
-        }
+    }
+
+    /// Set the find bar's Whole word and Match case options.
+    fn set_find_options(&mut self, whole_word: bool, case_sensitive: bool) {
+        let mut options = self.find_bar.options();
+        options.whole_word = whole_word;
+        options.match_case = case_sensitive;
+        self.find_bar.set_options(options);
     }
 
     /// Restore and navigate a canonical search-result resource.  An ordinal is
@@ -2599,18 +2661,19 @@ impl PdfApp {
         index: usize,
         page: usize,
     ) {
-        self.search_whole_word = whole_word;
-        self.search_case_sensitive = case_sensitive;
         self.open_search();
-        self.search_input.set_text(query);
-        self.recompute_matches();
+        self.set_find_options(whole_word, case_sensitive);
+        self.find_bar.set_query(query);
+        self.drive_find_bar();
         let matched_page = if self.raster_active() {
             self.raster_matches.get(index).map(|hit| hit.page)
         } else {
             self.matches.get(index).map(|hit| hit.page)
         };
         if matched_page == Some(page) {
-            self.active_match = index;
+            // Step the bar to the result so its counter and the emphasised
+            // match agree.
+            self.step_match(isize::try_from(index).unwrap_or(0));
             self.go_to_page(page);
         } else {
             // A progressive worker may not have extracted this page yet, or a
@@ -2620,20 +2683,6 @@ impl PdfApp {
             self.status_note = Some("Find result is no longer available".into());
         }
         self.dirty = true;
-    }
-
-    fn matched_blocks_for(&self, page: usize) -> (HashSet<usize>, Option<usize>) {
-        let mut set = HashSet::new();
-        let mut active = None;
-        for (i, m) in self.matches.iter().enumerate() {
-            if m.page == page {
-                set.insert(m.block);
-                if i == self.active_match {
-                    active = Some(m.block);
-                }
-            }
-        }
-        (set, active)
     }
 
     // ---- text selection (raster backend) ----------------------------
@@ -3196,9 +3245,9 @@ impl PdfApp {
             if v_gap > SNAP_NEAR {
                 continue;
             }
-            // Horizontal overlap with the line's glyph extent.
-            let x0 = drag.x.max(lr.x0);
-            let x1 = drag_right.min(lr.x1);
+            // Horizontal overlap with the line's glyph extent, widened to
+            // the words the drag touches so a marker never cuts a word.
+            let (x0, x1) = line.snap_to_words(drag.x.max(lr.x0), drag_right.min(lr.x1));
             // Near-horizontal proximity still counts so a slightly-off drag
             // snaps to the whole line rather than dropping it.
             let h_overlap = x1 - x0;
@@ -3329,7 +3378,7 @@ impl PdfApp {
                     ),
                 _ => tilo_rich_text::plain_blocks(initial),
             };
-            let field = self.comment_field(&blocks, matches!(target, EditTarget::Reply(_)));
+            let field = Self::comment_field(&blocks, matches!(target, EditTarget::Reply(_)));
             self.editing = Some(Editing {
                 target,
                 input: EditInput::Rich(Box::new(field)),
@@ -3337,26 +3386,11 @@ impl PdfApp {
             self.dirty = true;
             return;
         }
-        // The same type-scale steps the sidebar measures and paints these
-        // texts at, so the editor's glyphs are the glyphs it replaces.
-        let size = match &target {
-            EditTarget::CommentBody(_) | EditTarget::Reply(_) => self.type_px.sm,
-            EditTarget::Signer | EditTarget::FormField(_) => self.type_px.base,
-            // Typed at the size the box shows it at.
-            EditTarget::FreeText(id) => self
-                .annotations
-                .iter()
-                .find(|a| &a.id == id)
-                .and_then(|a| match &a.kind {
-                    AnnoKind::FreeText { size, .. } => Some((*size * self.zoom()) as f32),
-                    _ => None,
-                })
-                .unwrap_or(self.type_px.base),
-        };
+        // Typed in the body role the panel sets these texts in.
         let mut input = TextInput::local()
             .multiline(true)
             .with_enter_submits(true)
-            .with_font_size(size);
+            .with_text_role(ui::TextRole::Body);
         input.set_plain_chrome(true);
         input.set_text(initial);
         input.set_cursor_pos(initial.len());
@@ -3370,7 +3404,7 @@ impl PdfApp {
 
     /// A comment or reply field holding `blocks`, focused at its end: Enter
     /// sends, Shift+Enter breaks the line.
-    fn comment_field(&self, blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
+    fn comment_field(blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
         let hint = if reply {
             "Reply…"
         } else {
@@ -3381,7 +3415,7 @@ impl PdfApp {
                 ui::widget::BlockEditor::new()
                     .with_wrap_lines(true)
                     .with_compact_paragraph_spacing(true)
-                    .with_body_size(self.type_px.sm),
+                    .with_block_handles(false),
             )
             .with_placeholder(hint)
             .with_submit(SubmitKey::Enter);
@@ -4140,6 +4174,14 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    /// Pin the zoom to `zoom` (a committed value from the zoom stepper).
+    fn set_custom_zoom(&mut self, zoom: f64) {
+        let current = self.viewport.zoom();
+        if current > 0.0 {
+            self.zoom_by(zoom.clamp(ZOOM_MIN, ZOOM_MAX) / current);
+        }
+    }
+
     /// Zoom by `factor` while holding the document point under `focal`
     /// (a screen-space point) stationary, so Ctrl+wheel zooms toward the
     /// cursor and the content under it doesn't drift. The focal-tracking math
@@ -4550,7 +4592,7 @@ impl PdfApp {
                 self.editing = None;
                 self.selection = None;
                 self.close_search();
-                self.search_input.set_text("");
+                self.find_bar = ui::widget::FindBar::new();
                 self.matches.clear();
                 self.raster_matches.clear();
                 self.raster_text.clear();
@@ -4648,7 +4690,7 @@ impl PdfApp {
                     self.editing = None;
                     self.selection = None;
                     self.close_search();
-                    self.search_input.set_text("");
+                    self.find_bar = ui::widget::FindBar::new();
                     self.matches.clear();
                     self.raster_matches.clear();
                     self.raster_text.clear();
@@ -4769,7 +4811,9 @@ impl PdfApp {
                     let text = self.text_for_card(request.page + 1, text);
                     self.raster_text.insert(request.page + 1, text);
                     if self.search_active {
-                        self.recompute_matches();
+                        // The bar finds again over the grown text, so the
+                        // counter and the matches move together.
+                        self.drive_find_bar();
                     }
                     self.dirty = true;
                 }
@@ -5069,11 +5113,7 @@ impl Widget for PdfApp {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.text_scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
-        self.toolbar_inset = f64::from(theme.tokens.spacing.s3);
-        self.type_px = TypePx::from_theme(theme);
-        // The find field types at the size its placeholder is painted at.
-        self.search_input.set_font_size(self.type_px.base);
+        self.layout_theme = theme.clone();
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -5170,15 +5210,47 @@ impl Widget for PdfApp {
     }
 
     fn traps_focus(&self) -> bool {
-        self.context_menu
-            .as_ref()
-            .is_some_and(|menu| menu.widget.traps_focus())
+        self.toolbar.shown_menu().is_some()
+            || self
+                .marker_colours
+                .as_ref()
+                .is_some_and(Widget::traps_focus)
+            || self
+                .context_menu
+                .as_ref()
+                .is_some_and(|menu| menu.widget.traps_focus())
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.context_menu
-            .as_ref()
-            .and_then(|menu| menu.widget.modal_capture())
+        self.toolbar
+            .modal_capture()
+            .or_else(|| self.marker_colours.as_ref().and_then(Widget::modal_capture))
+            .or_else(|| {
+                self.context_menu
+                    .as_ref()
+                    .and_then(|menu| menu.widget.modal_capture())
+            })
+    }
+
+    /// The marker-colour popover and the context menu float in the top
+    /// layer, above the pages and the panels.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.toolbar
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+        if let Some(popover) = self.marker_colours.as_mut() {
+            popover.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if let Some(menu) = self.context_menu.as_mut() {
+            menu.widget
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
     }
 
     /// The reader paints its document chrome and pages directly, so expose the
@@ -5257,6 +5329,15 @@ impl Widget for PdfApp {
                 .with_bounds(layout.toggle_sidebar)
                 .with_state(focusable().checked(self.show_sidebar)),
         ];
+        // Commands that went to the More menu keep their nodes (zero bounds)
+        // and actions; the More button, and its menu while open, come from
+        // the toolbar itself.
+        if let Some(bar) = ui::widget::Widget::accessibility(&self.toolbar) {
+            controls.extend(bar.children.into_iter().filter(|child| {
+                child.role == Role::Menu
+                    || child.action_target.as_deref() == Some("toolbar.overflow")
+            }));
+        }
         controls.extend(layout.tools.iter().map(|(tool, bounds)| {
             AccessNode::new(Role::ToggleButton)
                 .with_name(tool.label())
@@ -5265,13 +5346,31 @@ impl Widget for PdfApp {
                 .with_bounds(*bounds)
                 .with_state(focusable().checked(self.tool == *tool))
         }));
-        controls.extend(layout.swatches.iter().map(|(swatch, bounds)| {
-            AccessNode::new(Role::RadioButton)
-                .with_name(format!("{} annotation colour", swatch_label(*swatch)))
-                .with_action_target(format!("pdf.swatch:{}", swatch.key()))
-                .with_bounds(*bounds)
-                .with_state(focusable().checked(self.swatch == *swatch))
-        }));
+        // The marker colours are a radio group behind the well: each colour
+        // is chosen directly, whether or not the popover is showing.
+        if let Some(well) = layout.colour {
+            controls.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Marker colour")
+                    .with_hashed_key("pdf.marker-colour")
+                    .with_bounds(well)
+                    .with_children(
+                        Swatch::ALL
+                            .iter()
+                            .map(|swatch| {
+                                AccessNode::new(Role::RadioButton)
+                                    .with_name(format!(
+                                        "{} annotation colour",
+                                        swatch_label(*swatch)
+                                    ))
+                                    .with_action_target(format!("pdf.swatch:{}", swatch.key()))
+                                    .with_bounds(well)
+                                    .with_state(focusable().checked(self.swatch == *swatch))
+                            })
+                            .collect(),
+                    ),
+            );
+        }
 
         let page_nodes = self
             .page_sidebar
@@ -5333,24 +5432,24 @@ impl Widget for PdfApp {
                         .with_state(focusable().selected(index == self.active_match))
                 })
                 .collect();
+            let mut find = vec![
+                AccessNode::new(Role::TextInput)
+                    .with_name("Find in document")
+                    .with_value(self.query())
+                    .with_action_target("pdf.search.input")
+                    .with_bounds(self.search_rect)
+                    .with_state(
+                        focusable().focused(ui::widget::Widget::is_focused(&self.find_bar)),
+                    ),
+            ];
+            find.extend(ui::widget::Widget::accessibility(&self.find_bar));
             content_children.push(
                 AccessNode::new(Role::Group)
                     .with_name("Find in document")
                     .with_children(vec![
-                        AccessNode::new(Role::TextInput)
-                            .with_name("Search PDF")
-                            .with_value(self.query())
-                            .with_action_target("pdf.search.input")
-                            .with_bounds(self.search_input.get_rect())
-                            .with_state(focusable().focused(self.search_input.is_focused())),
-                        AccessNode::new(Role::ToggleButton)
-                            .with_name("Whole words")
-                            .with_action_target("pdf.search.whole-word")
-                            .with_state(focusable().checked(self.search_whole_word)),
-                        AccessNode::new(Role::ToggleButton)
-                            .with_name("Match case")
-                            .with_action_target("pdf.search.case-sensitive")
-                            .with_state(focusable().checked(self.search_case_sensitive)),
+                        AccessNode::new(Role::Group)
+                            .with_name("Find")
+                            .with_children(find),
                         AccessNode::new(Role::StaticText)
                             .with_name(format!("{count} matches"))
                             .with_hashed_key("pdf.search.count")
@@ -5562,14 +5661,35 @@ impl Widget for PdfApp {
             }
             return handled;
         }
+        if target.starts_with("toolbar.") {
+            let handled = ui::widget::Widget::perform_semantic_action(
+                &mut self.toolbar,
+                target,
+                action,
+                state,
+                path,
+            );
+            self.drain_toolbar();
+            return handled;
+        }
+        if target.starts_with("find-") {
+            let handled = ui::widget::Widget::perform_semantic_action(
+                &mut self.find_bar,
+                target,
+                action,
+                state,
+                path,
+            );
+            self.drive_find_bar();
+            return handled;
+        }
         if target == "pdf.search.input" {
             match action {
                 A11yAction::Activate | A11yAction::Focus => self.open_search(),
                 A11yAction::SetValue(value) => {
                     self.open_search();
-                    self.search_input.set_text(value);
-                    self.search_input.set_cursor_pos(value.len());
-                    self.recompute_matches();
+                    self.find_bar.set_query(value);
+                    self.drive_find_bar();
                 }
                 _ => return false,
             }
@@ -5759,15 +5879,22 @@ impl Widget for PdfApp {
                 self.open_search();
                 return true;
             }
-            "pdf.search.whole-word" => {
-                self.search_whole_word = !self.search_whole_word;
-                self.recompute_matches();
-                return true;
-            }
-            "pdf.search.case-sensitive" => {
-                self.search_case_sensitive = !self.search_case_sensitive;
-                self.recompute_matches();
-                return true;
+            "pdf.search.whole-word" | "pdf.search.case-sensitive" => {
+                let part = if target == "pdf.search.whole-word" {
+                    "find-WholeWord"
+                } else {
+                    "find-MatchCase"
+                };
+                self.open_search();
+                let toggled = ui::widget::Widget::perform_semantic_action(
+                    &mut self.find_bar,
+                    part,
+                    &A11yAction::Activate,
+                    state,
+                    path,
+                );
+                self.drive_find_bar();
+                return toggled;
             }
             "pdf.fit" => {
                 if self.fit == FitMode::Width {
@@ -5804,9 +5931,16 @@ impl Widget for PdfApp {
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.search_active
-            && let Some(cursor) = self.search_input.cursor_shape(point)
+            && self.search_rect.contains(point)
+            && let Some(cursor) = ui::widget::Widget::cursor_shape(&self.find_bar, point)
         {
             return Some(cursor);
+        }
+        if self.zoom_rect_contains(point) {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
+        if self.on_rail_grip(point) {
+            return Some(winit::window::CursorIcon::ColResize);
         }
         self.link_under(point)
             .map(|_| winit::window::CursorIcon::Pointer)
@@ -5814,13 +5948,13 @@ impl Widget for PdfApp {
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
         self.search_active
-            .then(|| self.search_input.ime_cursor_rect())
+            .then(|| ui::widget::Widget::ime_cursor_rect(&self.find_bar))
             .flatten()
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.search_active
-            .then(|| self.search_input.ime_purpose())
+            .then(|| ui::widget::Widget::ime_purpose(&self.find_bar))
             .flatten()
     }
 
@@ -6487,8 +6621,13 @@ mod tests {
         {
             let (mut app, mut state) = app_with_state();
             let provider = searched(&app);
-            assert!(provider.search_page("", None, 0, 1).results.is_empty());
-            let first = provider.search_page("", None, 1, 1);
+            assert!(
+                provider
+                    .search_page(&ui::search::SearchQuery::new(""), None, 0, 1)
+                    .results
+                    .is_empty()
+            );
+            let first = provider.search_page(&ui::search::SearchQuery::new(""), None, 1, 1);
             assert_eq!(first.inspected, 1);
             let stale_cursor = first.next.expect("catalogue paging stays bounded");
             let hit = provider
@@ -6543,7 +6682,7 @@ mod tests {
             );
 
             app.open_search();
-            app.search_input.set_text("sandbox");
+            app.find_bar.set_query("sandbox");
             app.recompute_matches();
             app.sync_settled(&mut state.doc, &state.root);
             let find_provider = searched(&app);
@@ -6561,7 +6700,7 @@ mod tests {
                     .iter()
                     .any(|action| action.id == "go-to-match")
             );
-            app.search_input.set_text("filesystem");
+            app.find_bar.set_query("filesystem");
             app.recompute_matches();
             assert!(
                 resolve(&app, &state.doc, &find_address.resource).is_none(),
@@ -6581,7 +6720,12 @@ mod tests {
             let action = crate::actions::delete_page_plan_action("source-1");
             app.perform_action(&mut Edits::lend(&mut state.doc), &action);
             app.sync_settled(&mut state.doc, &state.root);
-            let restarted = searched(&app).search_page("", Some(&stale_cursor), 1, 1);
+            let restarted = searched(&app).search_page(
+                &ui::search::SearchQuery::new(""),
+                Some(&stale_cursor),
+                1,
+                1,
+            );
             assert!(
                 restarted.results.len() <= 1,
                 "a stale cursor restarts against the new generation"
@@ -7034,7 +7178,7 @@ mod tests {
 
             // Search: whole-word + case toggles narrow results.
             app.open_search();
-            app.search_input.set_text("sandbox");
+            app.find_bar.set_query("sandbox");
             app.recompute_matches();
             let loose = app.matches.len();
             assert!(loose > 0, "search finds 'sandbox' in the sample");
@@ -7086,7 +7230,7 @@ mod tests {
             assert!(narrow.overlay_mode, "compact viewport uses overlay panels");
 
             narrow.open_search();
-            narrow.search_input.set_text("sandbox");
+            narrow.find_bar.set_query("sandbox");
             narrow.recompute_matches();
             full_frame(&mut narrow, 390.0, 844.0, Some(&shot("narrow-search.png")));
             assert!(narrow.match_count() > 0, "find remains usable when compact");
@@ -7178,7 +7322,7 @@ mod tests {
                 first_word(&layer.text, 4).expect("a searchable word")
             };
             app.open_search();
-            app.search_input.set_text(&word);
+            app.find_bar.set_query(&word);
             app.recompute_matches();
             assert!(
                 !app.raster_matches.is_empty(),
@@ -7542,73 +7686,33 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn chrome_layout_reflows_find_bar_contents_bubble_and_rail() {
-        // The find bar must never overlap its own pieces, and must reflow (drop
-        // the hint, compact then drop the counter) as the window narrows. Asserts
-        // on the real `search_layout` the draw pass hit-tests, at three widths.
-        eprintln!("phase find_bar_layout_never_overlaps_and_reflows");
+        // Find is a band at the top of the page canvas: between the rail and
+        // the review panel, above the pages, at the bar's own height.
+        eprintln!("phase find_band_tops_the_canvas_column");
         {
-            fn check(app: &PdfApp, tr: &mut TextRenderer, width: f64) -> SearchBarLayout {
-                let lay = app.search_layout(tr);
-                // Visible pieces in on-screen (left→right) order.
-                let mut rects: Vec<(&str, Rect)> = vec![("field", lay.field)];
-                if let Some((r, _)) = &lay.counter {
-                    rects.push(("counter", *r));
-                }
-                if let Some(r) = lay.hint {
-                    rects.push(("hint", r));
-                }
-                rects.push(("case", lay.case));
-                rects.push(("whole_word", lay.whole_word));
-                for w in rects.windows(2) {
-                    assert!(
-                        w[0].1.x1 <= w[1].1.x0 + 0.5,
-                        "at width {width}: {} (x1={}) overlaps {} (x0={})",
-                        w[0].0,
-                        w[0].1.x1,
-                        w[1].0,
-                        w[1].1.x0
-                    );
-                }
-                for (name, r) in &rects {
-                    assert!(
-                        r.x0 >= app.search_rect.x0 - 0.5 && r.x1 <= app.search_rect.x1 + 0.5,
-                        "at width {width}: {name} escapes the bar ({r:?})"
-                    );
-                }
-                lay
-            }
-
             let (mut app, _st) = app_with_state();
-            app.search_active = true;
-            app.search_input.set_text("the");
-            app.matches = (0..12)
-                .map(|i| Match {
-                    page: 1,
-                    block: 0,
-                    start: i,
-                    len: 3,
-                })
-                .collect();
-            app.active_match = 2;
-            let mut tr = TextRenderer::new();
-
-            // Wide: everything shown, counter full, hint present.
-            app.search_rect = Rect::new(0.0, 56.0, 1200.0, 56.0 + 46.0);
-            let wide = check(&app, &mut tr, 1200.0);
-            assert!(wide.hint.is_some(), "the hint shows on a wide bar");
+            app.open_search();
+            let band = app.search_rect;
+            let theme = app.layout_theme.clone();
             assert!(
-                matches!(&wide.counter, Some((_, t)) if t.contains("of")),
-                "a wide bar shows the full '3 of 12 matches' counter"
+                (band.height() - app.find_bar.height(&theme)).abs() < 1e-9,
+                "the band is the bar's height"
             );
-
-            // Narrow: no overlap; the hint drops.
-            app.search_rect = Rect::new(0.0, 56.0, 520.0, 56.0 + 46.0);
-            let narrow = check(&app, &mut tr, 520.0);
-            assert!(narrow.hint.is_none(), "the hint drops on a narrow bar");
-
-            // Very narrow: the toggles still fit and nothing overlaps.
-            app.search_rect = Rect::new(0.0, 56.0, 380.0, 56.0 + 46.0);
-            check(&app, &mut tr, 380.0);
+            assert!(
+                (band.x0 - app.canvas_rect.x0).abs() < 1e-9
+                    && (band.x1 - app.canvas_rect.x1).abs() < 1e-9,
+                "the band spans the canvas column"
+            );
+            assert!(
+                (band.y1 - app.canvas_rect.y0).abs() < 1e-9,
+                "the pages start under the band"
+            );
+            assert!(
+                band.x0 >= app.rail_rect.x1 - 0.01 && band.x1 <= app.sidebar_rect.x0 + 0.01,
+                "the band leaves the rail and the review panel alone"
+            );
+            app.close_search();
+            assert_eq!(app.search_rect, Rect::ZERO, "closing removes the band");
         }
 
         // A long bookmark tree must remain navigable rather than being silently
@@ -7619,7 +7723,7 @@ mod tests {
         {
             let (mut app, _st) = app_with_state();
             app.sidebar_tab = SidebarTab::Outline;
-            app.text_scale = 2.0;
+            app.layout_theme = Theme::dark().with_text_scale(2.0);
             app.doc.outline = (0..80)
                 .map(|index| model::OutlineItem {
                     title: format!("Section {index}: an intentionally descriptive heading"),
@@ -7633,14 +7737,14 @@ mod tests {
             let (items, content_h) = app.sidebar_item_layout(&mut tr);
             assert_eq!(items.len(), 80, "every bookmark participates in scrolling");
             assert!(
-                items[1].1 - items[0].1 >= 64.0 - f64::EPSILON,
-                "outline rows scale from 30px to a touch-friendly 60px at 200% text"
+                items[1].1 - items[0].1 > ui::chrome::nav_row_height(&Theme::dark()),
+                "outline rows grow with the text"
             );
 
             app.sidebar_scroll = f64::MAX;
             app.prepare_sidebar_scroll(&mut tr);
             let body = app.sidebar_body();
-            let origin = body.y0 + 38.0 * 2.0;
+            let origin = app.outline_top(body);
             let max_scroll = (content_h - (body.y1 - origin)).max(0.0);
             assert!(max_scroll > 0.0, "the test outline exceeds the viewport");
             assert!(
@@ -7736,7 +7840,7 @@ mod tests {
             app.rail_w = 999.0;
             app.recompute_regions();
             assert!(
-                (app.rail_width() - RAIL_W_MAX).abs() < 1e-6,
+                (app.rail_width() - app.rail_width_range().1).abs() < 1e-6,
                 "rail width clamps to max"
             );
         }
@@ -7894,6 +7998,7 @@ mod tests {
                         x_end: 480.0,
                         y: 196.0,
                         h: 13.0,
+                        words: Vec::new(),
                     },
                     render::TextLine {
                         block: 5,
@@ -7901,6 +8006,7 @@ mod tests {
                         x_end: 420.0,
                         y: 210.0,
                         h: 13.0,
+                        words: Vec::new(),
                     },
                 ],
             );
@@ -7937,6 +8043,7 @@ mod tests {
                     x_end: 480.0,
                     y: 196.0,
                     h: 13.0,
+                    words: Vec::new(),
                 }],
             );
             app.tool = Tool::Highlight;
@@ -8024,7 +8131,7 @@ mod tests {
         eprintln!("phase search_finds_and_jumps");
         {
             let (mut app, _st) = app_with_state();
-            app.search_input.set_text("filesystem");
+            app.find_bar.set_query("filesystem");
             app.recompute_matches();
             assert!(!app.matches.is_empty());
             // Active match drives the current page.
@@ -8041,7 +8148,7 @@ mod tests {
         eprintln!("phase search_toggles_change_match_logic");
         {
             let (mut app, _st) = app_with_state();
-            app.search_input.set_text("the");
+            app.find_bar.set_query("the");
             app.search_case_sensitive = false;
             app.search_whole_word = false;
             app.recompute_matches();
@@ -8240,14 +8347,8 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
-        eprintln!("phase ymd_from_unix_secs_matches_known_dates");
+        eprintln!("phase today_is_the_local_date");
         {
-            // Fixed reference points keep the pure date conversion independent of
-            // the wall clock.
-            assert_eq!(ymd_from_unix_secs(0), "1970-01-01"); // Unix epoch
-            assert_eq!(ymd_from_unix_secs(946_684_800), "2000-01-01");
-            assert_eq!(ymd_from_unix_secs(1_582_977_600), "2020-02-29"); // a leap day
-            assert_eq!(ymd_from_unix_secs(1_798_761_599), "2026-12-31"); // year boundary
             // `today_ymd` is well-formed `YYYY-MM-DD`.
             let t = today_ymd();
             assert_eq!(t.len(), 10, "today is YYYY-MM-DD: {t}");
@@ -9159,7 +9260,7 @@ mod tests {
             app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             app.recompute_regions();
             app.sync_viewport_frame();
-            app.search_input.set_text(&word);
+            app.find_bar.set_query(&word);
             app.recompute_matches();
             assert!(
                 !app.raster_matches.is_empty(),
@@ -9509,169 +9610,191 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn comment_cards_centre_wrap_and_never_overlap_at_any_scale() {
-        // The note/comment card header must never overlap — the author name is
-        // bounded and truncated so it can't run under the Resolve chip or the ×
-        // button, whatever its length. Asserts on the production layout helper.
-        eprintln!("phase comment_header_never_overlaps_even_with_a_long_name");
-        {
-            // A representative inner card rect for the 324px sidebar.
-            let card = Rect::new(0.0, 0.0, SIDEBAR_W - 24.0, 120.0);
-            let hdr = PdfApp::comment_header_layout(card, 1.0);
-
-            assert!(
-                hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0,
-                "the author name stops before the resolve chip (name ends {}, chip at {})",
-                hdr.name_x + f64::from(hdr.name_max),
-                hdr.chip.x0
-            );
-            assert!(
-                hdr.chip.x1 <= hdr.del.x0,
-                "the resolve chip stops before the delete button"
-            );
-            assert!(
-                hdr.del.x1 <= card.x1,
-                "the delete button stays inside the card"
-            );
-            assert!(
-                hdr.body_top >= hdr.avatar_c.y + 9.0,
-                "the body starts below the avatar, not overlapping it"
-            );
-
-            // A very long name/email truncates to fit the bounded width.
+    fn comment_text_starts_on_the_author_name_edge_at_any_scale() {
+        // The rich text of a comment sets its first glyph where the author's
+        // name starts, at every text scale.
+        for scale in [1.0_f32, 2.0] {
+            let mut app = PdfApp::sample();
+            app.layout_theme = Theme::dark().with_text_scale(scale);
+            let theme = app.layout_theme.clone();
             let mut tr = ui::text_render::TextRenderer::new();
-            let long = "ada.van.der.berg.reviewer@really-long-domain.example.com";
-            // Measured and painted Semibold, like `draw_comment_header_row`.
-            let shown = tr.elide_to_width_weighted(long, 11.5, hdr.name_max, TextWeight::Semibold);
-            let (w, _) = tr.measure_weighted(&shown, 11.5, None, TextWeight::Semibold);
-            assert!(
-                w <= hdr.name_max + 0.5,
-                "the truncated name ({shown:?}, {w}px) fits within the bounded width {}px",
-                hdr.name_max
+            let card_w = f64::from(theme.tokens.metrics.inspector_width)
+                - 2.0 * f64::from(theme.tokens.spacing.s3);
+            let body =
+                CardFace::new().body_rect(&mut tr, &theme, Rect::new(0.0, 0.0, card_w, 400.0));
+            let hdr = PdfApp::comment_header_layout(
+                body,
+                PdfApp::resolve_button_w(&mut tr, &theme),
+                &theme,
             );
+            let rect = app.rich_text_rect(&mut tr, hdr.text_x, hdr.body_top, 200.0);
+            let mut view = RichTextView::new();
+            view.show(&[ui::widget::BlockContent::paragraph(
+                "a",
+                "Should we spell it out?",
+            )]);
+            view.layout(rect, &theme, &mut tr);
+            let caret = view
+                .editor_mut()
+                .blocks()
+                .first()
+                .map(|b| b.line.caret_rect(&theme, 0).x0)
+                .unwrap();
             assert!(
-                shown.chars().count() < long.chars().count(),
-                "the long name was actually truncated"
+                (caret - hdr.text_x).abs() < 0.5,
+                "body text at {caret} starts on the name edge {} at {scale}×",
+                hdr.text_x
             );
         }
+    }
 
-        // Enlarged text must reflow the bespoke comment card instead of painting
-        // the shared inline editor over its replies or the thread history. This
-        // uses the exact production measurement/layout helpers at the supported
-        // maximum accessibility scale.
-        eprintln!("phase high_text_comment_editor_reply_and_history_do_not_overlap");
+    #[test]
+    fn comment_cards_centre_wrap_and_never_overlap_at_any_scale() {
+        // The comment card's header never overlaps: the author name is bounded
+        // and elides before the Resolve and delete buttons, whatever its
+        // length, at every text scale, and every piece shares one centre line.
+        eprintln!("phase comment_header_never_overlaps_even_with_a_long_name");
+        let long = "ada.van.der.berg.reviewer@really-long-domain.example.com";
+        for scale in [1.0_f32, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = ui::text_render::TextRenderer::new();
+            let card_w = f64::from(theme.tokens.metrics.inspector_width)
+                - 2.0 * f64::from(theme.tokens.spacing.s3);
+            let card = Rect::new(0.0, 0.0, card_w, 400.0);
+            let body = CardFace::new().body_rect(&mut tr, &theme, card);
+            let resolve_w = PdfApp::resolve_button_w(&mut tr, &theme);
+            let hdr = PdfApp::comment_header_layout(body, resolve_w, &theme);
+            assert!(
+                hdr.avatar.x1 <= hdr.name.x0,
+                "avatar before the name at {scale}×"
+            );
+            assert!(
+                hdr.name.x1 <= hdr.resolve.x0,
+                "name before Resolve at {scale}×"
+            );
+            assert!(
+                hdr.resolve.x1 <= hdr.delete.x0,
+                "Resolve before delete at {scale}×"
+            );
+            assert!(
+                hdr.delete.x1 <= body.x1 + 0.01,
+                "delete inside the card at {scale}×"
+            );
+            for r in [hdr.avatar, hdr.resolve, hdr.delete] {
+                assert!(
+                    (r.center().y - hdr.name.center().y).abs() < 0.5,
+                    "{r:?} shares the header's centre line at {scale}×"
+                );
+            }
+            assert!(
+                hdr.body_top >= hdr.delete.y1,
+                "the body starts under the header"
+            );
+            let style = theme.text(TextRole::Label).strong();
+            let shown = tr.elide_to_width_style(long, hdr.name.width() as f32, &style);
+            let (w, _) = tr.measure_style(&shown, None, &style);
+            assert!(
+                f64::from(w) <= hdr.name.width() + 0.5,
+                "the elided name ({shown:?}, {w}px) fits its {}px at {scale}×",
+                hdr.name.width()
+            );
+            assert!(shown.chars().count() < long.chars().count());
+        }
+
+        // A measured card holds its header, body, replies and reply button:
+        // the running sequence the draw pass follows ends inside the card.
+        eprintln!("phase comment_card_measures_what_it_paints");
         {
             let app = crate::scenarios::sample_reader();
+            let theme = ui::Theme::dark().with_text_scale(2.0);
             let mut tr = ui::text_render::TextRenderer::new();
-            tr.set_text_scale(2.0);
             let cm = Comment {
                 id: "high-text-thread".into(),
                 anno_id: None,
                 page: 1,
                 author: "An exceptionally long review author name".into(),
-                body: "A deliberately long comment body that wraps across the narrow review rail at two-times text size.".into(),
+                body: "A deliberately long comment body that wraps across the narrow review panel at two-times text size.".into(),
                 created: 1,
                 resolved: false,
-                replies: vec![
-                    Reply {
-                        id: "high-text-reply-one".into(),
-                        author: "Bob".into(),
-                        body: "A long reply that also wraps, proving the history is allotted its own measured vertical space.".into(),
-                        blocks: Vec::new(),
-                    },
-                    Reply {
-                        id: "high-text-reply-two".into(),
-                        author: "Alice".into(),
-                        body: "A second reply remains below the first rather than colliding with the editor.".into(),
-                        blocks: Vec::new(),
-                    },
-                ],
-                blocks: Vec::new(),
+                replies: vec![Reply {
+                    id: "high-text-reply-one".into(),
+                    author: "Bob".into(),
+                    body: "A long reply that also wraps, proving the thread is allotted its own measured space.".into(),
+                    blocks: tilo_rich_text::plain_blocks("A long reply that also wraps, proving the thread is allotted its own measured space."),
+                }],
+                blocks: tilo_rich_text::plain_blocks("A deliberately long comment body that wraps across the narrow review panel at two-times text size."),
             };
-            let scale = 2.0;
-            let inner_w = SIDEBAR_W - 28.0 * scale;
-            let metrics = app.comment_metrics(&mut tr, &cm, inner_w);
-            let card = Rect::new(0.0, 0.0, SIDEBAR_W - 28.0 * scale, metrics.card_h);
-            let hdr = PdfApp::comment_header_layout(card, scale);
-
-            assert!(hdr.body_top >= hdr.avatar_c.y + hdr.avatar_radius);
-            assert!(hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0);
-            assert!(hdr.chip.x1 <= hdr.del.x0);
-
-            // This is the same running-y sequence used by draw_comment_body,
-            // draw_comment_replies and draw_comment_composer.
-            let editor_bottom = hdr.body_top + metrics.body_h + 8.0;
-            let replies_top = hdr.body_top + metrics.body_h + 10.0 * scale;
-            assert!(
-                editor_bottom <= replies_top,
-                "editor clears the first reply"
+            let card_w = 276.0;
+            let m = app.comment_metrics(&mut tr, &theme, &cm, card_w);
+            let card = Rect::new(0.0, 0.0, card_w, m.card_h);
+            let body = CardFace::new().body_rect(&mut tr, &theme, card);
+            let hdr = PdfApp::comment_header_layout(
+                body,
+                PdfApp::resolve_button_w(&mut tr, &theme),
+                &theme,
             );
-            let replies_bottom = replies_top
-                + metrics
-                    .reply_heights
-                    .iter()
-                    .map(|h| 14.0 * scale + h + 10.0 * scale)
-                    .sum::<f64>();
-            let composer_top = replies_bottom + 8.0 * scale;
-            let composer_bottom = composer_top + metrics.compose_h - 8.0 * scale;
-            assert!(
-                composer_bottom <= card.y1 + 0.1,
-                "reply editor ({composer_bottom}) remains inside its measured card ({})",
-                card.y1
-            );
-        }
-
-        // `vcenter` centres the *measured* line box, whatever the renderer's
-        // text scale made of it — the height half of a `measure` result is the
-        // only input it accepts, so no caller can centre on a nominal font size.
-        eprintln!("phase vcenter_centres_the_measured_line_box");
-        {
-            let rect = Rect::new(0.0, 10.0, 100.0, 44.0);
-            assert!((vcenter(rect, 15.0) - 19.5).abs() < 1e-9);
-            // A 2× line box in the same control still lands centred, not low.
-            let two_x = vcenter(rect, 30.0);
-            assert!((two_x - 12.0).abs() < 1e-9);
-            assert!(((rect.y1 - (two_x + 30.0)) - (two_x - rect.y0)).abs() < 1e-9);
-            let mut tr = ui::text_render::TextRenderer::new();
-            tr.set_text_scale(2.0);
-            let (_, h) = tr.measure("Fit", 11.0, None);
-            let y = vcenter(rect, h);
-            assert!(
-                (y - rect.y0 - (rect.y1 - (y + f64::from(h)))).abs() < 1e-6,
-                "top gap equals bottom gap for a 2× scaled run"
-            );
-        }
-
-        // A comment body painted from `card.x0 + 12·s` and wrapped with the shared
-        // helper ends `12·s` before the card's right edge at every text scale —
-        // the unscaled wrap used to spill 8px past the border at 2×.
-        eprintln!("phase comment_text_wraps_keep_a_symmetric_inset_at_every_scale");
-        {
-            for s in [1.0_f64, 1.5, 2.0] {
-                let inner_w = SIDEBAR_W - 28.0 * s;
-                let body_x = 12.0 * s;
-                let body_end = body_x + f64::from(PdfApp::comment_body_wrap(inner_w, s));
-                assert!(
-                    (body_end - (inner_w - 12.0 * s)).abs() < 1e-6,
-                    "body right inset at {s}×: {}",
-                    inner_w - body_end
-                );
-                let reply_end = 24.0 * s + f64::from(PdfApp::comment_reply_wrap(inner_w, s));
-                assert!(
-                    (reply_end - (inner_w - 12.0 * s)).abs() < 1e-6,
-                    "reply right inset at {s}×: {}",
-                    inner_w - reply_end
-                );
-                // Composer field: inset 12·s, editor text inset a further 10·s.
-                let compose_end = 22.0 * s + f64::from(PdfApp::comment_compose_wrap(inner_w, s));
-                assert!(
-                    (compose_end - (inner_w - 22.0 * s)).abs() < 1e-6,
-                    "composer right inset at {s}×: {}",
-                    inner_w - compose_end
-                );
+            let rhythm = &theme.tokens.spacing.rhythm;
+            let label = f64::from(theme.text(TextRole::Label).line_height_px());
+            let mut y = hdr.body_top + m.body_h;
+            for h in &m.reply_heights {
+                y += f64::from(rhythm.sibling) + label + f64::from(rhythm.tight) + h;
             }
+            y += m.compose_h;
+            assert!(
+                y <= body.y1 + 0.5,
+                "the reply button ({y}) stays inside the measured card body ({})",
+                body.y1
+            );
         }
+    }
+}
+
+impl ui::widget::Findable for PdfApp {
+    fn find(
+        &mut self,
+        query: &str,
+        options: ui::widget::FindOptions,
+    ) -> Vec<ui::widget::FindMatch> {
+        self.search_case_sensitive = options.match_case;
+        self.search_whole_word = options.whole_word;
+        // Finding again over grown text keeps the emphasised match; a new
+        // query reveals its first one.
+        let current = self.active_match;
+        self.recompute_matches_for(query);
+        if current < self.match_count() {
+            self.active_match = current;
+        }
+        (0..self.match_count())
+            .map(|i| ui::widget::FindMatch::new(i, i + 1))
+            .collect()
+    }
+
+    fn reveal(&mut self, index: usize) {
+        self.active_match = index;
+        let page = if self.raster_active() {
+            self.raster_matches.get(index).map(|m| m.page)
+        } else {
+            self.matches.get(index).map(|m| m.page)
+        };
+        if let Some(page) = page {
+            self.go_to_page(page);
+        }
+        self.dirty = true;
+    }
+
+    fn clear_find(&mut self) {
+        self.matches.clear();
+        self.raster_matches.clear();
+        self.active_match = 0;
+        self.dirty = true;
+    }
+
+    /// The searchable text grows as page text layers arrive from the worker;
+    /// the bar finds again, so its counter follows.
+    fn content_revision(&self) -> u64 {
+        let document = self.raster_document.as_ref().map_or(0, |doc| doc.id);
+        let pages = u64::try_from(self.raster_text.len()).unwrap_or(u64::MAX);
+        document.rotate_left(32) ^ pages
     }
 }
