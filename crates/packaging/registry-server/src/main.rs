@@ -309,6 +309,9 @@ enum ReviewCommand {
         reason: String,
         #[arg(long, hide = true)]
         allow_insecure_local: bool,
+        /// Review id from review show; refuse a replaced request.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Reject a request while retaining an audit record.
     Reject {
@@ -317,6 +320,9 @@ enum ReviewCommand {
         reviewer: String,
         #[arg(long)]
         reason: String,
+        /// Review id from review show; refuse a replaced request.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Immediately hide a public entry while retaining a recoverable copy.
     Quarantine {
@@ -1544,6 +1550,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
+                        "review_id": pending.review_id()?,
                         "submission": pending,
                         "verified_packages": inspection,
                     }))?
@@ -1572,8 +1579,9 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             reviewer,
             reason,
             allow_insecure_local,
+            review_id,
         } => {
-            let pending = require_pending(&moderation, &package_id)?;
+            let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
             let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
             let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
@@ -1593,8 +1601,10 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             package_id,
             reviewer,
             reason,
+            review_id,
         } => {
-            let record = moderation.reject(&package_id, reviewer, reason, unix_now())?;
+            let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
+            let record = moderation.reject_reviewed(&pending, reviewer, reason, unix_now())?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Quarantine {
@@ -1631,6 +1641,20 @@ fn require_pending(
     moderation
         .pending(package_id)?
         .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
+}
+
+fn require_reviewed_pending(
+    moderation: &ModerationService,
+    package_id: &str,
+    review_id: Option<&str>,
+) -> anyhow::Result<registry_server::PendingSubmission> {
+    let pending = require_pending(moderation, package_id)?;
+    if let Some(review_id) = review_id
+        && pending.review_id()? != review_id
+    {
+        return Err(registry_server::ModerationError::PendingChanged(package_id.into()).into());
+    }
+    Ok(pending)
 }
 
 fn fetch_for_decision(

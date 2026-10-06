@@ -468,8 +468,10 @@ remotely callable approval endpoint.
 tilo-registry-server review list --json
 tilo-registry-server review show so.tilo.example --json
 tilo-registry-server review approve so.tilo.example \
+    --review-id <review_id-from-show> \
     --reviewer alice --reason "capabilities and core journeys verified"
 tilo-registry-server review reject so.tilo.example \
+    --review-id <review_id-from-show> \
     --reviewer alice --reason "misleading subscription disclosure"
 ```
 
@@ -480,6 +482,14 @@ compare the signed manifest's app id and version with the submission.
 Their output includes filesystem, network, portal, and service requests.
 Approval moves the exact signed metadata into snapshot staging; a moderator
 cannot quietly rewrite a publisher's submission.
+
+`show --json` includes a `review_id` for the entire signed pending request,
+including its receipt time and both signatures. Pass it to either decision to
+refuse a request replaced after inspection, before fetching packages or changing
+registry state. Approval also rechecks the exact candidate under the registry
+lock; rejection does the same and retains the reviewed bytes and literal feedback.
+Rejecting an invalid request does not require its signature to become valid.
+The flag is optional for existing CLI callers; agents should preserve and pass it.
 
 Publish the next bounded-lifetime snapshot from an offline signing environment:
 
