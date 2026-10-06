@@ -22,6 +22,40 @@ enum ForeignCommitCapture {
 #[derive(Default)]
 struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 
+/// Keep only unambiguous buffer-coordinate damage. Surface-coordinate
+/// rectangles require viewport/scale conversion; absent or transformed hints
+/// remain whole-buffer damage rather than guessing that conversion.
+fn pending_buffer_damage(
+    attrs: &wl_compositor::SurfaceAttributes,
+) -> Option<Vec<vello::kurbo::Rect>> {
+    if attrs.buffer_transform
+        != smithay::reexports::wayland_server::protocol::wl_output::Transform::Normal
+        || attrs
+            .buffer_delta
+            .is_some_and(|delta| delta.x != 0 || delta.y != 0)
+        || attrs.damage.is_empty()
+        || attrs.damage.len() > 128
+    {
+        return None;
+    }
+    attrs
+        .damage
+        .iter()
+        .map(|damage| {
+            let wl_compositor::Damage::Buffer(rect) = damage else {
+                return None;
+            };
+            if rect.size.w <= 0 || rect.size.h <= 0 {
+                return None;
+            }
+            Some(vello::kurbo::Rect::from_origin_size(
+                (f64::from(rect.loc.x), f64::from(rect.loc.y)),
+                (f64::from(rect.size.w), f64::from(rect.size.h)),
+            ))
+        })
+        .collect()
+}
+
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Format, Modifier};
@@ -3902,6 +3936,7 @@ impl State {
                     return (association, None);
                 }
             };
+            let damage = pending_buffer_damage(attrs.pending());
             drop(attrs);
             let Some(client) = surface.client() else {
                 return (ForeignCommitCapture::Failed, None);
@@ -3913,7 +3948,13 @@ impl State {
                     .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
                     .map(|(colorimetry, _)| colorimetry);
                 if let Some((token, barrier)) = crate::compositor::foreign::store()
-                    .prepare_dmabuf_capture(surface_id, client, dmabuf, colorimetry)
+                    .prepare_dmabuf_capture_with_damage(
+                        surface_id,
+                        client,
+                        dmabuf,
+                        colorimetry,
+                        damage,
+                    )
                 {
                     // `with_states` holds Smithay's PrivateSurfaceData mutex.
                     // `add_blocker` takes that same non-reentrant mutex, so it
@@ -3926,8 +3967,8 @@ impl State {
             }
             match crate::compositor::surface_readback::copy_shm_frame(&buffer) {
                 Ok(frame) => {
-                    if let Some(generation) =
-                        crate::compositor::foreign::store().prepare_shm_capture(surface_id, frame)
+                    if let Some(generation) = crate::compositor::foreign::store()
+                        .prepare_shm_capture_with_damage(surface_id, frame, damage)
                     {
                         (ForeignCommitCapture::Shm(generation), None)
                     } else {
@@ -4752,6 +4793,9 @@ impl State {
         &mut self,
         owner: Option<crate::compositor::input_method::TrustedInputMethod>,
     ) {
+        if self.seat_input_method.get() != owner {
+            self.cancel_active_dictation();
+        }
         self.seat_input_method.set(owner);
         let handle = self.display_handle.clone();
         self.trusted_input_method_clients.retain(|(id, kind)| {
@@ -5892,7 +5936,9 @@ impl SeatHandler for State {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
+    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {
+        self.cancel_active_dictation();
+    }
 
     fn cursor_image(
         &mut self,

@@ -2336,6 +2336,22 @@ impl Widget for CommandPalette {
         )
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        if let Some(arg) = &self.arg_state {
+            let field = arg
+                .composition
+                .ime_edit_fingerprint(&arg.buffer, &arg.selection, key)?;
+            Some(crate::ime::scoped_fingerprint(
+                arg.entry_id.as_bytes(),
+                field,
+                key,
+            ))
+        } else {
+            self.query_composition
+                .ime_edit_fingerprint(&self.query, &self.query_selection, key)
+        }
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }

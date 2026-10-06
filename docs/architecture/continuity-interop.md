@@ -112,8 +112,8 @@ separates automated fixtures from physical-device observations.
 | Nearby transfer between certified Tilo devices | Files resources/actions and opaque connection/workspace-bound handles; approved source/destination descriptors; explicit receive consent; immutable file/folder staging; chunk transport, checkpoint hashes, collision-safe install, cancel/retry and policy teardown | Confirmed local decline of recovered partials; fresh-consent retry rebinding for an unchanged exact-source object | No further missing general-transfer code established in this assessment; additional gaps must come from the remaining journey checks. | Two-Iroh-endpoint resumed-byte fixture plus store/broker tests; physical paired-device disconnect/reconnect, grant revocation and large-file/folder journeys remain unobserved. |
 | Shared clipboard | Same-identity fabric snapshots, bounded shared history, sensitive-content exclusion, imported provenance and policy withdrawal; explicit history activation rather than remote writes replacing the live selection | Real-Iroh root-certified session fixture: runtime export/import, explicit activation, secret/primary exclusion, no imported re-export, and observed wrong-root frame rejection; no new clipboard engine | No established missing code for the current history-sharing contract. Apple Universal Clipboard interoperability is a separate, unimplemented adapter. | The paired fixture drives the compositor selection store and fabric pump, not two running Wayland clients. Physical copy → semantic activation → application paste and policy withdrawal remain unobserved. |
 | Resume work | Private continuity checkpoints, structural/generic app contracts and app-specific metadata; continuation suggestion/accept/dismiss; resource-position launch and preserved local focus | Real-Iroh same-root request/checkpoint fixture with exact Browser metadata, preserved local focus, semantic suggestion acceptance and real launcher consumption; no new app resume implementation | No established missing general transport code. App-specific semantic fidelity must be assessed against each app's declared contract; Music owns playback state. | The paired fixture verifies late-session catch-up, semantic acceptance and launcher staging. Two live compositor/app processes, durable restart and app-specific restored position remain to validate. |
-| AirPlay/Cast projection | Compositor-owned capture, receiver discovery/selection, existing encrypted AirPlay helper and PIN/password input, Cast/FCast control and disconnect | Explicit credential isolation/redaction with reject/retry/ready/disconnect subprocess regression | No second Cast/Spotify controller. Opt-in AirPlay receiver mode would be new code, outside the existing sender journey. | FCast socket and discovery fixtures exist; AirPlay helper regression uses a substitute child process. Assembled-image encrypted interoperability and physical AirPlay/Cast receivers remain unverified here. |
-| AirDrop interoperability | No release-enabled AirDrop feature or AWDL lifecycle | Debug-only Files action through its authenticated broker lane; immutable sealed staging, independently entered certificate pin on a compositor-owned consent sheet, scoped status/cancel and supervised helper; real TLS broker fixtures and pinned OpenDrop production receiver wire oracle | AWDL discovery/interface lifecycle; physical receiver verification method; per-chunk progress; secure optional receiving. Release availability remains false. | Nine mandatory OpenDrop wire/staging tests; native broker trust/revocation/rotation/cancellation and Files semantic-action fixtures. A composed live compositor/Files/OpenDrop journey and physical Apple/AWDL interoperability remain unobserved; no Contacts Only credentials or network changes are attempted. |
+| AirPlay/Cast projection | Compositor-owned capture, receiver discovery/selection, existing encrypted AirPlay helper and PIN/password input, Cast/FCast control and disconnect | Explicit credential isolation/redaction with reject/retry/ready/disconnect subprocess regression | No second Cast/Spotify controller. Opt-in AirPlay receiver mode would be new code, outside the existing sender journey. | FCast socket and discovery fixtures exist; AirPlay helper regression uses a substitute child process. A native Cast TLS/HLS journey is recorded below; receiver authentication, decoded display output and physical receivers remain unqualified. The cached image encrypted AirPlay run failed the optional codec prerequisite. |
+| AirDrop interoperability | No release-enabled AirDrop feature or AWDL lifecycle | Debug-only Files action through its authenticated broker lane; immutable sealed staging, independently entered certificate pin on a compositor-owned consent sheet, scoped status/cancel and supervised helper; real TLS broker fixtures and pinned OpenDrop production receiver wire oracle | AWDL discovery/interface lifecycle; physical receiver verification method; per-chunk progress; secure optional receiving. Release availability remains false. | Nine mandatory OpenDrop wire/staging tests; native broker trust/revocation/rotation/cancellation and Files semantic-action fixtures. Six composed live compositor/signed Files/pinned OpenDrop journeys now observe consent, exact bytes, wrong pin, cancellation, decline/retry, certificate rotation and fresh-consent recovery. Physical Apple/AWDL interoperability remains unobserved; no Contacts Only credentials or network changes are attempted. |
 
 Acceptance for the retry slice: immutable peer/name/kind/size/hash must match;
 fresh consent and an approved destination precede request rebinding; old request
@@ -231,3 +231,139 @@ in this work. Contacts Only/Apple credential extraction is outside this slice.
 Ownership remains continuity transport, pairing and Files capability integration;
 Music retains Spotify playback and UI owns its toolkit split. These fixtures add
 no UI framework refactor, casting controller, persistent grant or deployed service.
+
+
+### Native journey evidence and reproduction
+
+The composed AirDrop proof runs the actual headless compositor, provisioning its
+supported throwaway certified identity and bootstrapping a new workspace. A live
+owner grants read access only to its private fixture folder. The actual installer
+verifies the signed thin Files package against a matching signed runtime bundle;
+no package-size, signature, bubblewrap or Landlock checks are disabled. Files must
+present a real frame and publish its public folder/send/cancel/retry actions.
+The independently derived receiver fingerprint is typed into the compositor's
+focused shared control through canonical `tilo-control` input operations.
+
+`scripts/headless-examples/airdrop-transfer-proof.py` observes six journeys:
+exact extracted bytes after consent, wrong-pin metadata exclusion, cancelled
+consent with no HTTP requests, public cancellation while `/Ask` is held (no
+`/Upload`), receiver decline/generic retry without reused consent, changed
+certificate rejection before metadata, and a deliberate fresh-consent recovery.
+It fails on missing prerequisites or observations. Certificates, runtime signing
+identity, application registry, profile, grants, receiver and owned process groups
+are removed on completion. JSON evidence includes artifact hashes and a real
+presented Files frame; it contains no credentials. Files publishes a read-only `status` action on every visible transfer, including
+terminal transfers. It returns the broker-issued phase, total and confirmed byte
+counts with no paths, filesystem authority or network work; expired rows fail
+closed. The native proof reads awaiting consent, sending, cancellation/failure and
+completed byte counts through that action. AirDrop confirms bytes at completion;
+per-chunk byte progress remains unimplemented.
+
+Build these artifacts with the pinned toolchain before running. Set `CARGO` to
+your authorized Cargo drop-in for remote builds:
+
+```bash
+$CARGO build --locked -p shell -p file-explorer -p launcher -p install -p app-cli \
+  --bin shell --bin file-explorer --bin tilo-launcher --bin tilo-install --bin app \
+  --example serve-test-registry
+$CARGO build --locked --profile thin-app --features file-explorer/thin \
+  --config 'build.rustc-workspace-wrapper="/ABSOLUTE/CHECKOUT/tools/ci/rustc-thin-app-wrapper.sh"' \
+  --config 'env.TILO_THIN_BIN_CRATES="file_explorer"' \
+  -p runtime-dylib -p file-explorer --bin file-explorer
+```
+
+Run on the remote builder using its matching `libstd` and supported OS
+`tilo-runtime-bundle` binary, and the disposable OpenDrop Python environment
+specified above. A remote source snapshot may have no `.git`; record the full source
+commit before syncing, passing it explicitly. Artifact hashes distinguish rebuilt
+candidates from that source base.
+
+```bash
+python scripts/headless-examples/airdrop-transfer-proof.py \
+  --source-commit FULL_SOURCE_COMMIT --opendrop /path/to/pinned-opendrop \
+  --runtime-bundle /path/to/tilo-runtime-bundle \
+  --libstd /path/to/exact-toolchain/libstd-HASH.so \
+  --evidence target/airdrop-native-proof.json
+```
+
+### Cast lifetime defect and authentication boundary
+
+The native loopback Cast journey found that `connect_cast_device` returned a device
+whose SDK runtime owner had already been dropped. TLS connected and the projector
+reported ready, but its aborted worker never transmitted media `LOAD`. The helper
+now returns and retains `CastContext` until session teardown. The existing FCast
+wire regression uses this production helper, rather than constructing a separate
+SDK context in the test, so the runtime-lifetime defect is observable in CI.
+Music continues to own Spotify playback; no new playback controller is introduced.
+
+`scripts/headless-examples/cast-session-proof.py` exercises the prebuilt production
+projector against an independent bounded loopback Cast-message fixture. It checks
+TLS control, actual `LOAD`, receiver fetches of the tokenized HLS playlist and
+segment, denial of guessed tokens/private runtime files/traversal, readiness,
+stop and socket disconnect. The fixture supplies HLS bytes; it does **not** claim
+compositor capture, valid decoded video or physical receiver interoperability.
+
+```bash
+$CARGO build --locked -p tilo-projector --bin tilo-projector
+python3 scripts/headless-examples/cast-session-proof.py \
+  --projector target/debug/tilo-projector --evidence target/cast-session-proof.json
+```
+
+The locked `fcast-sender-sdk` 0.3.0 `chromecast.rs` uses `AllCertVerifier`, accepting
+server certificates and TLS handshake signatures without verification. There is
+no device-auth exchange in that path. A chosen address and encrypted connection
+therefore establish neither receiver authenticity nor a certified Tilo peer.
+The proof deliberately uses an isolated self-signed certificate and reports
+`receiver_authenticated: false`. Never promote this result to authenticated
+pairing, clipboard/workspace trust or an automatic capture authorization.
+[Open Screen's device-auth integration tests](https://chromium.googlesource.com/openscreen/+/7aff9322b2de31ced072e421b1ac31e3aae7745d/cast/test/README.md)
+provide a primary reference for a separate challenge/certificate/revocation
+qualification gate. Audit and implement that adapter boundary before claiming
+secure Cast pairing; retain the existing controller and explicit capture consent.
+
+### Current immutable image AirPlay codec gate
+
+The current qualified x86 image from successful build `72677` is
+`registry.tilo.so/tilo/tilo-ci:main-12f4dfb-x86_64`, digest
+`sha256:7a733a3f1a9fc79ca96f61a667f1b813c91251e822d93a999a5a9c240984cbce`
+(source `12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3`). Its encrypted-session
+test was actually invoked in a disposable read-only, network-isolated container.
+It failed plugin discovery: `openh264enc is not available`. This supersedes the
+earlier cached-image prerequisite result; it is not an encryption pass.
+
+The production `tilo-extension` consumer was also invoked against that image's
+exact RPM base fingerprint
+`8742f72a2365f83e615ae3e3782cfeba809a31287212f49d8a32a14363048c09`, copying only
+its public catalog/trust key into an ephemeral layout. The exact-base manifest
+request returned `Unpublished` (“Not available for this version of Tilo yet”).
+
+A concrete candidate was then prepared with the existing supported
+`tools/extensions/resolve.py` and `media-codecs/recipe.toml`, inside that exact
+immutable image. Dedicated temporary volumes preserve shared-source labels;
+DNF has temporary bookkeeping storage and the image's RPM database remains
+read-only. All upstream RPM signatures, pinned signing-key fingerprints,
+package compatibility rules and HTTPS artifact hashes remain enforced.
+Both parts resolved: 15 artifacts in `tilo-codecs` and one matching Mesa artifact
+in `tilo-codecs-mesa`. The unsigned candidate's SHA-256 is
+`bc87df63715dbc947013d132702c055dd6d32ad4a91654cb971e464b1e9fe7c2`;
+its revision is `20261006071645` and `resolve.py check` passes.
+
+The encoder uses publisher-served `openh264-2.6.0-3.fc44.x86_64.rpm`, 445460 bytes,
+SHA-256 `ddd3123c507f08d9ff1962371ada5dc555742dfa16d4543f87a53c1303c9da6c`,
+from `https://ciscobinary.openh264.org/openh264-2.6.0-3.fc44.x86_64.rpm`.
+The resolver refused Fedora's downgrade to an HTTP redirect. The GStreamer
+plugin is `gstreamer1-plugin-openh264-1.28.1-1.fc44.x86_64`, compatible with the
+base under the existing rule. Tilo redistributes neither publisher's RPM bytes.
+
+The remaining publication step is the existing main-only
+`extension-manifests.yml` workflow with `images` set to this immutable image.
+It resolves, signs through the existing non-exportable extension-manifest KMS
+key, verifies that key against `keys/extensions.pub`, and publishes metadata and
+detached signatures. No new trust key or signer access is needed. Publication
+is separately gated by the delegation's deployment limit because enabled
+extensions can consume updates. The unsigned candidate cannot substitute for
+the image-trusted signature. No extension has been activated and no device
+changed. After authorized publication, the next proof must use the production
+consumer to verify/stage those exact bytes, then run the real encrypted AirPlay
+session and selected-source capture. Cancelled/skipped image workflows and
+subprocess substitutes do not qualify that gate.

@@ -41,6 +41,7 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
     "crates/session/desktop",

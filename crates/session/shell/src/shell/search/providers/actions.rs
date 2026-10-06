@@ -172,6 +172,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "room.activity.explore"
         | "room.activity.replay"
         | "tab.menu"
+        | "tab.drag.cancel"
         | "history.compare"
         | "history.undo"
         | "history.restore" => {
@@ -270,6 +271,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "room.activity.explore"
         | "room.activity.replay"
         | "tab.menu"
+        | "tab.drag.cancel"
         | "history.compare"
         | "history.undo"
         | "history.restore"
@@ -945,6 +947,24 @@ const fn chrome(
 
 impl Action {
     const ALL: &'static [Action] = &[
+        chrome(
+            "dictation.toggle",
+            "shortcut-name-dictation-toggle",
+            "dictation-action-start-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationToggle),
+        ),
+        chrome(
+            "dictation.finish",
+            "shortcut-name-dictation-finish",
+            "dictation-action-finish-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationFinish),
+        ),
+        chrome(
+            "dictation.cancel",
+            "shortcut-name-dictation-cancel",
+            "dictation-action-cancel-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
+        ),
         chrome(
             "navigation.axis.enable",
             "search-action-axis-enable",
@@ -1658,6 +1678,20 @@ impl Action {
                     )));
                 }
                 request_window_shortcut(st, ShortcutAction::TabMenu)
+            },
+        ),
+        chrome(
+            "tab.drag.cancel",
+            "search-action-tab-drag-cancel",
+            "search-action-tab-drag-cancel-subtitle",
+            |st, _| {
+                if st.session_locked() {
+                    return Err(ActionError::Refused(t(
+                        "search-action-tab-drag-cancel-unavailable",
+                    )));
+                }
+                st.request_tab_drag_cancel();
+                Ok(())
             },
         ),
         chrome(
