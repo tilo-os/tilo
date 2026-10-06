@@ -13,6 +13,8 @@ use google_cast_protocol::{
     prost::Message, protos,
 };
 use log::{debug, error, warn};
+#[cfg(test)]
+use rcgen as certificates;
 use rustls_pki_types as pki;
 use serde::Serialize;
 use serde_json as json;
