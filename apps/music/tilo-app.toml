@@ -30,6 +30,11 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["open-uri", "secrets", "files.open", "files.paths", "app-files", "network.http", "network.status", "threads", "media.decode", "media.session"]
 
+# The release collection packs this authored manifest directly. The runtime
+# admits the shared library only when its signed package declares this kind.
+[resources]
+kinds = ["music.library"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
