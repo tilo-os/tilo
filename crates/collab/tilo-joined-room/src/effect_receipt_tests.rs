@@ -25,6 +25,180 @@ fn request(status: EffectReceiptStatus) -> OwnerCommitRequest {
     }
 }
 
+fn enroll_remote_history_member(
+    fixture: &mut Fixture,
+    path: &std::path::Path,
+) -> tilo_user_identity::DeviceCert {
+    use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse};
+    use tilo_user_identity::RevocationList;
+
+    let member_key = SigningKey::from_bytes(&[116; 32]);
+    let member = crate::testing::certificate(
+        &SigningKey::from_bytes(&[117; 32]),
+        &member_key,
+        "Remote member",
+    );
+    let hint = fixture.governor.hint(iroh_base::EndpointAddr::new(
+        iroh_base::EndpointId::from_bytes(&fixture.certificate.device_public_key).unwrap(),
+    ));
+    let now_ns = crate::testing::ns(fixture.now).unwrap();
+    let invitation = fixture.governor.issue(
+        vec![hint.clone()],
+        join::MemberRole::Editor,
+        Some(member.user_public_key),
+        None,
+        now_ns.checked_add(60_000_000_000).unwrap(),
+    );
+    let verified = join::decode_and_verify_invitation(
+        &invitation,
+        Some(member.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let JoinTransportResponse::Challenge(challenge) = fixture.governor.handle(
+        member.device_public_key,
+        JoinTransportRequest::Challenge(join::JoinChallengeRequest {
+            signed_invitation: invitation,
+            device_cert: member.clone(),
+            request_id: [118; 32],
+        }),
+    ) else {
+        panic!("remote member challenge refused")
+    };
+    let complete = join::JoinCompleteRequest {
+        proof: join::sign_join_proof(challenge.challenge, &member_key).unwrap(),
+    };
+    let intent = crate::VerifiedNativeEnrollmentIntent::from_proof(
+        verified,
+        complete.clone(),
+        member.clone(),
+        hint,
+        fixture.now,
+    )
+    .unwrap();
+    let owner = crate::open_file(path).unwrap();
+    let pending = owner
+        .prepare_enrollment_into(&intent, None, fixture.now)
+        .unwrap();
+    let JoinTransportResponse::Complete(bootstrap) = fixture.governor.handle(
+        member.device_public_key,
+        JoinTransportRequest::Complete(complete),
+    ) else {
+        panic!("remote member completion refused")
+    };
+    owner
+        .install(
+            &crate::testing::finalize(intent, pending, bootstrap).unwrap(),
+            fixture.now,
+        )
+        .unwrap();
+    member
+}
+
+#[test]
+fn effect_archived_signed_history_admits_and_reopens_remote_member_without_governor_blobs() {
+    let mut fixture = fixture();
+    let room = RoomId::parse(crate::testing::ROOM).unwrap();
+    for _ in 0..130 {
+        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+    }
+    let frames = fixture
+        .owner
+        .with_outgoing(room, fixture.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| entry.bytes().to_vec())
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    for frame in frames {
+        fixture
+            .governor
+            .receive(
+                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                    fixture.certificate.device_public_key,
+                ),
+                postcard::from_bytes(&frame).unwrap(),
+            )
+            .unwrap();
+    }
+    let signed_root = fixture
+        .governor
+        .peer()
+        .workspace_effect_history_root()
+        .unwrap();
+    assert!(signed_root.is_some());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("member.json");
+    let member = enroll_remote_history_member(&mut fixture, &path);
+    let reopened = crate::open_file(&path).unwrap();
+    reopened
+        .with_current(room, |view| {
+            assert_eq!(view.device(), &member);
+            assert_ne!(view.device(), view.governor());
+            assert_eq!(view.record.effect_history_root, None);
+            assert_eq!(view.peer().workspace_effect_history_root()?, signed_root);
+            assert_eq!(
+                tilo_desktop_model::projection::workspace_effect_receipts_of(
+                    view.peer().admitted_room().unwrap(),
+                )
+                .len(),
+                130
+            );
+            Ok(())
+        })
+        .unwrap();
+    commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+    let frames = fixture
+        .owner
+        .with_outgoing(room, fixture.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| entry.bytes().to_vec())
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    for frame in frames {
+        reopened
+            .receive(
+                room,
+                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                    fixture.certificate.device_public_key,
+                ),
+                postcard::from_bytes(&frame).unwrap(),
+                fixture.now,
+            )
+            .unwrap();
+    }
+    crate::open_file(&path)
+        .unwrap()
+        .with_current(room, |view| {
+            assert_eq!(view.record.effect_history_root, None);
+            assert_ne!(view.peer().workspace_effect_history_root()?, signed_root);
+            assert_eq!(
+                tilo_desktop_model::projection::workspace_effect_receipts_of(
+                    view.peer().admitted_room().unwrap(),
+                )
+                .len(),
+                131
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        reopened
+            .commit_effect_receipt(
+                &request(EffectReceiptStatus::Succeeded),
+                &fixture.certificate,
+                &fixture.key,
+                fixture.now,
+            )
+            .is_err(),
+        "remote member cannot claim governor receipt custody"
+    );
+}
+
 fn commit(fixture: &Fixture, request: &OwnerCommitRequest) -> Result<OwnerCommitReceipt, String> {
     fixture
         .owner
