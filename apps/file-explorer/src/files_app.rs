@@ -2161,6 +2161,15 @@ impl FileExplorerWidget {
                 self.decide_nearby(transfer, None)?;
                 None
             }
+            FilesEffect::InspectNearby { transfer } => {
+                let status = self
+                    .nearby_send
+                    .transfers()
+                    .iter()
+                    .find(|candidate| candidate.handle == transfer)
+                    .ok_or_else(|| t("files-nearby-transfer-unavailable"))?;
+                Some(serde_json::json!({"transfer": status}))
+            }
             FilesEffect::RetryNearby { transfer } => {
                 if !self.nearby_send.transfers().iter().any(|candidate| {
                     candidate.handle == transfer
@@ -8014,9 +8023,9 @@ impl FileExplorerWidget {
 
     fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
         for transfer in self.nearby_send.transfers() {
-            if let Some(resource) = self.nearby_receiver_resource(transfer) {
-                folder.children.push(resource);
-            }
+            folder
+                .children
+                .push(self.nearby_receiver_resource(transfer));
         }
     }
 
@@ -8027,7 +8036,7 @@ impl FileExplorerWidget {
     fn nearby_receiver_resource(
         &self,
         transfer: &ui::collaboration::NearbyTransferStatus,
-    ) -> Option<Resource> {
+    ) -> Resource {
         use ui::collaboration::NearbyTransferPhase;
 
         let mut resource = Resource::new(
@@ -8038,6 +8047,15 @@ impl FileExplorerWidget {
             "files.nearby-transfer",
             transfer.name.clone(),
         );
+        let mut inspect = crate::effects::row_action(
+            &crate::effects::FilesEffect::InspectNearby {
+                transfer: transfer.handle,
+            },
+            "status",
+            t("files-nearby-status"),
+        );
+        inspect.description = Some(t("files-nearby-status-detail"));
+        resource.actions.push(inspect);
         self.append_nearby_decision_actions(&mut resource, transfer);
         if transfer.phase == NearbyTransferPhase::Failed {
             resource.actions.push(crate::effects::row_action(
@@ -8060,7 +8078,7 @@ impl FileExplorerWidget {
                 t("files-nearby-cancelled"),
             ));
         }
-        (!resource.actions.is_empty()).then_some(resource)
+        resource
     }
 
     #[allow(
