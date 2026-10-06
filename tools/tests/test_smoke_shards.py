@@ -20,7 +20,14 @@ class SmokeShards(unittest.TestCase):
                 "import json,os,pathlib,signal,sys,time\n"
                 "pathlib.Path(os.environ['FIXTURE_ROOT'],f'chrome-{os.getpid()}.json')"
                 ".write_text(json.dumps(sys.argv[1:]))\n"
-                "signal.signal(signal.SIGTERM,lambda *args:sys.exit(0))\n"
+                "profile=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv[1:] if a.startswith('--user-data-dir=')))\n"
+                "profile.mkdir(parents=True)\n"
+                "def stop(*args):\n"
+                " time.sleep(.05)\n"
+                " if not profile.exists():pathlib.Path(os.environ['FIXTURE_ROOT'],'cleanup-race').touch()\n"
+                " else:(profile/'shutdown').write_text('flushed')\n"
+                " sys.exit(0)\n"
+                "signal.signal(signal.SIGTERM,stop)\n"
                 "while True:time.sleep(.01)\n"
             )
             curl = root / "curl"
@@ -65,6 +72,8 @@ class SmokeShards(unittest.TestCase):
             )
             workers = [json.loads(p.read_text()) for p in root.glob("worker-*.json")]
             browsers = [json.loads(p.read_text()) for p in root.glob("chrome-*.json")]
+            self.assertFalse((root / "cleanup-race").exists(), "profile removed before browser exit")
+            self.assertEqual(list(root.glob("smoke-browsers.*")), [])
             return result, workers, browsers
 
     def test_every_probe_runs_once_in_separate_browser_profiles(self):

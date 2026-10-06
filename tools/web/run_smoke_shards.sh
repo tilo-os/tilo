@@ -21,6 +21,11 @@ cleanup() {
   for pid in "${workers[@]}" "${browsers[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
+  # Chromium may still flush its profile after SIGTERM. Reap our children
+  # before removing it so their writes cannot race recursive removal.
+  for pid in "${workers[@]}" "${browsers[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
   rm -rf "$profiles"
 }
 trap cleanup EXIT
