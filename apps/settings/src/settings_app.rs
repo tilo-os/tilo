@@ -878,6 +878,14 @@ impl Widget for SettingsApp {
             .unwrap_or_default()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        // This root only delegates painting. Keep the shell's visual bounds
+        // instead of expanding every control hover to the whole app window.
+        if let Some(shell) = &self.shell {
+            shell.collect_damage(regions);
+        }
+    }
+
     fn name(&self) -> &'static str {
         "SettingsApp"
     }
@@ -947,6 +955,121 @@ impl AppWidget for SettingsApp {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+
+    struct DamageWitness {
+        app: SettingsApp,
+        frames: std::rc::Rc<std::cell::RefCell<Vec<Vec<vello::kurbo::Rect>>>>,
+    }
+
+    impl ui::widget::Decorator for DamageWitness {
+        type Inner = SettingsApp;
+
+        fn inner(&self) -> &SettingsApp {
+            &self.app
+        }
+
+        fn inner_mut(&mut self) -> &mut SettingsApp {
+            &mut self.app
+        }
+
+        fn mark_drawn(&mut self) {
+            let mut regions = Vec::new();
+            self.app.collect_damage(&mut regions);
+            self.frames.borrow_mut().push(regions);
+            self.app.mark_drawn();
+        }
+    }
+
+    #[test]
+    fn settings_sidebar_hover_damage_covers_changed_pixels_without_the_whole_window() {
+        for theme in [
+            ui::Theme::dark(),
+            ui::Theme::light(),
+            ui::Theme::high_contrast(),
+        ] {
+            sidebar_hover_damage_for_theme(theme);
+        }
+    }
+
+    fn sidebar_hover_damage_for_theme(theme: ui::Theme) {
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut harness = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            DamageWitness {
+                app: config.app(),
+                frames: std::rc::Rc::clone(&frames),
+            },
+            (1200, 700),
+            theme.with_reduce_motion(true),
+        );
+        let bounds = harness
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.role() == ui::accesskit::Role::Button && node.label() == Some("Hide sidebar"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .expect("the real shared sidebar toggle is exposed");
+        let pointer = |x, y| winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        };
+        harness.send(&pointer(1190.0, 690.0));
+        let mut renderer =
+            ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1200, 700)
+                .expect("the pixel oracle requires the production GPU fine rasterizer");
+        let background = harness.theme().tokens.colors.surfaces.content;
+        let before = harness.render_rgba_with(&mut renderer, background);
+        assert!(
+            before == harness.render_rgba_with(&mut renderer, background),
+            "an unchanged frame must rasterize identically"
+        );
+        frames.borrow_mut().clear();
+        harness.send(&pointer(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        ));
+        let after = harness.render_rgba_with(&mut renderer, background);
+        assert_eq!(before.len(), 1200 * 700 * 4);
+        assert_eq!(after.len(), before.len());
+        let regions = frames
+            .borrow()
+            .last()
+            .cloned()
+            .expect("hover paints a frame");
+        assert!(!regions.is_empty(), "hover publishes real visual damage");
+        let area: f64 = regions.iter().map(vello::kurbo::Rect::area).sum();
+        assert!(
+            area < 1200.0 * 700.0 / 2.0,
+            "a sidebar control must qualify for local repaint: {regions:?}"
+        );
+        let mut changed = 0_usize;
+        for (index, (old, new)) in before
+            .chunks_exact(4)
+            .zip(after.chunks_exact(4))
+            .enumerate()
+        {
+            if old == new {
+                continue;
+            }
+            changed = changed.saturating_add(1);
+            let x = u32::try_from(index % 1200).expect("pixel column");
+            let y = u32::try_from(index / 1200).expect("pixel row");
+            let point = vello::kurbo::Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+            assert!(
+                regions
+                    .iter()
+                    .any(|region| region.inflate(16.0, 16.0).contains(point)),
+                "hover changed pixel {point:?} {old:?}->{new:?} outside submitted damage {regions:?}"
+            );
+        }
+        assert!(
+            changed > 0,
+            "the production pointer route visibly changes the toggle"
+        );
+    }
 
     fn layout_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
         layout_at_with_theme(app, w, h, &ui::Theme::dark())

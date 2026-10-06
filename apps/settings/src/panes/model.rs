@@ -45,6 +45,9 @@ pub struct ModelPane<M: PaneModel> {
     model: Shared<M>,
     composed: Option<Box<dyn Widget>>,
     structure_dirty: bool,
+    composition_dirty: bool,
+    composition_paint_dirty: bool,
+    drawn_rect: Rect,
     rect: Rect,
 }
 
@@ -54,6 +57,9 @@ impl<M: PaneModel> ModelPane<M> {
             model,
             composed: None,
             structure_dirty: false,
+            composition_dirty: true,
+            composition_paint_dirty: true,
+            drawn_rect: Rect::ZERO,
             rect: Rect::ZERO,
         }
     }
@@ -68,6 +74,7 @@ impl<M: PaneModel> Widget for ModelPane<M> {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.model.borrow_mut().poll() {
             self.structure_dirty = true;
+            self.composition_dirty = true;
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -80,9 +87,18 @@ impl<M: PaneModel> Widget for ModelPane<M> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.model.borrow().compose();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        // A layout pass must keep the controls' retained state. Recompose only
+        // when the model reports a change, independently of the structural flag
+        // that the host consumes before rebuilding its layout tree.
+        if self.composition_dirty {
+            self.composed = Some(self.model.borrow().compose());
+            self.composition_dirty = false;
+            self.composition_paint_dirty = true;
+        }
+        let child = self
+            .composed
+            .get_or_insert_with(|| self.model.borrow().compose())
+            .build_layout(taffy, theme, node_map);
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
@@ -132,6 +148,36 @@ impl<M: PaneModel> Widget for ModelPane<M> {
             && let Some(&cn) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
+        }
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.composition_paint_dirty {
+            // Replacement can erase old text between the new child's boxes.
+            // Keep both painted extents until the replacement frame is drawn.
+            regions.push(if self.drawn_rect.is_zero_area() {
+                self.rect
+            } else {
+                self.rect.union(self.drawn_rect)
+            });
+        } else if let Some(composed) = &self.composed {
+            composed.collect_damage(regions);
+        }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.composition_paint_dirty
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|child| child.needs_redraw())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.composition_paint_dirty = false;
+        self.drawn_rect = self.rect;
+        if let Some(composed) = &mut self.composed {
+            composed.mark_drawn();
         }
     }
 
