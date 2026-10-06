@@ -1044,14 +1044,13 @@ mod tests {
         let targets = driver.targets();
         assert_eq!(
             driver
-                .a11y_nodes()
-                .into_iter()
-                .filter(|(_, node)| {
-                    node.label() == Some("History") && node.role() == accesskit::Role::Button
-                })
-                .count(),
+                .action_ui_routes(&tilo_actions::ActionAddress::new(
+                    crate::standalone_history_host::HISTORY_RESOURCE,
+                    "open",
+                ))
+                .len(),
             1,
-            "one integrated History button"
+            "one visible button bound to the canonical History action"
         );
         assert!(
             !targets.contains_key(crate::standalone_history_host::BAR_BUTTON_ID),
