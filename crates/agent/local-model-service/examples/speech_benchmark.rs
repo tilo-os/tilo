@@ -15,6 +15,7 @@ mod qualification {
     use sha2::{Digest as _, Sha256};
     use std::fs;
     use std::io::Read as _;
+    use std::io::Write as _;
     use std::path::{Path, PathBuf};
     use std::time::Instant;
     use zeroize::Zeroizing;
@@ -135,12 +136,14 @@ mod qualification {
         let model = manifest.models.get(&options.model).ok_or("model receipt")?;
         let bytes = receipt(root, &model.file, model.size, &model.sha256)?;
         let mut probes = Vec::new();
+        let long_language = options
+            .single_case
+            .as_deref()
+            .and_then(|id| id.strip_prefix("long-"));
         for case in manifest.cases {
-            if options
-                .single_case
-                .as_ref()
-                .is_some_and(|id| id != &case.id)
-            {
+            if options.single_case.as_ref().is_some_and(|id| {
+                long_language.map_or(id != &case.id, |language| language != case.language)
+            }) {
                 continue;
             }
             if case.size > u64::try_from(MAX_SAMPLES.saturating_mul(2).saturating_add(4096))?
@@ -151,7 +154,7 @@ mod qualification {
             let samples = wave(&receipt(root, &case.file, case.size, &case.sha256)?)?;
             probes.push(Probe { case, samples });
         }
-        if options.single_case.is_some() {
+        if options.single_case.is_some() && long_language.is_none() {
             if probes.len() != 1 || !probes.first().is_some_and(|probe| probe.case.primary) {
                 return Err("single public primary clip is unavailable".into());
             }
@@ -159,6 +162,9 @@ mod qualification {
         }
         // Unique public utterances are spliced; this is not natural conversation.
         for language in ["en", "fr", "zh"] {
+            if long_language.is_some_and(|selected| selected != language) {
+                continue;
+            }
             let source: Vec<_> = probes
                 .iter()
                 .filter(|probe| probe.case.language == language)
@@ -183,6 +189,13 @@ mod qualification {
             case.reference = references.join(" ");
             case.primary = true;
             probes.push(Probe { case, samples });
+        }
+        if let Some(id) = options.single_case.as_ref() {
+            let selected = probes
+                .into_iter()
+                .find(|probe| &probe.case.id == id)
+                .ok_or("single long public clip is unavailable")?;
+            return Ok((bytes, vec![selected]));
         }
         Ok((bytes, probes))
     }
@@ -213,6 +226,14 @@ mod qualification {
             .transcribe(&probe.samples, &auto)
             .map_err(|_| "auto recognition failed")?;
         let auto_ms = start.elapsed().as_millis();
+        if probe.case.id.starts_with("long-")
+            && engine
+                .transcribe(&probe.samples, &language)
+                .map_err(|_| "repeated long recognition failed")?
+                != text
+        {
+            return Err("long recognition retained state from another call".into());
+        }
         println!(
             "SPEECH_BENCHMARK {}",
             serde_json::json!({
@@ -227,6 +248,9 @@ mod qualification {
 
     pub fn run() -> Result<(), Failure> {
         let options = Options::parse();
+        if options.single_case.is_none() {
+            return batch(&options);
+        }
         // SAFETY: a fresh single-threaded qualification child owns no ambient
         // descriptor. Production memory/dump/death limits apply before loading.
         unsafe { local_model_service::speech::worker::prepare() }
@@ -243,6 +267,7 @@ mod qualification {
         let start = Instant::now();
         let mut engine = SpeechEngine::load(&mut model).map_err(|_| "model load failed")?;
         drop(model);
+        engine.prepare().map_err(|_| "decoder allocation failed")?;
         println!(
             "SPEECH_BENCHMARK_LOAD {}",
             serde_json::json!({
@@ -254,6 +279,47 @@ mod qualification {
         );
         for input in probes.into_iter().filter(|probe| probe.case.primary) {
             probe(&mut engine, &options.model, &input)?;
+        }
+        Ok(())
+    }
+
+    fn batch(options: &Options) -> Result<(), Failure> {
+        if fs::metadata(&options.manifest)?.len() > 1024 * 1024 {
+            return Err("manifest exceeds bound".into());
+        }
+        let manifest: Manifest = serde_json::from_slice(&fs::read(&options.manifest)?)?;
+        let mut ids: Vec<_> = manifest
+            .cases
+            .into_iter()
+            .filter(|case| case.primary)
+            .map(|case| case.id)
+            .collect();
+        if ids.len() != 18 {
+            return Err("missing primary public probes".into());
+        }
+        ids.extend(["long-en", "long-fr", "long-zh"].map(str::to_owned));
+        for id in ids {
+            // One fresh child at a time models one real dictation's memory,
+            // rather than preloading unrelated recordings into its budget.
+            let mut command = std::process::Command::new(std::env::current_exe()?);
+            command
+                .arg("--manifest")
+                .arg(&options.manifest)
+                .arg("--model")
+                .arg(&options.model)
+                .arg("--single-case")
+                .arg(&id);
+            let output = bounded_command::run_prepared(
+                command,
+                None,
+                128 * 1024,
+                std::time::Duration::from_secs(300),
+            )?;
+            std::io::stdout().lock().write_all(&output.stdout)?;
+            if !output.status.success() {
+                std::io::stderr().lock().write_all(&output.stderr)?;
+                return Err(format!("public probe {id} failed: {}", output.status).into());
+            }
         }
         Ok(())
     }

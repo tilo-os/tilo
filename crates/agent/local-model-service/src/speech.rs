@@ -125,6 +125,7 @@ pub fn confine_worker() -> Result<(), SpeechError> {
 
 unsafe extern "C" {
     fn tilo_speech_load(bytes: *mut u8, length: usize) -> *mut c_void;
+    fn tilo_speech_ready(context: *mut c_void) -> bool;
     fn tilo_speech_free(context: *mut c_void);
     fn tilo_speech_accepts(context: *mut c_void, language: *const c_char) -> bool;
     fn tilo_speech_transcribe(
@@ -158,6 +159,19 @@ impl SpeechEngine {
         NonNull::new(pointer)
             .map(Self)
             .ok_or(SpeechError::Recognition)
+    }
+    /// Allocate CPU decoder arenas after releasing the verified input bytes.
+    /// Call before announcing readiness or opening a microphone.
+    /// # Errors
+    /// Rejects failed native allocation under the existing worker limit.
+    pub fn prepare(&mut self) -> Result<(), SpeechError> {
+        // SAFETY: this exclusively owned handle stays live throughout the
+        // synchronous arena allocation; no input pointers are retained.
+        if unsafe { tilo_speech_ready(self.0.as_ptr()) } {
+            Ok(())
+        } else {
+            Err(SpeechError::Recognition)
+        }
     }
     /// Confirm engine language support before opening a microphone.
     /// # Errors

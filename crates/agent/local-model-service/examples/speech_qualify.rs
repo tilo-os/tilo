@@ -326,11 +326,20 @@ mod qualification {
         if arguments.first().is_some_and(|arg| arg == "--fixture") && arguments.len() == 4 {
             return child_fixture(arguments.get(1..).ok_or("fixture arguments")?);
         }
-        let mut model = fetch(
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
-            77_691_713,
-            "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
-        )?;
+        let small = arguments == ["--worker-small"] || arguments == ["--worker-core-small"];
+        let mut model = if small {
+            fetch(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+                190_085_487,
+                "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            )?
+        } else {
+            fetch(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
+                77_691_713,
+                "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+            )?
+        };
         let wave = fetch(
             "https://raw.githubusercontent.com/ggml-org/whisper.cpp/2eeeba56e9edd762b4b38467bab96c2517163158/samples/jfk.wav",
             352_078,
@@ -343,16 +352,21 @@ mod qualification {
                 .collect::<Vec<_>>(),
         );
         drop(wave);
-        if arguments == ["--worker"] || arguments == ["--worker-core"] {
-            worker_journey(&model, &pcm, arguments == ["--worker-core"])?;
+        if arguments == ["--worker"] || arguments == ["--worker-core"] || small {
+            worker_journey(
+                &model,
+                &pcm,
+                arguments == ["--worker-core"] || arguments == ["--worker-core-small"],
+            )?;
         } else if !arguments.is_empty() {
-            return Err("expected no arguments, --worker or --worker-core".into());
+            return Err("expected no arguments, --worker[-small] or --worker-core[-small]".into());
         }
         drop(pcm);
         local_model_service::speech::confine_worker().map_err(|_| "worker confinement failed")?;
         let start = Instant::now();
         let mut engine = SpeechEngine::load(&mut model).map_err(|_| "model load failed")?;
         drop(model);
+        engine.prepare().map_err(|_| "decoder allocation failed")?;
         let load_ms = start.elapsed().as_millis();
         let en = engine.language("en").map_err(|_| "English unavailable")?;
         let auto = engine

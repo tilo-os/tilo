@@ -2,13 +2,14 @@
 //! one-shot consent; neither a shortcut nor an action grants microphone access.
 use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
 use crate::compositor::dictation::{DictationError, DictationStatus, SessionId};
-use crate::shell::i18n::t;
+use crate::shell::i18n::{t, t_args};
 use std::time::Instant;
 use ui::a11y::AccessNode;
-use ui::widget::{PermissionPrompt, PromptChoice, Widget};
+use ui::widget::{PermissionPrompt, PromptChoice, Text, Widget};
 use vello::kurbo::Rect;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+use zeroize::Zeroize as _;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -32,6 +33,10 @@ pub(crate) struct DictationSurface {
     prompt: Option<PermissionPrompt>,
     pending: Option<Request>,
     changed: bool,
+    // Shared Text has no Debug/serialization surface; words stay in this
+    // local overlay, never in the permission prompt's diagnostic fields.
+    preview: Option<Text>,
+    preview_text: zeroize::Zeroizing<String>,
 }
 impl DictationSurface {
     pub(crate) fn owns_key(&self, key: &Key) -> bool {
@@ -87,6 +92,61 @@ impl DictationSurface {
     pub(crate) fn is_consent(&self) -> bool {
         self.phase == Some(Phase::Consent)
     }
+    pub(crate) fn is_model_setup(&self) -> bool {
+        self.phase == Some(Phase::Failure("dictation-model-required"))
+    }
+    pub(crate) fn preview(&mut self, transcript: Option<&str>) {
+        let active = matches!(
+            self.phase,
+            Some(Phase::Running(
+                DictationStatus::Listening
+                    | DictationStatus::Finishing
+                    | DictationStatus::StoppingRecording
+            ))
+        );
+        let transcript = transcript.filter(|text| active && !text.is_empty());
+        let Some(transcript) = transcript else {
+            self.changed |= self.preview.take().is_some();
+            self.preview_text.zeroize();
+            return;
+        };
+        // Bound glyph work as well as transcript storage. The complete draft
+        // remains in the private session; show only the last 160 scalars.
+        let start = transcript
+            .char_indices()
+            .rev()
+            .nth(159)
+            .map_or(0, |(offset, _)| offset);
+        let excerpt = transcript.get(start..).unwrap_or_default();
+        if self.preview_text.as_str() == excerpt {
+            return;
+        }
+        self.preview_text.zeroize();
+        self.preview_text.push_str(excerpt);
+        let label = t_args("dictation-live-preview", &[("text", excerpt.into())]);
+        self.preview = Some(
+            Text::new(&label)
+                .with_id("dictation.live-preview")
+                .with_role(ui::tokens::TextRole::Caption)
+                .with_live(ui::a11y::Politeness::Polite),
+        );
+        self.changed = true;
+    }
+    fn preview_rect(geometry: LayerGeometry<'_>) -> Rect {
+        let prompt = Self::surface_rect(geometry);
+        let spacing = ui::tokens::Spacing::BASE;
+        Rect::new(
+            prompt.x0,
+            prompt.y1,
+            prompt.x1,
+            prompt.y1 + f64::from(spacing.s8 + spacing.s8),
+        )
+    }
+    pub(crate) fn contains(&self, geometry: LayerGeometry<'_>, point: vello::kurbo::Point) -> bool {
+        self.prompt.is_some()
+            && (Self::surface_rect(geometry).contains(point)
+                || self.preview.is_some() && Self::preview_rect(geometry).contains(point))
+    }
     pub(crate) fn surface_rect(geometry: LayerGeometry<'_>) -> Rect {
         let area = geometry.focused_output.unwrap_or(geometry.viewport);
         let spacing = ui::tokens::Spacing::BASE;
@@ -102,7 +162,9 @@ impl DictationSurface {
         if self.phase == Some(phase) {
             return;
         }
-        let labels = if phase == Phase::Consent {
+        let labels = if phase == Phase::Failure("dictation-model-required") {
+            ["dictation-open-settings", "dictation-cancel"]
+        } else if phase == Phase::Consent {
             ["dictation-record-once", "dictation-cancel"]
         } else if matches!(phase, Phase::Running(DictationStatus::Recovery { .. })) {
             ["dictation-copy-transcript", "dictation-discard-transcript"]
@@ -111,18 +173,25 @@ impl DictationSurface {
         } else {
             ["dictation-cancel", "dictation-cancel"]
         };
+        let icon = if phase == Phase::Running(DictationStatus::Listening) {
+            ui::icons::Icon::Mic
+        } else {
+            ui::icons::Icon::MicOff
+        };
         let mut prompt = PermissionPrompt::for_local_input(
             t("dictation-title"),
             t(message),
             labels,
             phase == Phase::Consent,
-        );
+        )
+        .with_icon(icon);
         prompt.set_focus(phase == Phase::Consent);
         self.changed = true;
         self.prompt = Some(prompt);
         self.phase = Some(phase);
     }
     pub(crate) fn prepare(&mut self, id: SessionId) {
+        self.preview(None);
         self.id = Some(id);
         self.show(Phase::Preparing, "dictation-preparing");
     }
@@ -130,6 +199,14 @@ impl DictationSurface {
         self.show(Phase::Consent, "dictation-consent");
     }
     pub(crate) fn status(&mut self, status: DictationStatus) {
+        if !matches!(
+            status,
+            DictationStatus::Listening
+                | DictationStatus::Finishing
+                | DictationStatus::StoppingRecording
+        ) {
+            self.preview(None);
+        }
         let message = match status {
             DictationStatus::Idle => {
                 self.close();
@@ -162,6 +239,7 @@ impl DictationSurface {
         self.show(Phase::Running(status), message);
     }
     pub(crate) fn failure(&mut self, error: DictationError) {
+        self.preview(None);
         let key = match error {
             DictationError::NoEditableField | DictationError::SensitiveField => {
                 "dictation-editable-required"
@@ -185,6 +263,8 @@ impl DictationSurface {
                 Some(Phase::Running(DictationStatus::Recovery { .. }))
             ) {
                 "copy-transcript"
+            } else if self.is_model_setup() {
+                "open-settings"
             } else if self.is_consent() {
                 "record-once"
             } else if self.phase == Some(Phase::Running(DictationStatus::Listening)) {
@@ -202,8 +282,13 @@ impl DictationSurface {
         self.id = None;
         self.phase = None;
         self.prompt = None;
+        self.preview = None;
+        self.preview_text.zeroize();
     }
-    fn choice(&mut self, choice: PromptChoice) {
+    fn choice(&mut self, choice: PromptChoice) -> Option<LayerIntent> {
+        if self.is_model_setup() && choice == PromptChoice::Allow {
+            return Some(LayerIntent::DictationSetup);
+        }
         self.pending = match (self.phase, self.id, choice) {
             (
                 Some(Phase::Running(DictationStatus::Recovery { .. })),
@@ -216,8 +301,10 @@ impl DictationSurface {
             }
             _ => Some(Request::Cancel(self.id)),
         };
+        None
     }
 }
+
 fn error_key(error: crate::compositor::dictation::runtime::RuntimeError) -> &'static str {
     use crate::compositor::dictation::runtime::RuntimeError as E;
     use agent_provider_config::speech::SpeechError as S;
@@ -247,7 +334,7 @@ impl ShellLayer for DictationSurface {
         }
         let inside = cx
             .cursor
-            .is_some_and(|point| Self::surface_rect(cx.geometry).contains(point));
+            .is_some_and(|point| self.contains(cx.geometry, point));
         let pointer = matches!(
             event,
             WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
@@ -261,8 +348,10 @@ impl ShellLayer for DictationSurface {
         if let Some(prompt) = self.prompt.as_mut() {
             prompt.set_rect(Self::surface_rect(cx.geometry));
             prompt.handle_event(event, cx.event);
-            if let Some(choice) = prompt.pending_choice.take() {
-                self.choice(choice);
+            if let Some(choice) = prompt.pending_choice.take()
+                && let Some(intent) = self.choice(choice)
+            {
+                cx.request(intent);
             }
         }
         cx.request(LayerIntent::Repaint);
@@ -293,6 +382,38 @@ impl ShellLayer for DictationSurface {
                 );
             }
         }
+        if let Some(preview) = self.preview.as_mut() {
+            let rect = Self::preview_rect(cx.geometry);
+            let pad = f64::from(cx.theme.tokens.spacing.s4);
+            cx.scene.fill(
+                vello::peniko::Fill::NonZero,
+                cx.transform,
+                cx.theme.tokens.colors.surfaces.overlay,
+                None,
+                &rect,
+            );
+            preview.apply_layout_external(Rect::new(
+                rect.x0 + pad,
+                rect.y0 + pad,
+                rect.x1 - pad,
+                rect.y1 - pad,
+            ));
+            cx.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                cx.transform,
+                &rect,
+            );
+            preview.draw(
+                cx.scene,
+                cx.transform,
+                cx.text_renderer,
+                cx.theme,
+                cx.presence,
+            );
+            cx.scene.pop_layer();
+        }
     }
     fn accessibility(&self, _geometry: LayerGeometry<'_>) -> Option<AccessNode> {
         let mut node = self.prompt.as_ref()?.accessibility()?;
@@ -308,13 +429,24 @@ impl ShellLayer for DictationSurface {
         if let Some(child) = node.children.get_mut(1) {
             child.action_target = Some(self.cancel_target());
         }
+        if let Some(preview) = self.preview.as_ref().and_then(Widget::accessibility) {
+            node.children.push(preview);
+        }
         Some(node)
     }
     fn accessibility_rect(&self, geometry: LayerGeometry<'_>, path: &[usize]) -> Option<Rect> {
+        let choices = self.prompt.as_ref()?.accessibility()?.children.len();
+        if self.preview.is_some() && path == [choices] {
+            return Some(Self::preview_rect(geometry));
+        }
         let mut prompt = self.prompt.clone()?;
         prompt.set_rect(Self::surface_rect(geometry));
         if path.is_empty() {
-            Some(prompt.get_rect())
+            Some(if self.preview.is_some() {
+                prompt.get_rect().union(Self::preview_rect(geometry))
+            } else {
+                prompt.get_rect()
+            })
         } else {
             prompt.synthetic_accessibility_rect(path)
         }
@@ -325,6 +457,9 @@ impl ShellLayer for DictationSurface {
             .is_some_and(|prompt| prompt.focus_synthetic_accessibility(path))
     }
     fn semantic_intent(&self, target: &str) -> Option<LayerIntent> {
+        if self.is_model_setup() && target == self.affirmative_target() {
+            return Some(LayerIntent::DictationSetup);
+        }
         let request = if target == self.cancel_target() {
             Request::Cancel(self.id)
         } else if target == self.affirmative_target() {
@@ -350,5 +485,64 @@ impl ShellLayer for DictationSurface {
     }
     fn tick(&mut self, _now: Instant) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_streaming_preview_is_bounded_accessible_and_cleared_on_retirement() {
+        let mut surface = DictationSurface::default();
+        surface.status(DictationStatus::Listening);
+        let finish = surface.affirmative_target();
+        let draft = "Private public fixture 👋 日本語 ".repeat(200);
+        surface.preview(Some(&draft));
+        assert_eq!(surface.preview_text.chars().count(), 160);
+        let geometry = LayerGeometry {
+            viewport: Rect::new(0.0, 0.0, 1280.0, 800.0),
+            outputs: &[],
+            focused_output: None,
+        };
+        let node = surface.accessibility(geometry).unwrap();
+        let caption_rect = DictationSurface::preview_rect(geometry);
+        assert!(surface.contains(geometry, caption_rect.center()));
+        assert!(
+            surface
+                .accessibility_rect(geometry, &[])
+                .unwrap()
+                .contains(caption_rect.center())
+        );
+        assert_eq!(node.children.len(), 3);
+        assert_eq!(
+            node.children.first().unwrap().action_target.as_deref(),
+            Some(finish.as_str())
+        );
+        assert!(
+            node.children
+                .last()
+                .unwrap()
+                .name
+                .as_deref()
+                .unwrap()
+                .contains("日本語")
+        );
+        assert!(
+            !format!("{:?}", surface.prompt.as_ref().unwrap()).contains("Private public fixture")
+        );
+        assert!(matches!(
+            surface.semantic_intent(&finish),
+            Some(LayerIntent::Dictation(_))
+        ));
+        surface.status(DictationStatus::Recovery {
+            copied: false,
+            copy_failed: false,
+        });
+        assert!(surface.preview.is_none() && surface.preview_text.is_empty());
+        surface.status(DictationStatus::Idle);
+        surface.preview(Some(&draft));
+        assert!(surface.preview.is_none() && surface.accessibility(geometry).is_none());
+        assert!(!surface.contains(geometry, caption_rect.center()));
     }
 }

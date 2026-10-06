@@ -27,7 +27,8 @@ mod speech;
 pub use speech::{PhononTranscript, SpeechError, SpeechUpdate};
 
 /// Maximum lifetime, including final recognition, without retaining audio.
-pub const SESSION_WINDOW: Duration = Duration::from_secs(120);
+// Startup + at most 105 seconds of capture + a bounded CPU finalization pass.
+pub const SESSION_WINDOW: Duration = Duration::from_secs(180);
 /// A strict bound on a draft's UTF-8 bytes, independent of model output.
 pub const MAX_DRAFT_BYTES: usize = 16 * 1024;
 /// Fits the standard 4096-byte Wayland frame, including protocol overhead.
@@ -116,7 +117,7 @@ struct Session {
     id: SessionId,
     target: Target,
     deadline: Instant,
-    draft: String,
+    draft: zeroize::Zeroizing<String>,
 }
 
 // Private bounded transcript; never part of workspace state or diagnostic output.
@@ -157,6 +158,16 @@ impl Dictation {
 }
 
 impl State {
+    /// A private live hypothesis for the original local input session only.
+    /// It is not workspace state and must not enter diagnostics or history.
+    pub(crate) fn dictation_preview(&self, id: SessionId) -> Option<&str> {
+        self.text_commit
+            .dictation
+            .session
+            .as_ref()
+            .filter(|session| session.id == id)
+            .map(|session| session.draft.as_str())
+    }
     /// Prepare a session before opening the microphone. On an idle seat,
     /// lend the compositor an in-process input method using the existing private
     /// credential. An existing OSK or composing IME retains ownership.
@@ -261,7 +272,7 @@ impl State {
                 id,
                 target,
                 deadline: now.checked_add(SESSION_WINDOW).unwrap_or(now),
-                draft: String::new(),
+                draft: zeroize::Zeroizing::new(String::new()),
             });
         }
         Ok(ready)
@@ -288,7 +299,7 @@ impl State {
             id,
             target,
             deadline: now.checked_add(SESSION_WINDOW).unwrap_or(now),
-            draft: String::new(),
+            draft: zeroize::Zeroizing::new(String::new()),
         });
         Ok(id)
     }
@@ -306,6 +317,7 @@ impl State {
         draft: String,
         now: Instant,
     ) -> Result<(), DictationError> {
+        let draft = zeroize::Zeroizing::new(draft);
         self.validate_dictation(id, now)?;
         let error = if draft.len() > MAX_DRAFT_BYTES {
             Some(DictationError::DraftTooLarge)
@@ -342,7 +354,7 @@ impl State {
         if session.draft.len() > MAX_COMMIT_BYTES {
             self.text_commit.dictation.recovery = Some(Recovery {
                 id,
-                text: zeroize::Zeroizing::new(session.draft),
+                text: session.draft,
                 deadline: now.checked_add(RECOVERY_WINDOW).unwrap_or(now),
                 copied: false,
                 copy_failed: false,
@@ -357,7 +369,7 @@ impl State {
         // Validation and commit run together on the compositor thread. There
         // is no delayed request that could re-target itself while waiting.
         self.seat.text_input().with_active_text_input(|field, _| {
-            field.commit_string(Some(session.draft.clone()));
+            field.commit_string(Some(session.draft.to_string()));
         });
         self.seat.text_input().done(false);
         self.cancel_active_dictation();
@@ -493,6 +505,12 @@ impl State {
             .as_mut()
             .filter(|recognition| recognition.id == id)
             .ok_or(DictationError::StaleSession)?;
+        if matches!(
+            recognition.phase,
+            DictationStatus::StoppingRecording | DictationStatus::Finishing
+        ) {
+            return Ok(());
+        }
         if recognition.phase != DictationStatus::Listening {
             return Err(DictationError::Busy);
         }
