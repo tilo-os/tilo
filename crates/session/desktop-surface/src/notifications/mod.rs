@@ -14,6 +14,7 @@ mod history;
 mod log;
 mod model;
 mod persistence;
+mod reader;
 mod stack;
 
 pub use center::{CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, RowControl};
