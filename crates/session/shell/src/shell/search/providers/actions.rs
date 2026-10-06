@@ -937,6 +937,24 @@ const fn chrome(
 impl Action {
     const ALL: &'static [Action] = &[
         chrome(
+            "dictation.toggle",
+            "shortcut-name-dictation-toggle",
+            "dictation-action-start-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationToggle),
+        ),
+        chrome(
+            "dictation.finish",
+            "shortcut-name-dictation-finish",
+            "dictation-action-finish-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationFinish),
+        ),
+        chrome(
+            "dictation.cancel",
+            "shortcut-name-dictation-cancel",
+            "dictation-action-cancel-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
+        ),
+        chrome(
             "overview.toggle",
             "search-action-overview-toggle",
             "search-action-overview-toggle-subtitle",

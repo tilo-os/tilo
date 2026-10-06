@@ -112,7 +112,7 @@ impl CapturePurpose {
 
 impl AudioCapture {
     pub fn start(source: AudioSource) -> Result<Self, String> {
-        Self::start_for(source, CapturePurpose::Recording)
+        Self::start_for(source, CapturePurpose::Recording, None)
     }
 
     /// Start only after the user requested dictation and its edit target and
@@ -120,11 +120,31 @@ impl AudioCapture {
     /// resampling; no samples are skipped by this process. The spawning
     /// thread must stay alive until capture stops: parent death kills capture.
     pub fn start_dictation_microphone() -> Result<Self, String> {
-        Self::start_for(AudioSource::Microphone, CapturePurpose::Dictation)
+        Self::start_for(AudioSource::Microphone, CapturePurpose::Dictation, None)
     }
 
-    fn start_for(source: AudioSource, purpose: CapturePurpose) -> Result<Self, String> {
+    pub(super) fn start_dictation_if_active(cancel: &AtomicBool) -> Result<Self, String> {
+        Self::start_for(
+            AudioSource::Microphone,
+            CapturePurpose::Dictation,
+            Some(cancel),
+        )
+    }
+
+    fn start_for(
+        source: AudioSource,
+        purpose: CapturePurpose,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Self, String> {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err("dictation canceled".into());
+        }
         let target = default_target(source)?;
+        // A canceled startup must not open the microphone after the bounded
+        // source probe returns. The owner remains alive through teardown.
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err("dictation canceled".into());
+        }
         let args = match purpose {
             CapturePurpose::Recording => capture_args(source, &target),
             CapturePurpose::Dictation => vec![

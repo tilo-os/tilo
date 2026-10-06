@@ -1695,6 +1695,7 @@ fn route_keyboard_input(
         let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
+            || fb.host().dictation_owns_key(&key.logical_key)
             || (!shortcuts_inhibited(state)
                 && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open)))
             || state.global_shortcuts.claims(&key.physical_key, modifiers);
@@ -1728,7 +1729,8 @@ fn route_keyboard_input(
     } else {
         state.global_shortcuts.release(&key.physical_key)
     };
-    let shell_owns = captured || shell_chord || granted;
+    let shell_owns =
+        captured || shell_chord || granted || fb.host().dictation_owns_key(&key.logical_key);
     let forward = track_forwarded_key(
         &mut state.client_input.forwarded_keys,
         code,
@@ -1948,6 +1950,11 @@ pub fn finish_chrome_drag_into_shell(
     reason = "Pointer targeting is an ordered routing policy: separating the Chrome, client drag-and-drop, implicit-grab, and capture cases could reorder focus delivery during a held gesture."
 )]
 fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> Option<TileHit> {
+    if state.client_input.grab.is_none()
+        && fb.host().dictation_pointer_at(state.client_input.cursor())
+    {
+        return None;
+    }
     match state.client_input.grab {
         // A file carried out of the hosted file manager: the drop target is whichever client the pointer is over, so hit-test normally, as for a client's own drag below.
         Some(PointerOwner::Chrome) if state.selection.chrome_drag.is_some() => {
