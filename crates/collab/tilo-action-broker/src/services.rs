@@ -2,6 +2,9 @@
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 
+/// The normal desktop opening deadline, shared with placement retirement.
+pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub use crate::collab_broker_capnp::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
@@ -130,6 +133,44 @@ pub struct LaunchContent<'a> {
     pub author: Option<&'a str>,
 }
 
+/// One admitted launch's actual startup observation. Dropping an unanswered
+/// observation retires its host-side subscription; enqueueing a worker is
+/// never sufficient to produce this receipt.
+pub struct LaunchReadiness {
+    receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    retire: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl LaunchReadiness {
+    pub fn new(
+        receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
+        retire: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            receiver,
+            retire: Some(Box::new(retire)),
+        }
+    }
+
+    /// Wait for an adopted window or a terminal startup failure.
+    ///
+    /// # Errors
+    /// Returns the launcher failure, or that its observer disappeared.
+    pub async fn wait(mut self) -> Result<(), String> {
+        (&mut self.receiver)
+            .await
+            .map_err(|_| "the application startup observer stopped".to_string())?
+    }
+}
+
+impl Drop for LaunchReadiness {
+    fn drop(&mut self) {
+        if let Some(retire) = self.retire.take() {
+            retire();
+        }
+    }
+}
+
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`.
@@ -138,6 +179,22 @@ pub trait LauncherServices: Send + Sync {
     ///
     /// Returns a message when the host cannot launch the application.
     fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String>;
+    /// Launch an exact installed package, or an ordinary host application,
+    /// and observe its real startup in the authenticated workspace.
+    ///
+    /// # Errors
+    /// Refuses when this host cannot provide startup observations. An empty
+    /// package root selects the ordinary installed application identity.
+    fn begin_launch(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &Workspace,
+        author: Option<&str>,
+    ) -> Result<LaunchReadiness, String> {
+        let _ = (app, package_root, workspace, author);
+        Err("observed application startup is unavailable on this host".into())
+    }
     /// Launch `app` into `workspace`, opening the content-addressed bytes
     /// `content` names read-only, read through the calling application's own
     /// scope. An empty hash is a plain launch. A host that cannot stage
