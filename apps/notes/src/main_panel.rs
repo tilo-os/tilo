@@ -305,6 +305,7 @@ pub struct MainPanel {
     /// True until the next `mark_drawn`. Flipped on page swap, on
     /// title change, on rect resize, on editor mutations.
     dirty: bool,
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     /// Vertical scroll offset for the panel body (in CSS-like px).
     /// Bumped by mouse-wheel events; clamped each frame to the
     /// content overflow extent in `apply_layout`. We hand-roll this
@@ -371,6 +372,7 @@ impl MainPanel {
             editor_node: None,
             title_node: None,
             dirty: true,
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             scroll_y: 0.0,
             scroll_content_height: 0.0,
             bottom_inset: 0.0,
@@ -1478,8 +1480,9 @@ impl Widget for MainPanel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let incoming = std::mem::take(scene);
         // No ground: the window paints `surfaces.content` under the panel.
-        if self.page_id.is_some() {
+        if let Some(page_id) = self.page_id {
             // Prominent, editable page title, drawn OUTSIDE the scroll clip so
             // it stays pinned while the body scrolls under it.
             self.title_label.apply_layout_external(self.title_rect);
@@ -1511,9 +1514,14 @@ impl Widget for MainPanel {
             if let Some(header) = self.header.built_mut() {
                 header.draw(scene, transform, text_renderer, theme, presence);
             }
+            let mut outside = scene.clone();
+            let mut editor_scene = Scene::new();
             self.editor
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(&mut editor_scene, transform, text_renderer, theme, presence);
+            scene.append(&editor_scene, None);
             scene.pop_layer();
+            outside.pop_layer();
+            let mut complete = std::mem::take(scene);
             if self.scroll_thumb().is_some() {
                 self.scrollbar.draw(
                     scene,
@@ -1530,7 +1538,29 @@ impl Widget for MainPanel {
             self.editor
                 .editor_mut()
                 .draw_overlay(scene, transform, text_renderer, theme);
+            let suffix = std::mem::take(scene);
+            complete.append(&suffix, None);
+            outside.append(&suffix, None);
+            *scene = complete;
+            let mut editor_damage = Vec::new();
+            self.editor.collect_damage(&mut editor_damage);
+            self.paint_damage.record(
+                self.rect,
+                Some(ui::widget::paint_damage::PaintFrame::new(
+                    vec![self.rect, self.title_rect, body_clip, self.scroll_track],
+                    transform,
+                    theme,
+                    outside,
+                    vec![ui::widget::paint_damage::PaintPart::new(
+                        page_id.to_string(),
+                        self.editor.get_rect(),
+                        editor_scene,
+                        editor_damage,
+                    )],
+                )),
+            );
         } else {
+            self.paint_damage.record(self.rect, None);
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
@@ -1555,6 +1585,8 @@ impl Widget for MainPanel {
                 );
             }
         }
+        let own = std::mem::replace(scene, incoming);
+        scene.append(&own, None);
     }
 
     #[allow(
@@ -1939,7 +1971,21 @@ impl Widget for MainPanel {
         self.dirty || self.editor.needs_redraw()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
+        self.paint_damage.mark_drawn();
         self.dirty = false;
         self.editor.mark_drawn();
     }
@@ -1961,6 +2007,10 @@ impl Widget for MainPanel {
 }
 
 impl MainPanel {
+    pub(crate) fn has_editor_popup(&self) -> bool {
+        self.editor.editor().has_open_popup()
+    }
+
     pub fn take_tag_open(&mut self) -> Option<crate::model::TagId> {
         self.pending_tag_open.take()
     }
