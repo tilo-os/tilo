@@ -50,24 +50,24 @@ fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<
         .collect()
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "both `chrome` and `tree` back the values handed to `f` at the final call, which is \
-              the whole point of this function — there is no earlier point to drop either guard"
-)]
 fn with_action_gate<R>(
     chrome_handle: &crate::shell::chrome_state::Chrome,
     f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
 ) -> Result<R, String> {
     let chrome = chrome_handle.borrow();
-    let tree = chrome.tree();
-    let workspace = tree
-        .desktop
-        .active_workspace()
-        .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
+    // Visibility is an inert snapshot, not mutation authority. Do not retain
+    // the membership read lock while callbacks recheck certified admission:
+    // a queued writer can make a nested read wait on our own outer guard.
+    let workspace = {
+        let tree = chrome.tree();
+        tree.desktop
+            .active_workspace()
+            .cloned()
+            .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?
+    };
     let actor_id = chrome.local_user_for_room(&workspace.room);
     let actor = workspace.actor_for_person(&actor_id);
-    let gate = CapabilityVisibility::new(workspace, actor);
+    let gate = CapabilityVisibility::new(&workspace, actor);
     Ok(f(&chrome, &gate))
 }
 use smithay::reexports::calloop::{self, EventLoop, Interest, Mode, PostAction, generic::Generic};
@@ -12427,6 +12427,63 @@ mod tests {
             OskPreference::Auto,
             OskInput::from_environment(&ctx.input)
         ));
+    }
+
+    #[test]
+    fn action_gate_releases_membership_lock_before_real_callback() {
+        use crate::shell::state::{FreshId as _, WorkspaceId};
+        use tilo_action_broker::services::WorkspaceAuthority as _;
+
+        let id = WorkspaceId::new();
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        tree.desktop
+            .workspaces
+            .push(crate::shell::state::Workspace::new(id, "Gate test"));
+        tree.desktop.active = id;
+        let handle = tree.shared();
+        let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+            handle.clone(),
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
+        with_action_gate(&chrome, |_, gate| {
+            let write = handle.try_write().expect(
+                "action callback must not inherit a membership read guard that blocks writers",
+            );
+            drop(write);
+            let current = crate::shell::broker_services::NativeWorkspaceAuthority(handle.clone())
+                .snapshot()
+                .expect("the real certified-admission membership source remains readable");
+            assert_eq!(current.active, id);
+            assert!(
+                !gate.can_see(
+                    &ResourceRef::new("applications", "so.tilo.chat"),
+                    &crate::shell::search::ResourceKind::Application,
+                ),
+                "snapshot visibility must still deny an ungranted application write"
+            );
+            assert!(
+                gate.can_see(
+                    &ResourceRef::new("notes", "note"),
+                    &crate::shell::search::ResourceKind::Note,
+                ),
+                "ordinary view-only resources retain their existing visibility"
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn action_gate_missing_workspace_never_calls_the_callback() {
+        let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
+        assert!(
+            with_action_gate(&chrome, |_, _| panic!(
+                "missing workspace cannot expose actions"
+            ))
+            .is_err()
+        );
     }
 
     #[test]
