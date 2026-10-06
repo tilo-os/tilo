@@ -6,6 +6,30 @@ use crate::shell::state::WorkspaceTree;
 use automerge::{ReadDoc as _, ScalarValue};
 
 #[test]
+fn overlapping_agent_marker_opens_only_the_exact_room_bound_choices() {
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+    assert!(host.open_agent_conversation_from_user_navigation(
+        "room-a",
+        &[
+            ("scribe".into(), "Scribe".into()),
+            ("quill".into(), "Quill".into()),
+            ("scribe".into(), "Scribe".into()),
+        ],
+    ));
+    let chooser = host
+        .agent_navigation_chooser
+        .as_ref()
+        .expect("ambiguous paint opens the scoped shell chooser");
+    assert_eq!(chooser.room, "room-a");
+    assert_eq!(chooser.agents, ["quill", "scribe"]);
+    assert!(host.palette_visible());
+    assert!(
+        host.search_results.is_empty(),
+        "global search never contributes rows"
+    );
+}
+
+#[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
     fn people_overlay_publishes_live_roster_and_focusable_status_controls() {
         let mut h = build_harness();

@@ -275,6 +275,10 @@ pub enum FloatingSurfaceClientMessage {
 /// custody and independently rechecking surface, room, roster and action.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentConversationNavigation {
+    /// Workspace collaboration scope observed on both press and release.
+    /// This is descriptive input only; the compositor binds it to the
+    /// activated surface's authoritative room before opening Chat.
+    pub room: String,
     pub targets: Vec<AgentConversationNavigationTarget>,
     /// Source-local logical bounds of the marker(s), used only to place the
     /// shared chooser/conversation presentation.

@@ -1139,7 +1139,8 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
 fn valid_agent_navigation_request(
     request: &ui::floating_surface::AgentConversationNavigation,
 ) -> bool {
-    !request.targets.is_empty()
+    crate::shell::state::RoomId::parse(&request.room).is_some()
+        && !request.targets.is_empty()
         && request.targets.len() <= 8
         && request.anchor.iter().all(|value| value.is_finite())
         && request.anchor[2] > request.anchor[0]
@@ -1344,11 +1345,17 @@ fn pump_floating_surface_service(
                     if activated
                         && current
                         && let Some((_, _, room)) = source
+                        && request.room == room
                     {
                         let agents = request
                             .targets
                             .iter()
-                            .map(|target| target.agent.clone())
+                            .map(|target| {
+                                (
+                                    target.agent.clone(),
+                                    frame_builder.presence().display_name(&target.actor),
+                                )
+                            })
                             .collect::<Vec<_>>();
                         changed |= frame_builder
                             .host_mut()
@@ -16856,6 +16863,7 @@ mod external_floating_security_tests {
 
     fn agent_navigation(anchor: [f64; 4]) -> ui::floating_surface::AgentConversationNavigation {
         ui::floating_surface::AgentConversationNavigation {
+            room: "00000000-0000-4000-8000-000000000001".into(),
             targets: vec![ui::floating_surface::AgentConversationNavigationTarget {
                 agent: "scribe".into(),
                 actor: ui::UserId("agent:scribe".into()),

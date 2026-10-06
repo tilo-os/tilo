@@ -92,6 +92,7 @@ pub(super) struct InputRuntime {
 
 #[derive(Clone)]
 pub(super) struct AgentMarkerPress {
+    pub(super) room: String,
     pub(super) surface: String,
     pub(super) viewport: vello::kurbo::Rect,
     pub(super) targets: Vec<crate::presence::AgentMarkerTarget>,

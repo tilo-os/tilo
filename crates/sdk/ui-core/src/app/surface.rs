@@ -23,6 +23,138 @@ pub trait AppSurface {
     }
 }
 
+#[cfg(test)]
+mod agent_marker_gesture_tests {
+    use super::*;
+    use crate::collaboration::Collaborator;
+    use crate::paint::PaintCtx;
+    use crate::presence::PresenceKey;
+    use crate::text_render::TextRenderer;
+    use crate::theme::Theme;
+    use crate::widget::Text;
+    use tilo_actions::{
+        ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor,
+        InteractionActorKind, InteractionAnchor, InteractionPhase, InvocationId,
+        SemanticInteraction,
+    };
+    use uuid::Uuid;
+    use vello::{
+        Scene,
+        kurbo::{Affine, Rect},
+    };
+
+    fn pointer(position: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(position.x, position.y),
+        }
+    }
+
+    fn button(state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
+    fn app_with_marker(room: &str) -> (App, Point) {
+        let mut app = App::new(State::new(), Box::new(Text::new("Marker fixture")));
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room.into() }));
+        app.presence_ctx_mut().apply_collaboration_snapshot(&[
+            Collaborator {
+                id: "person:viewer".into(),
+                name: "Viewer".into(),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            },
+            Collaborator {
+                id: "agent:scribe".into(),
+                name: "Scribe".into(),
+                colour: None,
+                is_agent: true,
+                is_self: false,
+            },
+        ]);
+        let now = crate::time::now();
+        let interaction = SemanticInteraction {
+            version: INTERACTION_VERSION,
+            invocation: InvocationId(Uuid::from_u128(31)),
+            sequence: 1,
+            actor: InteractionActor {
+                id: "agent:scribe".into(),
+                kind: InteractionActorKind::Agent,
+            },
+            phase: InteractionPhase::Applying,
+            action: InteractionAction {
+                id: "edit".into(),
+                label: "Edit".into(),
+                app: None,
+            },
+            resource: ActionResource {
+                id: "note:draft".into(),
+                kind: "note".into(),
+                label: "Draft".into(),
+            },
+            anchor: InteractionAnchor::Resource,
+            group: None,
+        };
+        app.presence_ctx_mut()
+            .apply_interaction_at(interaction.clone(), now)
+            .unwrap();
+        let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let mut theme = Theme::light();
+        theme.reduce_motion = true;
+        app.presence_ctx_mut().draw_agent_action_marker(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            &interaction,
+            Rect::new(200.0, 100.0, 260.0, 140.0),
+            viewport,
+            "retained-primary",
+            now,
+        );
+        let target = app
+            .presence_ctx()
+            .agent_marker_targets("retained-primary", now)
+            .into_iter()
+            .next()
+            .expect("the authenticated current marker is painted");
+        app.window.agent_marker_surface = Some("retained-primary".into());
+        app.window.agent_marker_viewport = Some(viewport);
+        (app, target.bounds.center())
+    }
+
+    #[test]
+    fn marker_release_queues_once_only_in_the_room_that_owned_the_press() {
+        let (mut app, point) = app_with_marker("room-a");
+        assert!(!app.handle_agent_marker_gesture(&pointer(point), 1.0));
+        assert!(app.handle_agent_marker_gesture(&button(ElementState::Pressed), 1.0));
+        assert!(app.handle_agent_marker_gesture(&button(ElementState::Released), 1.0));
+        let request = app
+            .window
+            .pending_agent_navigation
+            .take()
+            .expect("same-room release queues the canonical navigation once");
+        assert_eq!(request.room, "room-a");
+        assert_eq!(request.targets.len(), 1);
+        assert!(app.handle_agent_marker_gesture(&button(ElementState::Released), 1.0));
+        assert!(app.window.pending_agent_navigation.is_none());
+
+        assert!(app.handle_agent_marker_gesture(&button(ElementState::Pressed), 1.0));
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
+            id: "room-b".into(),
+        }));
+        assert!(
+            app.handle_agent_marker_gesture(&button(ElementState::Released), 1.0),
+            "a withdrawn or changed room consumes the owned release"
+        );
+        assert!(app.window.pending_agent_navigation.is_none());
+    }
+}
+
 impl AppSurface for winit::window::Window {
     fn scale_factor(&self) -> f64 {
         winit::window::Window::scale_factor(self)
@@ -658,6 +790,18 @@ impl App {
             self.input.agent_marker_press = None;
             return false;
         };
+        let Some(room) = self
+            .presence_broadcast_scope()
+            .and_then(|scope| match scope {
+                crate::presence::PresenceKey::Workspace { id } => Some(id.clone()),
+                _ => None,
+            })
+        else {
+            // Once a marker owned the press, its release must never fall
+            // through to the app merely because collaboration context was
+            // withdrawn between the two events.
+            return self.input.agent_marker_press.take().is_some();
+        };
         let hit = self
             .presence_ctx
             .hit_agent_marker(&surface, viewport, point, crate::time::now());
@@ -669,6 +813,7 @@ impl App {
                 }
                 AgentMarkerHit::Stale => {
                     self.input.agent_marker_press = Some(super::runtime::AgentMarkerPress {
+                        room,
                         surface,
                         viewport,
                         targets: Vec::new(),
@@ -677,6 +822,7 @@ impl App {
                 }
                 AgentMarkerHit::Targets(targets) => {
                     self.input.agent_marker_press = Some(super::runtime::AgentMarkerPress {
+                        room,
                         surface,
                         viewport,
                         targets,
@@ -691,7 +837,8 @@ impl App {
                 let AgentMarkerHit::Targets(targets) = hit else {
                     return true;
                 };
-                if pressed.surface != surface
+                if pressed.room != room
+                    || pressed.surface != surface
                     || pressed.viewport != viewport
                     || pressed.targets.len() != targets.len()
                     || !pressed.targets.iter().zip(&targets).all(|(left, right)| {
@@ -705,12 +852,14 @@ impl App {
                 let Some(anchor) = targets
                     .iter()
                     .map(|target| target.bounds)
-                    .reduce(|left, right| left.union(right))
+                    .reduce(|left, right| left.intersect(right))
+                    .filter(|bounds| bounds.area() > 0.0 && bounds.contains(point))
                 else {
                     return true;
                 };
                 self.window.pending_agent_navigation =
                     Some(crate::floating_surface::AgentConversationNavigation {
+                        room,
                         targets: targets
                             .into_iter()
                             .map(|target| {

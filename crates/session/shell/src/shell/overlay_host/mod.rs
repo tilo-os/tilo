@@ -412,6 +412,14 @@ struct PendingLaunchpadAction {
     >,
 }
 
+/// Exact Agent choices captured from one authenticated marker hit. The rows
+/// are shell-owned and room-bound; normal provider search never broadens this
+/// list while the chooser is visible.
+struct AgentNavigationChooser {
+    room: String,
+    agents: Vec<String>,
+}
+
 fn valid_agent_navigation_id(agent: &str) -> bool {
     tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
         agent: agent.to_owned(),
@@ -513,6 +521,7 @@ pub struct ShellOverlayHost {
     /// Launchpad cards' app actions awaiting admission; see
     /// [`Self::poll_pending_launchpad_actions`].
     pending_launchpad_actions: Vec<PendingLaunchpadAction>,
+    agent_navigation_chooser: Option<AgentNavigationChooser>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
     last_search_query: String,
@@ -2071,6 +2080,7 @@ impl ShellOverlayHost {
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
             pending_launchpad_actions: Vec::new(),
+            agent_navigation_chooser: None,
             last_search_query: String::new(),
             last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
@@ -7309,6 +7319,10 @@ impl ShellOverlayHost {
     /// typed query. `ActiveApp` degrades to `All` when no tab is focused.
     fn open_palette_with_scope(&mut self, scope: crate::shell::chrome_state::SearchScope) {
         use crate::shell::chrome_state::SearchScope;
+        self.agent_navigation_chooser = None;
+        self.palette
+            .set_mode(ui::widget::command_palette::PaletteMode::Search);
+        self.palette.set_modal(false);
         let effective = if matches!(scope, SearchScope::ActiveApp)
             && self
                 .chrome
@@ -7502,7 +7516,7 @@ impl ShellOverlayHost {
     pub(crate) fn open_agent_conversation_from_user_navigation(
         &mut self,
         room: &str,
-        agents: &[String],
+        agents: &[(String, String)],
     ) -> bool {
         use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
 
@@ -7510,15 +7524,48 @@ impl ShellOverlayHost {
             return false;
         }
         if agents.len() > 1 {
-            // Overlapping markers are ambiguous. The system palette is the
-            // shared keyboard/screen-reader chooser; never pick by paint order.
-            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+            let mut exact = agents.to_vec();
+            exact.sort_by(|left, right| left.0.cmp(&right.0));
+            exact.dedup_by(|left, right| left.0 == right.0);
+            if exact.len() == 1 {
+                return self.open_agent_conversation_from_user_navigation(room, &exact);
+            }
+            if exact
+                .iter()
+                .any(|(agent, _)| !valid_agent_navigation_id(agent))
+            {
+                return false;
+            }
+            let entries = exact
+                .iter()
+                .enumerate()
+                .map(|(index, (agent, name))| {
+                    CommandEntry::new(format!("agent-navigation:{index}"), name.clone())
+                        .description(crate::shell::i18n::t_args(
+                            "agent-conversation-choice",
+                            &[("agent", agent.as_str().into())],
+                        ))
+                        .icon(ui::icons::Icon::Users)
+                })
+                .collect();
+            self.agent_navigation_chooser = Some(AgentNavigationChooser {
+                room: room.to_owned(),
+                agents: exact.into_iter().map(|(agent, _)| agent).collect(),
+            });
             self.palette
-                .set_query(&crate::shell::i18n::t("agent-conversation-search"));
+                .set_mode(ui::widget::command_palette::PaletteMode::Commands);
+            self.palette.set_entries(entries);
+            self.palette.set_query("");
+            self.palette
+                .set_query_placeholder(crate::shell::i18n::t("agent-conversation-choose"));
+            self.palette.set_focus(true);
+            self.palette_visible = true;
+            self.palette_layout_dirty = true;
             return true;
         }
         let Some(agent) = agents
             .first()
+            .map(|(agent, _)| agent)
             .filter(|agent| valid_agent_navigation_id(agent))
         else {
             return false;
@@ -7696,6 +7743,15 @@ impl ShellOverlayHost {
     /// cache; the first open pays for the files provider's deferred home walk
     /// and content index open (kept off the `OverlayHost` constructor on purpose).
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
+        if self.agent_navigation_chooser.is_some() {
+            if self.palette_visible {
+                return;
+            }
+            self.agent_navigation_chooser = None;
+            self.palette
+                .set_mode(ui::widget::command_palette::PaletteMode::Search);
+            self.palette.set_modal(false);
+        }
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -8426,6 +8482,28 @@ impl ShellOverlayHost {
         else {
             return;
         };
+        if let Some(index) = id
+            .strip_prefix("agent-navigation:")
+            .and_then(|index| index.parse::<usize>().ok())
+        {
+            let choice = self.agent_navigation_chooser.take().and_then(|chooser| {
+                chooser
+                    .agents
+                    .get(index)
+                    .cloned()
+                    .map(|agent| (chooser.room, agent))
+            });
+            self.palette_visible = false;
+            self.palette.close();
+            self.palette
+                .set_mode(ui::widget::command_palette::PaletteMode::Search);
+            self.palette.set_modal(false);
+            if let Some((room, agent)) = choice {
+                let _ = self
+                    .open_agent_conversation_from_user_navigation(&room, &[(agent.clone(), agent)]);
+            }
+            return;
+        }
         if let Some(idx) = id.strip_prefix("result:")
             && let Ok(idx) = idx.parse::<usize>()
             && let Some(result) = self.search_results.get(idx).cloned()
@@ -12867,6 +12945,15 @@ impl ShellOverlayHost {
             return true;
         }
         if self.palette_visible {
+            if self.agent_navigation_chooser.take().is_some() {
+                self.palette_visible = false;
+                self.palette.close();
+                self.palette
+                    .set_mode(ui::widget::command_palette::PaletteMode::Search);
+                self.palette.set_modal(false);
+                *handled = true;
+                return true;
+            }
             if let Some(chrome) = self.chrome.clone() {
                 let mut state = chrome.borrow_mut();
                 if state.search_resource_scope.take().is_some() {
