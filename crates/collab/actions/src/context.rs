@@ -40,6 +40,11 @@ pub struct ActionContext {
     /// this field from their retained admission before applying an action.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_invocation: Option<InvocationId>,
+    /// Exact executor action that produced this change. This is inert
+    /// correlation, never caller authority: fresh semantic envelopes replace
+    /// it with their own identity. Legacy replay preserves its absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executed_action: Option<crate::ActionId>,
     /// What the change is to the people sharing the document, declared by
     /// the action ([`crate::Action::change_kind`]) or, for a change that is
     /// nobody's step whatever it does (what a brand-new record starts with),

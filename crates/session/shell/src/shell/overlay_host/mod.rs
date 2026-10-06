@@ -130,7 +130,7 @@ use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, Collabor
 use tilo_desktop::drill_in as qs;
 use tilo_desktop::drill_in::{DrillInList, DrillInOutcome};
 use tilo_desktop::notifications::{
-    CenterLayout, CenterOutcome, NotificationCenter, NotificationStack,
+    CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationStack,
 };
 use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
@@ -577,6 +577,9 @@ pub struct ShellOverlayHost {
     /// helpers hit-testing calls (no theme in hand) read the same numbers
     /// paint does.
     overview_metrics: OverviewMetrics,
+    /// Layout-only theme snapshot for the shared compact-modal rule.
+    overview_layout_theme: Theme,
+    overview_layout_viewport: Rect,
     /// Interruptible open/close driver for quick-settings, so it fades +
     /// slides out on close instead of vanishing.
     qs_transition: ui::Transition,
@@ -600,7 +603,7 @@ pub struct ShellOverlayHost {
     /// the notification-history geometry — resolved before a frame has a
     /// theme, like the root's — measures the type it actually draws, with
     /// the ui scale and the text scale both included.
-    qs_type_lines: (f64, f64),
+    qs_type_lines: CenterMetrics,
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -2087,6 +2090,8 @@ impl ShellOverlayHost {
             overview_generation: 0,
             overview_fast_patch: None,
             overview_metrics: OverviewMetrics::default(),
+            overview_layout_theme: Theme::default(),
+            overview_layout_viewport: Rect::ZERO,
             transition_started: None,
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
@@ -2095,7 +2100,7 @@ impl ShellOverlayHost {
             content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
-            qs_type_lines: CenterLayout::type_lines(&Theme::dark()),
+            qs_type_lines: CenterLayout::metrics(&Theme::dark(), &mut TextRenderer::new()),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -7073,7 +7078,20 @@ impl ShellOverlayHost {
         if !self.overlay_flags().overview {
             return Rect::ZERO;
         }
-        self.overview_add_workspace_rect_for(self.overview_cards().len())
+        let content = self.overview_content_rect();
+        let top = self.overview_list_top().max(content.y0);
+        if top >= content.y1 {
+            return Rect::ZERO;
+        }
+        let band = Rect::new(content.x0, top, content.x1, content.y1);
+        let row = self
+            .overview_add_workspace_rect_for(self.overview_cards().len())
+            .intersect(band);
+        if row.width() > 0.0 && row.height() > 0.0 {
+            row
+        } else {
+            Rect::ZERO
+        }
     }
 
     /// Test-only: a strip's `GroupRow` rect in screen-space. `None` if no
@@ -8831,6 +8849,7 @@ impl ShellOverlayHost {
     /// previous value rather than blanking it.
     /// Bind the owning native session's existing event-loop wake.
     pub fn set_quick_settings_wake(&mut self, wake: crate::session_runtime::Wake) {
+        self.qs_action_slot.set_radio_wake(Arc::clone(&wake));
         self.qs_refresh.set_host_wake(wake);
     }
 
@@ -8924,6 +8943,9 @@ impl ShellOverlayHost {
         let (brightness, volume, wifi, bluetooth, power, wired, battery, wifi_nets, bt_devices) =
             match reading {
                 QsReading::Fast(reading) => {
+                    if let Some(radios) = reading.radios.as_ref() {
+                        self.qs_action_slot.observe_radio_availability(radios);
+                    }
                     let (brightness, volume, wifi, bluetooth, power, wired, battery) =
                         Self::apply_fast_qs_reading(st, reading);
                     (
@@ -10427,11 +10449,57 @@ impl ShellOverlayHost {
     /// across the content width, each a 16:10 well over a title line.
     fn overview_window_tile_size(&self) -> (f64, f64) {
         let m = self.overview_metrics;
-        let panel_w = OVERVIEW_PANEL_WIDTH_PX.min(self.overlay_area().width() - m.margin * 2.0);
+        let panel_w = self.overview_panel_width();
         let content_w = (panel_w - m.pad * 2.0).max(0.0);
         let columns = usize_to_f64_lossy(OVERVIEW_WINDOWS_MAX);
         let tile_w = ((content_w - (columns - 1.0) * m.window_gap) / columns).max(0.0);
         (tile_w, tile_w * 10.0 / 16.0)
+    }
+
+    fn overview_window_list_rect(&self) -> Option<Rect> {
+        (0..self.overview_row_windows().len())
+            .map(|index| self.overview_window_tile_rect(index))
+            .reduce(|left, right| left.union(right))
+    }
+
+    fn overview_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let count = self.overview_cards().len();
+        let windows = self.overview_row_windows().len();
+        let create = count.saturating_add(usize::from(windows > 0));
+        match path {
+            [] => Some(self.overview_panel_rect()),
+            [index] if *index < count => Some(self.overview_row_rect(*index)),
+            [index] if *index == count && windows > 0 => self.overview_window_list_rect(),
+            [index, window] if *index == count && *window < windows => {
+                Some(self.overview_window_tile_rect(*window))
+            }
+            [index] if *index == create => Some(self.overview_add_workspace_rect_for(count)),
+            _ => None,
+        }
+    }
+
+    fn focus_overview_accessibility(&mut self, path: &[usize]) -> bool {
+        if !self.overlay_flags().overview || self.palette_visible {
+            return false;
+        }
+        let count = self.overview_cards().len();
+        let windows = self.overview_row_windows().len();
+        let create = count.saturating_add(usize::from(windows > 0));
+        match path {
+            [index, window] if *index == count && *window < windows => {
+                self.select_overview_window(*window);
+                return true;
+            }
+            [index] if *index < count => self.overview_selection = Some(*index),
+            [index] if *index == create => self.overview_selection = Some(count),
+            _ => return false,
+        }
+        self.overview_window_selection = None;
+        self.scroll_overview_selection_into_view();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        true
     }
 
     /// Height the window row adds to the "you are here" block.
@@ -10479,6 +10547,9 @@ impl ShellOverlayHost {
 
     /// The preview tile under `p`, by its place in the row.
     fn hit_test_overview_window(&self, p: Point) -> Option<usize> {
+        if !self.overview_content_rect().contains(p) {
+            return None;
+        }
         let count = self.overview_row_windows().len();
         (0..count).find(|index| self.overview_window_tile_rect(*index).contains(p))
     }
@@ -10571,13 +10642,69 @@ impl ShellOverlayHost {
         (k * (m.room_row_h + m.room_row_gap) - m.room_row_gap).max(0.0)
     }
 
+    fn overview_uses_full_window(&self) -> bool {
+        ui::widget::modal_dialog::uses_full_window(self.overlay_area(), &self.overview_layout_theme)
+    }
+
+    fn overview_panel_width(&self) -> f64 {
+        let area = self.overlay_area();
+        if self.overview_uses_full_window() {
+            area.width().max(0.0)
+        } else {
+            OVERVIEW_PANEL_WIDTH_PX
+                .min(area.width() - self.overview_metrics.margin * 2.0)
+                .max(0.0)
+        }
+    }
+
+    fn resolve_overview_layout(&mut self, theme: &Theme) {
+        let metrics = OverviewMetrics::for_theme(theme);
+        let viewport = self.overlay_area();
+        if metrics == self.overview_metrics && viewport == self.overview_layout_viewport {
+            return;
+        }
+        let had_layout = self.overview_layout_viewport.area() > 0.0;
+        self.overview_layout_theme.clone_from(theme);
+        self.overview_layout_viewport = viewport;
+        self.overview_metrics = metrics;
+        self.overview_scroll_y = self
+            .overview_scroll_y
+            .clamp(0.0, self.overview_max_scroll_y());
+        if had_layout {
+            self.scroll_overview_selection_into_view();
+        }
+    }
+
+    /// On a constrained output the whole body scrolls. A pinned header must
+    /// never consume the list's last reachable action row.
+    fn overview_scrolls_whole_panel(&self) -> bool {
+        self.overview_uses_full_window()
+            || self.overview_content_rect().height()
+                - self.overview_here_block_height()
+                - self.overview_metrics.section_gap
+                - self.overview_metrics.caption_h
+                < self.overview_metrics.room_row_h
+    }
+
+    fn overview_content_top(&self) -> f64 {
+        self.overview_content_rect().y0
+            - if self.overview_scrolls_whole_panel() {
+                self.overview_scroll_y
+            } else {
+                0.0
+            }
+    }
+
     /// The panel: a floating surface centred in the viewport, sized to what
     /// it has to say and capped so it never runs off screen. Same width and
     /// centring as the workspace-settings modal — the same kind of object.
     fn overview_panel_rect(&self) -> Rect {
         let m = self.overview_metrics;
         let area = self.overlay_area();
-        let w = OVERVIEW_PANEL_WIDTH_PX.min(area.width() - m.margin * 2.0);
+        if self.overview_uses_full_window() {
+            return area;
+        }
+        let w = self.overview_panel_width();
         let natural = m.pad * 2.0
             + self.overview_here_block_height()
             + m.section_gap
@@ -10601,9 +10728,11 @@ impl ShellOverlayHost {
         let c = self.overview_content_rect();
         Rect::new(
             c.x0,
-            c.y0,
+            self.overview_content_top(),
             c.x1,
-            c.y0 + self.overview_metrics.here_h + self.overview_windows_row_height(),
+            self.overview_content_top()
+                + self.overview_metrics.here_h
+                + self.overview_windows_row_height(),
         )
     }
 
@@ -10614,7 +10743,7 @@ impl ShellOverlayHost {
 
     /// Y of the "Go to" caption above the room list.
     fn overview_list_caption_top(&self) -> f64 {
-        self.overview_content_rect().y0
+        self.overview_content_top()
             + self.overview_here_block_height()
             + self.overview_metrics.section_gap
     }
@@ -10626,20 +10755,36 @@ impl ShellOverlayHost {
 
     /// Height of the band the room list scrolls inside.
     fn overview_viewport_height(&self) -> f64 {
-        (self.overview_content_rect().y1 - self.overview_list_top()).max(0.0)
+        if self.overview_scrolls_whole_panel() {
+            self.overview_content_rect().height().max(0.0)
+        } else {
+            (self.overview_content_rect().y1 - self.overview_list_top()).max(0.0)
+        }
     }
 
     /// Maximum legal `overview_scroll_y` — the list's overflow below the
     /// visible band. Zero when every room fits.
     fn overview_max_scroll_y(&self) -> f64 {
-        (self.overview_content_height() - self.overview_viewport_height()).max(0.0)
+        let header = if self.overview_scrolls_whole_panel() {
+            self.overview_here_block_height()
+                + self.overview_metrics.section_gap
+                + self.overview_metrics.caption_h
+        } else {
+            0.0
+        };
+        (header + self.overview_content_height() - self.overview_viewport_height()).max(0.0)
     }
 
     /// Rect of list slot `slot`, panned by `overview_scroll_y`.
     fn overview_list_slot_rect(&self, slot: usize) -> Rect {
         let c = self.overview_content_rect();
         let m = self.overview_metrics;
-        let y0 = self.overview_list_top() - self.overview_scroll_y
+        let scroll = if self.overview_scrolls_whole_panel() {
+            0.0
+        } else {
+            self.overview_scroll_y
+        };
+        let y0 = self.overview_list_top() - scroll
             + usize_to_f64_lossy(slot) * (m.room_row_h + m.room_row_gap);
         Rect::new(c.x0, y0, c.x1, y0 + m.room_row_h)
     }
@@ -10678,14 +10823,24 @@ impl ShellOverlayHost {
         let Some(idx) = self.overview_selection else {
             return;
         };
-        let Some(slot) = self.overview_slot_of(idx) else {
-            // The room you are in is the pinned block, never in the list.
-            return;
-        };
         let m = self.overview_metrics;
-        let step = m.room_row_h + m.room_row_gap;
-        let top = usize_to_f64_lossy(slot) * step;
-        let bottom = top + m.room_row_h;
+        let whole = self.overview_scrolls_whole_panel();
+        let (top, height) = match self.overview_slot_of(idx) {
+            Some(slot) => {
+                let header = if whole {
+                    self.overview_here_block_height() + m.section_gap + m.caption_h
+                } else {
+                    0.0
+                };
+                (
+                    header + usize_to_f64_lossy(slot) * (m.room_row_h + m.room_row_gap),
+                    m.room_row_h,
+                )
+            }
+            None if whole => (0.0, m.here_h + self.overview_windows_row_height()),
+            None => return,
+        };
+        let bottom = top + height;
         let view = self.overview_viewport_height();
         let max = self.overview_max_scroll_y();
         let mut y = self.overview_scroll_y;
@@ -10702,6 +10857,9 @@ impl ShellOverlayHost {
     /// list's band is not hittable, so a click never lands on a room the
     /// user cannot see.
     fn hit_test_overview(&self, p: Point) -> Option<usize> {
+        if !self.overview_content_rect().contains(p) {
+            return None;
+        }
         let chrome = self.chrome.as_ref()?;
         let count = {
             let state = chrome.borrow();
@@ -10710,7 +10868,8 @@ impl ShellOverlayHost {
         };
         let band = Rect::new(
             self.overview_content_rect().x0,
-            self.overview_list_top(),
+            self.overview_list_top()
+                .max(self.overview_content_rect().y0),
             self.overview_content_rect().x1,
             self.overview_content_rect().y1,
         );
@@ -12053,7 +12212,7 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.handle_overview_keyboard_nav(logical_key, handled) {
+        if self.handle_overview_keyboard_nav(logical_key, shift_down, handled) {
             return true;
         }
         if super_down
@@ -12410,7 +12569,7 @@ impl ShellOverlayHost {
             .overview_window_selection
             .filter(|index| *index < count);
         match logical_key {
-            Key::Named(NamedKey::Enter) => {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 let Some(window) = current.and_then(|index| windows.get(index)) else {
                     return false;
                 };
@@ -12441,31 +12600,37 @@ impl ShellOverlayHost {
     fn select_overview_window(&mut self, index: usize) {
         self.overview_window_selection = Some(index);
         self.overview_selection = self.overview_here_index();
+        self.scroll_overview_selection_into_view();
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
     }
 
-    /// Arrow/Enter navigation of the room overview list, unmodified so
-    /// it runs ahead of the modifier chords and of the content — the
-    /// desktop must not scroll under an open panel. Returns `false`
-    /// (falling through to the modifier chords) when the overview isn't
-    /// showing, the palette is up, a different key was pressed, or
-    /// there are no rooms to navigate.
-    fn handle_overview_keyboard_nav(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
-        if !(self.overlay_flags().overview
-            && !self.palette_visible
-            && matches!(
-                logical_key,
-                Key::Named(
-                    NamedKey::ArrowDown
-                        | NamedKey::ArrowUp
-                        | NamedKey::ArrowLeft
-                        | NamedKey::ArrowRight
-                        | NamedKey::Enter
-                )
-            ))
-        {
+    /// Navigate the overview before input reaches content. Arrows keep the
+    /// workspace ring; Tab includes creation, and Home/End reach its ends.
+    fn handle_overview_keyboard_nav(
+        &mut self,
+        logical_key: &Key,
+        shift: bool,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.overlay_flags().overview || self.palette_visible {
+            return false;
+        }
+        if !matches!(
+            logical_key,
+            Key::Named(
+                NamedKey::ArrowDown
+                    | NamedKey::ArrowUp
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::Tab
+                    | NamedKey::Home
+                    | NamedKey::End
+                    | NamedKey::Enter
+                    | NamedKey::Space
+            )
+        ) {
             return false;
         }
         if self.handle_overview_window_keys(logical_key) {
@@ -12478,59 +12643,78 @@ impl ShellOverlayHost {
         ) {
             return false;
         }
-        // Up and Down go back to the rooms.
         self.overview_window_selection = None;
-        let count = self
-            .chrome
-            .as_ref()
-            .map_or(0, |c| c.borrow().tree().desktop.workspaces.len());
+        let count = self.overview_cards().len();
         if count == 0 {
             return false;
         }
-        if matches!(logical_key, Key::Named(NamedKey::Enter)) {
-            // Commits: go there and leave, no mouse required.
-            let target = self
-                .overview_selection
-                .or_else(|| self.overview_here_index());
-            if let (Some(idx), Some(chrome)) = (target, self.chrome.clone()) {
-                let mut st = chrome.borrow_mut();
-                {
-                    let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.desktop.workspaces.get(idx) {
-                        let id = ws.id;
-                        tree.set_active(id);
-                    }
-                }
-                st.overlays.overview = false;
-                st.bump();
-                drop(st);
-                self.settle_keyboard_overview();
+        match logical_key {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                self.activate_overview_selection(count);
             }
-        } else {
-            let step: isize = if matches!(logical_key, Key::Named(NamedKey::ArrowDown)) {
-                1
-            } else {
-                -1
-            };
-            let cur = usize_to_isize_lossy(
-                self.overview_selection
-                    .or_else(|| self.overview_here_index())
-                    .unwrap_or(0),
-            );
-            // A ring: the room after the last one is the first.
-            // `count > 0` is checked above, so the divisor is
-            // never zero; `wrapping_add` means an (unreachable
-            // in practice) isize overflow still lands on some
-            // in-range selection instead of panicking.
-            let next = isize_to_usize_lossy(
-                cur.wrapping_add(step)
-                    .rem_euclid(usize_to_isize_lossy(count)),
-            );
-            self.overview_selection = Some(next);
-            self.scroll_overview_selection_into_view();
+            Key::Named(NamedKey::Home) => self.overview_selection = self.overview_here_index(),
+            Key::Named(NamedKey::End) => self.overview_selection = Some(count),
+            _ => self.step_overview_selection(logical_key, shift, count),
+        }
+        self.scroll_overview_selection_into_view();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
         }
         *handled = true;
         true
+    }
+
+    fn step_overview_selection(&mut self, key: &Key, shift: bool, count: usize) {
+        let tab = matches!(key, Key::Named(NamedKey::Tab));
+        let back = matches!(key, Key::Named(NamedKey::ArrowUp)) || (tab && shift);
+        let focus_count = if tab { count.saturating_add(1) } else { count };
+        let mut current = self
+            .overview_selection
+            .or_else(|| self.overview_here_index())
+            .unwrap_or(0);
+        // Creation is outside the arrow-only workspace ring.
+        if !tab && current >= count {
+            current = if back { 0 } else { count.saturating_sub(1) };
+        }
+        let next = usize_to_isize_lossy(current)
+            .wrapping_add(if back { -1 } else { 1 })
+            .rem_euclid(usize_to_isize_lossy(focus_count));
+        self.overview_selection = Some(isize_to_usize_lossy(next));
+    }
+
+    fn activate_overview_selection(&mut self, count: usize) {
+        let target = self
+            .overview_selection
+            .or_else(|| self.overview_here_index());
+        if target == Some(count) {
+            self.create_overview_workspace();
+            self.settle_keyboard_overview();
+            return;
+        }
+        if let (Some(index), Some(chrome)) = (target, self.chrome.clone()) {
+            let mut state = chrome.borrow_mut();
+            {
+                let mut tree = state.tree_mut();
+                if let Some(workspace) = tree.desktop.workspaces.get(index) {
+                    let id = workspace.id;
+                    tree.set_active(id);
+                }
+            }
+            state.overlays.overview = false;
+            state.bump();
+            drop(state);
+            self.settle_keyboard_overview();
+        }
+    }
+
+    /// The pointer and keyboard release the overview in the same creation
+    /// transaction, through the existing workspace model.
+    fn create_overview_workspace(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            state.overlays.overview = false;
+            state.add_workspace("Untitled");
+        }
     }
 
     /// Immutable Super-key shell chords: projection/capture actions,
@@ -13622,6 +13806,9 @@ impl ShellOverlayHost {
         outcome: crate::shell::quick_settings::wifi::WifiPaneOutcome,
     ) {
         match outcome {
+            crate::shell::quick_settings::wifi::WifiPaneOutcome::RequestWifi(enabled) => {
+                self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(enabled));
+            }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::DrillIn(outcome) => {
                 Self::finish_quick_settings_drill_in_click(chrome, outcome);
             }
@@ -15094,14 +15281,7 @@ impl ShellOverlayHost {
         pending: crate::shell::quick_settings::root::PendingRootActions,
     ) {
         if let Some(v) = pending.wifi {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_wifi(v);
-            self.finish_quick_settings_action("set_wifi", t("host-qs-change-failed-wifi"), result);
-            if v {
-                self.qs_refresh.kick_wifi_networks();
-            }
+            self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(v));
         }
         if let Some(v) = pending.bluetooth {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
@@ -15126,15 +15306,7 @@ impl ShellOverlayHost {
             );
         }
         if let Some(v) = pending.airplane {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_airplane_mode(v);
-            self.finish_quick_settings_action(
-                "set_airplane_mode",
-                t("host-qs-change-failed-airplane"),
-                result,
-            );
+            self.dispatch_quick_settings_radio(os_actions::RadioChange::Airplane(v));
         }
         if let Some(v) = pending.hotspot {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
@@ -15183,6 +15355,57 @@ impl ShellOverlayHost {
                 result,
             );
         }
+    }
+
+    fn dispatch_quick_settings_radio(&mut self, change: os_actions::RadioChange) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        match self.qs_action_slot.start_radio(change, &chrome) {
+            Ok(Some(_)) => {}
+            Ok(None) => self.reconcile_quick_settings_radio(change),
+            Err(error) => {
+                self.finish_quick_settings_action(
+                    match change {
+                        os_actions::RadioChange::Wifi(_) => "set_wifi",
+                        os_actions::RadioChange::Airplane(_) => "set_airplane_mode",
+                    },
+                    t(match change {
+                        os_actions::RadioChange::Wifi(_) => "host-qs-change-failed-wifi",
+                        os_actions::RadioChange::Airplane(_) => "host-qs-change-failed-airplane",
+                    }),
+                    Err(error),
+                );
+            }
+        }
+    }
+
+    fn reconcile_quick_settings_radio(&mut self, change: os_actions::RadioChange) {
+        self.qs_refresh.kick_fast_after_write();
+        if change == os_actions::RadioChange::Wifi(true) && self.qs_refresh.os_reads_enabled() {
+            if let Some(chrome) = &self.chrome {
+                let mut state = chrome.borrow_mut();
+                state.quick_settings.wifi_scanning = true;
+                state.quick_settings.wifi_scan_error = None;
+                state.bump();
+            }
+            self.qs_refresh.kick_wifi_networks();
+        }
+    }
+
+    fn poll_quick_settings_radio(&mut self) -> bool {
+        let Some(job) = self.qs_action_slot.take_radio_completion() else {
+            return false;
+        };
+        if let Some(chrome) = &self.chrome {
+            job.apply(chrome);
+        }
+        if job.result().is_some_and(|result| result.is_ok()) {
+            self.reconcile_quick_settings_radio(job.change);
+        } else {
+            self.qs_refresh.kick_fast_after_write();
+        }
+        true
     }
 
     /// Reconcile every optimistic device toggle after the OS accepts or
@@ -15561,16 +15784,7 @@ impl ShellOverlayHost {
         // clears that cache.
         let add = self.add_workspace_hit_rect();
         if add.area() > 0.0 && add.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                // Creation switches to the new workspace. Release the
-                // overview's input grab in the same transaction so the
-                // first navigation gesture reaches that workspace.
-                st.overlays.overview = false;
-                // Mirrors the wheel-disc slot: both create
-                // affordances seed "Untitled".
-                st.add_workspace("Untitled");
-            }
+            self.create_overview_workspace();
             return;
         }
         let hit = self.hit_test_overview(p);
@@ -16555,6 +16769,7 @@ impl Widget for ShellOverlayHost {
             return onboarding_dirty || dialog_dirty;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
+        let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
@@ -16708,6 +16923,7 @@ impl Widget for ShellOverlayHost {
         }
         content_dirty
             || quick_settings_dirty
+            || radio_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty
@@ -16766,7 +16982,7 @@ impl Widget for ShellOverlayHost {
         // The overview's row heights follow the theme's type sizes; resolve
         // them here, where the theme is in hand, so this pass's hit-testing
         // and paint share one answer.
-        self.overview_metrics = OverviewMetrics::for_theme(theme);
+        self.resolve_overview_layout(theme);
         self.onboarding_node = None;
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
@@ -17147,7 +17363,7 @@ impl Widget for ShellOverlayHost {
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
         self.qs_root.set_layout_text_scale(theme.text_scale);
-        self.qs_type_lines = CenterLayout::type_lines(theme);
+        self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
             // contents never reach the room.
@@ -17873,6 +18089,10 @@ impl Widget for ShellOverlayHost {
                             AccessNode::new(Role::Button)
                                 .with_name(card.name.clone())
                                 .with_bounds(self.overview_row_rect(index))
+                                .with_state(AccessState::new().focusable(true).focused(
+                                    self.overview_selection == Some(index)
+                                        && self.overview_window_selection.is_none(),
+                                ))
                         }));
                     let windows = self.overview_row_windows();
                     if !windows.is_empty() {
@@ -17896,6 +18116,7 @@ impl Widget for ShellOverlayHost {
                             .collect();
                         overview.children.push(
                             AccessNode::new(Role::List)
+                                .with_bounds(self.overview_window_list_rect().unwrap_or(Rect::ZERO))
                                 .with_name(crate::shell::i18n::t("overview-windows-title"))
                                 .with_description(crate::shell::i18n::t(
                                     "overview-windows-description",
@@ -17906,7 +18127,11 @@ impl Widget for ShellOverlayHost {
                     overview.children.push(
                         AccessNode::new(Role::Button)
                             .with_name(t("a11y-new-workspace"))
-                            .with_bounds(self.overview_add_workspace_rect_for(cards.len())),
+                            .with_bounds(self.overview_add_workspace_rect_for(cards.len()))
+                            .with_state(AccessState::new().focusable(true).focused(
+                                self.overview_selection == Some(cards.len())
+                                    && self.overview_window_selection.is_none(),
+                            )),
                     );
                     root.children.push(overview);
                 }
@@ -18837,16 +19062,7 @@ impl Widget for ShellOverlayHost {
                     _ => None,
                 }
             }
-            LayerId::Overview => match child_path {
-                [] => Some(self.overview_panel_rect()),
-                [index] if *index < self.overview_cards().len() => {
-                    Some(self.overview_row_rect(*index))
-                }
-                [index] if *index == self.overview_cards().len() => {
-                    Some(self.overview_add_workspace_rect_for(*index))
-                }
-                _ => None,
-            },
+            LayerId::Overview => self.overview_accessibility_rect(child_path),
             LayerId::NowPlaying => self.now_playing_accessibility_rect(child_path),
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
@@ -18894,8 +19110,8 @@ impl Widget for ShellOverlayHost {
             LayerId::WorkspaceSettings => {
                 !child_path.is_empty() && self.synthetic_accessibility_rect(path).is_some()
             }
-            LayerId::Overview
-            | LayerId::MemberSheet
+            LayerId::Overview => self.focus_overview_accessibility(child_path),
+            LayerId::MemberSheet
             | LayerId::ShortcutHelp
             | LayerId::DisplayLayouts
             // Stacked; answered above.
@@ -22015,6 +22231,15 @@ impl ShellOverlayHost {
             None,
             &sub_style,
         );
+        if self.overview_selection == Some(idx) && self.overview_window_selection.is_none() {
+            ui::widget::paint_focus_ring(
+                scene,
+                transform,
+                rect.inset(-2.0),
+                (m.row_radius - 2.0).max(0.0),
+                theme,
+            );
+        }
     }
 
     /// Marks of the apps open in a room, ending at `right` and centred on
@@ -22053,8 +22278,8 @@ impl ShellOverlayHost {
     }
 
     /// The workspace overview: a switcher for rooms, so it's a floating
-    /// panel like the palette and workspace-settings modal, not a
-    /// full-screen grid. Reading order follows the questions asked: where
+    /// panel like the palette and workspace-settings modal, filling a
+    /// constrained window as a compact page. Reading order follows: where
     /// you are, what's shared, where else to go.
     fn draw_overview(
         &mut self,
@@ -22066,6 +22291,7 @@ impl ShellOverlayHost {
         if self.chrome.is_none() {
             return;
         }
+        self.resolve_overview_layout(theme);
         let cards = self.overview_cards();
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -22073,33 +22299,24 @@ impl ShellOverlayHost {
         // Same fill/hairline/lift as the workspace-settings modal: one
         // floating-surface language across the shell's overlays.
         let panel = self.overview_panel_rect();
-        let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.overview_metrics;
-        // A Panel (HIG §9.1): `radii.panel`, and a shadow that follows its own
-        // rounded outline rather than a square field.
-        ui::surface::shadow(
-            scene,
-            transform,
-            panel,
-            m.panel_radius,
-            &tokens.elevation.floating,
-        );
-        let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
-        scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
-        // A Panel's edge is derived (HIG §9.5), never `border_standard`.
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(panel, m.panel_radius),
-        );
+        self.draw_overview_backdrop(scene, transform, theme, panel);
 
         let content = self.overview_content_rect();
         let here_idx = self.overview_here_index();
         let here_rect = self.overview_here_rect();
         let caption_style = tokens.typography.style(TextRole::Caption);
 
+        let whole = self.overview_scrolls_whole_panel();
+        if whole {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &Rect::new(panel.x0, content.y0, panel.x1, content.y1),
+            );
+        }
         self.draw_overview_here_section(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             content,
@@ -22136,7 +22353,7 @@ impl ShellOverlayHost {
 
         let band = Rect::new(
             content.x0 - 2.0,
-            self.overview_list_top(),
+            self.overview_list_top().max(content.y0),
             content.x1 + 2.0,
             content.y1,
         );
@@ -22150,10 +22367,53 @@ impl ShellOverlayHost {
 
         self.draw_overview_go_to_list(scene, transform, text_renderer, theme, &cards, band);
         self.draw_overview_add_room_row(scene, transform, text_renderer, theme, cards.len());
-        self.draw_overview_scroll_fade(scene, transform, theme, band);
+        self.draw_overview_scroll_fade(scene, transform, theme, if whole { content } else { band });
 
         scene.pop_layer();
+        if whole {
+            scene.pop_layer();
+        }
         self.draw_overview_carried_window(scene, transform, theme);
+    }
+
+    fn draw_overview_backdrop(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        panel: Rect,
+    ) {
+        let m = self.overview_metrics;
+        let ground = ui::chrome::shell::panel_ground(theme);
+        // A Panel (HIG §9.1): `radii.panel`, and a shadow that follows its own
+        // rounded outline rather than a square field.
+        if self.overview_uses_full_window() {
+            ui::floating_surface::paint_material(
+                scene,
+                transform,
+                &panel,
+                ui::floating_surface::Material::Opaque,
+                theme,
+            );
+        } else {
+            ui::surface::shadow(
+                scene,
+                transform,
+                panel,
+                m.panel_radius,
+                &theme.tokens.elevation.floating,
+            );
+            let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
+            scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
+            // A Panel's edge is derived (HIG §9.5), never `border_standard`.
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                ui::chrome::shell::panel_border(theme),
+                None,
+                &ui::surface::edge_outline(panel, m.panel_radius),
+            );
+        }
     }
 
     /// The current room's windows, most recently used first: each one's
@@ -22209,6 +22469,15 @@ impl ShellOverlayHost {
                         &frame,
                     );
                 }
+            }
+            if state.active && !is_carried {
+                ui::widget::paint_focus_ring(
+                    scene,
+                    transform,
+                    bounds.inflate(s1, s1),
+                    m.window_radius + s1,
+                    theme,
+                );
             }
             if is_carried {
                 scene.push_layer(
@@ -22478,6 +22747,20 @@ impl ShellOverlayHost {
             None,
             &sel_rr,
         );
+        if self.overview_window_selection.is_none() {
+            let focus = if self.overview_scrolls_whole_panel() {
+                sel.intersect(content)
+            } else {
+                sel
+            };
+            ui::widget::paint_focus_ring(
+                scene,
+                transform,
+                focus.inset(-2.0),
+                (self.overview_metrics.row_radius - 2.0).max(0.0),
+                theme,
+            );
+        }
     }
 
     /// "What leaves this room": the share list, or an honest zero-state
@@ -22771,48 +23054,25 @@ impl ShellOverlayHost {
         theme: &Theme,
         cards_len: usize,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let accent = colors.intent.inverted;
-
-        let m = self.overview_metrics;
+        use ui::widget::{Interaction, ListRowFace, RowLeading};
         let add_rect = self.overview_add_workspace_rect_for(cards_len);
-        let add_hover = self.last_cursor.is_some_and(|c| add_rect.contains(c));
-        let add_rr = RoundedRect::from_rect(add_rect, m.row_radius);
-        if add_hover {
-            scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &add_rr);
-        }
-        let add_color = if add_hover { accent } else { colors.text_dim };
-        let glyph = 18.0_f64;
-        // Same inner padding as a room row, so the plus sits on the rows'
-        // text edge.
-        let gx = add_rect.x0 + m.row_pad;
-        let gcy = add_rect.center().y;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(gx, gcy - glyph / 2.0, gx + glyph, gcy + glyph / 2.0),
-            ui::icons::Icon::Plus,
-            add_color,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let add_style = tokens.typography.style(TextRole::Body);
-        let add_label = t("overview-new-workspace");
-        let (_, add_h) = text_renderer.measure_style(&add_label, None, &add_style);
-        text_renderer.draw_style(
-            scene,
-            &add_label,
-            add_color,
-            transform.pre_translate(
-                (
-                    gx + glyph + f64::from(tokens.spacing.s3),
-                    gcy - f64::from(add_h) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            &add_style,
-        );
+        let focused =
+            self.overview_selection == Some(cards_len) && self.overview_window_selection.is_none();
+        let label = t("overview-new-workspace");
+        ListRowFace::new(&label)
+            .leading(RowLeading::Icon(ui::icons::Icon::Plus))
+            .selected(focused)
+            .interaction(Interaction {
+                hovered: self
+                    .last_cursor
+                    .is_some_and(|cursor| add_rect.contains(cursor)),
+                focused,
+                ..Interaction::default()
+            })
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                add_rect,
+            );
         self.add_workspace_rect = add_rect;
     }
 
@@ -22825,7 +23085,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         band: Rect,
     ) {
-        if self.overview_max_scroll_y() > 0.5 {
+        if self.overview_scroll_y + 0.5 < self.overview_max_scroll_y() {
             let fade_y1 = band.y1;
             let fade_y0 = fade_y1 - OVERVIEW_SCROLL_FADE_PX;
             let ground = ui::chrome::shell::panel_ground(theme);

@@ -26,6 +26,10 @@ impl MusicApp {
         let choices = if self.spotify_catalogue {
             vec![
                 ("music-browse-spotify", MusicEffect::BrowseSpotify),
+                (
+                    "music-connect-spotify-library",
+                    MusicEffect::ConnectSpotifyLibrary,
+                ),
                 ("music-browse-youtube", MusicEffect::BrowseYouTube),
                 (
                     "music-spotify-playback",
@@ -1199,6 +1203,16 @@ mod tests {
             .expect("choice uses the host action door");
         assert_eq!(intent.address.action, MusicEffect::ConnectSpotify.id());
         assert!(app.take_control_invocation().is_none());
+        app.spotify_catalogue = true;
+        app.open_sources_menu();
+        assert!(app.menu_actions.iter().any(|action| matches!(
+            action,
+            super::super::Action::SpotifyEffect(MusicEffect::ConnectSpotifyLibrary)
+        )));
+        assert!(
+            app.take_control_invocation().is_none(),
+            "opening editing choice never grants extra permissions"
+        );
     }
 
     #[test]

@@ -510,6 +510,31 @@ mod tests {
     }
 
     #[test]
+    fn official_system_flathub_stable_items_use_the_account_install_route() {
+        let remote = crate::flathub_client::Remote {
+            name: "flathub".into(),
+            title: "Flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        let rows = "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\tflathub\n";
+        let item = super::remote_catalogue_items(rows, &remote, &[]).remove(0);
+        assert!(matches!(item.source, StoreSource::Flathub));
+        assert!(item.allows_action(crate::ActionKind::FlatpakInstall, true));
+        let beta = rows.replace("stable", "beta");
+        let item = super::remote_catalogue_items(&beta, &remote, &[]).remove(0);
+        assert!(matches!(
+            item.source,
+            StoreSource::FlatpakRemote {
+                user_managed: false,
+                ..
+            }
+        ));
+        assert!(!item.allows_action(crate::ActionKind::FlatpakInstall, true));
+    }
+
+    #[test]
     fn native_catalogue_matches_cli_target_channel_and_version_selection() {
         let mut entry = tilo_entry("so.tilo.notes", "Notes", "1.0.0", [1; 32]);
         let mut foreign = entry.versions[0].clone();

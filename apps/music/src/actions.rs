@@ -232,9 +232,14 @@ pub enum MusicEffect {
     /// Opens the source picker without starting sign-in or changing a grant.
     #[effect(device_only)]
     Sources,
+    /// Enable full Spotify library and device controls
+    ///
+    /// Explicitly requests editing, playlist, followed-artist and remote-device permissions.
+    #[effect(job, device_only)]
+    ConnectSpotifyLibrary,
     /// Connect Spotify
     ///
-    /// Opens Spotify's PKCE sign-in in the system browser; grants stay in system custody.
+    /// Requests profile and saved-library read access, without editing or remote control.
     #[effect(job, device_only)]
     ConnectSpotify,
     /// Authorize Spotify playback

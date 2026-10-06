@@ -1798,6 +1798,416 @@ fn assert_compact_clear_footer(
 /// Alignment and line spacing apply to the paragraph via the panel, and the panel owns paragraph
 /// alignment and the style editor.
 #[test]
+fn compact_styles_is_a_full_window_page_with_real_controls_and_no_typing_leak() {
+    for viewport in [(390, 844), (844, 390)] {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+        app.harness().resize(viewport).unwrap();
+        app.effect(&WordProcessorEffect::Styles).unwrap();
+        app.settle();
+        let (heading, close) = app
+            .with_surface::<WordProcessorWidget, _>(|widget| {
+                assert!(widget.styles_panel_full_window());
+                assert_eq!(
+                    widget.panel_rect, widget.rect,
+                    "the shared compact presentation leaves no underlying document gutter"
+                );
+                let close = widget
+                    .panel_hits
+                    .iter()
+                    .find_map(|(rect, hit)| matches!(hit, PanelHit::Close).then_some(*rect))
+                    .expect("the actual shared close control is painted");
+                assert!(
+                    close.x0 >= widget.rect.x0
+                        && close.x1 <= widget.rect.x1
+                        && close.y0 >= widget.rect.y0
+                        && close.y1 <= widget.rect.y1
+                );
+                (
+                    Point::new(widget.panel_rect.x0 + 16.0, close.center().y),
+                    close.center(),
+                )
+            })
+            .unwrap();
+        let heads = app.peer_document().get_heads();
+        app.harness().click_at(heading.x, heading.y);
+        app.harness()
+            .type_text("never insert this into the displaced page");
+        app.settle();
+        assert_eq!(app.peer_document().get_heads(), heads);
+        if viewport.1 < viewport.0 {
+            assert_styles_page_scrolls_to_its_last_real_action(&mut app);
+        }
+        assert!(
+            app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_full_window())
+                .unwrap()
+        );
+        app.harness().click_at(close.x, close.y);
+        app.settle();
+        assert!(
+            !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
+                .unwrap()
+        );
+        app.effect(&WordProcessorEffect::Styles).unwrap();
+        app.settle();
+        app.harness().key("Escape");
+        app.settle();
+        assert!(
+            !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
+                .unwrap()
+        );
+        assert_eq!(
+            app.peer_document().get_heads(),
+            heads,
+            "closing either way is local presentation only"
+        );
+    }
+}
+
+#[test]
+fn compact_styles_blocks_document_shortcuts_after_real_document_typing() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.settle();
+    let body = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.zoom_viewport.center())
+        .unwrap();
+    app.harness().click_at(body.x, body.y);
+    app.harness().type_text("protected document words");
+    app.settle();
+    let text = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.blocks[0].text.clone())
+        .unwrap();
+    assert_eq!(text, "protected document words");
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let heads = app.peer_document().get_heads();
+    for modifier in ["ctrl", "super"] {
+        app.harness().set_modifiers(&[modifier.into()]);
+        for key in ["Backspace", "b", "v", "Enter", "a", "Delete"] {
+            app.harness().key(key);
+            app.settle();
+            assert_eq!(
+                app.peer_document().get_heads(),
+                heads,
+                "{modifier}+{key} must not edit the displaced document"
+            );
+        }
+        app.harness().set_modifiers(&[]);
+    }
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.blocks[0].text.clone())
+            .unwrap(),
+        text
+    );
+}
+
+#[test]
+fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.settle();
+    let toolbar = t("a11y-group-formatting");
+    assert!(app.harness().a11y_node_named(&toolbar).is_some());
+    let bold = app
+        .harness()
+        .a11y_node_named(&tool_action_a11y_label(ToolAction::Bold))
+        .expect("the actual background formatting control is published before opening Styles");
+    let resources =
+        |app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>| {
+            app.harness()
+                .resources()
+                .into_iter()
+                .filter(|resource| resource.kind != "tilo.control")
+                .map(|resource| {
+                    (
+                        resource.id,
+                        resource
+                            .actions
+                            .into_iter()
+                            .map(|action| action.id)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+    let catalogue = resources(&mut app);
+    assert!(!catalogue.is_empty());
+    assert!(
+        app.harness()
+            .targets()
+            .keys()
+            .any(|path| path.contains("Toolbar"))
+    );
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    assert_eq!(resources(&mut app), catalogue);
+    assert!(app.harness().a11y_node_named(&toolbar).is_none());
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("a11y-document-editor"))
+            .is_none()
+    );
+    assert!(
+        !app.harness()
+            .targets()
+            .keys()
+            .any(|path| path.contains("Toolbar"))
+    );
+    let heads = app.peer_document().get_heads();
+    assert!(
+        app.harness()
+            .perform_a11y_action(bold, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    assert_eq!(app.peer_document().get_heads(), heads);
+    let close = app
+        .harness()
+        .a11y_node_named(&t("panel-close"))
+        .expect("the foreground page publishes its actual Close control");
+    app.harness()
+        .perform_a11y_action(close, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(close, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    assert!(
+        !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
+            .unwrap()
+    );
+    assert!(app.harness().a11y_node_named(&toolbar).is_some());
+    assert_eq!(app.peer_document().get_heads(), heads);
+}
+
+#[test]
+fn compact_styles_accessibility_edits_real_style_and_refuses_viewers() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let audit = app.harness().native_app_audit();
+    assert!(audit.is_certified(), "{:?}", audit.issues);
+    let before = app.peer_document().get_heads();
+    let serif = app
+        .harness()
+        .a11y_node_named(&t("panel-font-serif"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(serif, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(serif, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    assert_ne!(app.peer_document().get_heads(), before);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").font)
+            .unwrap(),
+        "serif"
+    );
+    let size = app.harness().a11y_node_named(&t("panel-num-size")).unwrap();
+    app.harness()
+        .perform_a11y_action(size, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(size, &ui::a11y::Action::SetValue("26".into()))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").size)
+            .unwrap(),
+        26.0
+    );
+    app.harness().key("Enter");
+    app.settle();
+    assert!(app.undo());
+    app.settle();
+    assert_ne!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").size)
+            .unwrap(),
+        26.0
+    );
+    app.set_role(ui::permissions::Role::Viewer);
+    app.settle();
+    let protected = app.peer_document().get_heads();
+    let mono = app
+        .harness()
+        .a11y_node_named(&t("panel-font-mono"))
+        .unwrap();
+    assert!(
+        app.harness()
+            .perform_a11y_action(mono, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    let size = app.harness().a11y_node_named(&t("panel-num-size")).unwrap();
+    assert!(
+        app.harness()
+            .perform_a11y_action(size, &ui::a11y::Action::SetValue("40".into()))
+            .is_err()
+    );
+    app.settle();
+    assert_eq!(app.peer_document().get_heads(), protected);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").font)
+            .unwrap(),
+        "serif"
+    );
+}
+
+#[test]
+fn compact_styles_accessibility_tracks_scrolled_foreground_controls() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((844, 390)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let align = app
+        .harness()
+        .a11y_node_named(&t("panel-align-left"))
+        .unwrap();
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-num-indent"))
+            .is_none()
+    );
+    let before = app.peer_document().get_heads();
+    let document_scroll = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.scroll_y)
+        .unwrap();
+    let region = app
+        .harness()
+        .root_widget()
+        .primary_vertical_scroll()
+        .expect("the hosted root publishes the foreground scroll region");
+    assert_eq!(region.key, "styles");
+    assert!(region.metrics.max_scroll() > 0.0);
+    let result = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            widget.apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End)
+        })
+        .unwrap();
+    assert!(matches!(
+        result,
+        ui::widget::PrimaryScrollResult::Changed(_)
+    ));
+    app.settle();
+    assert_eq!(app.peer_document().get_heads(), before);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.scroll_y)
+            .unwrap(),
+        document_scroll
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-align-left"))
+            .is_none()
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-num-indent"))
+            .is_some()
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-new-style"))
+            .is_some()
+    );
+    let audit = app.harness().native_app_audit();
+    assert!(audit.is_certified(), "{:?}", audit.issues);
+    let heads = app.peer_document().get_heads();
+    assert!(
+        app.harness()
+            .perform_a11y_action(align, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    assert_eq!(app.peer_document().get_heads(), heads);
+}
+
+#[test]
+fn compact_styles_accessibility_focus_routes_the_real_spacing_dropdown() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let before = app.peer_document().get_heads();
+    let spacing = app
+        .harness()
+        .a11y_node_named(&t("panel-line-spacing"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(spacing, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness().key("ArrowDown");
+    app.settle();
+    assert!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.line_spacing.is_open())
+            .unwrap()
+    );
+    app.harness().key("Escape");
+    app.settle();
+    assert!(
+        !app.with_surface::<WordProcessorWidget, _>(|widget| widget.line_spacing.is_open())
+            .unwrap()
+    );
+    assert_eq!(app.peer_document().get_heads(), before);
+    let spacing = app
+        .harness()
+        .a11y_node_named(&t("panel-line-spacing"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(
+            spacing,
+            &ui::a11y::Action::SetValue(line_spacing_label(2.0)),
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_line_spacing())
+            .unwrap(),
+        2.0
+    );
+    assert_ne!(app.peer_document().get_heads(), before);
+}
+
+fn assert_styles_page_scrolls_to_its_last_real_action(
+    app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
+) {
+    let body = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            assert!(
+                widget.panel_max_scroll > 0.0,
+                "landscape genuinely needs scrolling"
+            );
+            widget.panel_body
+        })
+        .unwrap();
+    app.harness().send(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(body.center().x, body.center().y),
+    });
+    app.harness().scroll(0.0, -20.0);
+    app.settle();
+    app.with_surface::<WordProcessorWidget, _>(|widget| {
+        let action = widget
+            .panel_hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, PanelHit::NewStyle).then_some(*rect))
+            .expect("the real final style action is painted");
+        assert!(widget.panel_scroll > 0.0);
+        assert!(
+            action.y0 >= widget.panel_body.y0 && action.y1 <= widget.panel_body.y1,
+            "the full-window inspector scrolls its last action into view: {action:?}"
+        );
+    })
+    .unwrap();
+}
+
+#[test]
 fn the_panel_applies_paragraph_alignment_and_spacing() {
     // Phase: alignment_applies_to_the_paragraph_via_the_panel.
     // Alignment now applies to the current paragraph through the side panel's
@@ -3747,9 +4157,9 @@ fn chrome_never_crowds_the_document_canvas() {
 
     // Phase: the_document_canvas_is_wider_than_the_styles_panel_at_every_tile_width.
     // A document editor shows the document. The contextual styles panel
-    // is an aid to that, not a co-equal half of the window: at every
-    // width the shell can hand this app, the canvas left for the
-    // document must be wider than the panel.
+    // is an aid to that, not a co-equal half of the window: beside the
+    // document, the remaining canvas must be wider. A phone instead shows
+    // the requested full-window foreground inspector until it is closed.
     //
     // Regression guard for a frame in which the panel took roughly half of a
     // tiled word-processor window, so
@@ -3779,6 +4189,14 @@ fn chrome_never_crowds_the_document_canvas() {
                 "precondition: the left-hand outline pane is closed, so the \
                  canvas is bounded only by the panel under test",
             );
+            if ui::widget::modal_dialog::uses_full_window(wp.rect, &Theme::dark()) {
+                assert!(wp.styles_panel_full_window());
+                assert_eq!(
+                    wp.panel_rect, wp.rect,
+                    "a phone uses the entire foreground page"
+                );
+                continue;
+            }
             let panel = wp.panel_rect.width();
             let canvas = if wp.styles_panel_overlay() {
                 wp.rect.width()

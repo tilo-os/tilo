@@ -586,3 +586,65 @@ fn mail_and_drive_share_the_google_registration_with_their_own_scopes() {
         })
     ));
 }
+
+#[test]
+fn scoped_sign_in_preserves_registration_and_refuses_extra_permissions() {
+    let server = FakeAuthorizationServer::start();
+    let mut table = crate::ClientTable::default();
+    table.spotify.client_id = "registered-public-client".into();
+    table.spotify.scopes.music = vec![
+        "user-read-private".into(),
+        "user-library-read".into(),
+        "user-library-modify".into(),
+    ];
+    let use_ = crate::OAuthUse::new(crate::OAuthIssuer::Spotify, crate::Capability::Music);
+    let custodian = Custodian::for_root(None)
+        .with_client_table(table)
+        .with_issuer_endpoints(crate::OAuthIssuer::Spotify, server.provider());
+    for scopes in [
+        &[][..],
+        &["streaming"][..],
+        &["user-library-read", "unconfigured"][..],
+    ] {
+        assert!(matches!(
+            custodian.begin_sign_in_for_scopes(use_, scopes, None),
+            Err(CustodyError::SignIn(_))
+        ));
+    }
+    let authorization = custodian
+        .begin_sign_in_for_scopes(use_, &["user-read-private", "user-library-read"], None)
+        .unwrap();
+    let url = url::Url::parse(authorization.url()).unwrap();
+    let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(query["scope"], "user-read-private user-library-read");
+    assert_eq!(query["client_id"], "registered-public-client");
+    assert_eq!(query["code_challenge_method"], "S256");
+    assert_eq!(url.origin().ascii_serialization(), server.url());
+}
+
+#[test]
+fn narrowed_scope_metadata_survives_a_refresh_that_omits_scope() {
+    let (fixture, mut tokens) = signed_in_drive(3600);
+    tokens.scope = Some("read-only".into());
+    fixture.custodian.seal_oauth(&fixture.id, &tokens).unwrap();
+    assert_eq!(
+        fixture
+            .custodian
+            .oauth_scopes(&fixture.id)
+            .unwrap()
+            .as_deref(),
+        Some("read-only")
+    );
+    fixture
+        .custodian
+        .oauth_access_token(&fixture.id, OAuthCloud::GoogleDrive.oauth_use(), true)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .custodian
+            .oauth_scopes(&fixture.id)
+            .unwrap()
+            .as_deref(),
+        Some("read-only")
+    );
+}

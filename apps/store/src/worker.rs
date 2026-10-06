@@ -294,6 +294,8 @@ impl Snapshots {
 
 struct State {
     refresh_requested: bool,
+    /// Passive source hydration must not erase a completed operation's notice.
+    operation_notice: Option<String>,
     host: Option<app_host::client::BlockingClient>,
     opened_ref: Option<FlatpakRef>,
     base_items: Vec<StoreItem>,
@@ -325,6 +327,7 @@ fn run(
     let _ = std::fs::create_dir_all(&staging);
     let mut state = State {
         refresh_requested: false,
+        operation_notice: None,
         host: host
             .map_err(|error| {
                 tracing::error!(%error, "required app-host capability unavailable");
@@ -361,11 +364,26 @@ fn run(
                 locale,
             }) => {
                 locale.apply();
+                if !matches!(request, Request::Detail(_)) {
+                    state.operation_notice = None;
+                }
                 if matches!(request, Request::Refresh) && refresh.is_none() {
                     refresh = Some(refresh::Refresh::start(&state, done));
                     continue;
                 }
+                let package_operation = matches!(request, Request::Act(..) | Request::UpdateAll(_));
                 let (alive, outcome) = handle(request, &mut state, snapshots, &staging);
+                if package_operation
+                    && let Some(outcome) = &outcome
+                    && !outcome
+                        .as_ref()
+                        .is_ok_and(|finished| finished.launch.is_some())
+                {
+                    state.operation_notice = Some(match outcome {
+                        Ok(finished) => finished.status.clone(),
+                        Err(error) => error.clone(),
+                    });
+                }
                 if let (Some(done), Some(outcome)) = (done, outcome) {
                     let _ = done.send(outcome);
                 }
@@ -410,7 +428,10 @@ fn poll_refresh(
     if finished {
         let done = refresh.done.take();
         *active = None;
-        let label = ui::i18n!("store-catalogue-refreshed");
+        let label = state
+            .operation_notice
+            .clone()
+            .unwrap_or_else(|| ui::i18n!("store-catalogue-refreshed"));
         let alive = send(
             snapshots,
             state,
@@ -431,7 +452,10 @@ fn poll_refresh(
     !changed
         || snapshots.progress(Snapshot {
             items: state.base_items.clone(),
-            status_line: ui::i18n!("store-catalogue-loading"),
+            status_line: state
+                .operation_notice
+                .clone()
+                .unwrap_or_else(|| ui::i18n!("store-catalogue-loading")),
             query: None,
             detail: None,
             remotes: state.remotes.clone(),
@@ -1197,6 +1221,7 @@ mod tests {
 
     fn state_with_items(items: Vec<StoreItem>, directory: StoreDirectory) -> State {
         State {
+            operation_notice: None,
             refresh_requested: false,
             host: None,
             opened_ref: None,

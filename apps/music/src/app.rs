@@ -1418,6 +1418,7 @@ impl MusicApp {
             self.source_status(),
         )
         .effect(&MusicEffect::Sources)
+        .effect(&MusicEffect::ConnectSpotifyLibrary)
         .effect(&MusicEffect::ConnectSpotify)
         .effect(&MusicEffect::ConnectSpotifyPlayback)
         .effect(&MusicEffect::SpotifyDevices)

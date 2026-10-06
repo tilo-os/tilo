@@ -1994,6 +1994,8 @@ impl Action {
 pub(crate) struct SharedQsDispatcher {
     actions: std::cell::RefCell<Rc<dyn crate::shell::quick_settings::actions::QsActions>>,
     availability: std::cell::Cell<crate::shell::quick_settings::actions::QsActionAvailability>,
+    radio_job: std::cell::RefCell<Option<crate::shell::quick_settings::radio::RadioTicket>>,
+    radio_wake: std::cell::RefCell<Option<crate::session_runtime::Wake>>,
 }
 
 impl SharedQsDispatcher {
@@ -2004,6 +2006,8 @@ impl SharedQsDispatcher {
         Self {
             actions: std::cell::RefCell::new(actions),
             availability: std::cell::Cell::new(availability),
+            radio_job: std::cell::RefCell::new(None),
+            radio_wake: std::cell::RefCell::new(None),
         }
     }
 
@@ -2012,8 +2016,68 @@ impl SharedQsDispatcher {
         actions: Rc<dyn crate::shell::quick_settings::actions::QsActions>,
         availability: crate::shell::quick_settings::actions::QsActionAvailability,
     ) {
+        if let Some(job) = self.radio_job.borrow().as_ref() {
+            job.retire();
+        }
         *self.actions.borrow_mut() = actions;
         self.availability.set(availability);
+    }
+
+    pub(crate) fn set_radio_wake(&self, wake: crate::session_runtime::Wake) {
+        *self.radio_wake.borrow_mut() = Some(wake);
+    }
+
+    pub(crate) fn observe_radio_availability(&self, radios: &os_actions::RadioState) {
+        let mut availability = self.availability.get();
+        availability.wifi = radios.wifi_available;
+        availability.airplane_mode = radios.wifi_available || radios.wwan_available;
+        self.availability.set(availability);
+    }
+
+    pub(crate) fn start_radio(
+        &self,
+        change: os_actions::RadioChange,
+        chrome: &Chrome,
+    ) -> Result<Option<crate::shell::quick_settings::radio::RadioTicket>, String> {
+        let id = match change {
+            os_actions::RadioChange::Wifi(_) => QS_WIFI_ID,
+            os_actions::RadioChange::Airplane(_) => QS_AIRPLANE_ID,
+        };
+        if !self.action_available(id) {
+            return Err("radio action is unavailable".into());
+        }
+        if self.radio_job.borrow().is_some() {
+            return Err("a radio change is already pending".into());
+        }
+        let actions = self.actions.borrow().clone();
+        if let Some(work) = actions.prepare_radio_change(change) {
+            let job = crate::shell::quick_settings::radio::RadioTicket::start(
+                change,
+                work,
+                self.radio_wake.borrow().clone(),
+            )?;
+            *self.radio_job.borrow_mut() = Some(job.clone());
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.radio_change_pending = true;
+            state.bump();
+            Ok(Some(job))
+        } else {
+            let result = change.execute(actions.as_ref());
+            result?;
+            crate::shell::quick_settings::radio::apply(change, Ok(()), chrome);
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn take_radio_completion(
+        &self,
+    ) -> Option<crate::shell::quick_settings::radio::RadioTicket> {
+        let mut pending = self.radio_job.borrow_mut();
+        if !pending.as_ref()?.finished() {
+            return None;
+        }
+        let _ = pending.as_ref()?.result()?;
+        pending.take()
     }
 
     fn action_available(&self, id: &str) -> bool {
@@ -2165,6 +2229,13 @@ impl<'a> ValidatedQsActions<'a> {
 }
 
 impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_> {
+    fn prepare_radio_change(
+        &self,
+        change: os_actions::RadioChange,
+    ) -> Option<os_actions::RadioWork> {
+        self.inner.prepare_radio_change(change)
+    }
+
     fn set_brightness(&self, percent: f32) -> Result<(), String> {
         self.dispatch(
             QS_BRIGHTNESS_ID,
@@ -2818,6 +2889,60 @@ impl SearchProvider for ActionsProvider {
             let score = 0;
             let actions = self.qs_actions.actions.borrow().clone();
             let available = self.qs_actions.action_available(id);
+            let mut contract = quick_settings_contract_for(available);
+            if available
+                && matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID)
+                && self.qs_actions.radio_job.borrow().is_some()
+            {
+                contract.availability = tilo_actions::Availability::Unavailable {
+                    code: "quick_settings_radio_pending".into(),
+                    reason: t("display-confirm-applying"),
+                };
+            }
+            let on_begin_invoke = matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID).then(|| {
+                let slot = Rc::clone(&self.qs_actions);
+                Rc::new(
+                    move |_: &mut ui::widget::Edits<'_>,
+                          _: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        if !current_shell_action_authorized(&chrome.borrow(), id) {
+                            return Err(ActionError::Refused(format!(
+                                "current workspace authority no longer permits {id}"
+                            )));
+                        }
+                        let enabled = args.boolean("enabled").unwrap_or(false);
+                        let change = if id == QS_WIFI_ID {
+                            os_actions::RadioChange::Wifi(enabled)
+                        } else {
+                            os_actions::RadioChange::Airplane(enabled)
+                        };
+                        match slot
+                            .start_radio(change, chrome)
+                            .map_err(ActionError::Refused)?
+                        {
+                            None => Ok(crate::shell::search::InvocationDisposition::Accepted(
+                                crate::shell::search::ActionReceipt::completed(),
+                            )),
+                            Some(job) => {
+                                let chrome = chrome.clone();
+                                let pending: crate::shell::search::PendingInvocation =
+                                    Rc::new(move || {
+                                        let Some(result) = job.result() else {
+                                            return Ok(None);
+                                        };
+                                        job.apply(&chrome);
+                                        result.map_err(ActionError::Refused)?;
+                                        Ok(Some(crate::shell::search::ActionReceipt::completed()))
+                                    });
+                                Ok(crate::shell::search::InvocationDisposition::Pending(
+                                    pending,
+                                ))
+                            }
+                        }
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>
+            });
             out.push(SearchResult {
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
@@ -2828,12 +2953,17 @@ impl SearchProvider for ActionsProvider {
                 subtitle: Some(subtitle),
                 score,
                 params: quick_settings_params(id),
-                contract: Some(quick_settings_contract_for(available)),
+                contract: Some(contract),
                 on_open: Rc::new(move |_doc, _root, chrome, args| {
                     if !current_shell_action_authorized(&chrome.borrow(), id) {
                         return Err(ActionError::Refused(format!(
                             "current workspace authority no longer permits {id}"
                         )));
+                    }
+                    if matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID) {
+                        return Err(ActionError::Refused(
+                            "radio changes require lifecycle dispatch".into(),
+                        ));
                     }
                     apply_quick_settings_effect(id, actions.as_ref(), args)?;
                     let mut state = chrome.borrow_mut();
@@ -2891,7 +3021,7 @@ impl SearchProvider for ActionsProvider {
                     Ok(())
                 }),
                 on_invoke: None,
-                on_begin_invoke: None,
+                on_begin_invoke,
             });
         }
         let actor = ctx.chrome.active_local_user();
@@ -5138,13 +5268,26 @@ mod tests {
             for (id, supplied) in cases {
                 let result = results.iter().find(|result| result.id == id).expect(id);
                 let args = ActionArgs::bind(&result.params, supplied).expect("typed args bind");
-                (result.on_open)(
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &chrome,
-                    &args,
-                )
-                .expect("controlled provider succeeds");
+                if let Some(begin) = &result.on_begin_invoke {
+                    assert!(matches!(
+                        begin(
+                            &mut ui::widget::Edits::lend(&mut doc),
+                            &automerge::ROOT,
+                            &chrome,
+                            &args
+                        )
+                        .expect("controlled provider succeeds"),
+                        crate::shell::search::InvocationDisposition::Accepted(_)
+                    ));
+                } else {
+                    (result.on_open)(
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                        &chrome,
+                        &args,
+                    )
+                    .expect("controlled provider succeeds");
+                }
             }
             assert_eq!(
                 recorder.calls.borrow().as_slice(),
@@ -5398,5 +5541,212 @@ mod tests {
             crate::shell::state::Verb::Read,
         ));
         drop(tree);
+    }
+
+    fn radio_catalog(
+        registry: &crate::shell::search::SearchRegistry,
+        chrome: &Chrome,
+        doc: &AutoCommit,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        crate::shell::search::action_api::ActionCatalog::build(
+            registry,
+            "quick-settings.",
+            crate::shell::search::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            doc,
+            &automerge::ROOT,
+            &crate::shell::search::action_api::AllVisible,
+        )
+    }
+
+    fn assert_radio_outcome(
+        poll: &crate::shell::search::PendingInvocation,
+        chrome: &Chrome,
+        change: os_actions::RadioChange,
+        outcome: &Result<(), String>,
+    ) {
+        if outcome.is_ok() {
+            let receipt = poll().unwrap().expect("real successful completion");
+            assert!(matches!(
+                receipt.update,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ));
+            match change {
+                os_actions::RadioChange::Wifi(_) => {
+                    assert!(chrome.borrow().quick_settings.wifi);
+                }
+                os_actions::RadioChange::Airplane(_) => {
+                    assert!(chrome.borrow().quick_settings.radios.airplane_mode);
+                }
+            }
+            assert!(chrome.borrow().notifications().is_empty());
+        } else {
+            assert!(
+                matches!(poll(), Err(ActionError::Refused(error)) if error.contains("fixture radio refusal"))
+            );
+            assert!(!chrome.borrow().quick_settings.wifi);
+            assert!(!chrome.borrow().quick_settings.radios.airplane_mode);
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+            assert!(poll().is_err());
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+        }
+    }
+
+    #[test]
+    fn radio_semantic_actions_wait_for_real_work_and_report_success_or_refusal() {
+        use crate::shell::quick_settings::radio::fixture::Fixture;
+        use crate::shell::search::InvocationDisposition;
+        use crate::shell::search::action_api::{ArgValue, ResourceRef};
+        for (id, change) in [
+            (QS_WIFI_ID, os_actions::RadioChange::Wifi(true)),
+            (QS_AIRPLANE_ID, os_actions::RadioChange::Airplane(true)),
+        ] {
+            for outcome in [Ok(()), Err("fixture radio refusal".into())] {
+                let fixture = Fixture::new();
+                let slot = Rc::new(SharedQsDispatcher::new(
+                    Rc::new(fixture.dispatcher),
+                    crate::shell::quick_settings::actions::QsActionAvailability::all(),
+                ));
+                let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+                slot.set_radio_wake(Arc::new(move || {
+                    let _ = wake_tx.send(());
+                }));
+                let mut registry = crate::shell::search::SearchRegistry::new();
+                registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
+                    slot.clone(),
+                )));
+                let chrome = chrome_with_room();
+                chrome.borrow_mut().quick_settings.wifi = false;
+                chrome.borrow_mut().quick_settings.radios.airplane_mode = false;
+                let mut doc = AutoCommit::new();
+                let catalog = radio_catalog(&registry, &chrome, &doc);
+                let resource = ResourceRef::new("actions", id);
+                let action = catalog.select(&resource).expect("declared Wi-Fi action");
+                let disposition = action
+                    .invoke(
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                        &chrome,
+                        [("enabled".into(), ArgValue::Boolean(true))],
+                    )
+                    .expect("owner action is admitted");
+                let InvocationDisposition::Pending(poll) = disposition else {
+                    panic!("starting radio work cannot manufacture completion");
+                };
+                assert_eq!(
+                    fixture
+                        .entered
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap(),
+                    change
+                );
+                assert!(poll().unwrap().is_none());
+                assert!(!chrome.borrow().quick_settings.wifi);
+                let busy_catalog = radio_catalog(&registry, &chrome, &doc);
+                assert!(matches!(
+                    busy_catalog
+                        .select(&resource)
+                        .unwrap()
+                        .contract()
+                        .unwrap()
+                        .availability,
+                    tilo_actions::Availability::Unavailable { .. }
+                ));
+                assert!(
+                    action
+                        .invoke(
+                            &mut ui::widget::Edits::lend(&mut doc),
+                            &automerge::ROOT,
+                            &chrome,
+                            [("enabled".into(), ArgValue::Boolean(false))],
+                        )
+                        .is_err(),
+                    "a stale descriptor cannot admit a second radio mutation"
+                );
+                fixture.release.send(outcome.clone()).unwrap();
+                wake_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                assert_radio_outcome(&poll, &chrome, change, &outcome);
+                assert!(!chrome.borrow().quick_settings.radio_change_pending);
+                let completion = slot
+                    .take_radio_completion()
+                    .expect("host consumes same owned receipt");
+                completion.apply(&chrome);
+                assert!(slot.take_radio_completion().is_none());
+                let restored = radio_catalog(&registry, &chrome, &doc);
+                assert!(matches!(
+                    restored
+                        .select(&resource)
+                        .unwrap()
+                        .contract()
+                        .unwrap()
+                        .availability,
+                    tilo_actions::Availability::Available
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn radio_semantic_admission_rechecks_current_dispatcher_and_workspace_authority() {
+        use crate::shell::quick_settings::radio::fixture::Fixture;
+        use crate::shell::search::action_api::{ArgValue, ResourceRef};
+        let fixture = Fixture::new();
+        let slot = Rc::new(SharedQsDispatcher::new(
+            Rc::new(fixture.dispatcher.clone()),
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        ));
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
+            slot.clone(),
+        )));
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let catalog = radio_catalog(&registry, &chrome, &doc);
+        let action = catalog
+            .select(&ResourceRef::new("actions", QS_WIFI_ID))
+            .unwrap();
+        slot.replace(
+            Rc::new(fixture.dispatcher.clone()),
+            crate::shell::quick_settings::actions::QsActionAvailability::default(),
+        );
+        assert!(
+            action
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &chrome,
+                    [("enabled".into(), ArgValue::Boolean(true))]
+                )
+                .is_err()
+        );
+        assert!(fixture.entered.try_recv().is_err());
+        slot.replace(
+            Rc::new(fixture.dispatcher.clone()),
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        );
+        chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .unwrap()
+            .set_owner("foreign-owner");
+        assert!(
+            action
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &chrome,
+                    [("enabled".into(), ArgValue::Boolean(true))]
+                )
+                .is_err()
+        );
+        assert!(
+            fixture.entered.try_recv().is_err(),
+            "revoked authority never reaches the native worker"
+        );
     }
 }
