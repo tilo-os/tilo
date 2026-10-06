@@ -264,7 +264,7 @@ fn drive_media_monitor(
         if remaining.is_zero() {
             return Err("PipeWire monitor graph deadline exceeded".into());
         }
-        let wait = if watch.is_established() {
+        let wait = if watch.is_established() && !decoder.incomplete() {
             remaining.min(MONITOR_QUIET)
         } else {
             remaining
@@ -806,6 +806,52 @@ mod tests {
             drive_media_monitor(&rx, &mut |_| panic!("absent graph published")).unwrap_err(),
             "PipeWire monitor graph deadline exceeded"
         );
+    }
+
+    #[test]
+    fn media_monitor_complete_graph_still_stops_when_stream_is_quiet() {
+        let graph = serde_json::json!([
+            {"type":"PipeWire:Interface:Device", "info":{"props":{"device.name":"alsa_card"}}},
+            {"type":"PipeWire:Interface:Client", "info":{"props":{}}}
+        ])
+        .to_string()
+        .into_bytes();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(graph).unwrap();
+        let mut published = 0;
+        drive_media_monitor(&rx, &mut |_| published += 1)
+            .expect("a complete stable graph stops without transport EOF");
+        drop(tx);
+        assert_eq!(published, 1);
+    }
+
+    #[test]
+    fn media_monitor_fragmented_next_graph_survives_a_quiet_interval() {
+        let graph = |name: &str| {
+            serde_json::json!([
+                {"type":"PipeWire:Interface:Device", "info":{"props":{"device.name":name}}},
+                {"type":"PipeWire:Interface:Client", "info":{"props":{}}}
+            ])
+            .to_string()
+            .into_bytes()
+        };
+        let initial = graph("alsa_card");
+        let next = graph("bluez_card");
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        let sender = std::thread::spawn(move || {
+            tx.send(initial).unwrap();
+            // A rendezvous ensures the real worker received this fragment
+            // before the quiet-sized gap begins.
+            tx.send(next[..1].to_vec()).unwrap();
+            std::thread::sleep(MONITOR_QUIET.saturating_mul(2));
+            let _ = tx.send(next[1..].to_vec());
+        });
+        let mut published = 0;
+        let result = drive_media_monitor(&rx, &mut |_| published += 1);
+        drop(rx);
+        sender.join().unwrap();
+        result.expect("an incomplete next graph waits for the graph deadline, not quiet-stop");
+        assert_eq!(published, 2, "both complete graph snapshots were processed");
     }
 
     #[test]
