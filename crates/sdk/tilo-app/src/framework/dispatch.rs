@@ -59,6 +59,8 @@ use ui_core::widget::controls::AttributedControlInvocation;
 pub struct Dispatcher<R: Resource> {
     app_id: &'static str,
     resource_id: Rc<str>,
+    /// The readable name published by the resource host, shared with surfaces.
+    resource_label: LocalState<String>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<Rc<str>>,
     /// A dispatcher lent to an admitted effect keeps its original custody.
@@ -133,6 +135,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
         Self {
             app_id: self.app_id,
             resource_id: Rc::clone(&self.resource_id),
+            resource_label: self.resource_label.clone(),
             me: self.me.clone(),
             custody: self.custody.clone(),
             queue: Rc::clone(&self.queue),
@@ -197,6 +200,7 @@ impl<R: Resource> Dispatcher<R> {
         Self {
             app_id,
             resource_id: Rc::from(resource_id),
+            resource_label: LocalState::new(R::LABEL.to_owned()),
             me: me.map(Rc::from),
             custody: None,
             queue: Rc::default(),
@@ -554,8 +558,12 @@ impl<R: Resource> Dispatcher<R> {
     pub fn apply_now(&self, edits: &mut Edits<'_>, action: &R::Action) -> Result<(), ActionError> {
         let label = tilo_resource::action_label::<R>(action)
             .unwrap_or_else(|| ActionContext::for_action("", "", action).action_label);
-        let context =
-            ActionContext::for_resource(label, self.resource_id.as_ref(), R::KIND, R::LABEL);
+        let context = ActionContext::for_resource(
+            label,
+            self.resource_id.as_ref(),
+            R::KIND,
+            self.resource_label.get(),
+        );
         self.apply_now_with(edits, action, context)
     }
 
@@ -583,8 +591,12 @@ impl<R: Resource> Dispatcher<R> {
         }
         // History names the resource and who edited it even when the
         // surface's context does not.
-        let mut named =
-            ActionContext::for_resource("", self.resource_id.as_ref(), R::KIND, R::LABEL);
+        let mut named = ActionContext::for_resource(
+            "",
+            self.resource_id.as_ref(),
+            R::KIND,
+            self.resource_label.get(),
+        );
         if let Some(me) = &self.me {
             named = named.with_invoker(ActionInvoker::actor(me.as_ref()));
         }
@@ -644,6 +656,7 @@ impl<R: Resource> Dispatcher<R> {
             me: self.me.clone(),
             custody: self.custody.clone(),
             resource_id: Rc::from(id),
+            resource_label: LocalState::new(C::LABEL.to_owned()),
             queue: Rc::clone(&self.queue),
             group: Rc::default(),
             read_only: self.read_only.clone(),
@@ -710,6 +723,10 @@ impl<R: Resource> Dispatcher<R> {
     /// continue it ([`Resource::coalesces`]).
     pub(crate) fn keeps_step_open(&self) -> bool {
         self.opened.get()
+    }
+
+    pub(crate) fn name_resource(&self, label: &str) {
+        self.resource_label.set(label.to_owned());
     }
 
     pub(crate) fn resource_id(&self) -> &str {

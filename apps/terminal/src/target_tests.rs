@@ -934,6 +934,7 @@ fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {
         let observed = if ended {
             app.harness().device_shell_operation(&O::Inspect).unwrap()["transport_disconnected"]
                 == true
+                && on_tab(app, |widget| widget.pty_output_drained())
         } else {
             let output = app
                 .harness()

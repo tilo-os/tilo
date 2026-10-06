@@ -686,6 +686,29 @@ impl KeyboardMapSelection {
         self
     }
 
+    fn key_target(name: &str) -> String {
+        format!("input.keyboard_map.key.{name}")
+    }
+
+    fn inspection_rect(&self, key: &KeyboardMapKey) -> Rect {
+        let scale = self.map.rect.width() / self.map.model_size.width.max(1.0);
+        let rect = key.legend_rect();
+        Rect::new(
+            self.map.rect.x0 + rect.x0 * scale,
+            self.map.rect.y0 + rect.y0 * scale,
+            self.map.rect.x0 + rect.x1 * scale,
+            self.map.rect.y0 + rect.y1 * scale,
+        )
+    }
+
+    fn inspection_enabled(&self) -> bool {
+        self.enabled
+            && self
+                .action
+                .as_ref()
+                .is_some_and(|action| action.is_available())
+    }
+
     fn press(&mut self, point: Point) {
         self.pressed = self.map.key_at(point).map(|key| key.name.clone());
     }
@@ -718,6 +741,66 @@ impl crate::widget::Decorator for KeyboardMapSelection {
     }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(&mut self.map)
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut root = self.map.accessibility()?;
+        // The map is a group; each painted physical position is the actual
+        // inspection control. These expose the same admitted effect as touch.
+        root.children = self
+            .map
+            .keys
+            .iter()
+            .map(|key| {
+                AccessNode::new(Role::Button)
+                    .with_name(format!(
+                        "{}: {}",
+                        key.name,
+                        self.map.legend_values(key).join(" / ")
+                    ))
+                    .with_action_target(Self::key_target(&key.name))
+                    .with_bounds(self.inspection_rect(key))
+                    .with_state(AccessState {
+                        disabled: !self.inspection_enabled(),
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        Some(root)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        match path {
+            [index] => self
+                .map
+                .keys
+                .get(*index)
+                .map(|key| self.inspection_rect(key)),
+            _ => None,
+        }
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        if !self.inspection_enabled() || !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(key) = self
+            .map
+            .keys
+            .iter()
+            .find(|key| Self::key_target(&key.name) == target)
+        else {
+            return false;
+        };
+        self.action
+            .as_mut()
+            .is_some_and(|action| action.emit(key.name.clone()).is_ok())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -791,7 +874,13 @@ impl crate::widget::controls::ActionControls for KeyboardMapSelection {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         self.action
             .as_ref()
-            .map(|action| vec![action.metadata("input.keyboard_map")])
+            .map(|action| {
+                self.map
+                    .keys
+                    .iter()
+                    .map(|key| action.metadata(Self::key_target(&key.name)))
+                    .collect()
+            })
             .unwrap_or_default()
     }
     fn refresh_control_action_availability(
@@ -895,7 +984,34 @@ mod selection_tests {
                 .and_then(serde_json::Value::as_str),
             Some("AD06")
         );
+        let semantics = map.accessibility().unwrap();
+        assert_eq!(semantics.role, Role::Group);
+        assert_eq!(semantics.children.len(), 1);
+        let control = &semantics.children[0];
+        assert_eq!(control.role, Role::Button);
+        let target = control.action_target.as_deref().unwrap();
+        assert_eq!(map.control_action_bindings()[0].control_id, target);
+        assert!(map.perform_semantic_action(
+            target,
+            &crate::a11y::Action::Activate,
+            &mut ctx.state,
+            &automerge::ROOT
+        ));
+        assert_eq!(map.take_control_invocation(), pointer);
+        assert!(!map.perform_semantic_action(
+            "input.keyboard_map.key.unknown",
+            &crate::a11y::Action::Activate,
+            &mut ctx.state,
+            &automerge::ROOT
+        ));
         map.refresh_control_action_availability(&HashSet::new());
+        assert!(map.accessibility().unwrap().children[0].state.disabled);
+        assert!(!map.perform_semantic_action(
+            target,
+            &crate::a11y::Action::Activate,
+            &mut ctx.state,
+            &automerge::ROOT
+        ));
         for phase in [
             winit::event::TouchPhase::Started,
             winit::event::TouchPhase::Ended,

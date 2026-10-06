@@ -7888,9 +7888,18 @@ fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
     in_window.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
     layout(&mut in_window);
     assert!(
-        has_open_button(&in_window),
-        "hosts without chrome keep the button"
+        !has_open_button(&in_window),
+        "an app without a header must not gain a duplicate top bar"
     );
+    let door = in_window
+        .host_commands(false)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::History)
+        .expect("History stays available through the platform action");
+    assert!(door.enabled);
+    assert!(in_window.invoke_host_command(&door.invocation().unwrap()));
+    layout(&mut in_window);
+    assert!(in_window.history.as_ref().unwrap().is_open());
 
     let mut app = app();
     app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);

@@ -94,7 +94,7 @@ grep -Fxq -- '/var/lib/containers:/var/lib/containers' "$work/podman-argv"
 # Btrfs compression is in place before bootc writes any objects. The persistent
 # property survives the installation mount and applies to newly created dirs.
 head -3 "$work/storage-order" >"$work/actual-order"
-printf 'mount -o compress=zstd:1 /dev/loop-testp2 %s/out/.mnt\nbtrfs property set %s/out/.mnt compression zstd\nmount /dev/loop-testp1 %s/out/.mnt/boot\n' \
+printf 'mount -o compress=zstd:3 /dev/loop-testp2 %s/out/.mnt\nbtrfs property set %s/out/.mnt compression zstd\nmount /dev/loop-testp1 %s/out/.mnt/boot\n' \
   "$work" "$work" "$work" >"$work/expected-order"
 cmp "$work/expected-order" "$work/actual-order"
 [ "$(sed -n '4p' "$work/storage-order")" = bootc ]

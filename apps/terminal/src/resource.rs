@@ -391,7 +391,13 @@ impl ResourceApp for TerminalShell {
         } else if let Some(services) = lent {
             TerminalWidget::spawn_hosted(services)
                 .map_err(|error| anyhow::anyhow!(error.to_string()))
-                .or_else(|_| TerminalWidget::spawn_headless())
+                .or_else(|error| {
+                    if cx.mode().is_live() {
+                        Ok(TerminalWidget::without_hosted_runtime(error.to_string()))
+                    } else {
+                        TerminalWidget::spawn_headless()
+                    }
+                })
         } else if cx.mode().is_live() && !cfg!(test) {
             TerminalWidget::spawn_default().or_else(|_| TerminalWidget::spawn_headless())
         } else {

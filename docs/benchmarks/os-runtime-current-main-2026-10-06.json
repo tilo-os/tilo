@@ -1,0 +1,3525 @@
+{
+  "schema": "tilo.os-runtime-investigation.v1",
+  "source": "60f484b76cbde5304535beaac369db7ad5084434",
+  "production_layout_ci_image": {
+    "digest": "sha256:f3dd831dd2e39860abab11f6f9b0444c7d94cc3449ae059bcf8eb9d5df6579fe",
+    "source_revision_verified": true,
+    "rust_lto": "off",
+    "compressed_oci_layer_bytes": 5039589382,
+    "unique_regular_file_totals": {
+      "logical_unique_bytes": 11006083124,
+      "allocated_unique_bytes": 11186843648,
+      "regular_file_paths": 82895,
+      "unique_regular_files": 76047
+    },
+    "scan_errors": [],
+    "largest_files": [
+      [
+        877373440,
+        "/usr/share/virtio-win/virtio-win.iso"
+      ],
+      [
+        288291496,
+        "/usr/bin/shell"
+      ],
+      [
+        270235520,
+        "/usr/lib/tilo-runtime/2026.07+native.c109422730ddda6e1d25322845b670f0/lib/libruntime_dylib.so"
+      ],
+      [
+        267902104,
+        "/usr/lib/tilo-runtime/2026.10.2-chromium/lib/chromium/libcef.so"
+      ],
+      [
+        147082848,
+        "/usr/lib64/libLLVM.so.22.1"
+      ],
+      [
+        118660608,
+        "/boot/EFI/Linux/7.2.8.efi"
+      ],
+      [
+        118636312,
+        "/usr/bin/tilo-runtime-mcp"
+      ],
+      [
+        97887992,
+        "/usr/bin/tilo-installer"
+      ],
+      [
+        97293456,
+        "/usr/bin/tilo-greeter"
+      ],
+      [
+        86412360,
+        "/usr/bin/fs"
+      ],
+      [
+        71766016,
+        "/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4/files/share/wine/gecko/wine-gecko-2.47.4-x86/xul.dll"
+      ],
+      [
+        70500352,
+        "/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4/files/share/wine/gecko/wine-gecko-2.47.4-x86_64/xul.dll"
+      ],
+      [
+        66812016,
+        "/usr/bin/tilo-relay"
+      ],
+      [
+        55959272,
+        "/usr/lib/tilo/windows-runners/steam-runtime/SteamLinuxRuntime_sniper/sniper_platform_3.0.20260805.254768/files/bf/67912f-1.bin"
+      ],
+      [
+        55490344,
+        "/usr/lib64/libgallium-26.2.3.so"
+      ]
+    ],
+    "largest_directories": [
+      [
+        "/usr/lib/tilo",
+        2212123597
+      ],
+      [
+        "/usr/bin",
+        1541152630
+      ],
+      [
+        "/usr/lib64/wine-wow64",
+        1499511780
+      ],
+      [
+        "/usr/lib64",
+        936334462
+      ],
+      [
+        "/usr/share/virtio-win",
+        909015923
+      ],
+      [
+        "/usr/lib/tilo-runtime",
+        666306393
+      ],
+      [
+        "/usr/share/wine",
+        442194824
+      ],
+      [
+        "/usr/share/tilo-apps",
+        399188593
+      ],
+      [
+        "/usr/lib/firmware",
+        312961531
+      ],
+      [
+        "/usr/share/locale",
+        214463150
+      ],
+      [
+        "/usr/x86_64-w64-mingw32/sys-root",
+        194127550
+      ],
+      [
+        "/usr/libexec",
+        193658133
+      ],
+      [
+        "/usr/lib/modules",
+        144970722
+      ],
+      [
+        "/usr/lib/python3.14",
+        140630987
+      ],
+      [
+        "/boot/EFI/Linux",
+        118660608
+      ]
+    ],
+    "largest_rpm_packages": [
+      [
+        1420588763,
+        "wine-core"
+      ],
+      [
+        318703141,
+        "wine-mono"
+      ],
+      [
+        182331338,
+        "mesa-vulkan-drivers"
+      ],
+      [
+        159288462,
+        "tilo-kernel-core"
+      ],
+      [
+        147275895,
+        "llvm-libs"
+      ],
+      [
+        141767574,
+        "mingw64-crt"
+      ],
+      [
+        122751302,
+        "python3-botocore"
+      ],
+      [
+        105915244,
+        "nvidia-gpu-firmware"
+      ],
+      [
+        63504893,
+        "qemu-system-x86-core"
+      ],
+      [
+        55782311,
+        "mesa-dri-drivers"
+      ],
+      [
+        54809719,
+        "mingw32-wine-gecko"
+      ],
+      [
+        52548727,
+        "mingw64-wine-gecko"
+      ],
+      [
+        51681862,
+        "podman"
+      ],
+      [
+        49377472,
+        "atheros-firmware"
+      ],
+      [
+        47634539,
+        "edk2-ovmf"
+      ]
+    ],
+    "scope": "Production-layout integration image; LTO off; not a signed shipping release"
+  },
+  "development_disk": {
+    "schema": "https://tilo.sh/dev/disk-candidate/v1",
+    "validation": "unvalidated",
+    "tag": "main-60f484b-osperf-ci",
+    "arch": "x86_64",
+    "sourceRevision": "60f484b76cbde5304535beaac369db7ad5084434",
+    "diskToolingRevision": "90f9186a2e5b5ac2063e81e588088e772dd1f4a5",
+    "imageDigest": "sha256:2a395df6495ebf34edc7516f768e666e55acefca570d1577b949c9cefa59f530",
+    "baseChildDigest": "sha256:f3dd831dd2e39860abab11f6f9b0444c7d94cc3449ae059bcf8eb9d5df6579fe",
+    "baseTrust": "integration",
+    "files": [
+      {
+        "role": "disk",
+        "file": "tilo-vm-candidate-x86_64.qcow2",
+        "url": "https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-candidate/60f484b76cbd-90f9186a2e5b-90734-1-x86_64/tilo-vm-candidate-x86_64.qcow2",
+        "sha256": "9effc170d02ae00c5253f27ab789c9967be04c4b2c40be9f05bb6d8a63ce1ad6",
+        "size": 7391281152,
+        "virtualSize": 68719476736
+      }
+    ]
+  },
+  "fixture": {
+    "accelerator": "tcg,thread=multi",
+    "renderer": "software; virtio 2D",
+    "vcpus": 4,
+    "memory_mib": 4096,
+    "resolution": [
+      1280,
+      720
+    ],
+    "host_kvm": false,
+    "host_render_node": false,
+    "shared_host": true
+  },
+  "development_boot": {
+    "readiness": {
+      "boot_returncode": 0,
+      "wait_returncode": 0,
+      "host_start_unix": 1791265603.079268,
+      "host_to_greeter_accepts_input_seconds": 81.43047719400784,
+      "env": {
+        "TILO_DISTROBOX": "",
+        "TILO_RUN": "/tmp/tilo-os-perf-20261006/current-run-01",
+        "TILO_VM_CYCLE": "os-perf-current-01",
+        "TILO_ACCEL": "tcg",
+        "TILO_MEM": "4096",
+        "TILO_SMP": "4",
+        "TILO_SSH_PORT": "22481",
+        "TILO_XRES": "1280",
+        "TILO_YRES": "720"
+      }
+    },
+    "systemd_summary": "Startup finished in 4.657s (kernel) + 10.876s (initrd) + 21.461s (userspace) = 36.995s \ngraphical.target reached after 18.874s in userspace.\nThe time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngraphical.target @18.874s\n\u2514\u2500greetd.service @18.871s\n  \u2514\u2500plymouth-quit-wait.service @18.013s +249ms\n    \u2514\u2500systemd-user-sessions.service @17.686s +264ms\n      \u2514\u2500network.target @17.641s\n        \u2514\u2500NetworkManager.service @13.304s +4.329s\n          \u2514\u2500network-pre.target @13.290s\n            \u2514\u2500firewalld.service @13.288s\n              \u2514\u2500basic.target @13.185s\n                \u2514\u2500dbus-broker.service @12.910s +269ms\n                  \u2514\u2500dbus.socket @12.663s +2ms\n                    \u2514\u2500sysinit.target @12.620s\n                      \u2514\u2500systemd-update-done.service @12.521s +93ms\n                        \u2514\u2500systemd-journal-catalog-update.service @12.278s +228ms\n                          \u2514\u2500systemd-tmpfiles-setup.service @10.101s +2.109s\n                            \u2514\u2500local-fs.target @9.989s\n                              \u2514\u2500run-user-974.mount @19.644s\n                                \u2514\u2500swap.target @9.346s\n                                  \u2514\u2500dev-zram0.swap @9.221s +107ms\n                                    \u2514\u2500systemd-zram-setup@zram0.service @9.045s +150ms\n                                      \u2514\u2500dev-zram0.device\n15.894s sys-module-fuse.device\n15.459s dev-sr0.device\n15.459s dev-disk-by\\x2ddiskseq-4.device\n15.459s dev-cdrom.device\n15.459s dev-disk-by\\x2dpath-pci\\x2d0000:00:1f.2\\x2data\\x2d3.device\n15.459s dev-disk-by\\x2did-ata\\x2dQEMU_DVD\\x2dROM_QM00005.device\n15.459s dev-disk-by\\x2dpath-pci\\x2d0000:00:1f.2\\x2data\\x2d3.0.device\n15.459s sys-devices-pci0000:00-0000:00:1f.2-ata3-host2-target2:0:0-2:0:0:0-block-sr0.device\n15.170s sys-devices-pci0000:00-0000:00:04.0-virtio3-virtio\\x2dports-vport3p1.device\n15.170s dev-vport3p1.device\n15.170s dev-virtio\\x2dports-org.tilo.console.0.device\n14.932s sys-devices-pci0000:00-0000:00:02.0-virtio1-block-vda-vda2.device\n14.932s dev-disk-by\\x2dlabel-Tilo\\x5cx20root.device\n14.932s dev-disk-by\\x2dpath-pci\\x2d0000:00:02.0\\x2dpart-by\\x2dlabel-Tilo\\x5cx20root.device\n14.932s dev-disk-by\\x2duuid-9b62e472\\x2d5fd8\\x2d4524\\x2da62b\\x2db69a6ab1a9f5.device\n14.932s dev-disk-by\\x2dpartlabel-Tilo\\x5cx20root.device\n14.931s dev-disk-by\\x2dpath-pci\\x2d0000:00:02.0\\x2dpart-by\\x2dpartnum-2.device\n14.931s dev-vda2.device\n14.931s dev-disk-by\\x2dpath-virtio\\x2dpci\\x2d0000:00:02.0\\x2dpart2.device\n14.931s dev-disk-by\\x2dpath-pci\\x2d0000:00:02.0\\x2dpart2.device\n14.931s dev-disk-by\\x2dpartuuid-14a632f0\\x2da5dd\\x2d43d4\\x2dac75\\x2d516213b54374.device\n14.931s dev-disk-by\\x2dpath-pci\\x2d0000:00:02.0\\x2dpart-by\\x2dpartlabel-Tilo\\x5cx20root.device\n14.931s dev-disk-by\\x2dpath-pci\\x2d0000:00:02.0\\x2dpart-by\\x2dpartuuid-14a632f0\\x2da5dd\\x2d43d4\\x2dac75\\x2d516213b54374.device\n14.931s dev-disk-by\\x2ddiskseq-1\\x2dpart2.device\n14.931s dev-disk-by\\x2dpath-pci\\x2d0000:00:02.0\\x2dpart-by\\x2duuid-9b62e472\\x2d5fd8\\x2d4524\\x2da62b\\x2db69a6ab1a9f5.device\n  UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\nFilesystem       1B-blocks       Used   Available Use% Mounted on\n/dev/vda2      66570924032 9788424192 54029647872  16% /sysroot\nConditionResult=no\nExecMainStartTimestampMonotonic=0\n",
+    "btrfs_physical_usage": {
+      "returncode": 0,
+      "stdout": "Overall:\n    Device size:\t\t       66570924032\n    Device allocated:\t\t       13983809536\n    Device unallocated:\t\t       52587114496\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        9769893888\n    Free (estimated):\t\t       54024859648\t(min: 27731302400)\n    Free (statfs, df):\t\t       54023766016\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t          24707072\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:9672065024, Used:8234319872 (85.14%)\n   /dev/vda2\t9672065024\n\nMetadata,DUP: Size:2147483648, Used:767770624 (35.75%)\n   /dev/vda2\t4294967296\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/vda2\t  16777216\n\nUnallocated:\n   /dev/vda2\t52587114496\n",
+      "stderr": "\nWe trust you have received the usual lecture from the local System\nAdministrator. It usually boils down to these three things:\n\n    #1) Respect the privacy of others.\n    #2) Think before you type.\n    #3) With great power comes great responsibility.\n\nFor security reasons, the password you type will not be visible.\n\n"
+    },
+    "bootc_status": {
+      "returncode": 0,
+      "stdout": "{\"apiVersion\":\"org.containers.bootc/v1\",\"kind\":\"BootcHost\",\"metadata\":{\"name\":\"host\"},\"spec\":{\"bootOrder\":\"default\",\"image\":{\"image\":\"registry.tilo.so/tilo/tilo-vm:main-60f484b-osperf-ci\",\"transport\":\"registry\"}},\"status\":{\"booted\":{\"cachedUpdate\":null,\"composefs\":{\"bootDigest\":\"3789582c51a374e706c07deacea48e93c2fd3da04199c8b741e48a029c47f4e2\",\"bootType\":\"Bls\",\"bootloader\":\"systemd\",\"missingVerityAllowed\":false,\"verity\":\"e8caf57420d17e96a369770bd7720ad64383a75eb50ef2bef8177c10304bfb83770e218281d4e8dc77e935e8c554838cdc217024796e4b68b36dcba6bf76ffe3\"},\"downloadOnly\":false,\"image\":{\"architecture\":\"amd64\",\"image\":{\"image\":\"registry.tilo.so/tilo/tilo-vm:main-60f484b-osperf-ci\",\"transport\":\"registry\"},\"imageDigest\":\"sha256:d245d01c5991761bece0d4c6f3afa5c7d8f7c80cfc2fe0d63fdf40049569b69d\",\"timestamp\":\"2026-10-04T17:58:47Z\",\"version\":null},\"incompatible\":false,\"ostree\":null,\"pinned\":false,\"softRebootCapable\":false,\"store\":null},\"readOnly\":false,\"rollback\":null,\"rollbackQueued\":false,\"staged\":null,\"type\":null,\"usrOverlay\":null}}",
+      "stderr": ""
+    }
+  },
+  "desktop_idle": {
+    "samples": [
+      {
+        "monotonic": 325.276100758,
+        "ticks": [
+          18494,
+          541,
+          11929,
+          95131,
+          1201,
+          1529,
+          575,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3026704
+      },
+      {
+        "monotonic": 330.279987172,
+        "ticks": [
+          18496,
+          541,
+          11932,
+          97130,
+          1201,
+          1530,
+          576,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3029948
+      },
+      {
+        "monotonic": 335.284986926,
+        "ticks": [
+          18499,
+          541,
+          11938,
+          99119,
+          1201,
+          1533,
+          579,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3029948
+      },
+      {
+        "monotonic": 340.289007054,
+        "ticks": [
+          18522,
+          541,
+          11945,
+          101092,
+          1201,
+          1536,
+          583,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3029948
+      },
+      {
+        "monotonic": 345.294215568,
+        "ticks": [
+          18523,
+          541,
+          11950,
+          103088,
+          1201,
+          1538,
+          585,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3029948
+      },
+      {
+        "monotonic": 350.298009056,
+        "ticks": [
+          18537,
+          541,
+          11961,
+          105067,
+          1201,
+          1541,
+          586,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3030776
+      },
+      {
+        "monotonic": 355.301127539,
+        "ticks": [
+          18539,
+          541,
+          11971,
+          107058,
+          1202,
+          1543,
+          587,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3031392
+      }
+    ],
+    "summary": {
+      "cpu_percent_total_capacity_intervals": [
+        0.3489531405782652,
+        0.7485029940119761,
+        1.8407960199004976,
+        0.4985044865403789,
+        1.4442231075697212,
+        0.7473841554559043
+      ],
+      "cpu_percent_mean": 0.9380606506761239,
+      "unavailable_mib_range": [
+        884.65234375,
+        889.23046875
+      ]
+    },
+    "observer": "one SSH/Python connection; no other guest work during window",
+    "shell_rss_kib": 395700
+  },
+  "greeter_transient": {
+    "samples": [
+      {
+        "monotonic": 120.386603574,
+        "ticks": [
+          9428,
+          38,
+          7024,
+          29981,
+          282,
+          855,
+          305,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3187812
+      },
+      {
+        "monotonic": 125.392264643,
+        "ticks": [
+          9447,
+          91,
+          7111,
+          31818,
+          288,
+          862,
+          309,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3190592
+      },
+      {
+        "monotonic": 130.395744396,
+        "ticks": [
+          9466,
+          419,
+          7348,
+          33212,
+          310,
+          876,
+          315,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3187384
+      },
+      {
+        "monotonic": 135.399456712,
+        "ticks": [
+          9502,
+          533,
+          7629,
+          34759,
+          314,
+          895,
+          332,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3175736
+      },
+      {
+        "monotonic": 140.403916071,
+        "ticks": [
+          9503,
+          533,
+          7629,
+          36760,
+          314,
+          896,
+          333,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3180044
+      },
+      {
+        "monotonic": 145.408489118,
+        "ticks": [
+          9504,
+          533,
+          7630,
+          38761,
+          314,
+          897,
+          334,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3183272
+      },
+      {
+        "monotonic": 150.412620875,
+        "ticks": [
+          9504,
+          533,
+          7631,
+          40759,
+          314,
+          899,
+          337,
+          0
+        ],
+        "mem_total_kib": 3937276,
+        "mem_available_kib": 3183272
+      }
+    ],
+    "summary": {
+      "cpu_percent_total_capacity_intervals": [
+        8.445106805762544,
+        29.900990099009903,
+        23.141724479682853,
+        0.1497005988023952,
+        0.19950124688279303,
+        0.2994011976047904
+      ],
+      "cpu_percent_mean": 10.356070737957547,
+      "unavailable_mib_range": [
+        729.18359375,
+        743.69140625
+      ]
+    },
+    "excluded_from_steady_idle": true,
+    "reason": "Activity continued in the first three intervals; warmup was insufficient."
+  },
+  "terminal_journey": {
+    "action": {
+      "returncode": 0,
+      "stdout": "{\"action\":{\"provider\":\"actions\",\"id\":\"window.new.terminal\",\"kind\":\"Actions\",\"title\":\"New terminal window\",\"params\":[],\"contract\":{\"availability\":{\"state\":\"available\"},\"permission\":\"write\",\"risk\":\"low\",\"confirmation\":{\"mode\":\"none\"},\"retry\":\"at_most_once\",\"reversible\":true,\"execution\":{\"mode\":\"immediate\"},\"discovery\":\"live\",\"result\":{\"type\":\"none\"}}},\"receipt\":{\"update\":{\"state\":\"succeeded\",\"invocation\":\"da2e8548-01ed-4580-8cc3-8106581ff981\",\"output\":{}}}}\n",
+      "stderr": "",
+      "seconds": 0.0627871300000038
+    },
+    "last_observed_elapsed_seconds": 22.371545966000042,
+    "outcome": "AppPlaceholder; first-login setup pending; not a successful app launch or startup measurement"
+  },
+  "native_btrfs_compression_model": {
+    "image": "registry.tilo.so/tilo/tilo-ci@sha256:f3dd831dd2e39860abab11f6f9b0444c7d94cc3449ae059bcf8eb9d5df6579fe",
+    "tar_sha256": "1f94ecf8db9a09da0b2edac5371a1e0052d10ecc3c28462a3caa516df78e176a",
+    "tar_bytes": 11678952448,
+    "scope": "Complete exported CI production-layout rootfs including content-addressed hardlink targets, on fresh native Btrfs. No installed composefs/fs-verity overhead.",
+    "rows": [
+      {
+        "level": 1,
+        "extract_sync_seconds": 18.467323115997715,
+        "physical_used_bytes": 6490599424,
+        "logical_du_bytes": 11542009978,
+        "shell_sha256": "05488e7f630259feac1bdad9ab0efb31c4f788cc4d100a5cebd4a0dd546f8275",
+        "filesystem_usage": "Overall:\n    Device size:\t\t       25769803776\n    Device allocated:\t\t        8078229504\n    Device unallocated:\t\t       17691574272\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        6490599424\n    Free (estimated):\t\t       19088986112\t(min: 10243198976)\n    Free (statfs, df):\t\t       19087937536\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t          14581760\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:7524581376, Used:6127169536 (81.43%)\n   /dev/loop0\t7524581376\n\nMetadata,DUP: Size:268435456, Used:181698560 (67.69%)\n   /dev/loop0\t 536870912\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/loop0\t  16777216\n\nUnallocated:\n   /dev/loop0\t17691574272\n"
+      },
+      {
+        "level": 3,
+        "extract_sync_seconds": 14.500357716009603,
+        "physical_used_bytes": 6350241792,
+        "logical_du_bytes": 11542009978,
+        "shell_sha256": "05488e7f630259feac1bdad9ab0efb31c4f788cc4d100a5cebd4a0dd546f8275",
+        "filesystem_usage": "Overall:\n    Device size:\t\t       25769803776\n    Device allocated:\t\t        7004487680\n    Device unallocated:\t\t       18765316096\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        6350241792\n    Free (estimated):\t\t       19229016064\t(min: 9846358016)\n    Free (statfs, df):\t\t       19227967488\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t          11419648\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:6450839552, Used:5987139584 (92.81%)\n   /dev/loop0\t6450839552\n\nMetadata,DUP: Size:268435456, Used:181534720 (67.63%)\n   /dev/loop0\t 536870912\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/loop0\t  16777216\n\nUnallocated:\n   /dev/loop0\t18765316096\n"
+      }
+    ],
+    "physical_reduction_bytes": 140357632
+  },
+  "not_measured": [
+    "Shipping thin-LTO image performance",
+    "Hardware input-to-present latency and frame cadence",
+    "Successful native app startup"
+  ],
+  "cleanup": {
+    "development_vm_stopped": true,
+    "temporary_compression_filesystems_unmounted": true,
+    "production_vms_stopped": true
+  },
+  "installed_comparison": {
+    "rows": [
+      {
+        "disk": "/tmp/tilo-os-perf-20261006/production-zstd1/disk.raw",
+        "filesystem_usage": "Overall:\n    Device size:\t\t       23621251072\n    Device allocated:\t\t       10225713152\n    Device unallocated:\t\t       13395537920\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        7525588992\n    Free (estimated):\t\t       15679213568\t(min: 8981444608)\n    Free (statfs, df):\t\t       15678119936\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t                 0\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:8598323200, Used:6314647552 (73.44%)\n   /dev/loop0p2\t8598323200\n\nMetadata,DUP: Size:805306368, Used:605454336 (75.18%)\n   /dev/loop0p2\t1610612736\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/loop0p2\t  16777216\n\nUnallocated:\n   /dev/loop0p2\t13395537920\n",
+        "physical_used_bytes": 7525588992,
+        "object_count": 76338,
+        "objects_logical_bytes": 11985898231,
+        "objects_verity_fingerprint_sha256": "e84d12de17ad30ece9d231ec1931621aa25ae12d907185add89a376924c649ba",
+        "every_object_verity_measured": true,
+        "level": 1
+      },
+      {
+        "disk": "/tmp/tilo-os-perf-20261006/production-zstd3/disk.raw",
+        "filesystem_usage": "Overall:\n    Device size:\t\t       23621251072\n    Device allocated:\t\t       10225713152\n    Device unallocated:\t\t       13395537920\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        7408070656\n    Free (estimated):\t\t       15791226880\t(min: 9093457920)\n    Free (statfs, df):\t\t       15790133248\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t                 0\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:8598323200, Used:6202634240 (72.14%)\n   /dev/loop0p2\t8598323200\n\nMetadata,DUP: Size:805306368, Used:602701824 (74.84%)\n   /dev/loop0p2\t1610612736\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/loop0p2\t  16777216\n\nUnallocated:\n   /dev/loop0p2\t13395537920\n",
+        "physical_used_bytes": 7408070656,
+        "object_count": 76338,
+        "objects_logical_bytes": 11985898241,
+        "objects_verity_fingerprint_sha256": "dc035bfceb928bae948b8555ba0e24fc0e0dede1f9ad95f9ca853fc0fd649eb1",
+        "every_object_verity_measured": true,
+        "level": 3
+      }
+    ],
+    "physical_reduction_bytes": 117518336,
+    "common_object_count": 76336,
+    "same_name_changed": {},
+    "baseline_only": {
+      "77/8beb05b718fda92579edd5a985c4a30d5e6b9a71f005b939cb0caa984aa454fa6b8d11e2a53b401be588f17c5674ffe1013ffab77d57a4db8e17236247af39": [
+        "02004000778beb05b718fda92579edd5a985c4a30d5e6b9a71f005b939cb0caa984aa454fa6b8d11e2a53b401be588f17c5674ffe1013ffab77d57a4db8e17236247af39",
+        20743
+      ],
+      "1f/d07fde622e97bf19d416aa4ab5a91ca7ac93e61ef42be29a83181e99a6e357f10cd8e8a0d1fff5b45d293293f69ab1486e60a90f0f8b03b0bf37f8618efa06": [
+        "020040001fd07fde622e97bf19d416aa4ab5a91ca7ac93e61ef42be29a83181e99a6e357f10cd8e8a0d1fff5b45d293293f69ab1486e60a90f0f8b03b0bf37f8618efa06",
+        20749
+      ]
+    },
+    "candidate_only": {
+      "dc/21a71a61463fe60b902dcd13f1f848b848d48f6174d79f85a7011b4a212594a6af03df1b7b1e1ce64872fc3c78e066a3a2e038ed994a3e17e640101596fce1": [
+        "02004000dc21a71a61463fe60b902dcd13f1f848b848d48f6174d79f85a7011b4a212594a6af03df1b7b1e1ce64872fc3c78e066a3a2e038ed994a3e17e640101596fce1",
+        20750
+      ],
+      "ea/8cba5dd5f4fffcf935b2d46e1df5cfd57f54816de64c47e52ee581fd19d0c76b94818c6ed73846c6067a8f4d9dfd3443878551fa2b601ff57c49b65b0be440": [
+        "02004000ea8cba5dd5f4fffcf935b2d46e1df5cfd57f54816de64c47e52ee581fd19d0c76b94818c6ed73846c6067a8f4d9dfd3443878551fa2b601ff57c49b65b0be440",
+        20752
+      ]
+    },
+    "all_object_fingerprints_matched": false,
+    "splitstream_semantics": [
+      {
+        "oci_manifest_object_reference_matched": true,
+        "decoded_stream_matched": true,
+        "named_reference_count": 204,
+        "name_to_verity_reference_map_matched": true,
+        "canonical_named_map_sha256": "205598d36d28cd6c95d2ea5bef0754a94e1ad28f4eacfdeaf67479bef7dd4a19",
+        "cause": "Stream-reference order and corresponding named-reference indices differ; resolved names and data references match."
+      },
+      {
+        "oci_manifest_object_reference_matched": true,
+        "decoded_stream_matched": true,
+        "named_reference_count": 204,
+        "name_to_verity_reference_map_matched": true,
+        "canonical_named_map_sha256": "861931f7cd709e0de87dccebc6dcb9edcc6fcea0288a4c284d04fa95285d3d3a",
+        "cause": "Stream-reference order and corresponding named-reference indices differ; resolved names and data references match."
+      }
+    ],
+    "payload_semantics_verified": true,
+    "common_object_logical_bytes": 11985856739,
+    "resealed_image_id": "sha256:1853812a965dc7832c2af311d6e7a2f801633447c8a6fff03195bbdaefacc6de",
+    "sealed_composefs_digest": "a668a5510ef06d1b8ba95aa774c923e97141f6a618c474c5da2775a800857a8d878fcf42a871ec0e69899df6082c36045c4e568f57cf3117fcd5a2695b97c8fa",
+    "assemblies": [
+      {
+        "returncode": 0,
+        "elapsed_seconds": 62.745797928000684,
+        "command": [
+          "bash",
+          "/tmp/tilo-os-perf-20261006/os/dev/disk-image.sh",
+          "--composefs",
+          "--size",
+          "24G",
+          "--rootfs",
+          "btrfs",
+          "--raw",
+          "localhost/tilo-os-perf:production-resealed",
+          "/tmp/tilo-os-perf-20261006/production-zstd1"
+        ],
+        "source_image": "sha256:df0c3126ff40dfc31b378229d4f2487fe39adb67c798f7c3f2c0c3b163e34bd3",
+        "resealed_image": "sha256:1853812a965dc7832c2af311d6e7a2f801633447c8a6fff03195bbdaefacc6de",
+        "level": 1
+      },
+      {
+        "returncode": 0,
+        "elapsed_seconds": 42.52552681899397,
+        "command": [
+          "bash",
+          "/tmp/tilo-os-perf-20261006/os/dev/disk-image.sh",
+          "--composefs",
+          "--size",
+          "24G",
+          "--rootfs",
+          "btrfs",
+          "--raw",
+          "localhost/tilo-os-perf:production-resealed",
+          "/tmp/tilo-os-perf-20261006/production-zstd3"
+        ],
+        "resealed_image": "sha256:1853812a965dc7832c2af311d6e7a2f801633447c8a6fff03195bbdaefacc6de",
+        "level": 3
+      }
+    ],
+    "scope": "Matched CI production-layout rootfs, UKI-only resealed for this test; not a signed shipping release. One install per level. Filesystem physical use includes metadata and fs-verity; EFI system partition is separate.",
+    "physical_reduction_percent": 1.5615832345471785
+  },
+  "production_boot_comparison": [
+    {
+      "level": 1,
+      "env": {
+        "TILO_DISTROBOX": "",
+        "TILO_RUN": "/tmp/tilo-os-perf-20261006/production-boot-zstd1",
+        "TILO_VM_CYCLE": "os-perf-prod-1",
+        "TILO_ACCEL": "tcg",
+        "TILO_MEM": "4096",
+        "TILO_SMP": "4",
+        "TILO_SSH_PORT": "22481",
+        "TILO_XRES": "1280",
+        "TILO_YRES": "720"
+      },
+      "production_account_provisioned": false,
+      "boot_returncode": 0,
+      "wait_returncode": 0,
+      "host_start_unix": 1791267927.3505874,
+      "host_to_greeter_accepts_input_seconds": 83.02052770399314,
+      "greeter_state_returncode": 0,
+      "greeter_state": {
+        "app": "greeter",
+        "phase": "sign-in",
+        "account": null,
+        "session": "Tilo",
+        "sessions": [
+          "Tilo"
+        ],
+        "session_choice": false,
+        "session_diagnostics": null,
+        "status": "",
+        "username": "",
+        "challenge": null,
+        "cancellation_requested": false,
+        "accounts": [],
+        "notice": null,
+        "accepts_input": true,
+        "image": {
+          "composefs": "a668a5510ef06d1b8ba95aa774c923e97141f6a618c474c5da2775a800857a8d878fcf42a871ec0e69899df6082c36045c4e568f57cf3117fcd5a2695b97c8fa"
+        }
+      },
+      "qemu_args": "qemu-system-x86_64 -machine q35,smm=on -accel tcg,thread=multi -cpu max -m 4096 -smp 4 -drive if=pflash,format=qcow2,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2 -drive if=pflash,format=qcow2,file=/tmp/tilo-os-perf-20261006/production-boot-zstd1/vars-qcow2-none.img -drive file=/tmp/tilo-os-perf-20261006/production-boot-zstd1/guest.qcow2,format=qcow2,if=none,id=tilo-disk -device virtio-blk-pci,drive=tilo-disk -device virtio-vga,xres=1280,yres=720 -display none -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:22481-:22 -usb -device usb-tablet -device virtio-serial-pci -chardev socket,id=tiloconsole,path=/tmp/tilo-os-perf-20261006/production-boot-zstd1/console.sock,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0 -monitor unix:/tmp/tilo-os-perf-20261006/production-boot-zstd1/mon.sock,server,nowait -serial file:/tmp/tilo-os-perf-20261006/production-boot-zstd1/serial.log -pidfile /tmp/tilo-os-perf-20261006/production-boot-zstd1/qemu.pid -name tilo -global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1 ",
+      "cleanup_status": "stopped"
+    },
+    {
+      "level": 3,
+      "env": {
+        "TILO_DISTROBOX": "",
+        "TILO_RUN": "/tmp/tilo-os-perf-20261006/production-boot-zstd3",
+        "TILO_VM_CYCLE": "os-perf-prod-3",
+        "TILO_ACCEL": "tcg",
+        "TILO_MEM": "4096",
+        "TILO_SMP": "4",
+        "TILO_SSH_PORT": "22481",
+        "TILO_XRES": "1280",
+        "TILO_YRES": "720"
+      },
+      "production_account_provisioned": false,
+      "boot_returncode": 0,
+      "wait_returncode": 0,
+      "host_start_unix": 1791268013.7213714,
+      "host_to_greeter_accepts_input_seconds": 78.31225330599409,
+      "greeter_state_returncode": 0,
+      "greeter_state": {
+        "app": "greeter",
+        "phase": "sign-in",
+        "account": null,
+        "session": "Tilo",
+        "sessions": [
+          "Tilo"
+        ],
+        "session_choice": false,
+        "session_diagnostics": null,
+        "status": "",
+        "username": "",
+        "challenge": null,
+        "cancellation_requested": false,
+        "accounts": [],
+        "notice": null,
+        "accepts_input": true,
+        "image": {
+          "composefs": "a668a5510ef06d1b8ba95aa774c923e97141f6a618c474c5da2775a800857a8d878fcf42a871ec0e69899df6082c36045c4e568f57cf3117fcd5a2695b97c8fa"
+        }
+      },
+      "qemu_args": "qemu-system-x86_64 -machine q35,smm=on -accel tcg,thread=multi -cpu max -m 4096 -smp 4 -drive if=pflash,format=qcow2,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2 -drive if=pflash,format=qcow2,file=/tmp/tilo-os-perf-20261006/production-boot-zstd3/vars-qcow2-none.img -drive file=/tmp/tilo-os-perf-20261006/production-boot-zstd3/guest.qcow2,format=qcow2,if=none,id=tilo-disk -device virtio-blk-pci,drive=tilo-disk -device virtio-vga,xres=1280,yres=720 -display none -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:22481-:22 -usb -device usb-tablet -device virtio-serial-pci -chardev socket,id=tiloconsole,path=/tmp/tilo-os-perf-20261006/production-boot-zstd3/console.sock,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0 -monitor unix:/tmp/tilo-os-perf-20261006/production-boot-zstd3/mon.sock,server,nowait -serial file:/tmp/tilo-os-perf-20261006/production-boot-zstd3/serial.log -pidfile /tmp/tilo-os-perf-20261006/production-boot-zstd3/qemu.pid -name tilo -global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1 ",
+      "cleanup_status": "stopped"
+    }
+  ],
+  "production_qcow_artifacts": [
+    {
+      "level": 1,
+      "qcow2_sha256": "d4098c98fc07c0ec003fc2fbc67bc9146804c2e03e303068328777f9f904fd63",
+      "file_bytes": 5948375040,
+      "virtual_bytes": 25769803776,
+      "convert_check_hash_seconds": 14.608144081998034
+    },
+    {
+      "level": 3,
+      "qcow2_sha256": "2ac6564a0967cd4811fd33a61e9747f017d6b2303803c76186668756142e4d85",
+      "file_bytes": 5841944576,
+      "virtual_bytes": 25769803776,
+      "convert_check_hash_seconds": 13.75965089899546
+    }
+  ],
+  "raw_to_qcow_lossless_checks": [
+    {
+      "level": 1,
+      "returncode": 0,
+      "stdout": "Images are identical.\n"
+    },
+    {
+      "level": 3,
+      "returncode": 0,
+      "stdout": "Images are identical.\n"
+    }
+  ],
+  "remaining_root_content": {
+    "rows": [
+      {
+        "path": "/sysroot",
+        "file_paths": 71337,
+        "logical_path_bytes": 1802651027,
+        "new_unique_files": 48382,
+        "additional_unique_bytes": 419257061,
+        "largest_extra_files": [
+          [
+            106961695,
+            "/sysroot/ostree/repo/objects/2d/b0f0a2c539e9d173f0594f1f34b6bf73555b1ab2732248186c6139891ad14f.file"
+          ],
+          [
+            33624064,
+            "/sysroot/ostree/repo/objects/fc/253623731922a329dcf016b924f236dab580dc87aeb033bb64e9bba04c0695.file"
+          ],
+          [
+            19007848,
+            "/sysroot/ostree/repo/objects/db/2c673166d19558f52b4ecc510f22115ab6556ac6cfaf12da78258935d43fb1.file"
+          ],
+          [
+            17565064,
+            "/sysroot/ostree/repo/objects/ea/f3021d47c9f299c849cb08ba93740335b0f53b66c703806566c946de646161.file"
+          ],
+          [
+            13841211,
+            "/sysroot/ostree/repo/objects/24/1dd05baa542089979aa4e37197961e835fcd6a3a828a76c098d4c06c557e68.file"
+          ],
+          [
+            12505407,
+            "/sysroot/ostree/repo/objects/a5/c2d9381af6ebe78d088808dbc033b0cf27592355888bfd90ced1b54e966d13.file"
+          ],
+          [
+            6246920,
+            "/sysroot/ostree/repo/objects/4e/e0da2a6c0962ac43f51bfb866bc330cb1ae18cffab25ca5463fed947f8e7f8.file"
+          ],
+          [
+            4840460,
+            "/sysroot/ostree/repo/objects/ee/278035dd1d9b1272f19c3b6bf75e715c28fd765446f0e47233b1fbd7d634a5.file"
+          ],
+          [
+            4145576,
+            "/sysroot/ostree/repo/objects/b9/e81aac9518b715727be9c1254b11034f231655caa1760cb23ac22b1dc4600f.file"
+          ],
+          [
+            3805774,
+            "/sysroot/ostree/repo/objects/93/bd4562baa32f0d46dc90d8dba4d3d85bcd3c7ea51fe1cb0ecd0cda47a2a9be.file"
+          ],
+          [
+            3805774,
+            "/sysroot/ostree/repo/objects/2c/8f1c0a6d4e08f156e20bc86f2dc63e597a7a2a0f8d32d6ff53164dd4116b5e.file"
+          ],
+          [
+            3805774,
+            "/sysroot/ostree/repo/objects/06/704fbba8d2a81250fdf3fea95ba24a40bd38c830955041b5b60a6538394db7.file"
+          ]
+        ]
+      },
+      {
+        "path": "/var",
+        "file_paths": 0,
+        "logical_path_bytes": 0,
+        "new_unique_files": 0,
+        "additional_unique_bytes": 0,
+        "largest_extra_files": []
+      },
+      {
+        "path": "/app",
+        "file_paths": 0,
+        "logical_path_bytes": 0,
+        "new_unique_files": 0,
+        "additional_unique_bytes": 0,
+        "largest_extra_files": []
+      },
+      {
+        "path": "/root",
+        "file_paths": 0,
+        "logical_path_bytes": 0,
+        "new_unique_files": 0,
+        "additional_unique_bytes": 0,
+        "largest_extra_files": []
+      }
+    ],
+    "ostree_repo_config": "[core]\nrepo_version=1\nmode=bare-split-xattrs\n",
+    "top_level": [
+      "sysroot",
+      "boot",
+      "dev",
+      "opt",
+      "proc",
+      "run",
+      "sys",
+      "tmp",
+      "usr",
+      "etc",
+      "var",
+      "kernel",
+      "media",
+      "sbin",
+      "home",
+      "lib64",
+      "srv",
+      "lib",
+      "bin",
+      "root",
+      "mnt",
+      "ostree"
+    ]
+  },
+  "production_qcow_reduction_bytes": 106430464,
+  "production_boot_scope": "One cold boot per compression level, shared runner and uncontrolled cache; readiness validation, not evidence of a boot-speed improvement.",
+  "rejected_embedded_ostree_cleanup": {
+    "role": {
+      "ostree --repo=/sysroot/ostree/repo refs": {
+        "rc": 0,
+        "out": "",
+        "err": ""
+      },
+      "ostree --repo=/sysroot/ostree/repo summary -v": {
+        "rc": 1,
+        "out": "",
+        "err": "OT: using fuse: 0\nerror: openat(summary): No such file or directory\n"
+      },
+      "file /sysroot/ostree/repo/objects/2d/b0f0a2c539e9d173f0594f1f34b6bf73555b1ab2732248186c6139891ad14f.file /sysroot/ostree/repo/objects/fc/253623731922a329dcf016b924f236dab580dc87aeb033bb64e9bba04c0695.file": {
+        "rc": 0,
+        "out": "/sysroot/ostree/repo/objects/2d/b0f0a2c539e9d173f0594f1f34b6bf73555b1ab2732248186c6139891ad14f.file: ASCII cpio archive (SVR4 with no CRC)\n/sysroot/ostree/repo/objects/fc/253623731922a329dcf016b924f236dab580dc87aeb033bb64e9bba04c0695.file: SQLite 3.x database, last written using SQLite version 3051002, file counter 3, database pages 8209, cookie 0x31, schema 4, UTF-8, version-valid-for 3\n",
+        "err": ""
+      },
+      "refs_files": []
+    },
+    "derived_unsealed_image": "sha256:715806e78459b11544b99ecc5581cda490f88d7533cacea4ecd1f741b83dd52e",
+    "resealed_image": "sha256:4e7900cb3c8a09c7ed9237aded66a1ce05b203069fbedf9177beefbeaff6087d",
+    "bootc_lint_passed": true,
+    "complete_install_passed": true,
+    "installation_log_tail": "es/sector, 8 sectors/cluster\n\u001b[1;36m[tilo]\u001b[0m 2/4 mounted /dev/loop0p2 -> /tmp/tilo-os-perf-20261006/production-cleanup/.mnt, /dev/loop0p1 -> /tmp/tilo-os-perf-20261006/production-cleanup/.mnt/boot\n\u001b[1;36m[tilo]\u001b[0m 3/4 bootc install to-filesystem --generic-image --skip-fetch-check --target-imgref sha256:4e7900cb3c8a09c7ed9237aded66a1ce05b203069fbedf9177beefbeaff6087d --composefs-backend --source-imgref docker://localhost:5000/sha256:disk-install /run/tilo-install-target\nInstalling image: docker://sha256:4e7900cb3c8a09c7ed9237aded66a1ce05b203069fbedf9177beefbeaff6087d\nBootloader: systemd\nInstalling bootloader via systemd-boot\nTrimming root\n.: 15 GiB (16147427328 bytes) trimmed\nFinalizing filesystem root\nTrimming boot\nboot: 1.9 GiB (2024284160 bytes) trimmed\nFinalizing filesystem boot\nInstallation complete!\ncomposefs objects with fs-verity: 76339 of 76339\n\u001b[1;36m[tilo]\u001b[0m 4/4 leaving the raw image in place\n\u001b[1;36m[tilo]\u001b[0m DONE: /tmp/tilo-os-perf-20261006/production-cleanup/disk.raw\n",
+    "installed": {
+      "disk": "/tmp/tilo-os-perf-20261006/production-cleanup/disk.raw",
+      "filesystem_usage": "Overall:\n    Device size:\t\t       23621251072\n    Device allocated:\t\t       10225713152\n    Device unallocated:\t\t       13395537920\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        7386718208\n    Free (estimated):\t\t       15815725056\t(min: 9117956096)\n    Free (statfs, df):\t\t       15814631424\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t                 0\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:8598323200, Used:6178136064 (71.85%)\n   /dev/loop0p2\t8598323200\n\nMetadata,DUP: Size:805306368, Used:604274688 (75.04%)\n   /dev/loop0p2\t1610612736\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/loop0p2\t  16777216\n\nUnallocated:\n   /dev/loop0p2\t13395537920\n",
+      "physical_used_bytes": 7386718208,
+      "object_count": 76339,
+      "objects_logical_bytes": 11972689826,
+      "objects_verity_fingerprint_sha256": "1dfe2f91ab8d3588c9e8aebba31825fa34c52463e8939cd68c3eee722bac5321",
+      "every_object_verity_measured": true
+    },
+    "decision": "Not shipped: deleting 419 MB from the final image view did not remove that amount from the installed object store. Changed layer graph, no repeatability proof."
+  },
+  "artifact_conversion_flags": [
+    "-f",
+    "raw",
+    "-O",
+    "qcow2",
+    "-c",
+    "-o",
+    "compression_type=zstd"
+  ],
+  "supplementary_host_context": {
+    "uname -r": {
+      "returncode": 0,
+      "stdout": "7.2.7-200.fc44.x86_64\n",
+      "stderr": ""
+    },
+    "qemu-system-x86_64 --version": {
+      "returncode": 0,
+      "stdout": "QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers\n",
+      "stderr": ""
+    },
+    "btrfs --version": {
+      "returncode": 0,
+      "stdout": "btrfs-progs v7.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt\n",
+      "stderr": ""
+    },
+    "podman --version": {
+      "returncode": 0,
+      "stdout": "podman version 5.8.7\n",
+      "stderr": ""
+    },
+    "zstd --version": {
+      "returncode": 0,
+      "stdout": "*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***\n",
+      "stderr": ""
+    },
+    "lscpu -J": {
+      "returncode": 0,
+      "stdout": "{\n   \"lscpu\": [\n      {\n         \"field\": \"Architecture:\",\n         \"data\": \"x86_64\"\n      },{\n         \"field\": \"CPU op-mode(s):\",\n         \"data\": \"32-bit, 64-bit\"\n      },{\n         \"field\": \"Address sizes:\",\n         \"data\": \"48 bits physical, 48 bits virtual\"\n      },{\n         \"field\": \"Byte Order:\",\n         \"data\": \"Little Endian\"\n      },{\n         \"field\": \"CPU(s):\",\n         \"data\": \"64\"\n      },{\n         \"field\": \"On-line CPU(s) list:\",\n         \"data\": \"0-63\"\n      },{\n         \"field\": \"Vendor ID:\",\n         \"data\": \"AuthenticAMD\"\n      },{\n         \"field\": \"Model name:\",\n         \"data\": \"AMD EPYC 9R45\"\n      },{\n         \"field\": \"CPU family:\",\n         \"data\": \"26\"\n      },{\n         \"field\": \"Model:\",\n         \"data\": \"2\"\n      },{\n         \"field\": \"Thread(s) per core:\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Core(s) per socket:\",\n         \"data\": \"64\"\n      },{\n         \"field\": \"Socket(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Stepping:\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"BogoMIPS:\",\n         \"data\": \"5199.99\"\n      },{\n         \"field\": \"Flags:\",\n         \"data\": \"fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf tsc_known_freq pni pclmulqdq monitor ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch topoext perfctr_core ssbd perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 clzero xsaveerptr rdpru wbnoinvd arat avx512vbmi pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid movdiri movdir64b fsrm avx512_vp2intersect flush_l1d\"\n      },{\n         \"field\": \"Hypervisor vendor:\",\n         \"data\": \"KVM\"\n      },{\n         \"field\": \"Virtualization type:\",\n         \"data\": \"full\"\n      },{\n         \"field\": \"L1d cache:\",\n         \"data\": \"3 MiB (64 instances)\"\n      },{\n         \"field\": \"L1i cache:\",\n         \"data\": \"2 MiB (64 instances)\"\n      },{\n         \"field\": \"L2 cache:\",\n         \"data\": \"64 MiB (64 instances)\"\n      },{\n         \"field\": \"L3 cache:\",\n         \"data\": \"256 MiB (8 instances)\"\n      },{\n         \"field\": \"NUMA node(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"NUMA node0 CPU(s):\",\n         \"data\": \"0-63\"\n      },{\n         \"field\": \"Vulnerability Gather data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Ghostwrite:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Indirect target selection:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Itlb multihit:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability L1tf:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Meltdown:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mmio stale data:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Old microcode:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Reg file data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Retbleed:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Spec rstack overflow:\",\n         \"data\": \"Mitigation; IBPB on VMEXIT only\"\n      },{\n         \"field\": \"Vulnerability Spec store bypass:\",\n         \"data\": \"Mitigation; Speculative Store Bypass disabled via prctl\"\n      },{\n         \"field\": \"Vulnerability Spectre v1:\",\n         \"data\": \"Mitigation; usercopy/swapgs barriers and __user pointer sanitization\"\n      },{\n         \"field\": \"Vulnerability Spectre v2:\",\n         \"data\": \"Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP disabled; PBRSB-eIBRS Not affected; BHI Not affected\"\n      },{\n         \"field\": \"Vulnerability Srbds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsa:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsx async abort:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Vmscape:\",\n         \"data\": \"Not affected\"\n      }\n   ]\n}\n",
+      "stderr": ""
+    },
+    "kvm_available": false,
+    "render_nodes": []
+  },
+  "current_main_refresh_12f4dfb": {
+    "installation": {
+      "provenance": {
+        "image": "registry.tilo.so/tilo/tilo-ci@sha256:7a733a3f1a9fc79ca96f61a667f1b813c91251e822d93a999a5a9c240984cbce",
+        "manifest_digest_verified": true,
+        "config_digest_verified": true,
+        "source": "12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3",
+        "rust_lto": "off",
+        "compressed_layers_bytes": 5045428358
+      },
+      "original_image_id": "sha256:65f8a7f281f5bceb752d5b07f2b7b41f13f21d925484c684626dca9725665548",
+      "assembly_compression_level": 1,
+      "install-first.log": {
+        "rc": 1,
+        "wall_seconds": 87.4346904480044
+      },
+      "composefs_digest": "e1a2f7a75b88be411d90105f2a4632268f2976b47ed67ace5d95e6e369960e89b6d78ab7823fd0fc876b4b8a412d4974bb7428b66ca64f05467a971711a7745d",
+      "install-final.log": {
+        "rc": 0,
+        "wall_seconds": 43.75451099999191
+      },
+      "installed_image_id": "sha256:06f5ff21a03e18b7967c88889822aad5ebe85db8a61e5d59ec813ec161abfe19",
+      "complete_install_passed": true,
+      "install_log_tail": "tes/sector, 8 sectors/cluster\n\u001b[1;36m[tilo]\u001b[0m 2/4 mounted /dev/loop0p2 -> /tmp/tilo-os-perf-20261006/production-main12/.mnt, /dev/loop0p1 -> /tmp/tilo-os-perf-20261006/production-main12/.mnt/boot\n\u001b[1;36m[tilo]\u001b[0m 3/4 bootc install to-filesystem --generic-image --skip-fetch-check --target-imgref sha256:06f5ff21a03e18b7967c88889822aad5ebe85db8a61e5d59ec813ec161abfe19 --composefs-backend --source-imgref docker://localhost:5000/sha256:disk-install /run/tilo-install-target\nInstalling image: docker://sha256:06f5ff21a03e18b7967c88889822aad5ebe85db8a61e5d59ec813ec161abfe19\nBootloader: systemd\nInstalling bootloader via systemd-boot\nTrimming root\n.: 14.9 GiB (15986823168 bytes) trimmed\nFinalizing filesystem root\nTrimming boot\nboot: 1.9 GiB (2024275968 bytes) trimmed\nFinalizing filesystem boot\nInstallation complete!\ncomposefs objects with fs-verity: 76338 of 76338\n\u001b[1;36m[tilo]\u001b[0m 4/4 leaving the raw image in place\n\u001b[1;36m[tilo]\u001b[0m DONE: /tmp/tilo-os-perf-20261006/production-main12/disk.raw\n"
+    },
+    "installed": {
+      "disk": "/tmp/tilo-os-perf-20261006/production-main12/disk.raw",
+      "filesystem_usage": "Overall:\n    Device size:\t\t       23621251072\n    Device allocated:\t\t       10225713152\n    Device unallocated:\t\t       13395537920\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        7536689152\n    Free (estimated):\t\t       15666409472\t(min: 8968640512)\n    Free (statfs, df):\t\t       15665315840\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t                 0\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:8598323200, Used:6327451648 (73.59%)\n   /dev/loop0p2\t8598323200\n\nMetadata,DUP: Size:805306368, Used:604602368 (75.08%)\n   /dev/loop0p2\t1610612736\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/loop0p2\t  16777216\n\nUnallocated:\n   /dev/loop0p2\t13395537920\n",
+      "physical_used_bytes": 7536689152,
+      "object_count": 76338,
+      "objects_logical_bytes": 12005806498,
+      "objects_verity_fingerprint_sha256": "aeaff77f31a7a4d56308eb8fca540cde4a8f2cd4c5f5a8fdbb23b01db92176bd",
+      "every_object_verity_measured": true
+    },
+    "qcow_zstd": {
+      "file_bytes": 5976621056,
+      "sha256": "3d588d57bb0eede581cc2ed4968568eb3de8bc9b91b67208c0770dc5f764fdda",
+      "conversion_flags": [
+        "-f",
+        "raw",
+        "-O",
+        "qcow2",
+        "-c",
+        "-o",
+        "compression_type=zstd"
+      ],
+      "lossless_compare": "Images are identical.\n",
+      "qemu_check_passed": true
+    },
+    "qcow_uncompressed": {
+      "file_bytes": 8053063680,
+      "sha256": "4804b1caaceff9b1b18db5b83c5750eb323acc3de0c613a3c05d0448c65fd79f",
+      "lossless_compare": "Images are identical.\n",
+      "qemu_check_passed": true
+    },
+    "boot": {
+      "env": {
+        "TILO_DISTROBOX": "",
+        "TILO_RUN": "/tmp/tilo-os-perf-20261006/production-boot-main12-02",
+        "TILO_VM_CYCLE": "os-perf-main12-02",
+        "TILO_ACCEL": "tcg",
+        "TILO_MEM": "4096",
+        "TILO_SMP": "4",
+        "TILO_SSH_PORT": "22481",
+        "TILO_XRES": "1280",
+        "TILO_YRES": "720"
+      },
+      "account_provisioned": false,
+      "disk_artifact": {
+        "file_bytes": 5976621056,
+        "sha256": "3d588d57bb0eede581cc2ed4968568eb3de8bc9b91b67208c0770dc5f764fdda",
+        "conversion_flags": [
+          "-f",
+          "raw",
+          "-O",
+          "qcow2",
+          "-c",
+          "-o",
+          "compression_type=zstd"
+        ],
+        "lossless_compare": "Images are identical.\n",
+        "qemu_check_passed": true
+      },
+      "boot_rc": 0,
+      "wait_rc": 0,
+      "host_to_ready_seconds": 81.67057748399384,
+      "greeter_state": {
+        "app": "greeter",
+        "phase": "sign-in",
+        "account": null,
+        "session": "Tilo",
+        "sessions": [
+          "Tilo"
+        ],
+        "session_choice": false,
+        "session_diagnostics": null,
+        "status": "",
+        "username": "",
+        "challenge": null,
+        "cancellation_requested": false,
+        "accounts": [],
+        "notice": null,
+        "accepts_input": true,
+        "image": {
+          "composefs": "e1a2f7a75b88be411d90105f2a4632268f2976b47ed67ace5d95e6e369960e89b6d78ab7823fd0fc876b4b8a412d4974bb7428b66ca64f05467a971711a7745d"
+        }
+      },
+      "cleanup": "stopped"
+    },
+    "failed_final_probe_boot": {
+      "env": {
+        "TILO_DISTROBOX": "",
+        "TILO_RUN": "/tmp/tilo-os-perf-20261006/production-boot-main12",
+        "TILO_VM_CYCLE": "os-perf-main12",
+        "TILO_ACCEL": "tcg",
+        "TILO_MEM": "4096",
+        "TILO_SMP": "4",
+        "TILO_SSH_PORT": "22481",
+        "TILO_XRES": "1280",
+        "TILO_YRES": "720"
+      },
+      "account_provisioned": false,
+      "boot_rc": 0,
+      "wait_rc": 0,
+      "host_to_ready_seconds": 80.38200679700822,
+      "cleanup": "stopped",
+      "final_probe": {
+        "command": "installer-console.py state-dump",
+        "returncode": 2,
+        "reason": "unsupported subcommand; corrected fresh child rerun uses state"
+      }
+    },
+    "shipping_release_note": "72696 is release-apps.yml, not an optimized OS image release. This baseline is the verified current-main LTO-off CI rootfs.",
+    "cleanup": {
+      "vms_stopped": true,
+      "mounts_detached": true,
+      "level3_script_restored": true,
+      "redundant_raw_deleted": true
+    }
+  },
+  "current_dev_isolated_app_startup": {
+    "source": "12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3",
+    "scope": "private current dev COW; TCG software headless; no hardware claim; restricted network; marked dev-only identity",
+    "journey_rc": 1,
+    "journey_stderr": "",
+    "stop_rc": 0,
+    "cow_removed": true,
+    "journey": {
+      "fixture": {
+        "answer": {
+          "created": true,
+          "display_name": "Throwaway test identity",
+          "throwaway": true
+        }
+      },
+      "actions": {
+        "answer": {
+          "query": "",
+          "count": 55,
+          "actions": [
+            {
+              "provider": "actions",
+              "id": "navigation.axis.enable",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Enable experimental axis navigation",
+              "subtitle": "This session: step between groups and gather focus into view",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "navigation.axis.disable",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Disable experimental axis navigation",
+              "subtitle": "Restore ordinary window navigation for this session",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "navigation.axis.gather",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Gather the focused window into view",
+              "subtitle": "Experimental axis navigation: reveal focus without animation",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "overview.toggle",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Toggle workspace overview",
+              "subtitle": "Show all workspaces in the wheel view",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "settings.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open workspace settings",
+              "subtitle": "Identity, people, privacy, apps and files for this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "settings.members.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open workspace people",
+              "subtitle": "People, roles and invitations in this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "settings.privacy.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open workspace privacy & security",
+              "subtitle": "App grants and enforced access for this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "settings.apps.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open workspace apps & files",
+              "subtitle": "Shared app defaults and your workspace overrides",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.connect",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Add an existing identity",
+              "subtitle": "Import identity credentials and use them in this workspace",
+              "score": 0,
+              "params": [
+                {
+                  "name": "path",
+                  "type": "text",
+                  "required": true,
+                  "description": "Absolute path to an exported Tilo identity JSON record.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "confirm",
+                  "type": "boolean",
+                  "required": true,
+                  "description": "Confirm importing credentials and delegating workspace administration.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "privileged",
+                "confirmation": {
+                  "mode": "confirm"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.select",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Use identity in this workspace",
+              "subtitle": "Select one of the identities already connected to this device",
+              "score": 0,
+              "params": [
+                {
+                  "name": "id",
+                  "type": "text",
+                  "required": true,
+                  "description": "The identity's 64-character public-key fingerprint.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "confirm",
+                  "type": "boolean",
+                  "required": true,
+                  "description": "Confirm delegating workspace administration to this identity.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "privileged",
+                "confirmation": {
+                  "mode": "confirm"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.devices.copy",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Copy connected device list",
+              "subtitle": "Copy device names, fingerprints, capabilities, and revocation state",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.device.enroll",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Enroll another device",
+              "subtitle": "Copy a device setup code that is valid for five minutes",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.home-peer.enroll",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Pair a home server",
+              "subtitle": "Copy a five-minute setup code with always-on full-sync access",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.device.revoke",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Revoke an identity device",
+              "subtitle": "Permanently stop trusting a lost, retired, or compromised device",
+              "score": 0,
+              "params": [
+                {
+                  "name": "device",
+                  "type": "text",
+                  "required": true,
+                  "description": "The enrolled device's 64-character public-key fingerprint.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "reason",
+                  "type": "text",
+                  "required": false,
+                  "description": "lost, stolen, retired, or compromised (defaults to retired).",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "confirm",
+                  "type": "boolean",
+                  "required": true,
+                  "description": "Explicit confirmation that this permanent administrative revocation should run.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "privileged",
+                "confirmation": {
+                  "mode": "confirm"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "quick-settings.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open quick settings",
+              "subtitle": "Brightness, volume, Wi-Fi, Bluetooth, power profile",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "quick-settings.clipboard",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open clipboard history",
+              "subtitle": "Search, pin, remove, or reuse private clipboard items",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "quick-settings.devices",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open devices and media",
+              "subtitle": "Certified devices, media routes, remote input, and handoffs",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "projection.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Choose where the desktop appears",
+              "subtitle": "Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.layout.extend",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Extend displays",
+              "subtitle": "Use every connected display as one larger desktop",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.layout.mirror",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Mirror displays",
+              "subtitle": "Show the same picture on every connected display",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.layout.builtin-only",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Show only on this screen",
+              "subtitle": "Turn external displays off and keep the built-in screen",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.layout.external-only",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Show only on external displays",
+              "subtitle": "Turn the built-in screen off and use the external displays",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.change.keep",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Keep display settings",
+              "subtitle": "Confirm the display layout that was just applied",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.change.revert",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Revert display settings",
+              "subtitle": "Restore the display layout from before the last change",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "bluetooth.pairing.decline",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Decline Bluetooth pairing",
+              "subtitle": "Refuse the pairing request on screen, or stop the pairing whose code it shows",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "capture.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Capture or float part of the screen",
+              "subtitle": "Screenshot, record, or make PiP from one or more regions",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "capture.screenshot.send",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Send the last screenshot",
+              "subtitle": "To one of your devices, or into this workspace's files",
+              "score": 0,
+              "params": [
+                {
+                  "name": "target",
+                  "type": "text",
+                  "required": true,
+                  "description": "`workspace` to save into this workspace's files, or the id of one of your online devices.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "collaborators.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Show collaborators",
+              "subtitle": "Collaborators currently in this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "presence.follow",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Follow a collaborator",
+              "subtitle": "Keep this view attached to a connected person or visible agent",
+              "score": 0,
+              "params": [
+                {
+                  "name": "collaborator",
+                  "type": "text",
+                  "required": true,
+                  "description": "Stable collaborator id returned by the workspace roster.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "presence.follow.stop",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Stop following",
+              "subtitle": "Return this view to local navigation",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "presence.status.set",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Set workspace status",
+              "subtitle": "Publish an explicit status, or clear it with an empty value",
+              "score": 0,
+              "params": [
+                {
+                  "name": "text",
+                  "type": "text",
+                  "required": false,
+                  "description": "Manual status visible to this workspace; empty clears it.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "presence.status-sharing.set",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Set status privacy",
+              "subtitle": "Choose whether status is off, explicit-only, or automatically inferred",
+              "score": 0,
+              "params": [
+                {
+                  "name": "mode",
+                  "type": "text",
+                  "required": true,
+                  "description": "off, manual, or automatic.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "room.activity.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Show workspace activity",
+              "subtitle": "History of this workspace: changes, permissions, who did what and when",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "agent.invite",
+              "kind": "Actions",
+              "operation_kind": "Document",
+              "title": "Invite agent to workspace",
+              "subtitle": "Start a scoped agent setup; choose every surface it may use",
+              "score": 0,
+              "params": [
+                {
+                  "name": "name",
+                  "type": "text",
+                  "required": false,
+                  "description": "The agent's name, as it was launched with. Defaults to `Claude`.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "preset",
+                  "type": "text",
+                  "required": false,
+                  "description": "Observer, Contributor, Operator, or Custom. Presets never grant access to a surface by themselves.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "invite",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.new.terminal.here",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "New terminal tab here",
+              "subtitle": "Open a terminal as a tab in the focused window group",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "window.new.terminal",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "New terminal window",
+              "subtitle": "Open a terminal beside the focused window",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.duplicate",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Duplicate this tab",
+              "subtitle": "Open a second instance of the focused app beside it",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.open-beside",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Open an app in a new tab",
+              "subtitle": "Open another instance of an app, optionally at an address, as a tab right after the focused one",
+              "score": 0,
+              "params": [
+                {
+                  "name": "app",
+                  "type": "text",
+                  "required": true,
+                  "description": "The installed app's package id, such as `so.tilo.browser`.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "target",
+                  "type": "text",
+                  "required": false,
+                  "description": "A URI the app declares, such as `https://example.org/`. Omit for an empty instance.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "background",
+                  "type": "boolean",
+                  "required": false,
+                  "description": "Open behind the focused tab instead of in front of it. Defaults to false.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.menu",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Show tab menu",
+              "subtitle": "Actions for the focused tab",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.drag.cancel",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Cancel tab drag",
+              "subtitle": "Keep the dragged tab in its original place",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.close",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Close this tab",
+              "subtitle": "Close the focused tab; its window closes with it if it was the last",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.reopen",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Reopen closed tab",
+              "subtitle": "Bring back the tab closed most recently in this workspace, where it was",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.split-right",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Split this tab to the right",
+              "subtitle": "Move the focused tab into a new window group beside its current one",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "window.focus-previous",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Focus the previous window",
+              "subtitle": "Move focus to the window on the left along the strip",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "window.focus-next",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Focus the next window",
+              "subtitle": "Move focus to the window on the right along the strip",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "strip.focus-previous",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Go to the strip above",
+              "subtitle": "Move focus to the strip above in this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "strip.focus-next",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Go to the strip below",
+              "subtitle": "Move focus to the strip below in this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "workspace.previous",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Go to the previous workspace",
+              "subtitle": "Switch to the workspace before this one",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "session",
+              "id": "lock",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Lock",
+              "subtitle": "Keep apps running",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                },
+                "tags": [
+                  "desktop",
+                  "session",
+                  "lock"
+                ]
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "session",
+              "id": "logout",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Log out of Tilo",
+              "subtitle": "End this desktop session cleanly and return to the display manager",
+              "score": 0,
+              "params": [
+                {
+                  "name": "confirm",
+                  "type": "boolean",
+                  "required": true,
+                  "description": "Explicitly confirm this session action",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "destructive",
+                "confirmation": {
+                  "mode": "confirm"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                },
+                "tags": [
+                  "desktop",
+                  "session",
+                  "logout"
+                ]
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "shortcuts#create",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "New shortcut",
+              "subtitle": "Save a shortcut after checking every step against the actions you are offered",
+              "score": 0,
+              "params": [
+                {
+                  "name": "shortcut",
+                  "type": "object",
+                  "required": true,
+                  "description": "The shortcut, as JSON: id, name, inputs, steps, output and grant",
+                  "choices": [],
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "steps"
+                    ]
+                  },
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "resource",
+                  "resource_kind": "shortcuts.shortcut"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "shortcuts#update",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Change shortcut",
+              "subtitle": "Replace a saved shortcut after checking it again",
+              "score": 0,
+              "params": [
+                {
+                  "name": "shortcut",
+                  "type": "object",
+                  "required": true,
+                  "description": "The shortcut, as JSON: id, name, inputs, steps, output and grant",
+                  "choices": [],
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "steps"
+                    ]
+                  },
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "resource",
+                  "resource_kind": "shortcuts.shortcut"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "shortcuts#delete",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Delete shortcut",
+              "subtitle": "Delete a saved shortcut",
+              "score": 0,
+              "params": [
+                {
+                  "name": "id",
+                  "type": "text",
+                  "required": true,
+                  "description": "Id of the shortcut to delete",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "destructive",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "shortcuts#list",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "List shortcuts",
+              "subtitle": "Every shortcut saved in this workspace, as JSON",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "json",
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "app.so.tilo.shortcuts#open",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Open Shortcuts",
+              "subtitle": "Launch this application into the current workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            }
+          ]
+        }
+      },
+      "receipt": {
+        "answer": {
+          "action": {
+            "provider": "actions",
+            "id": "window.new.terminal",
+            "kind": "Actions",
+            "title": "New terminal window",
+            "params": [],
+            "contract": {
+              "availability": {
+                "state": "available"
+              },
+              "permission": "write",
+              "risk": "low",
+              "confirmation": {
+                "mode": "none"
+              },
+              "retry": "at_most_once",
+              "reversible": true,
+              "execution": {
+                "mode": "immediate"
+              },
+              "discovery": "live",
+              "result": {
+                "type": "none"
+              }
+            }
+          },
+          "receipt": {
+            "update": {
+              "state": "succeeded",
+              "invocation": "c850e9d3-dfd9-437a-b9f4-55755ef436b3",
+              "output": {}
+            }
+          }
+        }
+      },
+      "invoke_ms": 415.8148890000035,
+      "history": [],
+      "state": {
+        "state": {
+          "workspace_tree": {
+            "native_authority": {
+              "revision": 0,
+              "rooms": {},
+              "pending": {}
+            },
+            "schema_version": 1,
+            "workspaces": [
+              {
+                "id": 6813383286258139137,
+                "room": "b9d75d77-8563-4aa0-b234-ce0168ef477e",
+                "name": "Home",
+                "strips": [
+                  {
+                    "id": 6813383286258139138,
+                    "name": "Main",
+                    "window_groups": [
+                      {
+                        "id": 6813383286258139140,
+                        "tabs": [
+                          {
+                            "id": 6813383286258139139,
+                            "title": "Terminal",
+                            "tile": {
+                              "AppPlaceholder": {
+                                "kind": "Terminal",
+                                "label": "Terminal"
+                              }
+                            }
+                          }
+                        ],
+                        "active_tab": 6813383286258139139,
+                        "width": "Normal",
+                        "maximized": false
+                      }
+                    ]
+                  }
+                ],
+                "collaborators": [],
+                "owner": "c93667527e9ca592bcd7cb16fd375894851b9366e48e8e6770593f3fe37a4042",
+                "pending_ownership_transfer": null,
+                "ownership_transfer_audit": [],
+                "ownership_transfer_cancellations": [],
+                "capabilities": [
+                  {
+                    "subject": {
+                      "Principal": {
+                        "Person": "c93667527e9ca592bcd7cb16fd375894851b9366e48e8e6770593f3fe37a4042"
+                      }
+                    },
+                    "scope": {
+                      "Room": "b9d75d77-8563-4aa0-b234-ce0168ef477e"
+                    },
+                    "effect": "Grant",
+                    "verb": "Admin",
+                    "id": "owner-6813383286258139137",
+                    "expiry": "Never",
+                    "granted_by": null
+                  }
+                ],
+                "permission_profiles": [],
+                "default_apps": {
+                  "policy": {},
+                  "user_choices": {}
+                },
+                "tasks": [],
+                "effect_receipts": [],
+                "shortcuts": [],
+                "schedule_claims": [],
+                "shared_surfaces": {}
+              }
+            ],
+            "active": 6813383286258139137,
+            "active_strip": {
+              "6813383286258139137": 6813383286258139138
+            },
+            "active_group": {
+              "6813383286258139138": 6813383286258139140
+            },
+            "collaborators": [],
+            "room_authority": {},
+            "room_peer_names": {},
+            "room_peer_identities": {},
+            "room_share_floor": {},
+            "continuation_tabs": [],
+            "continuation_rooms": [],
+            "continuation_owned_tabs": {},
+            "continuation_closed_tabs": {},
+            "continuation_file_references": {},
+            "native_document_tabs": {}
+          },
+          "chrome": {
+            "seat_focus": {
+              "keyboard": null,
+              "routed_keyboard_surface": null,
+              "text_input": null,
+              "text_input_active": false,
+              "on_screen_keyboard_surface": null
+            },
+            "overlays": {
+              "overview": false,
+              "quick_settings": false,
+              "ws_settings": false,
+              "collaborators": false,
+              "room_activity": false,
+              "power_menu": false
+            },
+            "pointer": {
+              "kind": "shape",
+              "shape": "default"
+            },
+            "input": {
+              "modality": "pointer",
+              "available": [],
+              "help_modality": "pointer"
+            },
+            "input_capture": {
+              "onboarding": false,
+              "chrome": false,
+              "inner_surface": false,
+              "maximized_controls": false,
+              "shortcut_help": false,
+              "projection": false
+            },
+            "on_screen_keyboard": {
+              "connected": false,
+              "requested": false,
+              "mapped": false,
+              "commits": 0,
+              "serves_shell_field": false,
+              "shown": null
+            },
+            "search_scope": "Workspace",
+            "displays": [
+              {
+                "id": 0,
+                "primary": true,
+                "focused": true,
+                "groups": [
+                  6813383286258139140
+                ]
+              }
+            ],
+            "tray": [],
+            "tab_icons": [],
+            "window_switcher": {
+              "open": false
+            },
+            "search_resource_scope": null,
+            "presence": {
+              "status_sharing": "automatic",
+              "own_status": "Managing workspace access",
+              "following": null
+            },
+            "ws_settings_tab": "General",
+            "revision": 8,
+            "notifications": [],
+            "files_drag": null,
+            "files_drag_handed_off": false,
+            "portal_dialog": null,
+            "editing_workspace_name": null,
+            "pending_grants_count": 0,
+            "session_locked": false,
+            "lock_auth": {
+              "verifying": false,
+              "password_len": 0,
+              "error": null,
+              "keyboard": []
+            },
+            "local_user_id": "c93667527e9ca592bcd7cb16fd375894851b9366e48e8e6770593f3fe37a4042",
+            "may_administer_active": true,
+            "peer_sync": {
+              "invite_token": null,
+              "connect_input": null,
+              "status": null,
+              "invite_name": null,
+              "invite_for": null
+            },
+            "collab": {
+              "available": true,
+              "unavailable_reason": null,
+              "socket": "/run/user/1000/tilo-app-startup-v52shsaw/run/tilo/services/collab.sock"
+            },
+            "ws_grant_draft": {
+              "subject": "Member:c93667527e9ca592bcd7cb16fd375894851b9366e48e8e6770593f3fe37a4042",
+              "capability": "Camera",
+              "expiry": "EndOfSession"
+            },
+            "palette": {
+              "visible": false,
+              "query": "",
+              "selected_id": null,
+              "kind_filter": [],
+              "rows": []
+            },
+            "strip_scroll": [
+              {
+                "strip": 6813383286258139138,
+                "scroll_x": 0.0,
+                "max_scroll_x": 0.0
+              }
+            ],
+            "active_window_controls": {
+              "maximize": {
+                "x": 0.0,
+                "y": 0.0,
+                "w": 0.0,
+                "h": 0.0
+              },
+              "restore": {
+                "x": 0.0,
+                "y": 0.0,
+                "w": 0.0,
+                "h": 0.0
+              }
+            },
+            "wheel_summon": null,
+            "fullscreen_group": null,
+            "fullscreen": false
+          },
+          "peers": {
+            "pointers": [],
+            "roster": []
+          },
+          "sharing": {
+            "exposures": []
+          }
+        }
+      },
+      "error": "No presented Terminal frame matching its tile within 90 seconds",
+      "success": false,
+      "log_tail": "er/1000/tilo-app-startup-v52shsaw/run/pipewire-0: No such file or directory (os error 2)\n\u001b[2m2026-10-06T08:02:53.354673Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::compositor::native\u001b[0m\u001b[2m:\u001b[0m portal: the document store cannot reach sandboxed apps \u2014 a file picked by a bwrap'd app will not be readable by it. Unconfined apps are unaffected.\n\u001b[2m2026-10-06T08:02:53.397099Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::shell::collab_broker\u001b[0m\u001b[2m:\u001b[0m MLS collaboration unavailable: no system secret store answered \u001b[3merror\u001b[0m\u001b[2m=\u001b[0mMLS vault provider unavailable: MLS key storage refused: no secret store: org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable\ntilo compositor listening on \"wayland-1\"\n  WAYLAND_DISPLAY=wayland-1 \u2014 e.g. `WAYLAND_DISPLAY=wayland-1 cargo run -p terminal`\n  also written to /run/user/1000/tilo-app-startup-v52shsaw/run/tilo-session/wayland-display\n\u001b[2m2026-10-06T08:02:53.500411Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::portal::appearance\u001b[0m\u001b[2m:\u001b[0m dconf refused the appearance keys \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mexit status: 1 \u001b[3mstderr\u001b[0m\u001b[2m=\u001b[0merror: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable\n\u001b[2m2026-10-06T08:02:53.514951Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::shell::windows_compat\u001b[0m\u001b[2m:\u001b[0m windows compatibility catalogue skipped unsupported Bottles metadata \u001b[3mskipped\u001b[0m\u001b[2m=\u001b[0m39\n\u001b[2m2026-10-06T08:02:53.520391Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::compositor::native\u001b[0m\u001b[2m:\u001b[0m windows compatibility session service unavailable \u001b[3merror\u001b[0m\u001b[2m=\u001b[0mthe compositor has no safe render node to delegate\ntilo compositor privileged socket on tilo-privileged-2295\ntilo compositor test_control listening on /run/user/1000/tilo-app-startup-v52shsaw/run/control.sock\ntilo compositor: backend reports no refresh rate; pacing to 60.000 Hz\n\u001b[2m2026-10-06T08:02:53.749093Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mzbus::proxy\u001b[0m\u001b[2m:\u001b[0m Failed to populate properties cache via GetAll: org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable. Property change streams will not produce values.\n\u001b[2m2026-10-06T08:02:53.750695Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mtilo::bluetooth\u001b[0m\u001b[2m:\u001b[0m could not preload device names \u001b[3merror\u001b[0m\u001b[2m=\u001b[0morg.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.bluez': unit failed\n\u001b[2m2026-10-06T08:02:53.822227Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::session_runtime\u001b[0m\u001b[2m:\u001b[0m bluetooth pairing agent: could not register on the bus (bluetoothd refused the pairing agent: org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.bluez': unit failed); continuing without it\n\u001b[2m2026-10-06T08:02:53.824112Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::session_runtime\u001b[0m\u001b[2m:\u001b[0m network secret agent: could not register on the bus (org.freedesktop.NetworkManager.AgentManager.PermissionDenied: An agent with this ID is already registered for this user.); continuing without it\nSLOW-ITER total_work=451.821355ms | input=21.805226ms pump=+46.61846ms post_pump_paint=+378.77423ms testctl=+4.527328ms dispatch_clients=+96.111\u00b5s (selection=13.5\u00b5s dispatch=43.24\u00b5s capture_barriers=12.971\u00b5s snapshot=1.96\u00b5s flush=6.08\u00b5s configures=8.99\u00b5s idle_callbacks=8.98\u00b5s)\n\u001b[2m2026-10-06T08:02:54.205206Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::shell::fs_authority\u001b[0m\u001b[2m:\u001b[0m filesystem authority publication failed; retrying quietly \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mExitStatus(unix_wait_status(256)) \u001b[3mstderr\u001b[0m\u001b[2m=\u001b[0mError: No such file or directory (os error 2) \u001b[3macl\u001b[0m\u001b[2m=\u001b[0m/run/user/1000/tilo-app-startup-v52shsaw/config/tilo/fs-capabilities.json\nSLOW-ITER total_work=301.550554ms | input=372.814\u00b5s pump=+1.482259ms post_pump_paint=+8.91\u00b5s testctl=+299.567979ms dispatch_clients=+118.592\u00b5s (selection=14.69\u00b5s dispatch=55.971\u00b5s capture_barriers=16.3\u00b5s snapshot=1.95\u00b5s flush=6.41\u00b5s configures=11.391\u00b5s idle_callbacks=9.33\u00b5s)\n\u001b[2m2026-10-06T08:02:54.662006Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::shell::fs_authority\u001b[0m\u001b[2m:\u001b[0m filesystem authority publication failed; retrying quietly \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mExitStatus(unix_wait_status(256)) \u001b[3mstderr\u001b[0m\u001b[2m=\u001b[0mError: No such file or directory (os error 2) \u001b[3macl\u001b[0m\u001b[2m=\u001b[0m/run/user/1000/tilo-app-startup-v52shsaw/config/tilo/fs-capabilities.json\nSLOW-ITER total_work=408.77384ms | input=394.805\u00b5s pump=+4.988703ms post_pump_paint=+11.36\u00b5s testctl=+403.262971ms dispatch_clients=+116.001\u00b5s (selection=14.4\u00b5s dispatch=56.941\u00b5s capture_barriers=14.23\u00b5s snapshot=2.01\u00b5s flush=6.23\u00b5s configures=11.13\u00b5s idle_callbacks=9.27\u00b5s)\nSLOW-ITER total_work=300.643202ms | input=577.927\u00b5s pump=+8.435987ms post_pump_paint=+289.451271ms testctl=+2.081296ms dispatch_clients=+96.721\u00b5s (selection=12.56\u00b5s dispatch=48.631\u00b5s capture_barriers=13.63\u00b5s snapshot=2.07\u00b5s flush=6.63\u00b5s configures=5.18\u00b5s idle_callbacks=7.8\u00b5s)\nSLOW-ITER total_work=146.2252ms | input=92.692\u00b5s pump=+515.616\u00b5s post_pump_paint=+144.118893ms testctl=+1.410218ms dispatch_clients=+87.781\u00b5s (selection=12.42\u00b5s dispatch=43.85\u00b5s capture_barriers=13.051\u00b5s snapshot=1.74\u00b5s flush=5.89\u00b5s configures=3.51\u00b5s idle_callbacks=7.28\u00b5s)\n",
+      "private_compositor_stopped": true
+    }
+  },
+  "image_validation_followup": {
+    "failed_run": 72823,
+    "failed_head": "90694b9ab2f1823a0f3b03cfad2db6f2eed5643f",
+    "failed_job": 489771,
+    "failure": "Music tapp 11396096 bytes exceeds 8388608-byte package limit",
+    "upstream_fix": "ef20159690135eec61cf5f94039a6128e15f2499",
+    "upstream_merge": "12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3",
+    "action": "Rebase task branch onto already-landed Music shared-runtime fix; retain size gate and draft/hold."
+  }
+}

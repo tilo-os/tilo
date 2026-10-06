@@ -881,21 +881,48 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
 
 #[test]
 fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
+    // Case `local_document_action_cannot_claim_an_admitted_source_invocation`.
+    {
+        let mut app = app();
+        let claimed = tilo_actions::InvocationId::new();
+        let ambient = tilo_actions::ActionContext::default().with_source_invocation(Some(claimed));
+        let address = tilo_actions::ActionAddress::new("test.counter", "bump");
+        let actor = app.collaboration.local_author.0.clone();
+        app.invoke_resource_action(
+            ResourceInvocation::new(&address, &actor)
+                .invocation(Some(claimed))
+                .ambient_context(Some(&ambient)),
+        )
+        .unwrap();
+        let context = app
+            .state
+            .doc
+            .get_changes(&[])
+            .last()
+            .and_then(|change| change.message())
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .expect("the local action retained its ordinary history context");
+        assert_eq!(context.source_invocation, None);
+    }
+
     // Case `directed_task_context_survives_into_action_history`.
     {
         let mut app = app();
         let resources = app.collect_resources();
         assert!(!resources.is_empty(), "test action surface was rejected");
+        let forged_invocation = tilo_actions::InvocationId::new();
         let ambient = tilo_actions::ActionContext::default()
             .with_app("org.tilo.Agent", "Agent")
             .with_purpose("Make the opening concrete")
-            .with_group("task:opening", "Rewrite the opening", "task");
+            .with_group("task:opening", "Rewrite the opening", "task")
+            .with_source_invocation(Some(forged_invocation));
 
         let address = tilo_actions::ActionAddress::new("test.counter", "bump");
+        let admitted_invocation = tilo_actions::InvocationId::new();
         let request = ResourceInvocation::new(&address, "agent:Scribe")
             .confirmed(true)
             .broker_admitted(true)
-            .invocation(Some(tilo_actions::InvocationId::new()))
+            .invocation(Some(admitted_invocation))
             .ambient_context(Some(&ambient));
         let result = app.invoke_resource_action(request);
 
@@ -920,6 +947,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(context.purpose, ambient.purpose);
         assert_eq!(context.group, ambient.group);
         assert_eq!(context.app, ambient.app);
+        assert_eq!(context.source_invocation, Some(admitted_invocation));
         assert_eq!(
             app.state
                 .peek_last_undo()
