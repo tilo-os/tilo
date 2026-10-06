@@ -50,7 +50,7 @@ use tilo_clock::unix_now_i64;
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource,
+    OperationKind, Resource, ResourceViewSpec,
 };
 use tilo_document::RichTextAction;
 use ui::tilo_resource::Effect as _;
@@ -973,6 +973,7 @@ fn publish_workspace(id: &str, name: &str) -> Resource {
         }
         .bound(),
     )
+    .with_view(ResourceViewSpec::new("workspace", "Workspace", "open-workspace").with_primary(true))
     .with_action(new_channel_action_spec(id))
     .with_action(new_category_action_spec(id))
 }
@@ -1002,6 +1003,10 @@ fn publish_channel(
     // the composer. `@Name` of a member becomes a structured mention, the
     // same as typing it in the composer.
     if ch.kind != ChannelKind::Voice {
+        channel = channel.with_view(
+            ResourceViewSpec::new("conversation", "Conversation", "open-channel")
+                .with_primary(true),
+        );
         channel = channel.with_action(share_resource_spec(&ch.id));
         channel = channel.with_action(ActionSpec::prompted(
             "post",
@@ -1194,6 +1199,7 @@ fn publish_message(m: &MessageResource) -> Resource {
         m.label.clone(),
     )
     .with_action(reveal())
+    .with_view(ResourceViewSpec::new("message", "Message", "reveal-message").with_primary(true))
     .with_action(
         ChatEffect::ReadMessage {
             message: m.id.clone(),
@@ -1942,12 +1948,29 @@ mod tests {
         ] {
             assert!(ids(concept).contains(&id), "{id}: {:?}", ids(concept));
         }
+        assert_eq!(workspace.views[0].open_action, "open-workspace");
+        assert_eq!(crit.views[0].open_action, "open-channel");
+        assert_eq!(concept.views[0].open_action, "reveal-message");
+        for resource in [workspace, crit, concept] {
+            assert!(resource.views[0].validate(resource).is_empty());
+        }
         let read = concept
             .actions
             .iter()
             .find(|a| a.id == "read-message")
             .unwrap();
         assert_eq!(read.kind, OperationKind::View);
+        assert!(
+            tilo_actions::ResourceViewDescriptor::declared_for(concept, "read-message").is_none(),
+            "a read query does not navigate"
+        );
+        assert!(
+            find(&root.children, "chat.channel:c_huddle")
+                .unwrap()
+                .views
+                .is_empty(),
+            "opening a voice channel must remain explicit call consent"
+        );
         assert!(
             find(&concept.children, "chat.attachment:m_concept").is_some(),
             "the attachment is a child of its message"

@@ -879,3 +879,18 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
     layer.stop();
   }
 });
+
+
+test('resource hydration can be cancelled and leaving the peer refuses pending opens', async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore()));
+  const cancelled = new AbortController();
+  const pending = peer.whenRecord('so.tilo.chat', '', {signal: cancelled.signal});
+  cancelled.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  const leaving = peer.whenRecord('so.tilo.notes', 'missing');
+  const refused = assert.rejects(leaving, /connection closed/);
+  await peer.dispose();
+  await refused;
+  await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing'), /connection closed/);
+});

@@ -23,5 +23,48 @@ export async function resolveResourceReference({reference, provider, actions, cu
   // Labels and action contracts come from the authorized live publisher, never
   // from the untrusted message. Navigation still uses its own view door.
   return {provider, app, revision: page.revision, resource: rows[0].resource,
-    views: rows.filter(row => row.action?.kind === 'View').map(row => row.action)};
+    views: rows.filter(row => row.action?.kind === 'View' && row.action.view?.open_action === row.action.address?.action && !row.action.view.mount).map(row => row.action)};
+}
+
+/** Explicitly open a reference in a standalone native-rendered browser app.
+ * The caller selects a published view action, never a label-derived app.
+ */
+export async function openResourceReference({reference, provider, action, actions, current, waitRecord, mount, signal}) {
+  signal?.throwIfAborted();
+  if (reference?.span != null) throw Error('Shared resource ranges require a range-aware view action');
+  const resolved = await resolveResourceReference({reference, provider, actions, current});
+  signal?.throwIfAborted();
+  const prefix = `record:${resolved.app}:`;
+  if (!provider.startsWith(prefix)) throw Error('Shared resource record does not match its publisher');
+  if (!resolved.views.some(view => view.address?.resource === resolved.resource.id
+    && view.address.action === action)) throw Error('Shared resource view unavailable');
+  const record = provider.slice(prefix.length);
+  await waitRecord(resolved.app, record);
+  signal?.throwIfAborted();
+  if (!current()) throw Error('Shared resource connection changed');
+  let opened;
+  try {
+    // The collaboration wire uses empty for RecordId::package_primary().
+    // Mount the canonical id explicitly; omitting it could create a document.
+    opened = await mount({app: resolved.app, record: record || '@tilo:package-primary'});
+    signal?.throwIfAborted();
+    if (!current()) throw Error('Shared resource connection changed');
+    // The mounted app resolves the same exact address again with current
+    // permissions. Read metadata does not authorize a later view invocation.
+    const view = opened.actions(resolved.resource.id).find(view =>
+      view.address?.resource === resolved.resource.id && view.address.action === action && view.kind === 'View'
+      && view.view?.open_action === action && !view.view.mount);
+    if (!view || (view.input && view.input !== 'None')
+      || view.params?.some(param => param.required)
+      || (view.contract?.confirmation?.mode && view.contract.confirmation.mode !== 'none')) {
+      throw Error('Shared resource view unavailable or requires input');
+    }
+    const result = opened.invokeAction(resolved.resource.id, action);
+    signal?.throwIfAborted();
+    if (result.state !== 'completed' || !current()) throw Error('Shared resource view did not complete');
+    return opened;
+  } catch (error) {
+    await opened?.cleanup();
+    throw error;
+  }
 }

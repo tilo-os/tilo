@@ -20,7 +20,7 @@
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createActions} from './actions.mjs';
-import {resolveResourceReference} from './resource-reference.mjs';
+import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
 import {createMembership, createWorkspaces} from './membership.mjs';
@@ -638,6 +638,7 @@ async function connect({
   let host = JSON.parse(await runtime.hostInfo(post));
   let carriers = carriersFor(host);
   const listeners = new Set();
+  const pendingRecordWaits = new Set();
   let peer;
   let live;
   // Agents this page runs publish under their own namespaces: one layer each.
@@ -864,6 +865,7 @@ async function connect({
   async function dispose() {
     if (disposed) return;
     disposed = true;
+    for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
     for (const entry of [...surfaces.values()]) dropSurface(entry);
     unsubscribeStorage?.();
     agents?.dispose();
@@ -922,6 +924,15 @@ async function connect({
       return resolveResourceReference({reference, provider, actions: connection,
         current: () => !disposed && snapshot.phase === 'ready' && actions === connection});
     },
+    /** Open an exact shared resource through a standalone app's current view
+     * door. Calling this is explicit navigation; it never joins or grants. */
+    openResource(target, reference, provider, action, {signal} = {}) {
+      const connection = actions;
+      return openResourceReference({reference, provider, action, actions: connection, signal,
+        current: () => !disposed && snapshot.phase === 'ready' && actions === connection,
+        waitRecord: (app, record) => certifiedPeer.whenRecord(app, record, {signal}),
+        mount: ({app, record}) => certifiedPeer.mountDesktop(target, {app, record, signal})});
+    },
     /** The room's calls (`voice-peer.mjs`), or `undefined` without a room. */
     get voice() { return voice; },
     /** `actions` in the frozen `actionsV1` contract. */
@@ -979,15 +990,25 @@ async function connect({
     /** Whether this page holds the room's record `record` of `app`. */
     hasRecord,
     /** Resolves once the room's record `record` of `app` reached this page. */
-    whenRecord(app, record, {timeoutMs = 30_000} = {}) {
+    whenRecord(app, record, {timeoutMs = 30_000, signal} = {}) {
       return new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(signal.reason); return; }
+        if (disposed) { reject(new Error('Shared resource connection closed')); return; }
         if (hasRecord(app, record)) { resolve(); return; }
-        const check = () => {
-          if (!hasRecord(app, record)) return;
-          clearTimeout(timer); listeners.delete(check); resolve();
+        const source = peer;
+        const finish = (error, failed = error !== undefined) => {
+          clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
+          signal?.removeEventListener('abort', abort);
+          if (failed) reject(error); else resolve();
         };
-        const timer = setTimeout(() => { listeners.delete(check); reject(new Error(`the room sent no ${app} record ${record}`)); }, timeoutMs);
-        listeners.add(check);
+        const abort = () => finish(signal.reason, true);
+        const check = () => {
+          if (peer !== source || snapshot.phase === 'failed') { finish(new Error('Shared resource connection changed')); return; }
+          if (hasRecord(app, record)) finish();
+        };
+        const timer = setTimeout(() => finish(new Error(`the room sent no ${app} record ${record}`)), timeoutMs);
+        listeners.add(check); pendingRecordWaits.add(finish);
+        signal?.addEventListener('abort', abort, {once: true});
       });
     },
     /** The live layer of agent `agent` this page runs (created on first use;
