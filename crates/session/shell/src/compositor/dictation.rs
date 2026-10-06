@@ -33,6 +33,7 @@ pub const MAX_DRAFT_BYTES: usize = 16 * 1024;
 /// Fits the standard 4096-byte Wayland frame, including protocol overhead.
 /// Keep one final commit: splitting would lose atomic selection and undo.
 pub const MAX_COMMIT_BYTES: usize = 4000;
+const RECOVERY_WINDOW: Duration = Duration::from_secs(600);
 
 /// An explicitly started microphone stream, owned by the trusted speech worker.
 /// Drop stops and reaps only its `PipeWire` process and joins its reader. Start
@@ -91,6 +92,10 @@ pub enum DictationStatus {
     Finishing,
     Stopping,
     Unavailable(runtime::RuntimeError),
+    Recovery {
+        copied: bool,
+        copy_failed: bool,
+    },
 }
 
 struct Recognition {
@@ -114,6 +119,15 @@ struct Session {
     draft: String,
 }
 
+// Private bounded transcript; never part of workspace state or diagnostic output.
+struct Recovery {
+    id: SessionId,
+    text: zeroize::Zeroizing<String>,
+    deadline: Instant,
+    copied: bool,
+    copy_failed: bool,
+}
+
 struct Preparation {
     id: SessionId,
     surface: ObjectId,
@@ -129,6 +143,7 @@ pub(crate) struct Dictation {
     recognition: Option<Recognition>,
     last_failure: Option<runtime::RuntimeError>,
     native_commit_pending: bool,
+    recovery: Option<Recovery>,
 }
 
 impl Dictation {
@@ -155,6 +170,7 @@ impl State {
             || self.text_commit.dictation.preparation.is_some()
             || self.text_commit.dictation.recognition.is_some()
             || self.text_commit.dictation.native_commit_pending
+            || self.text_commit.dictation.recovery.is_some()
         {
             return Err(DictationError::Busy);
         }
@@ -261,6 +277,7 @@ impl State {
             || self.text_commit.dictation.preparation.is_some()
             || self.text_commit.dictation.recognition.is_some()
             || self.text_commit.dictation.native_commit_pending
+            || self.text_commit.dictation.recovery.is_some()
         {
             return Err(DictationError::Busy);
         }
@@ -323,8 +340,15 @@ impl State {
             .take()
             .ok_or(DictationError::StaleSession)?;
         if session.draft.len() > MAX_COMMIT_BYTES {
+            self.text_commit.dictation.recovery = Some(Recovery {
+                id,
+                text: zeroize::Zeroizing::new(session.draft),
+                deadline: now.checked_add(RECOVERY_WINDOW).unwrap_or(now),
+                copied: false,
+                copy_failed: false,
+            });
             self.cancel_active_dictation();
-            return Err(DictationError::DraftTooLarge);
+            return Ok(());
         }
         if session.draft.is_empty() {
             self.cancel_active_dictation();
@@ -342,6 +366,45 @@ impl State {
         // change the selected range. Keep successors out until that happens.
         self.text_commit.dictation.native_commit_pending = self.shell_field_active;
         Ok(())
+    }
+
+    /// Explicit local export only: never paste or retarget an insertion.
+    /// Failure retains the complete original transcript for another attempt.
+    pub(crate) fn copy_dictation_recovery(
+        &mut self,
+        id: SessionId,
+        now: Instant,
+    ) -> Result<(), DictationError> {
+        self.expire_dictation_recovery(now);
+        let recovery = self
+            .text_commit
+            .dictation
+            .recovery
+            .as_mut()
+            .filter(|recovery| recovery.id == id)
+            .ok_or(DictationError::StaleSession)?;
+        let copied = ui::text_selection::try_clipboard_copy(&recovery.text);
+        recovery.copied |= copied;
+        recovery.copy_failed = !copied;
+        Ok(())
+    }
+
+    pub(crate) fn discard_dictation_recovery(&mut self) {
+        self.text_commit.dictation.recovery = None;
+        self.cancel_active_dictation();
+    }
+
+    pub(crate) fn expire_dictation_recovery(&mut self, now: Instant) {
+        if self
+            .text_commit
+            .dictation
+            .recovery
+            .as_ref()
+            .is_some_and(|r| now >= r.deadline)
+        {
+            self.text_commit.dictation.recovery = None;
+            self.text_commit.dictation.last_failure = Some(runtime::RuntimeError::TimedOut);
+        }
     }
 
     pub(crate) fn take_native_dictation_commit(&mut self) -> bool {
@@ -362,8 +425,14 @@ impl State {
                 .preparation
                 .as_ref()
                 .is_some_and(|p| p.id == id)
+            || self
+                .text_commit
+                .dictation
+                .recovery
+                .as_ref()
+                .is_some_and(|r| r.id == id)
         {
-            self.cancel_active_dictation();
+            self.discard_dictation_recovery();
             true
         } else {
             false
@@ -436,6 +505,12 @@ impl State {
     }
 
     pub fn dictation_status(&self) -> DictationStatus {
+        if let Some(recovery) = &self.text_commit.dictation.recovery {
+            return DictationStatus::Recovery {
+                copied: recovery.copied,
+                copy_failed: recovery.copy_failed,
+            };
+        }
         if let Some(recognition) = &self.text_commit.dictation.recognition {
             return recognition.phase;
         }
@@ -470,9 +545,14 @@ impl State {
     /// Wake an otherwise idle compositor while a private actor or target lives.
     /// No periodic work is scheduled while dictation is inactive.
     pub(crate) fn dictation_service_deadline(&self, now: Instant) -> Option<Instant> {
-        (self.has_dictation_target() || self.text_commit.dictation.recognition.is_some())
-            .then(|| now.checked_add(Duration::from_millis(50)))
-            .flatten()
+        if self.has_dictation_target() || self.text_commit.dictation.recognition.is_some() {
+            return now.checked_add(Duration::from_millis(50));
+        }
+        self.text_commit
+            .dictation
+            .recovery
+            .as_ref()
+            .map(|recovery| recovery.deadline.max(now))
     }
 
     /// Poll on every native service tick, even without paint/input events.

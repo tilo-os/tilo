@@ -66,14 +66,23 @@ is for the trusted local speech service; it is not an unprivileged socket operat
   insertion API remain responsible for their own capture lifecycle.
 - A request is bounded to 120 seconds and 16 KiB of draft UTF-8. A final
   is limited to 4,000 UTF-8 bytes so one commit fits the standard Wayland
-  4 KiB message buffer. Larger finals fail before sending any text; splitting
+  4 KiB message buffer. Larger finals enter private recovery before sending any text; splitting
   would lose atomic selected-range replacement and undo. Native final delivery
   drains the existing IME bridge and dispatches it in the same compositor turn,
   before another edit can move the selection. An incomplete delivery disconnects
   that bridge instead of retrying after a focus or selection change. Control characters,
   including line breaks, are rejected in this first boundary. Spoken paragraph
   commands require a field-aware extension; they must never submit a terminal.
-- No transcripts, audio or surrounding-text strings are logged or persisted.
+- Oversized finals remain under their original session ID in zeroizing memory
+  for ten minutes. The local controls visibly offer Copy transcript and Discard
+  transcript. Copy explicitly exports the complete text to the system clipboard;
+  it never pastes, synthesizes keys or retargets insertion. Failed export retains
+  the text and offers retry. Focus changes cannot insert it elsewhere. Cancel,
+  lock and expiry discard it; start/finish shortcuts cannot silently dismiss it.
+  Idle recovery schedules only its expiry, without polling or microphone work.
+- No transcripts, audio or surrounding-text strings are automatically logged or
+  persisted. Explicit Copy uses the normal system clipboard and its history;
+  discarding the private recovery does not erase an already exported copy.
   Errors contain typed status only. Dropping a draft is not a secure memory wipe.
 
 The bounded Phonon event decoder handles partial replacement, consecutive final
@@ -212,7 +221,9 @@ verified with its existing public trust input in the regression test.
 
 `dictation-whisper-review.json` pins a multilingual tiny-model candidate by
 upstream revision, LFS hash and size, plus the exact binding source archives
-reviewed. No weights or native dependency were installed. The reviewed
+reviewed. No weights or native dependency were installed. The exact weights and licence
+were subsequently downloaded into an isolated remote review directory and both
+full byte counts and SHA-256 hashes verified; this was staging, not installation. The reviewed
 whisper-rs 0.16.0 `set_abort_callback_safe` erases its closure into a boxed trait
 object, but its trampoline casts that pointer back to the generic closure type
 and does not retain ownership. Do not use that helper. A raw C API adapter needs
@@ -336,3 +347,54 @@ changes invalidate the retained frame. “Microphone off” appears only after t
 actor drops and reaps capture. Language autodetection uses the loaded model's
 supported vocabulary; no network recognizer, paid API or automatic licence
 acceptance is introduced.
+
+
+## Concrete speech release decision and staged provenance
+
+The selected review candidate is **Whisper tiny multilingual**, rather than the
+English-only `tiny.en`. This chooses the smallest unquantized multilingual
+baseline reviewed with the CPU worker; it is not yet an accuracy-qualified default.
+The [pinned upstream model card](https://huggingface.co/ggerganov/whisper.cpp/blob/5359861c739e955e79d9a303bcbc70fb988958b1/README.md)
+identifies converted OpenAI weights and MIT licensing. The complete upstream
+copyright and permission notice is preserved in `dist/local-models/whisper-tiny/LICENSE`.
+No account, paid endpoint, extra runtime image or new trust identity is needed.
+
+The remote review directory `/tmp/tilo-dictation-review-ce8` contains:
+
+| File | Bytes | Verified SHA-256 |
+| --- | ---: | --- |
+| `ggml-tiny.bin` | 77,691,713 | `be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21` |
+| `LICENSE` | 1,063 | `b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d` |
+| `provenance.json` | 895 | `bd78051261f7c46309e4a52c8d3a8fdb6a31f6bd2c67e3fd17060c258b3b17e3` |
+
+These are public review inputs under private directory permissions. The directory
+is temporary builder storage, not a release destination or an installed model.
+`tools/release/prepare_speech_catalog.py` prepares a complete review candidate
+with unchanged U²-Net inputs and the exact speech receipts. Its offline tests
+reject insecure transport, altered receipts, excess bytes and overwriting.
+
+After the candidate is qualified, the concrete release work is:
+
+1. Review `dist/local-models/catalog-source-speech-candidate.json`, the retained
+   MIT notice, model receipt, CPU source receipt and public-audio qualification.
+   Non-English recognition quality and older-device timings still need evidence.
+2. Extend the existing protected `release-local-model-catalog.yml` allowlist to
+   these **two exact** models, retaining `runtimes: []`, empty chat recommendation,
+   immutable URLs, receipt checks and the existing trust key. General arbitrary
+   models, new keys and ambient executables are outside this change.
+3. Publish the weight and MIT notice to the pinned `whisper-tiny/<revision>`
+   Forgejo package URLs already declared by the candidate. Independently read
+   them anonymously and check the exact receipts before signing the catalogue.
+4. Let the protected publisher create the signed catalogue and verify its
+   unchanged public key. Review the resulting signed image input and reproduce
+   it with the existing compiler; do not substitute a development signature or
+   relax the publisher's comparison against reviewed image bytes.
+5. Deliver those catalogue bytes through the normal image lifecycle, then use
+   Settings' existing licence-acceptance and install action to obtain the model.
+   Run the nonroot installed-worker journey and separately approved live
+   microphone/denial/removal journeys before lifting the PR's hold.
+
+Nothing in this work dispatches the publisher, publishes artifacts, modifies the
+production catalogue, installs a model or approves microphone access. The pending
+operator decision is approval of this exact reviewed release and its later image
+qualification, not a vague grant of model or account access.

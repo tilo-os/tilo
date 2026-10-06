@@ -2425,3 +2425,7 @@ shortcut-name-tab-menu = Tab-Menü öffnen
 search-action-tab-menu = Tab-Menü öffnen
 search-action-tab-menu-subtitle = Aktionen für den fokussierten Tab
 search-action-tab-menu-unavailable = Kein fokussierter Tab verfügbar
+
+dictation-transcript-retained = Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.
+dictation-transcript-copied = Gesamtes Transkript kopiert. Füge es im gewünschten Feld ein. Der private Entwurf bleibt bis zum Verwerfen oder Ablauf der 10 Minuten erhalten.
+dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkript bleibt privat aufbewahrt; versuche es erneut oder verwirf es.

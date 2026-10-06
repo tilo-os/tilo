@@ -460,3 +460,6 @@ block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfe
 dictation-record-once = Einmal aufnehmen
 dictation-finish = Fertig
 dictation-cancel = Abbrechen
+
+dictation-copy-transcript = Transkript kopieren
+dictation-discard-transcript = Transkript verwerfen

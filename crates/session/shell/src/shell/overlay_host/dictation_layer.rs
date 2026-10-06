@@ -15,6 +15,7 @@ pub(crate) enum Request {
     Toggle,
     Consent(SessionId),
     Finish(SessionId),
+    Copy(SessionId),
     Cancel(Option<SessionId>),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -77,6 +78,12 @@ impl DictationSurface {
     pub(crate) fn preparing(&self) -> bool {
         self.phase == Some(Phase::Preparing)
     }
+    pub(crate) fn is_recovery(&self) -> bool {
+        matches!(
+            self.phase,
+            Some(Phase::Running(DictationStatus::Recovery { .. }))
+        )
+    }
     pub(crate) fn is_consent(&self) -> bool {
         self.phase == Some(Phase::Consent)
     }
@@ -97,6 +104,8 @@ impl DictationSurface {
         }
         let labels = if phase == Phase::Consent {
             ["dictation-record-once", "dictation-cancel"]
+        } else if matches!(phase, Phase::Running(DictationStatus::Recovery { .. })) {
+            ["dictation-copy-transcript", "dictation-discard-transcript"]
         } else if phase == Phase::Running(DictationStatus::Listening) {
             ["dictation-finish", "dictation-cancel"]
         } else {
@@ -125,6 +134,18 @@ impl DictationSurface {
             DictationStatus::Idle => {
                 self.close();
                 return;
+            }
+            DictationStatus::Recovery {
+                copied,
+                copy_failed,
+            } => {
+                if copy_failed {
+                    "dictation-copy-failed"
+                } else if copied {
+                    "dictation-transcript-copied"
+                } else {
+                    "dictation-transcript-retained"
+                }
             }
             DictationStatus::Preparing => "dictation-preparing",
             DictationStatus::Loading => "dictation-loading",
@@ -159,7 +180,12 @@ impl DictationSurface {
         format!(
             "dictation:{:?}:{}",
             self.id,
-            if self.is_consent() {
+            if matches!(
+                self.phase,
+                Some(Phase::Running(DictationStatus::Recovery { .. }))
+            ) {
+                "copy-transcript"
+            } else if self.is_consent() {
                 "record-once"
             } else if self.phase == Some(Phase::Running(DictationStatus::Listening)) {
                 "finish"
@@ -179,6 +205,11 @@ impl DictationSurface {
     }
     fn choice(&mut self, choice: PromptChoice) {
         self.pending = match (self.phase, self.id, choice) {
+            (
+                Some(Phase::Running(DictationStatus::Recovery { .. })),
+                Some(id),
+                PromptChoice::Allow,
+            ) => Some(Request::Copy(id)),
             (Some(Phase::Consent), Some(id), PromptChoice::Allow) => Some(Request::Consent(id)),
             (Some(Phase::Running(DictationStatus::Listening)), Some(id), PromptChoice::Allow) => {
                 Some(Request::Finish(id))
@@ -298,6 +329,9 @@ impl ShellLayer for DictationSurface {
             Request::Cancel(self.id)
         } else if target == self.affirmative_target() {
             match (self.phase, self.id) {
+                (Some(Phase::Running(DictationStatus::Recovery { .. })), Some(id)) => {
+                    Request::Copy(id)
+                }
                 (Some(Phase::Consent), Some(id)) => Request::Consent(id),
                 (Some(Phase::Running(DictationStatus::Listening)), Some(id)) => Request::Finish(id),
                 _ => Request::Cancel(self.id),
