@@ -39,6 +39,107 @@ impl PendingAnswer {
     }
 }
 
+pub(crate) struct PendingLayout {
+    result: mpsc::Receiver<std::io::Result<DisplayTransaction>>,
+}
+
+impl PendingLayout {
+    pub(crate) fn poll(&self) -> std::io::Result<Option<DisplayTransaction>> {
+        match self.result.try_recv() {
+            Ok(result) => result.map(Some),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(std::io::Error::other("display layout storage stopped"))
+            }
+        }
+    }
+}
+
+/// Prepare against one committed profile view and the native capabilities;
+/// only an actual conditional persistence receipt makes this request effective.
+pub(crate) fn stage_layout(
+    mode: settings_store::display_mode::DisplayLayoutMode,
+) -> std::io::Result<PendingLayout> {
+    use settings_store::hardware::{DisplayHardwareSnapshot, DisplayProfiles};
+    let source = settings_store::installed_source();
+    let file = if source.is_none() {
+        Some(settings_store::file_write_path()?)
+    } else {
+        None
+    };
+    let document = source
+        .as_ref()
+        .map_or_else(settings_store::load, |source| source.load());
+    let snapshot = DisplayHardwareSnapshot::load()
+        .ok_or_else(|| std::io::Error::other("the compositor has not published displays"))?;
+    let set = settings_store::display_mode::attached_set(&snapshot.outputs);
+    let profiles: DisplayProfiles = document
+        .get("display_profiles")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let previous = profiles.layout_for(&set).unwrap_or_default();
+    let candidate = settings_store::display_mode::plan_layout(mode, &snapshot.outputs, &previous)
+        .map_err(std::io::Error::other)?;
+    let mut transaction = DisplayTransaction::prepare_request(set, candidate)?;
+    transaction.previous = previous;
+    let update = settings_store::DisplayUpdate::new(&document, section(&transaction)?, None);
+    let wake = wake_slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(Arc::clone);
+    let (sender, result) = mpsc::channel();
+    super::durable_writer::global().submit_ordered(move || {
+        let stored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let current = DisplayHardwareSnapshot::load().ok_or_else(|| {
+                std::io::Error::other("display capabilities are no longer available")
+            })?;
+            if current.publisher_pid != snapshot.publisher_pid
+                || current.publisher_start_ticks != snapshot.publisher_start_ticks
+                || current.outputs != snapshot.outputs
+            {
+                return Err(std::io::Error::other(
+                    "attached displays changed before the layout was recorded",
+                ));
+            }
+            store_display_update(source.as_deref(), file.as_deref(), update)?;
+            Ok(transaction)
+        }))
+        .unwrap_or_else(|_| Err(std::io::Error::other("display layout storage panicked")));
+        let _ = sender.send(stored);
+        if let Some(wake) = wake {
+            wake();
+        }
+    })?;
+    Ok(PendingLayout { result })
+}
+
+fn store_display_update(
+    source: Option<&dyn settings_store::SettingsSource>,
+    file: Option<&std::path::Path>,
+    update: settings_store::DisplayUpdate,
+) -> std::io::Result<()> {
+    let receipt = if let Some(source) = source {
+        source.compare_display_update(update)?
+    } else {
+        settings_store::compare_display_update_at(
+            file.ok_or_else(|| std::io::Error::other("display storage is unavailable"))?,
+            update,
+        )?
+    };
+    match receipt {
+        settings_store::ConditionalUpdate::Stored => Ok(()),
+        settings_store::ConditionalUpdate::Superseded => Err(std::io::Error::other(
+            "display transaction or profiles changed before persistence",
+        )),
+        settings_store::ConditionalUpdate::StoredWithCopyRepair(error) => {
+            tracing::warn!(%error, "display intent is durable; settings copy repair remains pending");
+            Ok(())
+        }
+    }
+}
+
 pub(crate) fn answer(answer: Answer) -> std::io::Result<PendingAnswer> {
     answer_for(answer, None)
 }

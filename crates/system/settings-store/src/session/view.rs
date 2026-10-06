@@ -82,6 +82,13 @@ impl SettingsSource for HostView {
         self.session.compare_update_section(name, expected, values)
     }
 
+    fn compare_display_update(
+        &self,
+        update: crate::DisplayUpdate,
+    ) -> std::io::Result<ConditionalUpdate> {
+        self.session.compare_display_update(update)
+    }
+
     fn revision(&self) -> u64 {
         self.snapshot().revision
     }

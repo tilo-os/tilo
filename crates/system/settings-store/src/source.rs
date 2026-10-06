@@ -33,6 +33,45 @@ impl ConditionalUpdate {
     }
 }
 
+/// A display-only atomic update: the transaction and saved profiles live in
+/// one device record. Expected sections include absence and malformed values,
+/// so a delayed request cannot erase newly adopted display intent.
+#[derive(Clone)]
+pub struct DisplayUpdate {
+    transaction_before: Option<Value>,
+    profiles_before: Option<Value>,
+    transaction: Map<String, Value>,
+    profiles: Option<Map<String, Value>>,
+}
+
+impl DisplayUpdate {
+    pub fn new(
+        document: &Map<String, Value>,
+        transaction: Map<String, Value>,
+        profiles: Option<Map<String, Value>>,
+    ) -> Self {
+        Self {
+            transaction_before: document.get("display_transaction").cloned(),
+            profiles_before: document.get("display_profiles").cloned(),
+            transaction,
+            profiles,
+        }
+    }
+
+    pub(crate) fn matches(&self, document: &Map<String, Value>) -> bool {
+        document.get("display_transaction") == self.transaction_before.as_ref()
+            && document.get("display_profiles") == self.profiles_before.as_ref()
+    }
+
+    pub(crate) fn sections(self) -> Vec<(&'static str, Map<String, Value>)> {
+        let mut sections = vec![("display_transaction", self.transaction)];
+        if let Some(profiles) = self.profiles {
+            sections.push(("display_profiles", profiles));
+        }
+        sections
+    }
+}
+
 /// Where the settings document lives when it is not the local file.
 pub trait SettingsSource: Send + Sync {
     /// The whole document. Forgiving like the file: never fails.
@@ -73,6 +112,18 @@ pub trait SettingsSource: Send + Sync {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "conditional settings persistence is unavailable",
+        ))
+    }
+
+    /// Atomically compare and merge display transaction/profile intent in
+    /// its single device record, after adopting external-copy changes.
+    ///
+    /// # Errors
+    /// Storage failed, or the source cannot provide atomic display updates.
+    fn compare_display_update(&self, _update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "atomic display persistence is unavailable",
         ))
     }
 
