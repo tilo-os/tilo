@@ -3,7 +3,6 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 use taffy::NodeId;
 use winit::event::{Ime, PrivateIme, PrivateImeKind, WindowEvent};
-use winit::platform::wayland::WindowExtWayland;
 use winit::window::Window;
 
 use crate::app::App;
@@ -19,10 +18,10 @@ pub(super) trait Transport {
 }
 impl Transport for Window {
     fn publish(&self, snapshot: Option<[u8; 32]>) -> bool {
-        self.private_text_input(snapshot)
+        tilo_presentation::text_input::publish(self, snapshot)
     }
     fn acknowledge(&self, serial: u32, outcome: u32) {
-        self.acknowledge_private_text_input(serial, outcome);
+        tilo_presentation::text_input::acknowledge(self, serial, outcome);
     }
     fn redraw(&self) {
         self.request_redraw();

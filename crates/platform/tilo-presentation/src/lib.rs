@@ -2,6 +2,7 @@
 //! Missing protocol support returns false while still presenting the buffer.
 pub mod clock;
 mod damage;
+pub mod text_input;
 
 pub use damage::DamageRect;
 #[cfg(all(feature = "gpu-damage", not(target_arch = "wasm32")))]

@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
 mod linux_header;
-#[cfg(target_os = "linux")]
 mod private_text_input;
 
 #[cfg(not(target_os = "android"))]
@@ -84,7 +83,6 @@ struct AppHandler {
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<ImeWindowState>,
-    #[cfg(target_os = "linux")]
     private_input: private_text_input::Bridge,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
@@ -1310,7 +1308,6 @@ impl AppHandler {
 
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
-        #[cfg(target_os = "linux")]
         self.private_input.service(
             &self.app,
             window,
@@ -1323,14 +1320,7 @@ impl AppHandler {
                 if !self.app.focused_ime_requires_deferred_ack() {
                     return true;
                 }
-                #[cfg(target_os = "linux")]
-                {
-                    self.private_input.admitted()
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    false
-                }
+                self.private_input.admitted()
             })
         };
         #[cfg(target_os = "android")]
@@ -3123,7 +3113,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        #[cfg(target_os = "linux")]
         if let Some(window) = self
             .window
             .clone()
@@ -3264,7 +3253,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
         self.sync_ime(&window);
-        #[cfg(target_os = "linux")]
         if self.private_input.pending() {
             request_primary_redraw();
         }
@@ -3559,7 +3547,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             retry_at,
             animation_deadline,
         );
-        #[cfg(target_os = "linux")]
         let deadline = deadline
             .into_iter()
             .chain(
@@ -4007,7 +3994,6 @@ impl App {
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
-            #[cfg(target_os = "linux")]
             private_input: private_text_input::Bridge::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
