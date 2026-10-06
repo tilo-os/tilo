@@ -4401,9 +4401,11 @@ impl RoomActivityPane {
                     )
                 })
                 .unwrap_or_default();
-            let actions = selected
-                .then(|| self.task_actions_for(&task))
-                .unwrap_or_default();
+            let actions = if selected {
+                self.task_actions_for(&task)
+            } else {
+                Vec::new()
+            };
             let instruction_button_height = if selected && task_instruction(&task).is_some() {
                 self.task_instruction_open_button.layout(
                     Rect::new(0.0, 0.0, (x1 - x0 - 16.0).max(1.0), 0.0),
@@ -5264,13 +5266,13 @@ impl RoomActivityPane {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         tree: &mut impl ActivityTree,
     ) -> bool {
         let Some(theme) = self
             .task_instruction_detail
             .as_ref()
-            .and(self.task_instruction_theme.clone())
+            .and_then(|_| self.task_instruction_theme.clone())
         else {
             return false;
         };
@@ -5285,7 +5287,7 @@ impl RoomActivityPane {
             event,
             &mut ui::widget::EventCtx {
                 scale_factor,
-                modifiers,
+                modifiers: &modifiers,
                 state: ui::widget::Edits::lend(tree.document_mut()),
                 path: &root,
                 handled: &mut handled,
@@ -5302,7 +5304,7 @@ impl RoomActivityPane {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         tree: &mut impl ActivityTree,
     ) -> bool {
         if self.view != ActivityView::Tasks || self.task_instruction_detail.is_some() {
@@ -5322,7 +5324,7 @@ impl RoomActivityPane {
             event,
             &mut ui::widget::EventCtx {
                 scale_factor,
-                modifiers,
+                modifiers: &modifiers,
                 state: ui::widget::Edits::lend(tree.document_mut()),
                 path: &root,
                 handled: &mut handled,
@@ -5905,10 +5907,10 @@ impl RoomActivityPane {
         if self.route_task_instruction_button_event(event, scale_factor, *modifiers, cursor, tree) {
             return handled_outcome();
         }
-        if self.route_task_instruction_scroll_event(event, scale_factor, modifiers, tree) {
+        if self.route_task_instruction_scroll_event(event, scale_factor, *modifiers, tree) {
             return handled_outcome();
         }
-        if self.route_task_list_scroll_event(event, scale_factor, modifiers, tree) {
+        if self.route_task_list_scroll_event(event, scale_factor, *modifiers, tree) {
             return handled_outcome();
         }
 
@@ -6255,6 +6257,13 @@ impl RoomActivityPane {
         true
     }
 
+    fn toggle_task_selection(&mut self, id: String) {
+        self.selected_task = (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
+        self.task_instruction_detail = None;
+        self.task_instruction_scroll
+            .set_offset(vello::kurbo::Vec2::ZERO);
+    }
+
     fn activate_focus(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -6290,16 +6299,10 @@ impl RoomActivityPane {
             }
             ActivityFocus::MoreBriefs => self.advance_briefs(),
             ActivityFocus::NewTask => self.open_task_composer(tree),
-            ActivityFocus::Task(id) => {
-                self.selected_task =
-                    (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
-                self.task_instruction_detail = None;
-                self.task_instruction_scroll
-                    .set_offset(vello::kurbo::Vec2::ZERO);
-            }
+            ActivityFocus::Task(id) => self.toggle_task_selection(id),
             ActivityFocus::TaskInstruction(_)
             | ActivityFocus::TaskInstructionClose
-            | ActivityFocus::TaskInstructionScroll => unreachable!("handled above"),
+            | ActivityFocus::TaskInstructionScroll => return outcome,
             ActivityFocus::TaskRoute(route) => self.task_route = route,
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
@@ -7289,6 +7292,10 @@ struct PreparedTaskCard {
     y: f64,
 }
 
+fn task_lines_height(line_height: f64, line_count: usize) -> f64 {
+    line_height * f64::from(u32::try_from(line_count).unwrap_or(u32::MAX))
+}
+
 impl TaskCardLayout {
     fn header_height(self) -> f64 {
         9.0 + self.label_height.max(self.caption_height)
@@ -7308,11 +7315,14 @@ impl TaskCardLayout {
             height += self.caption_height + self.gap;
         }
         if self.instruction_lines > 0 {
-            height +=
-                self.label_height + self.gap + self.caption_height * self.instruction_lines as f64;
+            height += self.label_height
+                + self.gap
+                + task_lines_height(self.caption_height, self.instruction_lines);
         }
         if self.audit_rows > 0 {
-            height += self.gap + self.label_height + self.caption_height * self.audit_rows as f64;
+            height += self.gap
+                + self.label_height
+                + task_lines_height(self.caption_height, self.audit_rows);
         }
         if self.instruction_button_height > 0.0 {
             height += self.gap + self.instruction_button_height;
