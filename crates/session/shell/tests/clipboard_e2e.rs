@@ -1104,6 +1104,10 @@ fn cancellation_clipboard(app: &TestClient) -> (ui::clipboard::WaylandClipboard,
         app.conn.clone(),
         read_budget,
     );
+    assert!(
+        clipboard.wait_ready_for_wayland_test(end.saturating_duration_since(Instant::now())),
+        "clipboard worker did not bind its devices before fixture focus"
+    );
     (clipboard, end)
 }
 
@@ -1853,6 +1857,10 @@ fn wayland_rich_clipboard_deadline_closes_stalled_pipe_and_rejects_late_bytes() 
     let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-stall-sink");
     app.assert_is_tilo_compositor();
     let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    assert!(
+        clipboard.wait_ready_for_wayland_test(deadline()),
+        "clipboard worker did not bind its devices before fixture focus"
+    );
     app.map_window(&compositor);
     wait_for_clipboard(
         &mut app,
