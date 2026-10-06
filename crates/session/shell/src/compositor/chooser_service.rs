@@ -217,18 +217,7 @@ fn answer(
             if !(context.presence)() {
                 return Reply::Nobody { id };
             }
-            let verb = if mode == PickMode::Save {
-                Verb::Write
-            } else {
-                Verb::Read
-            };
-            let granted = context
-                .grants
-                .granted_paths(caller)
-                .into_iter()
-                .filter(|path| context.grants.filesystem_path_allows(caller, path, verb))
-                .collect();
-            let Some(scope) = scope_for(granted, context.save_directory.as_deref(), mode) else {
+            let Some(scope) = authorized_scope(context, caller, mode) else {
                 return Reply::Failed {
                     id,
                     reason: t("portal-chooser-nothing-granted"),
@@ -305,6 +294,26 @@ fn answer(
             }
         }
     }
+}
+
+/// Derive picker reach from the requested operation's current authority.
+fn authorized_scope(
+    context: &ChooserContext,
+    caller: &PortalCaller,
+    mode: PickMode,
+) -> Option<PickerScope> {
+    let verb = if mode == PickMode::Save {
+        Verb::Write
+    } else {
+        Verb::Read
+    };
+    let granted = context
+        .grants
+        .granted_paths(caller)
+        .into_iter()
+        .filter(|path| context.grants.filesystem_path_allows(caller, path, verb))
+        .collect();
+    scope_for(granted, context.save_directory.as_deref(), mode)
 }
 
 /// The chooser's reach: the directories the app was granted (a granted file
