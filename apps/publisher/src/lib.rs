@@ -58,13 +58,8 @@ impl Publisher {
     pub fn set_registry(
         &mut self,
         #[param("Registry URL")] registry: String,
-    ) -> Result<(), &'static str> {
-        let loopback = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
-            .iter()
-            .any(|prefix| registry.starts_with(prefix));
-        if !registry.starts_with("https://") && !loopback {
-            return Err("a registry URL is https, or http on this machine");
-        }
+    ) -> Result<(), String> {
+        RegistryClient::validate_url(&registry).map_err(|error| error.to_string())?;
         self.registry = registry;
         Ok(())
     }
