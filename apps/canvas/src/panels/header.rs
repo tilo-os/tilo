@@ -46,7 +46,6 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     Box::new(
         Row::new()
-            .no_wrap()
             .with_padding(10.0, 6.0)
             .with_gap(2.0)
             .with_align_items(ui::taffy::AlignItems::Center)
