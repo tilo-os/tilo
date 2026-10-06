@@ -3496,6 +3496,94 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_resize_uses_the_live_host_pointer_and_semantic_routes() {
+        use ui::Widget;
+        use ui::headless::FrameHarness;
+        let (app, doc) = app_with_doc();
+        let mut state = ui::State::new();
+        assert!(state.adopt_doc(doc));
+        let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
+        assert!(!driver.root::<ChatApp>().left_overlay());
+        driver.resize((880, 720)).expect("normal narrow layout");
+        assert!(driver.root::<ChatApp>().left_overlay());
+        driver.resize((960, 720)).expect("normal wide layout");
+        assert!(!driver.root::<ChatApp>().left_overlay());
+        let before = driver.state_mut().doc.get_heads();
+        let edge = driver.root::<ChatApp>().left_flap.sidebar_rect().x1;
+        driver.drag_at((edge, 200.0), (edge - 40.0, 200.0));
+        assert_eq!(
+            driver.root::<ChatApp>().left_flap.list_rect().width(),
+            240.0
+        );
+        assert!(!driver.root::<ChatApp>().wants_pointer_capture());
+        let access = driver.root::<ChatApp>().accessibility().unwrap();
+        for child in &access.children {
+            if !matches!(
+                child.action_target.as_deref(),
+                Some("sidebar-resize" | "inspector-resize")
+            ) {
+                assert!(
+                    child.semantic_key.is_none(),
+                    "legacy Chat controls keep typed domain authority"
+                );
+            }
+        }
+        let resources = driver.resources();
+        let resize = resources
+            .iter()
+            .find(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "set-value")
+                    && resource.label == "Resize sidebar"
+            })
+            .expect("the live shared separator publishes exact resize alongside steps");
+        for id in ["increment", "decrement", "set-value"] {
+            assert!(resize.actions.iter().any(|action| action.id == id));
+        }
+        let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+        let arguments = serde_json::Map::from_iter([(
+            ui::tilo_actions::PROMPTED_PARAM.to_owned(),
+            serde_json::Value::String("30%".into()),
+        )]);
+        assert!(
+            driver
+                .invoke_action(&address, &arguments, false, None)
+                .expect("the freshly published canonical resize door")
+                .completed()
+                .is_some()
+        );
+        let root = driver.root::<ChatApp>();
+        assert_eq!(root.left_flap.sidebar_rect().width(), 288.0);
+        assert_eq!(root.left_flap.list_rect().width(), 212.0);
+        assert_eq!(
+            driver.state_mut().doc.get_heads(),
+            before,
+            "resizing never changes the shared conversation"
+        );
+    }
+
+    #[test]
+    fn navigation_remains_docked_while_the_shared_content_minimum_fits() {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 960.0, 720.0);
+        assert!(
+            !app.left_overlay(),
+            "rail + sidebar + content minimum fit at this width"
+        );
+        assert!(
+            app.left_flap.content_rect().width()
+                >= f64::from(ui::tokens::Metrics::BASE.content_min_width)
+        );
+        render_frame(&mut app, 880.0, 720.0);
+        assert!(
+            app.left_overlay(),
+            "the navigation must become a drawer when content actually no longer fits"
+        );
+    }
+
+    #[test]
     fn the_attached_call_window_rests_below_the_header_row() {
         for (w, h) in [(1280.0, 800.0), (800.0, 600.0)] {
             let (mut app, _doc) = app_with_doc();
