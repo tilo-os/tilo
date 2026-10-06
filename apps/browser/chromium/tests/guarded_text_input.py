@@ -147,6 +147,28 @@ class GuardedTextInput(unittest.TestCase):
                 self.unchanged()
                 self.main_world('(window.' + flag + '=false,true)')
 
+    def test_selectionless_email_and_number_refuse_deferred_input_and_recover(self):
+        for kind, value in [('email', 'public@example.test'), ('number', '123.5')]:
+            with self.subTest(kind=kind):
+                snapshot = self.main_world("(()=>{let e=document.createElement('input');"
+                    f"e.id='limitedField';e.type={json.dumps(kind)};e.value={json.dumps(value)};"
+                    "document.body.append(e);e.focus();return {focused:document.activeElement===e,"
+                    "start:e.selectionStart,end:e.selectionEnd,value:e.value}})()")
+                self.assertEqual(snapshot, {'focused': True, 'start': None, 'end': None, 'value': value})
+                result = self.request_input('prepare')
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(result['code'], 'not_editable', result)
+                self.assertEqual(self.main_world('limitedField.value'), value)
+                self.unchanged()
+                self.main_world('(limitedField.remove(),true)')
+        # Rejection must not leave a lease that blocks a supported successor.
+        self.main_world('(first.focus(),first.setSelectionRange(6,10),true)')
+        lease = self.prepare()
+        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease})
+        self.assertTrue(self.request_input('commit', lease=lease, text='recovered')['ok'])
+        self.assertEqual(self.main_world('first.value'), 'alpha recovered gamma')
+        self.assertEqual(self.main_world('second.value'), 'second')
+
     def test_password_otp_and_composition_are_refused(self):
         for target in ['password', 'otp', 'card', 'masked']:
             self.main_world(f'({target}.focus(),true)')
