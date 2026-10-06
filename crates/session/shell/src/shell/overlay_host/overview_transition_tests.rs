@@ -441,12 +441,12 @@ fn keyboard_overview_arrives_immediately_and_pointer_motion_can_resume() {
     }
 
     // Arrow + Enter activates another workspace and leaves no closing fade.
-    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::ArrowDown), &mut handled));
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::ArrowDown), false, &mut handled));
     let selected = h
         .overview_selection
         .expect("the next workspace is selected");
     let destination = chrome.borrow().tree().desktop.workspaces[selected].id;
-    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), &mut handled));
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
     assert_eq!(chrome.borrow().tree().desktop.active, destination);
     assert!(!chrome.borrow().overlays.overview);
     assert_eq!(h.overview_t, 0.0);
