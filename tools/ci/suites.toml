@@ -38,6 +38,11 @@
 # whose read CI never runs, with the reason.
 
 [[group]]
+name = "session-diagnostics"
+inputs = ["dist/session/tilo-flight-recorder.py"]
+suites = ["os/tests/flight_recorder_test.py"]
+
+[[group]]
 name = "os"
 inputs = ["os/"]
 suites = [
