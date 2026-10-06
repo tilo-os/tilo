@@ -403,7 +403,7 @@ pub fn sample_engine() -> Engine {
         images: sample_images(),
         volumes: sample_volumes(),
         distroboxes: sample_distroboxes(),
-        connection: "podman 5.1.1 · rootless · sample data".into(),
+        connection: "Not connected to Podman".into(),
         live: false,
     }
 }
@@ -480,7 +480,7 @@ fn sample_container_api_server() -> Container {
     Container {
         id: "1b77e0a9c3f54d2e8e0c9a1f6b2d3e4f".into(),
         name: "api-server".into(),
-        image: "registry.example.test/api:2.4.1".into(),
+        image: "ghcr.io/northwind/api:2.4.1".into(),
         status: ContainerStatus::Running,
         status_detail: "Up 4 hours (healthy)".into(),
         command: "/usr/local/bin/api --config /etc/api/config.toml".into(),
@@ -589,9 +589,9 @@ fn sample_container_redis_cache() -> Container {
             pids: 4,
         },
         logs: vec![
-            "1:C 30 Jun 2026 09:14:02.114 * Redis version=7.2.5, bits=64, pid=1, just started"
+            "1:C 30 Jun 2026 06:42:02.114 * Redis version=7.2.5, bits=64, pid=1, just started"
                 .into(),
-            "1:M 30 Jun 2026 09:14:02.116 * Ready to accept connections tcp".into(),
+            "1:M 30 Jun 2026 06:42:02.116 * Ready to accept connections tcp".into(),
         ],
     }
 }
@@ -600,7 +600,7 @@ fn sample_container_build_runner() -> Container {
     Container {
         id: "e0b3a7c9f2d14e6b8c0a3f5d7e9b1c2d".into(),
         name: "build-runner".into(),
-        image: "registry.example.test/ci-runner:latest".into(),
+        image: "ghcr.io/northwind/ci-runner:latest".into(),
         status: ContainerStatus::Exited,
         status_detail: "Exited (0) 2 hours ago".into(),
         command: "/runner/entrypoint.sh".into(),
@@ -716,7 +716,7 @@ fn sample_images() -> Vec<Image> {
         },
         Image {
             id: "sha256:b7e0d2a4c6f81930e5a7c9b1d3f5a7c9".into(),
-            repository: "registry.example.test/api".into(),
+            repository: "ghcr.io/northwind/api".into(),
             tag: "2.4.1".into(),
             size_bytes: 122_683_392,
             created: "3 days ago".into(),
@@ -748,7 +748,7 @@ fn sample_images() -> Vec<Image> {
         },
         Image {
             id: "sha256:f1c4b6d8e0a25374c9e1a3b5d7f9c1e3".into(),
-            repository: "registry.example.test/ci-runner".into(),
+            repository: "ghcr.io/northwind/ci-runner".into(),
             tag: "latest".into(),
             size_bytes: 689_438_720,
             created: "yesterday".into(),
@@ -835,28 +835,28 @@ fn sample_volumes() -> Vec<Volume> {
 fn sample_nginx_logs() -> Vec<String> {
     vec![
         "/docker-entrypoint.sh: Configuration complete; ready for start up".into(),
-        "2026/06/30 09:14:01 [notice] 1#1: using the \"epoll\" event method".into(),
-        "2026/06/30 09:14:01 [notice] 1#1: nginx/1.27.0".into(),
-        "2026/06/30 09:14:01 [notice] 1#1: OS: Linux 7.0.9".into(),
-        "2026/06/30 09:14:01 [notice] 1#1: start worker processes".into(),
-        "10.0.2.14 - - [30/Jun/2026:13:02:11 +0000] \"GET / HTTP/1.1\" 200 1024".into(),
-        "10.0.2.14 - - [30/Jun/2026:13:02:11 +0000] \"GET /app.css HTTP/1.1\" 200 8210".into(),
-        "10.0.2.14 - - [30/Jun/2026:13:02:12 +0000] \"GET /app.js HTTP/1.1\" 200 41200".into(),
-        "10.0.2.31 - - [30/Jun/2026:13:05:44 +0000] \"GET /favicon.ico HTTP/1.1\" 404 153".into(),
-        "10.0.2.14 - - [30/Jun/2026:13:09:02 +0000] \"GET /api/health HTTP/1.1\" 200 17".into(),
+        "2026/06/30 06:42:01 [notice] 1#1: using the \"epoll\" event method".into(),
+        "2026/06/30 06:42:01 [notice] 1#1: nginx/1.27.0".into(),
+        "2026/06/30 06:42:01 [notice] 1#1: OS: Linux 7.0.9".into(),
+        "2026/06/30 06:42:01 [notice] 1#1: start worker processes".into(),
+        "10.0.2.14 - - [30/Jun/2026:10:32:11 +0000] \"GET / HTTP/1.1\" 200 1024".into(),
+        "10.0.2.14 - - [30/Jun/2026:10:32:11 +0000] \"GET /app.css HTTP/1.1\" 200 8210".into(),
+        "10.0.2.14 - - [30/Jun/2026:10:32:12 +0000] \"GET /app.js HTTP/1.1\" 200 41200".into(),
+        "10.0.2.31 - - [30/Jun/2026:10:35:44 +0000] \"GET /favicon.ico HTTP/1.1\" 404 153".into(),
+        "10.0.2.14 - - [30/Jun/2026:10:39:02 +0000] \"GET /api/health HTTP/1.1\" 200 17".into(),
     ]
 }
 
 fn sample_api_logs() -> Vec<String> {
     vec![
-        "2026-06-30T09:14:02Z INFO  api: starting api-server v2.4.1".into(),
-        "2026-06-30T09:14:02Z INFO  api::db: connecting to postgres://db:5432/app".into(),
-        "2026-06-30T09:14:02Z INFO  api::db: pool ready (max=16)".into(),
-        "2026-06-30T09:14:02Z INFO  api: listening on 0.0.0.0:3000".into(),
-        "2026-06-30T13:02:12Z INFO  api::http: GET /api/health 200 0.4ms".into(),
-        "2026-06-30T13:05:01Z INFO  api::http: POST /api/login 200 38ms".into(),
-        "2026-06-30T13:05:01Z WARN  api::auth: 1 failed login for user=guest".into(),
-        "2026-06-30T13:09:02Z INFO  api::http: GET /api/items 200 12ms".into(),
+        "2026-06-30T06:42:02Z INFO  api: starting api-server v2.4.1".into(),
+        "2026-06-30T06:42:02Z INFO  api::db: connecting to postgres://db:5432/app".into(),
+        "2026-06-30T06:42:02Z INFO  api::db: pool ready (max=16)".into(),
+        "2026-06-30T06:42:02Z INFO  api: listening on 0.0.0.0:3000".into(),
+        "2026-06-30T10:32:12Z INFO  api::http: GET /api/health 200 0.4ms".into(),
+        "2026-06-30T10:35:01Z INFO  api::http: POST /api/login 200 38ms".into(),
+        "2026-06-30T10:35:01Z WARN  api::auth: 1 failed login for user=guest".into(),
+        "2026-06-30T10:39:02Z INFO  api::http: GET /api/items 200 12ms".into(),
     ]
 }
 
@@ -864,13 +864,13 @@ fn sample_postgres_logs() -> Vec<String> {
     vec![
         "PostgreSQL Database directory appears to contain a database; Skipping initialization"
             .into(),
-        "2026-06-30 09:14:02.001 UTC [1] LOG:  starting PostgreSQL 16.3".into(),
-        "2026-06-30 09:14:02.004 UTC [1] LOG:  listening on IPv4 address \"0.0.0.0\", port 5432"
+        "2026-06-30 06:42:02.001 UTC [1] LOG:  starting PostgreSQL 16.3".into(),
+        "2026-06-30 06:42:02.004 UTC [1] LOG:  listening on IPv4 address \"0.0.0.0\", port 5432"
             .into(),
-        "2026-06-30 09:14:02.010 UTC [1] LOG:  database system is ready to accept connections"
+        "2026-06-30 06:42:02.010 UTC [1] LOG:  database system is ready to accept connections"
             .into(),
-        "2026-06-30 13:05:01.221 UTC [42] LOG:  checkpoint starting: time".into(),
-        "2026-06-30 13:05:11.882 UTC [42] LOG:  checkpoint complete: wrote 12 buffers".into(),
+        "2026-06-30 10:35:01.221 UTC [42] LOG:  checkpoint starting: time".into(),
+        "2026-06-30 10:35:11.882 UTC [42] LOG:  checkpoint complete: wrote 12 buffers".into(),
     ]
 }
 

@@ -84,12 +84,14 @@ account selection behavior.
 
 ## Integration boundaries
 
-Contacts exposes a dedicated inline account editor using shared controls. A
-contact resource's `OpenAccounts` action opens the same editor as its toolbar.
+Contacts exposes account editing in the redesigned `NavShell` inspector using
+shared controls. A contact resource's `OpenAccounts` action opens that inspector;
+the shell supplies its header, toggle and responsive placement.
 Additions, edits and removals stage a review before mutating the directory.
 Pending reviews are `contacts.account-review` resources with a row-scoped,
 confirmation-required action. Changing contact, closing, or cancelling invalidates
-the review; changed endpoint snapshots refuse confirmation. Duplicate names show
+the review; closing the shell inspector also invalidates it. Changed endpoint
+snapshots refuse confirmation. Duplicate names show
 a stable UUID suffix in the contact picker.
 
 Manually entered addresses have no identity evidence and cannot produce transport

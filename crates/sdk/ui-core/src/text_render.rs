@@ -15,8 +15,18 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 /// renderer also assigns them to the CSS-like generic families below. Keeping
 /// the names here makes plain text, rich text, and theme tokens agree instead
 /// of depending on each machine's fontconfig defaults.
-pub const UI_SANS_FAMILY: &str = "Noto Sans";
-pub const UI_SERIF_FAMILY: &str = "Noto Serif";
+///
+/// The UI face covers Latin, Vietnamese and Greek. Cyrillic falls back to a
+/// face matched to it, sized to its x-height (see [`crate::font_catalog`]);
+/// every other script falls back to Noto.
+pub const UI_SANS_FAMILY: &str = "Tilo Sans";
+/// The built-in "Hyperlegible" UI face a theme or the accessibility layer
+/// can choose instead of [`UI_SANS_FAMILY`].
+pub const UI_HYPERLEGIBLE_FAMILY: &str = "Atkinson Hyperlegible Next";
+/// The default reading face, New Computer Modern. Set in this family, text
+/// takes the cut its size calls for: the 8 pt design for footnotes, Book for
+/// body text and Regular for titles ([`crate::tokens::ReadingFace`]).
+pub const UI_SERIF_FAMILY: &str = "New Computer Modern";
 pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
 /// Dedicated OpenType MATH face used by the shared formula compositor.
 pub const UI_MATH_FAMILY: &str = "Noto Sans Math";
@@ -169,19 +179,22 @@ fn share_host_font_database(font_system: &FontSystem) {
         Some((font_system.locale().to_owned(), font_system.db().clone()));
 }
 
-/// Build a font system whose generic families are deterministic across the
-/// developer distrobox and the Tilo image. cosmic-text's platform fallback
-/// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
-/// other characters not covered by the selected primary face.
+/// Build the process's font system: the database a host built for it when
+/// there is one, otherwise the product font catalog with the system's fonts
+/// behind it and Tilo's script fallback (Android copies its catalog out of
+/// the APK first). A binary run from a checkout, a screenshot and the Tilo
+/// image therefore all set text in the same faces, whether or not the
+/// machine has them installed. Only when no catalog loads does it fall back
+/// to the system's fonts alone with the generic families pinned to the
+/// product names.
 #[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
-    #[cfg(test)]
-    FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
-    #[cfg(windows)]
-    if let Some(font_system) =
-        crate::font_catalog::windows_font_system(crate::i18n::I18nManager::current_locale())
-    {
-        return font_system;
+    let host = HOST_FONT_DATABASE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some((locale, database)) = host {
+        return crate::font_catalog::system_over(locale, database);
     }
     #[cfg(all(target_os = "android", feature = "native"))]
     if let Some(font_system) =
@@ -189,12 +202,10 @@ pub fn configured_font_system() -> FontSystem {
     {
         return font_system;
     }
-    let host = HOST_FONT_DATABASE
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    if let Some((locale, database)) = host {
-        return crate::font_catalog::system_over(locale, database);
+    if let Some(font_system) =
+        crate::font_catalog::bundled_font_system(crate::i18n::I18nManager::current_locale())
+    {
+        return font_system;
     }
     let (locale, database) = SYSTEM_FONT_DATABASE.get_or_init(|| {
         let mut font_system = FontSystem::new();
@@ -217,27 +228,19 @@ static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::D
 /// The toolkit's color emoji face for engines that load their own fonts, as
 /// font data and face index.
 ///
-/// On Windows the toolkit ships its font catalog, so this returns the
-/// catalog's Noto Color Emoji face instead of relying on machine-specific font
-/// discovery. Elsewhere the platform's fonts already provide emoji and this
-/// returns `None`.
+/// The toolkit sets text in its font catalog, so this is the catalog's Noto
+/// Color Emoji face rather than whatever the machine has installed. `None`
+/// only when no emoji face is loaded at all.
 #[must_use]
 pub fn bundled_emoji_face() -> Option<(Vec<u8>, u32)> {
-    #[cfg(windows)]
-    {
-        let system = configured_font_system();
-        let database = system.db();
-        let face = database.faces().find(|face| {
-            face.families
-                .iter()
-                .any(|(name, _)| name == "Noto Color Emoji")
-        })?;
-        database.with_face_data(face.id, |data, index| (data.to_vec(), index))
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+    let system = configured_font_system();
+    let database = system.db();
+    let face = database.faces().find(|face| {
+        face.families
+            .iter()
+            .any(|(name, _)| name == "Noto Color Emoji")
+    })?;
+    database.with_face_data(face.id, |data, index| (data.to_vec(), index))
 }
 
 pub(crate) fn balance_buffer(buffer: &mut Buffer, font_system: &mut FontSystem, max_width: f32) {
@@ -297,6 +300,27 @@ fn is_closing_punctuation(text: &str) -> bool {
                 | '』'
         )
     })
+}
+
+/// The CSS width keyword nearest a `wdth` axis value: the width a run is
+/// shaped at (cosmic-text takes widths as keywords).
+pub(crate) fn stretch_for_width(width: f32) -> cosmic_text::Stretch {
+    use cosmic_text::Stretch;
+    const WIDTHS: [(f32, Stretch); 9] = [
+        (50.0, Stretch::UltraCondensed),
+        (62.5, Stretch::ExtraCondensed),
+        (75.0, Stretch::Condensed),
+        (87.5, Stretch::SemiCondensed),
+        (100.0, Stretch::Normal),
+        (112.5, Stretch::SemiExpanded),
+        (125.0, Stretch::Expanded),
+        (150.0, Stretch::ExtraExpanded),
+        (200.0, Stretch::UltraExpanded),
+    ];
+    WIDTHS
+        .iter()
+        .min_by(|a, b| (a.0 - width).abs().total_cmp(&(b.0 - width).abs()))
+        .map_or(Stretch::Normal, |&(_, stretch)| stretch)
 }
 
 /// Where a laid-out glyph is painted: its pen position (`pen_x`, already
@@ -495,6 +519,59 @@ impl OpenTypeTag {
     }
 }
 
+/// What a run of text *is*, so the toolkit can pick its OpenType features.
+///
+/// Applications never name a feature: they say what the text is (or the
+/// widget knows it) and the features are resolved against the face the text
+/// is actually set in, applying only what that face supports.
+///
+/// | Kind | Features, where the face has them |
+/// |---|---|
+/// | `Prose` | none |
+/// | `Numeric` | tabular lining figures (`tnum`, `lnum`) |
+/// | `Secret` | tabular figures, slashed or dotted zero (`zero`), distinct I and l |
+/// | `Identifier` | distinct I and l |
+/// | `Url` | slashed or dotted zero, distinct I and l |
+/// | `Code` | none; set in the mono face |
+///
+/// Identifiers inside `Prose` (links, email addresses, mentions, room
+/// aliases) are found by [`crate::text_detect`] and set as `Url` or
+/// `Identifier` on their own. A [`TextStyle`] marked
+/// [`TextStyle::on_security_surface`], and all text while the person's
+/// "Always distinguish similar letters" setting is on, gets the distinct
+/// forms whatever its kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextKind {
+    /// Running text. Numbers stay proportional.
+    #[default]
+    Prose,
+    /// Figures that line up in columns or change in place: times, dates,
+    /// durations, counts, prices, sizes, progress, clocks.
+    Numeric,
+    /// Characters someone copies or compares one by one: verification and
+    /// recovery codes, TOTP, API keys, hashes, revealed passwords, Wi-Fi and
+    /// licence keys.
+    Secret,
+    /// Names that must not be mistaken for another: usernames, handles,
+    /// email addresses, invite codes, room names, other people's file
+    /// names.
+    Identifier,
+    /// Web and other links. An identifier that also sets the zero apart:
+    /// a look-alike domain (`paypa1.com`, `g00gle.com`) is a phishing
+    /// vector.
+    Url,
+    /// Source code and terminal text, in the mono face.
+    Code,
+}
+
+/// The features that pick a figure style: spacing and form.
+pub(crate) const FIGURE_TAGS: [OpenTypeTag; 4] = [
+    OpenTypeTag::TABULAR_NUMERALS,
+    OpenTypeTag::PROPORTIONAL_NUMERALS,
+    OpenTypeTag::OLDSTYLE_NUMERALS,
+    OpenTypeTag::LINING_NUMERALS,
+];
+
 /// One explicit OpenType substitution/positioning setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OpenTypeFeature {
@@ -525,6 +602,32 @@ pub enum OpticalSizing {
     Auto,
     None,
     Value(f32),
+}
+
+/// The ground text is set on, as far as the face is concerned. Light ink on a
+/// dark ground loses fine hairlines first, so a family drawn in separate
+/// optical cuts keeps its sturdier text cut to larger sizes there
+/// ([`OpticalSizing::Auto`]). A theme's roles carry its content ground; a
+/// surface that paints its own ground (a book's page) says which it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextGround {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl TextGround {
+    /// The ground `color` is: dark when light ink reads better on it than
+    /// dark ink does.
+    #[must_use]
+    pub fn of(color: Color) -> Self {
+        // Black and white contrast equally with a ground of this luminance.
+        if crate::color::relative_luminance(color) < 0.179 {
+            Self::Dark
+        } else {
+            Self::Light
+        }
+    }
 }
 
 /// Paragraph alignment, including inter-word justification.
@@ -559,6 +662,9 @@ pub enum TextWrapMode {
     /// Choose a narrower measure that keeps the same number of lines while
     /// minimizing raggedness, like CSS `text-wrap: balance`.
     Balance,
+    /// Source code's soft wrap: a wrapped row hangs under its line's own
+    /// indentation, so a continuation never reads as a new, outdented line.
+    Indented,
 }
 
 /// Optical punctuation protrusion at paragraph edges.
@@ -659,13 +765,45 @@ pub struct TextStyle {
     pub wrap_mode: TextWrapMode,
     pub hanging_punctuation: HangingPunctuation,
     pub fragmentation: Fragmentation,
+    /// What `size` is relative to, and so whether the renderer's
+    /// accessibility text scale still applies to it.
+    pub scaling: TextScaling,
+    /// What the text is; resolved to OpenType features against each face it
+    /// is set in.
+    pub kind: TextKind,
+    /// The ground the text is set on, for the optical cut it is set in.
+    pub ground: TextGround,
+    /// Set every look-alike (I, l, 1 and 0, O) apart whatever the kind: text
+    /// on a security surface ([`Self::on_security_surface`]). The renderer
+    /// also sets it on all text while the person's "Always distinguish
+    /// similar letters" setting is on.
+    pub distinguish: bool,
+}
+
+/// What a [`TextStyle`]'s size (and pixel letter spacing) is measured in.
+///
+/// Text must be scaled exactly once. A theme role is already resolved; a
+/// renderer-relative base size is scaled by the renderer; a document's own
+/// type is never scaled by an accessibility preference at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextScaling {
+    /// A 1× base size. The renderer multiplies it by its accessibility text
+    /// scale. [`TextStyle::new`] and the size-based renderer APIs use this.
+    #[default]
+    Renderer,
+    /// A final logical size that already includes the theme's UI and text
+    /// scale: every [`crate::theme::Theme::text`] role. Painted as given.
+    Resolved,
+    /// A document-space size that belongs to the content, not the chrome: a
+    /// zoomed canvas, a PDF stamp, a terminal grid. Painted as given and
+    /// never grown by the text scale; the content's own zoom scales it.
+    Content,
 }
 
 impl TextStyle {
-    /// Construct regular sans-serif text with the renderer's legacy leading.
-    /// The default preserves existing call-site layout; applications should
-    /// normally select an explicit theme line-height through
-    /// [`Self::with_line_height`].
+    /// Construct regular sans-serif text at a renderer-relative base size
+    /// ([`TextScaling::Renderer`]) with the renderer's legacy leading. UI
+    /// text takes a role instead: [`crate::theme::Theme::text`].
     pub fn new(size: f32) -> Self {
         Self {
             size,
@@ -682,6 +820,20 @@ impl TextStyle {
             wrap_mode: TextWrapMode::Wrap,
             hanging_punctuation: HangingPunctuation::default(),
             fragmentation: Fragmentation::default(),
+            scaling: TextScaling::Renderer,
+            kind: TextKind::Prose,
+            ground: TextGround::Light,
+            distinguish: false,
+        }
+    }
+
+    /// Document-space text at exactly `size` ([`TextScaling::Content`]):
+    /// zoomed canvases, PDF stamps, terminal grids. The accessibility text
+    /// scale never applies; the content's zoom does, through the transform.
+    pub fn content(size: f32) -> Self {
+        Self {
+            scaling: TextScaling::Content,
+            ..Self::new(size)
         }
     }
 
@@ -721,6 +873,41 @@ impl TextStyle {
     pub fn with_tracking(self, em: f32) -> Self {
         let size = self.size;
         self.with_letter_spacing(em * size)
+    }
+
+    /// Say what the text is ([`TextKind`]). `Code` also sets it in the mono
+    /// face. `Numeric` and `Secret` decide the figures, so they replace any
+    /// figure style set before them (the Reading role's old-style figures).
+    #[must_use]
+    pub fn with_kind(mut self, kind: TextKind) -> Self {
+        self.kind = kind;
+        if kind == TextKind::Code {
+            self.family = FontChoice::Monospace;
+        }
+        if matches!(kind, TextKind::Numeric | TextKind::Secret) {
+            self.font_features
+                .retain(|feature| !FIGURE_TAGS.contains(&feature.tag));
+        }
+        self
+    }
+
+    /// Say what ground the text is set on ([`TextGround`]). Theme roles
+    /// carry their theme's; a surface that paints its own ground sets it.
+    #[must_use]
+    pub fn with_ground(mut self, ground: TextGround) -> Self {
+        self.ground = ground;
+        self
+    }
+
+    /// Text on a security surface — a permission prompt, a link preview, an
+    /// invite or join confirmation, identity verification — where every
+    /// look-alike letter and figure is set apart, prose included. Toolkit
+    /// surfaces of these kinds mark themselves; a custom-painted one marks
+    /// its styles here.
+    #[must_use]
+    pub fn on_security_surface(mut self) -> Self {
+        self.distinguish = true;
+        self
     }
 
     #[must_use]
@@ -905,9 +1092,23 @@ impl TextStyle {
         for feature in &self.font_features {
             features.set(cosmic_text::FeatureTag::new(&feature.tag.0), feature.value);
         }
+        let weight = self.effective_weight();
+        let family = match &self.family {
+            FontChoice::Named(name) => Family::Name(
+                crate::font_catalog::optical::cut(
+                    name,
+                    self.size,
+                    self.optical(),
+                    self.italic,
+                    weight.0,
+                )
+                .unwrap_or(name),
+            ),
+            other => other.to_cosmic(),
+        };
         let mut attrs = Attrs::new()
-            .weight(self.effective_weight())
-            .family(self.family.to_cosmic())
+            .weight(weight)
+            .family(family)
             .font_features(features);
         if self.letter_spacing != 0.0 {
             attrs = attrs.letter_spacing(self.letter_spacing / self.size.max(0.1));
@@ -915,7 +1116,26 @@ impl TextStyle {
         if self.italic {
             attrs = attrs.style(FontStyle::Italic);
         }
+        // Shaping, measuring and kerning follow the width the glyphs are
+        // drawn at (the draw applies `wdth` exactly; shaping takes the
+        // nearest CSS width keyword).
+        if let Some(width) = self
+            .font_variations
+            .iter()
+            .find(|axis| axis.tag == OpenTypeTag::WIDTH)
+        {
+            attrs = attrs.stretch(stretch_for_width(width.value));
+        }
         attrs
+    }
+
+    /// What picks this style's optical cut besides the family, size, style
+    /// and weight of each run.
+    pub(crate) fn optical(&self) -> crate::font_catalog::optical::Optical {
+        crate::font_catalog::optical::Optical {
+            sizing: self.optical_sizing,
+            ground: self.ground,
+        }
     }
 
     pub(crate) fn advanced_hash(&self) -> u64 {
@@ -940,6 +1160,9 @@ impl TextStyle {
         self.wrap_mode.hash(&mut h);
         self.hanging_punctuation.hash(&mut h);
         self.fragmentation.hash(&mut h);
+        self.kind.hash(&mut h);
+        self.ground.hash(&mut h);
+        self.distinguish.hash(&mut h);
         h.finish()
     }
 }
@@ -1438,6 +1661,9 @@ struct ShapeKey {
 struct GlyphRun {
     face_id: cosmic_text::fontdb::ID,
     font_weight: Weight,
+    /// The size the run was shaped at: the style's, or a matched fallback's
+    /// x-height-matched size.
+    size: f32,
     glyphs: Vec<vello::Glyph>,
     normalized_coords: Vec<vello::NormalizedCoord>,
 }
@@ -1652,6 +1878,11 @@ pub struct TextRenderer {
     generation: u64,
     /// Identity of widget-owned layouts, unique across renderers and font epochs.
     layout_epoch: Arc<()>,
+    /// "Always distinguish similar letters" ([`Self::set_distinct_letters`]).
+    /// Mirrored into the shaping thread's state whenever the renderer
+    /// measures, paints or hands out its layout epoch, so layouts shaped
+    /// outside it ([`crate::richtext::RichTextLayout`]) follow it too.
+    distinct_letters: bool,
     hits: u64,
     misses: u64,
     /// `(text, size, max_width, weight, style)` → shaped + positioned glyph
@@ -1766,6 +1997,7 @@ impl TextRenderer {
             measure_cache: HashMap::with_capacity(256),
             generation: 0,
             layout_epoch: Arc::new(()),
+            distinct_letters: false,
             hits: 0,
             misses: 0,
             shape_cache: HashMap::with_capacity(256),
@@ -1785,6 +2017,10 @@ impl TextRenderer {
         share_host_font_database(&font_system);
         let mut renderer = Self::with_font_system(font_system);
         renderer.browser_font_demands = Some(BTreeSet::new());
+        renderer.browser_font_assets = crate::font_catalog::browser_startup_files()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         renderer
     }
 
@@ -1839,6 +2075,66 @@ impl TextRenderer {
         };
     }
 
+    /// Set the family the generic sans-serif resolves to: the theme's UI face
+    /// ([`crate::tokens::Typography::sans_family`]). Text that names a role
+    /// already carries the family; this makes text built on the generic
+    /// family (inputs, toolkit internals) follow the same face. A family the
+    /// font system does not have is ignored.
+    pub fn set_ui_face(&mut self, family: &str) {
+        let db = self.font_system.db();
+        if db.family_name(&Family::SansSerif) == family
+            || !db
+                .faces()
+                .any(|face| face.families.iter().any(|(name, _)| name == family))
+        {
+            return;
+        }
+        self.font_system.db_mut().set_sans_serif_family(family);
+        self.bump_generation();
+    }
+
+    /// Follow a theme's type: its UI face ([`Self::set_ui_face`]) and its
+    /// "Always distinguish similar letters" ([`Self::set_distinct_letters`]).
+    pub fn apply_typography(&mut self, typography: &crate::tokens::Typography) {
+        self.set_ui_face(&typography.sans_family);
+        self.set_distinct_letters(typography.distinct_letters);
+    }
+
+    /// Turn the "Always distinguish similar letters" setting on or off: with
+    /// it on, every look-alike (I, l, 1 and 0, O) is set apart in all text,
+    /// whatever its kind, where the face has the forms. The theme's
+    /// resolved [`crate::tokens::Typography::distinct_letters`].
+    pub fn set_distinct_letters(&mut self, on: bool) {
+        self.sync_distinct_letters();
+        if self.distinct_letters != on {
+            self.distinct_letters = on;
+            self.sync_distinct_letters();
+            self.bump_generation();
+        }
+    }
+
+    /// Whether every look-alike letter is set apart in text drawn now: the
+    /// setting is on, or a security surface is being drawn.
+    pub fn distinguishes_letters(&self) -> bool {
+        crate::font_catalog::matched::distinguish_everywhere()
+    }
+
+    /// Lay out or paint a security surface — a permission prompt, a link
+    /// preview, an invite or join confirmation, identity verification —
+    /// with every look-alike letter and figure set apart in all its text,
+    /// prose included, whatever the setting.
+    pub fn security_surface<R>(&mut self, draw: impl FnOnce(&mut Self) -> R) -> R {
+        struct Leave;
+        impl Drop for Leave {
+            fn drop(&mut self) {
+                crate::font_catalog::matched::security_surface(false);
+            }
+        }
+        crate::font_catalog::matched::security_surface(true);
+        let _leave = Leave;
+        draw(self)
+    }
+
     /// The effective accessibility text scale used for both measurement and
     /// drawing. Custom-drawn app chrome uses this to make its surrounding
     /// geometry grow with the shared renderer rather than letting enlarged
@@ -1847,26 +2143,18 @@ impl TextRenderer {
         self.text_scale
     }
 
-    /// Convert a fully resolved logical-pixel style into the renderer-relative
-    /// input consumed by [`Self::measure_style`] and [`Self::draw_style`].
-    ///
-    /// Theme typography already includes the active UI and text scales. Both
-    /// size and pixel letter spacing are therefore divided by the renderer's
-    /// sanitized accessibility scale so those final values are applied once.
-    /// Legacy base-size callers should keep passing their styles directly.
-    pub fn renderer_input_style(&self, resolved: &TextStyle) -> TextStyle {
-        let scale = self.text_scale();
-        let mut style = resolved.clone();
-        style.size /= scale;
-        style.letter_spacing /= scale;
-        style
-    }
-
+    /// The style the shaper sees: only a renderer-relative style
+    /// ([`TextScaling::Renderer`]) is grown by the accessibility text scale;
+    /// resolved theme roles and document content are already final.
     fn scaled_style(&self, style: &TextStyle) -> TextStyle {
-        if (self.text_scale - 1.0).abs() <= f32::EPSILON {
-            return style.clone();
-        }
+        self.sync_distinct_letters();
         let mut scaled = style.clone();
+        // The setting, or a security surface being drawn: part of the style
+        // so measuring and painting key their caches on it.
+        scaled.distinguish |= crate::font_catalog::matched::distinguish_everywhere();
+        if style.scaling != TextScaling::Renderer || (self.text_scale - 1.0).abs() <= f32::EPSILON {
+            return scaled;
+        }
         scaled.size *= self.text_scale;
         scaled.letter_spacing *= self.text_scale;
         scaled
@@ -1890,7 +2178,13 @@ impl TextRenderer {
     }
 
     pub(crate) fn layout_epoch(&self) -> &Arc<()> {
+        self.sync_distinct_letters();
         &self.layout_epoch
+    }
+
+    /// Put this renderer's setting on the thread that is shaping with it.
+    fn sync_distinct_letters(&self) {
+        crate::font_catalog::matched::set_distinguish_everywhere(self.distinct_letters);
     }
 
     /// Call this when the font set or active locale changes; cosmic-text
@@ -2203,35 +2497,54 @@ impl TextRenderer {
         }
     }
 
-    /// Word-wraps `text` to `max_width` and clamps to at most `max_lines`
-    /// lines, eliding the last kept line when content overflows. Draw each
-    /// returned line on its own baseline at `line_height = size * 1.25`.
-    /// `max_lines == 1` degenerates to [`Self::elide_to_width`].
+    /// Word-wraps `text` in `style` to `max_width` and clamps to at most
+    /// `max_lines` lines, eliding the last kept line when content overflows.
+    /// Draw each returned line in the same style, one
+    /// [`TextStyle::line_height_px`] apart. `max_lines == 1` degenerates to
+    /// [`Self::elide_to_width_style`].
     pub fn clamp_to_lines(
         &mut self,
         text: &str,
-        size: f32,
+        style: &TextStyle,
         max_width: f32,
         max_lines: usize,
+    ) -> Vec<String> {
+        self.clamp_to_lines_style(text, max_width, max_lines, style)
+    }
+
+    /// Style-aware line clamping. Wrapping and the final truncation marker
+    /// use the same font, weight and features as the text that will be drawn.
+    pub fn clamp_to_lines_style(
+        &mut self,
+        text: &str,
+        max_width: f32,
+        max_lines: usize,
+        style: &TextStyle,
     ) -> Vec<String> {
         if max_lines == 0 || text.is_empty() || max_width <= 0.0 {
             return Vec::new();
         }
         if max_lines == 1 {
-            return vec![self.elide_to_width(text, size, max_width)];
+            return vec![self.elide_to_width_style(text, max_width, style)];
         }
-        let wrapped = self.wrap_lines(text, size, max_width);
+        let wrapped = self.wrap_lines(text, style, max_width);
         if wrapped.len() <= max_lines {
-            return wrapped;
+            return wrapped
+                .into_iter()
+                .map(|line| self.elide_to_width_style(&line, max_width, style))
+                .collect();
         }
         // Keep the first `max_lines - 1` whole lines, then merge the rest
         // onto the final line and elide it as the truncation marker.
         let (head, tail) = wrapped
             .split_at_checked(max_lines.saturating_sub(1))
             .unwrap_or((&wrapped, &[]));
-        let mut kept: Vec<String> = head.to_vec();
+        let mut kept: Vec<String> = head
+            .iter()
+            .map(|line| self.elide_to_width_style(line, max_width, style))
+            .collect();
         let remainder: String = tail.join(" ");
-        kept.push(self.elide_to_width(&remainder, size, max_width));
+        kept.push(self.elide_to_width_style(&remainder, max_width, style));
         kept
     }
 
@@ -2239,7 +2552,12 @@ impl TextRenderer {
     /// do not use ASCII spaces, keeps non-breaking spaces intact, and honors
     /// explicit mandatory breaks. An unbreakable segment wider than the budget
     /// stays on its own line; [`Self::clamp_to_lines`] elides it if necessary.
-    pub(crate) fn wrap_lines(&mut self, text: &str, size: f32, max_width: f32) -> Vec<String> {
+    pub(crate) fn wrap_lines(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: f32,
+    ) -> Vec<String> {
         fn collapsible_edge(character: char) -> bool {
             matches!(character, ' ' | '\t' | '\n' | '\r')
         }
@@ -2266,7 +2584,7 @@ impl TextRenderer {
                     .get(start..end)
                     .unwrap_or_default()
                     .trim_end_matches(collapsible_edge);
-                let fits = self.measure(candidate, size, None).0 <= max_width;
+                let fits = self.measure_style(candidate, None, style).0 <= max_width;
                 if fits {
                     best = Some(end);
                     if kind == LineBreakKind::Mandatory {
@@ -2333,9 +2651,13 @@ impl TextRenderer {
         let mut set: BTreeSet<String> = BTreeSet::new();
         for face in self.font_system.db().faces() {
             if let Some((name, _)) = face.families.first() {
-                // Skip internal/placeholder families with no real name.
+                // Skip internal/placeholder families with no real name. An
+                // optical cut is listed as the family it is a cut of.
                 if !name.trim().is_empty() {
-                    set.insert(name.clone());
+                    set.insert(
+                        crate::font_catalog::optical::family_name(name)
+                            .map_or_else(|| name.clone(), str::to_owned),
+                    );
                 }
             }
         }
@@ -2400,7 +2722,7 @@ impl TextRenderer {
         let style = &scaled_style;
         let max_width = self.collapse_unused_max_width(text, max_width, style, true);
         let runs = self.shaped_runs(text, max_width, style);
-        self.paint_runs(scene, &runs, style.size, color, transform);
+        self.paint_runs(scene, &runs, color, transform);
     }
 
     /// How far below the origin [`Self::draw_style`], given the same
@@ -2453,28 +2775,28 @@ impl TextRenderer {
     ) -> PreparedBuffer {
         self.note_browser_explicit_family(style);
         let line_height = style.line_height_px();
-        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(style.size, line_height));
+        let metrics = Metrics::new(style.size, line_height);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
         let attrs = style.cosmic_attrs();
         let offset_map = max_width.map(|_| style.hyphenation.offset_map(text));
         let shaping_text = offset_map
             .as_ref()
             .map_or(std::borrow::Cow::Borrowed(text), |map| map.shape_text(text));
         let emoji = self.browser_font_assets.contains("Noto-COLRv1.ttf");
-        if emoji && browser_text_demands_emoji(&shaping_text) {
-            buffer.set_rich_text(
-                browser_emoji_runs(&shaping_text, &attrs, true),
-                &attrs,
-                Shaping::Advanced,
-                style.align.to_cosmic(),
-            );
-        } else {
-            buffer.set_text(
-                &shaping_text,
-                &attrs,
-                Shaping::Advanced,
-                style.align.to_cosmic(),
-            );
-        }
+        let spans = crate::font_catalog::matched::plan(
+            self.font_system.db(),
+            browser_emoji_runs(&shaping_text, &attrs, emoji),
+            metrics,
+            style.kind,
+            style.optical(),
+            style.distinguish || crate::font_catalog::matched::distinguish_everywhere(),
+        );
+        crate::font_catalog::matched::set_spans(
+            &mut buffer,
+            &spans,
+            &attrs,
+            style.align.to_cosmic(),
+        );
         let hyphen_width = if offset_map
             .as_ref()
             .is_some_and(OffsetMap::has_discretionary_hyphens)
@@ -2487,7 +2809,7 @@ impl TextRenderer {
         buffer.set_size(layout_width, None);
         buffer.set_wrap(match style.wrap_mode {
             TextWrapMode::WordOrGlyph => Wrap::WordOrGlyph,
-            TextWrapMode::Wrap | TextWrapMode::Balance => Wrap::Word,
+            TextWrapMode::Wrap | TextWrapMode::Balance | TextWrapMode::Indented => Wrap::Word,
         });
         buffer.shape_until_scroll(&mut self.font_system, false);
         if style.wrap_mode == TextWrapMode::Balance && max_width.is_some() {
@@ -2540,12 +2862,32 @@ impl TextRenderer {
         let Some(demands) = self.browser_font_demands.as_mut() else {
             return;
         };
-        if matches!(&style.family, FontChoice::Named(name) if name == UI_MATH_FAMILY)
-            && !self
-                .browser_font_assets
-                .contains("NotoSansMath-Regular.ttf")
-        {
-            demands.insert("NotoSansMath-Regular.ttf".to_owned());
+        let FontChoice::Named(name) = &style.family else {
+            return;
+        };
+        // A family drawn in optical cuts needs the cut for this size and the
+        // smaller ones its superscripts and footnotes take.
+        let weight = style.effective_weight().0;
+        let mut families = crate::font_catalog::optical::cuts_up_to(
+            name,
+            style.size,
+            style.optical(),
+            style.italic,
+            weight,
+        );
+        if families.is_empty() {
+            families.push(name);
+        }
+        let bold = weight > 500;
+        // A face without a bold sets bold text in its regular.
+        let mut files = crate::font_catalog::product_files_for(&families, style.italic, bold);
+        if files.is_empty() && bold {
+            files = crate::font_catalog::product_files_for(&families, style.italic, false);
+        }
+        for file in files {
+            if !self.browser_font_assets.contains(file) {
+                demands.insert(file.to_owned());
+            }
         }
     }
 
@@ -2568,20 +2910,22 @@ impl TextRenderer {
                 .glyphs
                 .last()
                 .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
-            let mut current: Option<(cosmic_text::fontdb::ID, Weight)> = None;
+            let mut current: Option<(cosmic_text::fontdb::ID, Weight, u32)> = None;
             let mut glyphs: Vec<vello::Glyph> = Vec::new();
             for g in run.glyphs {
                 if run.text.get(g.start..g.end) == Some("\u{ad}") {
                     continue;
                 }
-                let key = (g.font_id, g.font_weight);
-                if let Some((face_id, font_weight)) = current
+                // A matched script fallback is shaped at its own size.
+                let key = (g.font_id, g.font_weight, g.font_size.to_bits());
+                if let Some((face_id, font_weight, size)) = current
                     && current != Some(key)
                     && !glyphs.is_empty()
                 {
                     runs.push(GlyphRun {
                         face_id,
                         font_weight,
+                        size: f32::from_bits(size),
                         glyphs: std::mem::take(&mut glyphs),
                         normalized_coords: self.normalized_coords(
                             face_id,
@@ -2602,12 +2946,13 @@ impl TextRenderer {
                     y,
                 });
             }
-            if let Some((face_id, font_weight)) = current
+            if let Some((face_id, font_weight, size)) = current
                 && !glyphs.is_empty()
             {
                 runs.push(GlyphRun {
                     face_id,
                     font_weight,
+                    size: f32::from_bits(size),
                     glyphs,
                     normalized_coords: self.normalized_coords(face_id, &variations, font_weight),
                 });
@@ -2618,6 +2963,7 @@ impl TextRenderer {
                 runs.push(GlyphRun {
                     face_id: hyphen.font_id,
                     font_weight: hyphen.font_weight,
+                    size: hyphen.font_size,
                     glyphs: vec![vello::Glyph {
                         id: u32::from(hyphen.glyph_id),
                         x: hyphen.x,
@@ -2708,7 +3054,6 @@ impl TextRenderer {
         &mut self,
         scene: &mut Scene,
         runs: &[GlyphRun],
-        size: f32,
         color: Color,
         transform: Affine,
     ) {
@@ -2718,7 +3063,7 @@ impl TextRenderer {
             };
             scene
                 .draw_glyphs(&font)
-                .font_size(size)
+                .font_size(run.size)
                 .normalized_coords(&run.normalized_coords)
                 .brush(color)
                 .transform(transform)
@@ -3690,7 +4035,7 @@ mod tests {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "東京京都大阪名古屋";
             let two_glyphs = tr.measure("東京", 14.0, None).0 + 0.5;
-            let lines = tr.wrap_lines(text, 14.0, two_glyphs);
+            let lines = tr.wrap_lines(text, &TextStyle::new(14.0), two_glyphs);
             assert!(lines.len() > 1, "CJK text wraps without ASCII spaces");
             assert_eq!(lines.concat(), text);
             assert!(lines.iter().all(|line| !line.is_empty()));
@@ -3701,7 +4046,7 @@ mod tests {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "10\u{a0}km away";
             let narrow = tr.measure("10", 14.0, None).0 + 1.0;
-            let lines = tr.wrap_lines(text, 14.0, narrow);
+            let lines = tr.wrap_lines(text, &TextStyle::new(14.0), narrow);
             assert_eq!(lines.first().map(String::as_str), Some("10\u{a0}km"));
             assert_eq!(lines.join(" "), text);
         }
@@ -3712,7 +4057,7 @@ mod tests {
             let text = "ทุกสองสัปดาห์";
             let first_word = &text[..9];
             let budget = tr.measure(first_word, 14.0, None).0 + 0.5;
-            let lines = tr.wrap_lines(text, 14.0, budget);
+            let lines = tr.wrap_lines(text, &TextStyle::new(14.0), budget);
             assert_eq!(lines, vec![&text[..9], &text[9..18], &text[18..]]);
             assert_eq!(lines.concat(), text);
         }
@@ -3951,6 +4296,44 @@ mod tests {
     }
 
     #[test]
+    fn styled_line_clamping_keeps_drawn_weight_within_the_budget() {
+        for scale in [1.0, 2.0] {
+            with_layout_renderer(scale, |renderer| {
+                let title = "Review the launch announcement, compact navigation, translated labels, and final release checklist";
+                let style = TextStyle::new(13.0).with_weight(TextWeight::Semibold);
+                let width = 240.0;
+                assert!(renderer.measure_style(title, None, &style).0 > width);
+                let lines = renderer.clamp_to_lines_style(title, width, 2, &style);
+                assert_eq!(lines.len(), 2);
+                assert!(lines.last().is_some_and(|line| line.ends_with(ELLIPSIS)));
+                for line in &lines {
+                    let (actual_width, height) = renderer.measure_style(line, None, &style);
+                    assert!(height > 0.0, "real glyph metrics must be observable");
+                    assert!(actual_width <= width + 0.1, "{line:?} exceeds {width}");
+                }
+                assert_eq!(
+                    renderer.clamp_to_lines_style("Review", width, 2, &style),
+                    ["Review"]
+                );
+                assert!(
+                    renderer
+                        .clamp_to_lines_style(title, width, 0, &style)
+                        .is_empty()
+                );
+                assert_eq!(
+                    renderer.clamp_to_lines_style(title, width, 1, &style),
+                    [renderer.elide_to_width_style(title, width, &style)]
+                );
+                let unbreakable = "abcdefghijklmnopqrstuvwxyzzabcdefghijklmnopqrstuvwxyzz";
+                let lines = renderer.clamp_to_lines_style(unbreakable, width, 2, &style);
+                assert_eq!(lines.len(), 1);
+                assert!(lines[0].ends_with(ELLIPSIS));
+                assert!(renderer.measure_style(&lines[0], None, &style).0 <= width + 0.1);
+            });
+        }
+    }
+
+    #[test]
     fn elide_and_clamp_truncate_at_grapheme_boundaries() {
         // Case `elide_returns_text_unchanged_when_it_fits`.
         {
@@ -4057,7 +4440,7 @@ mod tests {
             let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
              incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
             // Narrow width forces several wrapped lines; cap to 2.
-            let lines = tr.clamp_to_lines(paragraph, 14.0, 120.0, 2);
+            let lines = tr.clamp_to_lines(paragraph, &TextStyle::new(14.0), 120.0, 2);
             assert!(
                 lines.len() <= 2,
                 "must not exceed max_lines, got {}",
@@ -4074,8 +4457,16 @@ mod tests {
         // Case `clamp_to_lines_degenerate_cases`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
-            assert!(tr.clamp_to_lines("anything", 14.0, 80.0, 0).is_empty());
-            let one = tr.clamp_to_lines("a fairly long single line of text here", 14.0, 60.0, 1);
+            assert!(
+                tr.clamp_to_lines("anything", &TextStyle::new(14.0), 80.0, 0)
+                    .is_empty()
+            );
+            let one = tr.clamp_to_lines(
+                "a fairly long single line of text here",
+                &TextStyle::new(14.0),
+                60.0,
+                1,
+            );
             assert_eq!(one.len(), 1);
             assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
         }
@@ -4083,7 +4474,7 @@ mod tests {
         // Case `clamp_to_lines_no_overflow_keeps_all`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
-            let lines = tr.clamp_to_lines("two words", 14.0, 1000.0, 3);
+            let lines = tr.clamp_to_lines("two words", &TextStyle::new(14.0), 1000.0, 3);
             assert_eq!(lines, vec!["two words".to_string()]);
             assert!(!lines[0].ends_with('\u{2026}'));
         }
@@ -4466,7 +4857,8 @@ mod tests {
         // Case `resolved_styles_keep_metrics_and_glyph_geometry_across_renderer_scales`.
         {
             let text = "Tracked resolved text";
-            let resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
+            let mut resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
+            resolved.scaling = TextScaling::Resolved;
             let mut renderer = crate::font_catalog::fixture_renderer();
 
             let legacy_at_one = renderer.measure_style(text, None, &TextStyle::new(14.0));
@@ -4485,10 +4877,7 @@ mod tests {
             let legacy_at_two = renderer.measure_style(text, None, &TextStyle::new(14.0));
             assert!((legacy_at_two.1 - legacy_at_one.1 * 2.0).abs() < 0.001);
 
-            let renderer_input = renderer.renderer_input_style(&resolved);
-            assert!((renderer_input.size - 14.0).abs() < 0.001);
-            assert!((renderer_input.letter_spacing - 1.5).abs() < 0.001);
-            let resolved_at_two = renderer.measure_style(text, None, &renderer_input);
+            let resolved_at_two = renderer.measure_style(text, None, &resolved);
             assert_eq!(resolved_at_two, resolved_at_one);
 
             let mut scene_at_two = Scene::new();
@@ -4498,7 +4887,7 @@ mod tests {
                 Color::WHITE,
                 Affine::IDENTITY,
                 None,
-                &renderer_input,
+                &resolved,
             );
             let first = scene_at_one.encoding();
             let second = scene_at_two.encoding();
@@ -4526,22 +4915,30 @@ mod tests {
 
         // Case `resolved_theme_style_applies_ui_and_text_scale_once`.
         {
-            let base = crate::theme::Theme::dark().tokens.typography.scale.sm;
+            let role = crate::tokens::TextRole::Caption;
+            let base = crate::theme::Theme::dark().text(role).size;
             let theme = crate::theme::Theme::dark()
                 .with_ui_scale(1.25)
                 .with_text_scale(2.0);
-            let resolved = TextStyle::new(theme.tokens.typography.scale.sm);
+            let resolved = theme.text(role);
             let mut renderer = crate::font_catalog::fixture_renderer();
             renderer.set_text_scale(2.0);
-            let renderer_input = renderer.renderer_input_style(&resolved);
-            let (_, height) = renderer.measure_style("Scale once", None, &renderer_input);
+            let (_, height) = renderer.measure_style("Scale once", None, &resolved);
             assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
+
+            // Content text ignores the renderer's accessibility scale too.
+            let content = TextStyle::content(19.0);
+            let (_, content_height) = renderer.measure_style("Page", None, &content);
+            assert!((content_height - 19.0 * content.line_height).abs() < 0.001);
         }
     }
 }
 
 #[cfg(test)]
 mod renderer_regressions;
+
+#[cfg(test)]
+mod reading_faces;
 
 #[cfg(test)]
 mod layout_renderer_pool {

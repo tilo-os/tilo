@@ -14,14 +14,17 @@ pub const APP_TITLE: &str = "App Publisher";
 
 pub mod locales;
 
+/// Install the catalog once per process, before the first view reads it.
 fn install_catalog() {
-    locales::install();
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(locales::install);
 }
 
 use registry_client::{RegistryClient, key};
 use registry_types::application::{NamespaceClaim, proof_token};
 use ui::prelude::*;
 use ui::secrets::SecretStore;
+use ui::widget::{BannerKind, Field};
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
 /// part of it.
@@ -48,7 +51,7 @@ impl Default for Publisher {
     }
 }
 
-#[resource(kind = "so.tilo.publisher.profile", label = "Publisher")]
+#[resource(kind = "so.tilo.publisher.profile", label = "App Publisher")]
 impl Publisher {
     /// Change the registry to publish to.
     #[action]
@@ -92,8 +95,11 @@ impl Publisher {
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyState {
     Missing,
-    Present { public: String },
-    Unreadable(String),
+    Present {
+        public: String,
+    },
+    /// A file is there but is not a publisher key.
+    Unreadable,
 }
 
 impl KeyState {
@@ -103,34 +109,59 @@ impl KeyState {
                 public: key::public_hex(&key),
             },
             Ok(None) => Self::Missing,
-            Err(error) => Self::Unreadable(format!("{error:#}")),
+            Err(_) => Self::Unreadable,
         }
     }
 }
 
-/// The outcome of the last operation, as a catalog message and its argument.
+/// The outcome of the last operation, as the banner that reports it: a
+/// severity, a headline and the detail that explains it.
 #[derive(Clone, Debug, PartialEq)]
 struct Notice {
-    message: &'static str,
-    detail: String,
-    error: bool,
+    kind: BannerKind,
+    title: String,
+    message: Option<String>,
+}
+
+/// A catalog message.
+fn say(key: &str) -> String {
+    ui::i18n::I18nManager::format(key, &[])
 }
 
 impl Notice {
-    fn info(message: &'static str, detail: impl Into<String>) -> Self {
+    fn new(kind: BannerKind, key: &str) -> Self {
         Self {
-            message,
-            detail: detail.into(),
-            error: false,
+            kind,
+            title: say(key),
+            message: None,
         }
     }
 
+    /// An outcome worth knowing, with nothing to explain.
+    fn info(key: &str) -> Self {
+        Self::new(BannerKind::Info, key)
+    }
+
+    /// An operation that went through.
+    fn success(key: &str) -> Self {
+        Self::new(BannerKind::Success, key)
+    }
+
+    /// What the person needs to know to go on: a catalog message.
+    fn explained(mut self, key: &str) -> Self {
+        self.message = Some(say(key));
+        self
+    }
+
+    /// What the registry or the machine answered, as it said it.
+    fn detailed(mut self, detail: impl Into<String>) -> Self {
+        self.message = Some(detail.into());
+        self
+    }
+
+    /// Why an operation failed.
     fn error(detail: impl Into<String>) -> Self {
-        Self {
-            message: "publisher-failed",
-            detail: detail.into(),
-            error: true,
-        }
+        Self::new(BannerKind::Error, "publisher-failed-title").detailed(detail)
     }
 }
 
@@ -211,18 +242,19 @@ fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
     match effect {
         KeyEffect::CreateKey => {
             let key = key::create(secrets).map_err(|error| format!("{error:#}"))?;
-            Ok(Notice::info("publisher-key-created", key::public_hex(&key)))
+            Ok(Notice::info("publisher-key-created").detailed(key::public_hex(&key)))
         }
         KeyEffect::CopyProof => {
             let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
             let proof = proof_token(&key::public_hex(&key));
             ui::text_selection::clipboard_copy(&proof);
-            Ok(Notice::info("publisher-proof-copied", proof))
+            Ok(Notice::info("publisher-proof-copied").detailed(proof))
         }
         KeyEffect::CopySecret => {
             let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
             ui::text_selection::clipboard_copy(&hex::encode(key.to_bytes()));
-            Ok(Notice::info("publisher-secret-copied", String::new()))
+            Ok(Notice::success("publisher-secret-copied")
+                .explained("publisher-secret-copied-detail"))
         }
         KeyEffect::ApplyForNamespaces | KeyEffect::CheckStatus => {
             Err(format!("`{}` runs as a job", effect.id()))
@@ -237,11 +269,12 @@ fn remote(
     secrets: &SecretStore,
 ) -> Result<Notice, String> {
     if *effect == KeyEffect::ApplyForNamespaces {
-        return apply(profile, secrets).map(|status| Notice::info("publisher-status", status));
+        return apply(profile, secrets)
+            .map(|status| Notice::info("publisher-status").detailed(status));
     }
     check_status(&profile.registry, secrets).map(|status| match status {
-        Some(status) => Notice::info("publisher-status", status),
-        None => Notice::info("publisher-no-application", String::new()),
+        Some(status) => Notice::info("publisher-status").detailed(status),
+        None => Notice::info("publisher-no-application").detailed(String::new()),
     })
 }
 
@@ -287,6 +320,22 @@ fn unavailable(pane: &Pane) -> Vec<EffectStatus> {
     status
 }
 
+fn value_group(label: &str, value: &str, id: &str, help: Option<&str>) -> Element {
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(Text::new(label).with_role(TextRole::Caption)))
+        .push(Box::new(
+            Text::new(value).with_id(id).with_role(TextRole::Body),
+        ));
+    if let Some(help) = help {
+        column = column.push(Box::new(Text::new(help).with_role(TextRole::Caption)));
+    }
+    Box::new(column)
+}
+fn labeled_field(label: &str, input: impl ui::widget::FormControl + 'static) -> Field {
+    Field::new(label, input)
+}
 fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
     let button = |id: &str, label: &str, effect: &KeyEffect| {
         actions.bind_effect_invocation(Button::new(id, label), effect)
@@ -306,19 +355,17 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
         }
         KeyState::Present { public } => {
             column = column
-                .push(Box::new(Text::new("publisher-public-key-label")))
-                .push(Box::new(
-                    Text::new("publisher-verbatim")
-                        .with_arg("text", public.clone())
-                        .with_role(TextRole::Code)
-                        .with_id("public-key"),
+                .push(value_group(
+                    "publisher-public-key-label",
+                    public,
+                    "public-key",
+                    None,
                 ))
-                .push(Box::new(Text::new("publisher-proof-label")))
-                .push(Box::new(
-                    Text::new("publisher-verbatim")
-                        .with_arg("text", proof_token(public))
-                        .with_role(TextRole::Code)
-                        .with_id("proof-line"),
+                .push(value_group(
+                    "publisher-proof-label",
+                    &proof_token(public),
+                    "proof-line",
+                    Some("publisher-proof-help"),
                 ))
                 .push(Box::new(ui::row![
                     button("copy-proof", "publisher-copy-proof", &KeyEffect::CopyProof),
@@ -334,32 +381,15 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
                     ),
                 ]));
         }
-        KeyState::Unreadable(reason) => {
-            column = column.push(Box::new(Banner::error(reason.clone())));
+        KeyState::Unreadable => {
+            column = column.push(Box::new(
+                Banner::error(say("publisher-key-unreadable-title"))
+                    .with_message(say("publisher-key-unreadable")),
+            ));
         }
-    }
-    if pane.busy {
-        column = column.push(Box::new(Spinner::new()));
-    }
-    if let Some(notice) = &pane.notice {
-        if notice.error {
-            column = column.push(Box::new(Banner::error(ui::i18n::I18nManager::format(
-                "publisher-failed-title",
-                &[],
-            ))));
-        }
-        column = column.push(Box::new(
-            Text::new(notice.message)
-                .with_arg("detail", notice.detail.clone())
-                .with_id("notice"),
-        ));
     }
     Box::new(column)
 }
-
-/// The public half of the key a capture shows: a capture never reads the
-/// key on the machine it runs on.
-const CAPTURE_PUBLIC_KEY: &str = "5f0c3a9e1d2b4c6f8a7e9d0b1c2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a";
 
 /// The app: the key on this machine, and an application for namespaces.
 pub struct App;
@@ -368,28 +398,36 @@ impl ResourceApp for App {
     type Resource = Publisher;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn scenarios() -> &'static [&'static str] {
-        &["key"]
+        &["no-key", "unreadable", "applied", "failed", "copied"]
     }
 
-    fn fixture(fixture: &mut Fixture<Publisher>) {
-        if fixture.scenario() == Some("key") {
-            fixture.provide(KeyState::Present {
-                public: CAPTURE_PUBLIC_KEY.to_owned(),
-            });
-        }
+    fn fixture(fixture: &mut ui::framework::Fixture<Publisher>) {
+        let key = match fixture.scenario() {
+            Some("no-key") => KeyState::Missing,
+            Some("unreadable") => KeyState::Unreadable,
+            _ => KeyState::Present {
+                public: "a1".repeat(32),
+            },
+        };
+        fixture.provide(key);
     }
 
+    /// A capture never reads this machine's key file or settings: the claims
+    /// are filled in here, the key and the last outcome in [`staged`].
     fn scenario(name: Option<&str>) -> Vec<Invoke<Publisher>> {
-        match name {
-            Some("key") => vec![
-                Publisher::SET_DOMAIN.with("example.com".into()),
-                Publisher::SET_FORGE_ACCOUNT.with("github:ada".into()),
-                Publisher::SET_CONTACT.with("ada@example.com".into()),
-            ],
-            _ => Vec::new(),
+        if name == Some("no-key") {
+            return Vec::new();
         }
+        vec![
+            Publisher::SET_DOMAIN.with("lovelace.dev".into()),
+            Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada".into()),
+            Publisher::SET_CONTACT.with("ada@lovelace.dev".into()),
+        ]
     }
 
     fn view(cx: &mut ViewCx<Publisher>) -> Element {
@@ -481,7 +519,18 @@ impl ResourceApp for App {
         );
         let key =
             ModelView::from_state_by(&pane, Clone::clone, move |pane| key_section(pane, &actions));
-        Box::new(ui::column![key, form, apply_button])
+        let notice = ModelView::from_state_by(&pane, Clone::clone, |pane| {
+            let mut column = Column::new().with_no_padding().with_intrinsic_height();
+            if let Some(notice) = &pane.notice {
+                let mut banner = Banner::new(notice.kind, &notice.title).with_id("notice");
+                if let Some(message) = &notice.message {
+                    banner = banner.with_message(message);
+                }
+                column = column.push(Box::new(banner));
+            }
+            Box::new(column)
+        });
+        Box::new(ui::column![key, form, apply_button, notice])
     }
 }
 

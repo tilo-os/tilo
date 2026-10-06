@@ -151,6 +151,72 @@ fn host_app() -> (App, Rc<Cell<bool>>) {
 }
 
 #[test]
+fn framework_history_preserves_the_native_apps_own_modal_focus_trap() {
+    use crate::history_mode::{
+        HistoryDefinition, HistoryPresentation, HistoryRegistration, HistoryScopeDefinition,
+        HistorySourceRegistration, ManagedRoot,
+    };
+    static HISTORY: HistoryDefinition = HistoryDefinition {
+        app_id: "so.tilo.modal-history-fixture",
+        scopes: &[HistoryScopeDefinition {
+            key: "document",
+            title: "Document",
+            presentation: HistoryPresentation::External { reason: "fixture" },
+            content_schema: None,
+        }],
+    };
+    let registration = HistoryRegistration::new(
+        &HISTORY,
+        vec![HistorySourceRegistration::Unversioned {
+            scope: "document",
+            reason: "fixture",
+        }],
+    )
+    .unwrap();
+    let open = Rc::new(Cell::new(false));
+    let mut app = App::from_managed_root_with_controlled_inputs(
+        State::new(),
+        ManagedRoot::new(Box::new(ModalHost::new(open.clone())), registration),
+    )
+    .unwrap();
+    app.init_layout();
+    let opener = app
+        .focusable_order
+        .iter()
+        .copied()
+        .find(|&node| {
+            app.inspect_node(node, |widget| widget.test_id() == Some("a"))
+                .unwrap_or(false)
+        })
+        .expect("actual opener");
+    app.set_focused_node(Some(opener));
+    open.set(true);
+    app.refresh_focus_order();
+    assert!(app.accessibility.focus_trap_active);
+    assert_eq!(app.focusable_order.len(), 2);
+    for _ in 0..6 {
+        assert!(app.focus_tab(false));
+        let id = app
+            .inspect_node(app.focused_node.unwrap(), |widget| {
+                widget.test_id().map(str::to_owned)
+            })
+            .unwrap();
+        assert!(matches!(id.as_deref(), Some("ok" | "cancel")));
+    }
+    open.set(false);
+    app.refresh_focus_order();
+    assert!(!app.accessibility.focus_trap_active);
+    assert_eq!(
+        app.inspect_node(app.focused_node.expect("restored opener"), |widget| {
+            widget.test_id().map(str::to_owned)
+        })
+        .unwrap()
+        .as_deref(),
+        Some("a")
+    );
+}
+
+#[test]
 fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
     // Case `container_overlay_traps_tab_in_its_controls`.
     {

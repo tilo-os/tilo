@@ -360,6 +360,18 @@ pub fn push_trusted_identities_bind(argv: &mut Vec<String>, host_path: &Path) {
         Path::new(SANDBOX_TRUSTED_IDENTITIES_DIR),
     );
 }
+/// Only the selected app/person policy directory is visible to the child.
+pub const SANDBOX_ACTION_AUTHORITY_DIR: &str = "/run/tilo/action-authority";
+
+pub fn push_action_authority_bind(argv: &mut Vec<String>, host_path: &Path) {
+    push_bind(
+        argv,
+        "--ro-bind",
+        host_path.parent().unwrap_or(host_path),
+        Path::new(SANDBOX_ACTION_AUTHORITY_DIR),
+    );
+}
+
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs: `runtime_root`, `service_binds` (fds reach the child by
 /// inheritance, not argv), `dbus_bind`, and whether an identity broker fd is

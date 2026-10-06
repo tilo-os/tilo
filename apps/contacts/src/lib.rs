@@ -34,13 +34,14 @@ mod account_editor;
 pub mod actions;
 pub mod app;
 pub mod date;
+mod detail;
 pub mod doc;
-mod export_dialog;
+mod form;
 pub mod model;
 mod priority_contacts;
 pub mod resource;
-pub mod responsive;
 pub mod vcard;
+mod view;
 
 pub use app::ContactsApp;
 pub use resource::{Contacts, ContactsShell};

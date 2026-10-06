@@ -99,9 +99,20 @@ struct Selection {
 pub(crate) struct Editor {
     directory: Option<PersonRecord<ContactDirectory>>,
     selection: LocalState<Selection>,
+    pub(crate) visible: LocalState<bool>,
 }
 
 impl Editor {
+    pub(crate) fn sync_visibility(&self) {
+        let mut selected = self.selection.get();
+        if selected.open != self.visible.get() {
+            selected.open = self.visible.get();
+            selected.pending = None;
+            selected.editing = None;
+            self.selection.set(selected);
+        }
+    }
+
     fn current(&self) -> Result<Rc<ContactDirectory>, String> {
         self.directory
             .as_ref()
@@ -195,6 +206,7 @@ impl Editor {
                 selected.editing = None;
             }
         }
+        self.visible.set(selected.open);
         self.selection.set(selected);
         Ok(Effected::done())
     }
@@ -353,24 +365,15 @@ pub(crate) fn build(cx: &ViewCx<Contacts>) -> Element {
             None
         },
         selection: LocalState::new(Selection::default()),
+        visible: LocalState::new(false),
     };
     let answer = editor.clone();
     cx.effects(move |effect: AccountEffect, _| answer.answer(effect));
 
     let dispatcher = cx.dispatcher();
-    let open = dispatcher.clone();
-    let toolbar = Row::new().push(Box::new(
-        Button::new("contacts.accounts.open", "contacts-accounts").on_view(move || {
-            open.effect(&AccountEffect::OpenAccounts {
-                person: String::new(),
-            });
-        }),
-    ));
     let observed = editor.clone();
     let detail_dispatcher = dispatcher;
     let actions = cx.actions();
-    let mut surface = crate::app::ContactsApp::new();
-    surface.account_editor = Some(editor.clone());
     let pane = ModelView::from_document(
         move |_, _| {
             (
@@ -381,20 +384,12 @@ pub(crate) fn build(cx: &ViewCx<Contacts>) -> Element {
                 observed.selection.get(),
             )
         },
-        move |(_, selection)| panel(&editor, &detail_dispatcher, &actions, selection),
+        {
+            let editor = editor.clone();
+            move |(_, selection)| panel(&editor, &detail_dispatcher, &actions, selection)
+        },
     );
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .push(Box::new(toolbar))
-            .push(Box::new(pane))
-            .push(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_fill_remaining_height()
-                    .push(cx.surface(surface)),
-            )),
-    )
+    cx.surface(crate::app::ContactsApp::new().with_accounts(editor, Box::new(pane)))
 }
 
 pub(crate) fn review_rows(editor: &Editor) -> Vec<LiveRow> {
@@ -458,11 +453,7 @@ fn panel(
 ) -> Element {
     let content = panel_contents(editor, dispatcher, actions, selected);
     if selected.open {
-        Box::new(
-            Scrollable::new_vertical()
-                .with_max_height(360.0)
-                .with_child(content),
-        )
+        Box::new(Scrollable::new_vertical().with_child(content))
     } else {
         content
     }
@@ -611,7 +602,9 @@ fn endpoint_list(
                 )))
                 .push(Box::new(Text::new(status)))
                 .push(Box::new(
-                    Row::new()
+                    Column::new()
+                        .with_intrinsic_height()
+                        .with_no_padding()
                         .push(Box::new(
                             Button::new(
                                 &format!("contacts.accounts.edit:{}", id.as_str()),
@@ -868,6 +861,56 @@ mod tests {
     }
 
     #[test]
+    fn closing_the_shared_inspector_invalidates_its_pending_review() {
+        let (mut app, one, _) = fixture();
+        app.harness().resize((1180, 820)).unwrap();
+        review(&mut app, &one, "pending-inspector-reference");
+        let staged = pending(&mut app);
+        assert!(
+            app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())
+                .unwrap()
+        );
+        app.harness().click_named("nav-shell-inspector").unwrap();
+        app.settle();
+        assert!(
+            !app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())
+                .unwrap()
+        );
+        assert!(
+            app.with_surface::<ContactsApp, _>(|surface| surface
+                .account_editor
+                .as_ref()
+                .unwrap()
+                .selection
+                .get()
+                .pending
+                .is_none())
+                .unwrap()
+        );
+        assert!(
+            app.effect_on_confirmed(
+                &format!("contacts.account-review:{}", staged.token),
+                &AccountEffect::ConfirmAccountReview {
+                    token: staged.token
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            app.shared_person::<ContactDirectory>()
+                .unwrap()
+                .get()
+                .resolve_account(
+                    "signal",
+                    "signal-main",
+                    "aci:alice",
+                    "pending-inspector-reference"
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn editing_an_address_preserves_history_and_clears_old_identity_evidence() {
         let (mut app, one, _) = fixture();
         review(&mut app, &one, "identity-before-edit");
@@ -970,12 +1013,21 @@ mod tests {
             (420, ui::theme::Theme::high_contrast()),
         ] {
             let (mut app, one, _) = fixture();
+            app.harness().set_theme(theme);
+            app.harness().resize((width, 820)).unwrap();
             app.effect(&AccountEffect::OpenAccounts {
                 person: one.clone(),
             })
             .unwrap();
-            app.harness().set_theme(theme);
-            app.harness().resize((width, 820)).unwrap();
+            assert!(
+                app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())
+                    .unwrap()
+            );
+            assert!(
+                app.harness()
+                    .settle_for_capture(ui::time::Duration::from_secs(5)),
+                "inspector animation must finish"
+            );
             let nodes = app.harness().a11y_nodes();
             for label in [
                 "Contact",
@@ -1047,6 +1099,16 @@ mod input_journey {
             serde_json::json!({}),
         )
         .unwrap();
+        app.settle();
+        assert!(
+            app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())
+                .unwrap()
+        );
+        assert!(
+            app.harness()
+                .settle_for_capture(ui::time::Duration::from_secs(5)),
+            "inspector animation must finish"
+        );
         app.harness()
             .click_named("contacts.accounts.recipient")
             .unwrap();
