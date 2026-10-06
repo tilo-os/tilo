@@ -23,6 +23,8 @@
     )
 )]
 
+pub mod component_pins;
+
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

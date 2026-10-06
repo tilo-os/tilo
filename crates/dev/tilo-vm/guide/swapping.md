@@ -188,3 +188,23 @@ what the restarted session printed.
   builds are.
 - Swapping the same layer twice does nothing. A failed apply leaves the slot
   on its old generation; rerun the swap.
+
+### Worktree apps and their matching runtime
+
+`tilo-vm swap apps+runtime --builder remote` builds every packaged native app and
+its toolkit in one Cargo graph on the configured builder for the slot's actual
+architecture. It verifies the complete source inventory before and after the
+build, signs and verifies the payload-derived runtime ABI, checks loader closure,
+and packs apps through the normal installer. Ephemeral signing keys stay in
+private build staging and are not exported.
+
+The same invocation updates the existing `launcher` and `install` session
+components from that source before activating the cohort. These updates restart
+the selected session; a failure stops the remaining steps and is recorded in the
+normal receipt. Installed component pins must be root-owned and immutable;
+operator `/etc` trust remains effective. No OS image or kernel reboot is needed.
+
+`swap app:terminal --builder remote` retains the ordinary app installer and its
+runtime checks. A standalone package whose authored runtime is absent is refused;
+use the paired component above for an unpublished worktree toolkit rather than
+relabeling it as the VM's existing ABI.

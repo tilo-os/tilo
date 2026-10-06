@@ -124,7 +124,7 @@ pub fn pack_into(dir: &Path, out: impl std::io::Write) -> Result<(), CliError> {
         .map_err(CliError::io("finish layer archive"))
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
