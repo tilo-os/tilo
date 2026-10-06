@@ -1,0 +1,1093 @@
+//! Canonical Task Center reads and person-authored mutations through the
+//! ordinary durable invocation door. Public arguments select text, routing,
+//! and an enrolled Agent; caller identity and owner custody stay out of band.
+
+use super::{
+    Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
+    PublishedSurface,
+};
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand};
+
+const APP: &str = "so.tilo.desktop";
+const RECORD: &str = "tasks";
+const COLLECTION: &str = "desktop:tasks";
+const TASK_PREFIX: &str = "desktop:task:";
+const MAX_CURRENT_TASK_FRONTIERS: usize = 256;
+const MAX_TASK_ARGUMENT_BYTES: usize = 40 * 1024;
+
+impl CapnpBrokerState {
+    /// Refresh from the admitted owner document, including rooms enrolled
+    /// after boot. The published rows contain no task instruction text.
+    pub(super) fn refresh_workspace_task_services(self: &Arc<Self>) -> Result<(), String> {
+        let Some(service) = self.services.workspace_tasks.clone() else {
+            return Ok(());
+        };
+        let Some(authority) = &self.membership else {
+            return Ok(());
+        };
+        for workspace in authority.snapshot()?.workspaces {
+            let room = workspace.room.to_string();
+            if !service.requires_room(&room) {
+                continue;
+            }
+            let snapshot = checked_snapshot(service.as_ref(), &room)?;
+            let actions = task_actions(&snapshot.tasks, &snapshot.controls);
+            let existing = self
+                .workspace_task_peers
+                .lock()
+                .map_err(|_| "task service registry unavailable")?
+                .get(&room)
+                .copied();
+            if let Some(peer) = existing {
+                let changed = {
+                    let mut surfaces = self
+                        .surfaces
+                        .lock()
+                        .map_err(|_| "task surfaces unavailable")?;
+                    surfaces.get_mut(&peer).is_some_and(|surface| {
+                        if surface.actions == actions {
+                            return false;
+                        }
+                        surface.actions = actions;
+                        true
+                    })
+                };
+                if changed {
+                    self.publish_changed_action_catalogue();
+                }
+                continue;
+            }
+            self.start_workspace_task_service(room, actions, service.clone())?;
+        }
+        Ok(())
+    }
+
+    fn start_workspace_task_service(
+        self: &Arc<Self>,
+        room: String,
+        actions: Vec<PublishedAction>,
+        service: Arc<dyn crate::services::WorkspaceTasks>,
+    ) -> Result<(), String> {
+        let peer = self.next_service_peer_id();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.invocation_subscribers
+            .lock()
+            .map_err(|_| "invocation subscribers unavailable")?
+            .insert(peer, sender);
+        self.stable_invocation_subscribers
+            .lock()
+            .map_err(|_| "stable invocation registry unavailable")?
+            .insert(peer);
+        self.surfaces
+            .lock()
+            .map_err(|_| "task surfaces unavailable")?
+            .insert(
+                peer,
+                PublishedSurface {
+                    peer_id: peer,
+                    app_id: APP.into(),
+                    route: CrdtRoute::record(APP, &room, RECORD),
+                    live: true,
+                    actions,
+                },
+            );
+        self.workspace_task_peers
+            .lock()
+            .map_err(|_| "task service registry unavailable")?
+            .insert(room.clone(), peer);
+        self.publish_changed_action_catalogue();
+        let state = self.clone();
+        tokio::task::spawn_local(async move {
+            while let Some(envelope) = receiver.recv().await {
+                let result = state
+                    .execute_workspace_task_command(peer, &room, &envelope, service.as_ref())
+                    .await;
+                if result.is_err()
+                    && let Err(reason) = service.health().and_then(|()| state.owner_health())
+                {
+                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
+                        failure.get_or_insert(reason);
+                    }
+                    break;
+                }
+                let update = match result {
+                    Ok(value) => tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: envelope.invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        },
+                    },
+                    Err(error) => tilo_actions::InvocationUpdate::Failed {
+                        invocation: envelope.invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "workspace_task_refused".into(),
+                            message: error,
+                            retryable: false,
+                            details: None,
+                        },
+                    },
+                };
+                if let Err(error) = state
+                    .apply_invocation_update(peer, envelope.id, update, None)
+                    .await
+                {
+                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
+                        failure.get_or_insert(error.to_string());
+                    }
+                    break;
+                }
+            }
+            let removed = state
+                .surfaces
+                .lock()
+                .is_ok_and(|mut surfaces| surfaces.remove(&peer).is_some());
+            if removed {
+                state.publish_changed_action_catalogue();
+            }
+            if let Ok(mut peers) = state.workspace_task_peers.lock() {
+                peers.remove(&room);
+            }
+        });
+        Ok(())
+    }
+
+    async fn execute_workspace_task_command(
+        &self,
+        peer: u64,
+        room: &str,
+        envelope: &InvocationEnvelope,
+        service: &dyn crate::services::WorkspaceTasks,
+    ) -> Result<serde_json::Value, String> {
+        if envelope.resource == COLLECTION && envelope.action == "read-current-tasks" {
+            return read_current_tasks(room, envelope, service);
+        }
+        if envelope.action == "read-task" {
+            return read_task(room, envelope, service);
+        }
+        let pending = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| "invocation registry unavailable")?
+            .get(&envelope.id)
+            .filter(|pending| {
+                pending.peer_id == peer && pending.update.invocation() == envelope.invocation
+            })
+            .cloned()
+            .ok_or("task invocation is no longer admitted")?;
+        let key = pending
+            .journal_key
+            .as_ref()
+            .ok_or("task invocation has no durable admission")?;
+        if key.room != room
+            || key.invocation != envelope.invocation
+            || key.owner != pending.owner
+            || !service.requires_room(room)
+        {
+            return Err("task invocation binding changed".into());
+        }
+        let original = pending
+            .original
+            .as_ref()
+            .ok_or("task original custody unavailable")?;
+        let caller = original.owner_person_certificate(self, room, envelope)?;
+        let device = caller.device_public_key;
+        let command = person_command(envelope)?;
+        let request = OwnerCommitRequest {
+            room: room.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation: envelope.invocation.0,
+                authority: WorkspaceTaskAuthority::Person { caller },
+                command,
+            },
+        };
+        let receipt = service.execute(request.clone()).await?;
+        receipt.validate_for(&request)?;
+        let snapshot = checked_snapshot(service, room)?;
+        if snapshot.generation < receipt.generation {
+            return Err("task owner cannot observe its committed result".into());
+        }
+        if let Some(surface) = self
+            .surfaces
+            .lock()
+            .map_err(|_| "task surfaces unavailable")?
+            .get_mut(&peer)
+        {
+            surface.actions = task_actions(&snapshot.tasks, &snapshot.controls);
+        }
+        self.publish_action_catalogue();
+        let result = snapshot
+            .controls
+            .values()
+            .flat_map(|control| &control.receipts)
+            .find(|saved| {
+                saved.device == device
+                    && saved.invocation == envelope.invocation.0
+                    && saved.request_digest == receipt.binding.request_digest
+            })
+            .ok_or("task owner lost its exact committed result")?;
+        let dispatch = match &result.result {
+            tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } => self
+                .dispatch_live_workspace_task(room, task_id, service)
+                .await
+                .map_or_else(
+                    |error| {
+                        tracing::warn!(%error, %room, %task_id, "queued task delivery deferred");
+                        "failed"
+                    },
+                    |run| if run.is_some() { "started" } else { "queued" },
+                ),
+            _ => "saved",
+        };
+        Ok(serde_json::json!({
+            "generation": receipt.generation,
+            "result": result.result,
+            "delivery": dispatch,
+        }))
+    }
+
+    async fn dispatch_live_workspace_task(
+        &self,
+        room: &str,
+        task_id: &str,
+        service: &dyn crate::services::WorkspaceTasks,
+    ) -> Result<Option<u64>, String> {
+        let snapshot = checked_snapshot(service, room)?;
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or("queued task disappeared before delivery")?;
+        if task.status != tilo_desktop_model::WorkspaceTaskStatus::Queued {
+            return Ok(None);
+        }
+        let agent = task
+            .assigned_agent
+            .as_deref()
+            .filter(|_| task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual)
+            .ok_or("queued task has no Agent route")?;
+        let control = snapshot
+            .controls
+            .get(task_id)
+            .ok_or("queued task has no owner control")?;
+        if control.instruction_required && control.instruction.is_none() {
+            return Err("queued task lost its required instruction".into());
+        }
+        let Some((peer_id, tx)) = self.live_task_subscriber(room, agent)? else {
+            return Ok(None);
+        };
+        let epoch = control
+            .run_epoch
+            .checked_add(1)
+            .ok_or("task run epoch exhausted")?;
+        let invocation = run_invocation(room, task_id, epoch);
+        let request = OwnerCommitRequest {
+            room: room.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation,
+                authority: WorkspaceTaskAuthority::Host {
+                    attestor: service.host_certificate(room)?,
+                },
+                command: WorkspaceTaskCommand::StartRun {
+                    task_id: task_id.into(),
+                    agent_id: agent.into(),
+                },
+            },
+        };
+        let receipt = service.execute(request.clone()).await?;
+        receipt.validate_for(&request)?;
+        let snapshot = checked_snapshot(service, room)?;
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or("started task disappeared")?;
+        let control = snapshot
+            .controls
+            .get(task_id)
+            .ok_or("started task has no owner control")?;
+        let active = control
+            .active_run
+            .as_ref()
+            .filter(|active| active.epoch == epoch && active.agent_id == agent)
+            .ok_or("owner did not retain the exact started run")?;
+        let run_id = self
+            .task_run_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let lease = uuid::Uuid::new_v4().to_string();
+        let context = task.action_context();
+        let envelope = super::TaskRunEnvelope {
+            task_id: task.id.clone(),
+            title: task.title.clone(),
+            instruction: control.instruction.clone(),
+            run_id,
+            lease: lease.clone(),
+            planning: task_run_planning(task.route)?,
+            action_context: context.clone(),
+        };
+        if tx.send(envelope).is_err() {
+            self.abandon_undelivered_workspace_task(room, task_id, epoch, service)
+                .await?;
+            return Err("assigned Agent task stream closed before delivery".into());
+        }
+        self.pending_task_runs
+            .lock()
+            .map_err(|_| "task run registry unavailable")?
+            .insert(
+                run_id,
+                super::PendingTaskRun {
+                    peer_id,
+                    agent_id: agent.into(),
+                    cluster_id: room.into(),
+                    task_id: task.id.clone(),
+                    lease,
+                    action_context: context,
+                    task_epoch: Some(active.epoch),
+                    terminal: false,
+                },
+            );
+        Ok(Some(run_id))
+    }
+
+    fn live_task_subscriber(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<
+        Option<(
+            u64,
+            tokio::sync::mpsc::UnboundedSender<super::TaskRunEnvelope>,
+        )>,
+        String,
+    > {
+        Ok(self
+            .task_subscribers
+            .lock()
+            .map_err(|_| "task subscription registry unavailable")?
+            .iter()
+            .find(|(_, subscriber)| {
+                subscriber.cluster_id == room
+                    && subscriber.agent_id == agent
+                    && !subscriber.tx.is_closed()
+            })
+            .map(|(peer, subscriber)| (*peer, subscriber.tx.clone())))
+    }
+
+    async fn abandon_undelivered_workspace_task(
+        &self,
+        room: &str,
+        task_id: &str,
+        epoch: u64,
+        service: &dyn crate::services::WorkspaceTasks,
+    ) -> Result<(), String> {
+        let invocation = update_invocation(room, task_id, epoch, b"delivery-closed");
+        let request = OwnerCommitRequest {
+            room: room.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation,
+                authority: WorkspaceTaskAuthority::Host {
+                    attestor: service.host_certificate(room)?,
+                },
+                command: WorkspaceTaskCommand::Abandon {
+                    task_id: task_id.into(),
+                    run_epoch: epoch,
+                    reason: "Agent disconnected before delivery".into(),
+                },
+            },
+        };
+        let receipt = service.execute(request.clone()).await?;
+        receipt.validate_for(&request)?;
+        let snapshot = checked_snapshot(service, room)?;
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or("undelivered task disappeared")?;
+        if task.status != tilo_desktop_model::WorkspaceTaskStatus::Waiting {
+            return Err("owner did not retain the undelivered task as waiting".into());
+        }
+        Ok(())
+    }
+
+    pub(super) async fn record_owner_task_run_update(
+        &self,
+        run_id: u64,
+        run: &super::PendingTaskRun,
+        update: runtime_collab::TaskRunUpdate,
+    ) -> Result<(), String> {
+        let Some(epoch) = run.task_epoch else {
+            return Err("canonical task run has no owner epoch".into());
+        };
+        let command = match &update {
+            runtime_collab::TaskRunUpdate::Accepted
+            | runtime_collab::TaskRunUpdate::Progress { .. } => return Ok(()),
+            runtime_collab::TaskRunUpdate::Succeeded { message } => WorkspaceTaskCommand::Finish {
+                task_id: run.task_id.clone(),
+                run_epoch: epoch,
+                outcome: tilo_peer_state::workspace_task::WorkspaceTaskFinish::Done,
+                summary: bounded_summary(message)?,
+            },
+            runtime_collab::TaskRunUpdate::Failed { message } => WorkspaceTaskCommand::Finish {
+                task_id: run.task_id.clone(),
+                run_epoch: epoch,
+                outcome: tilo_peer_state::workspace_task::WorkspaceTaskFinish::Waiting,
+                summary: bounded_summary(message)?,
+            },
+            runtime_collab::TaskRunUpdate::Cancelled { message } => WorkspaceTaskCommand::Finish {
+                task_id: run.task_id.clone(),
+                run_epoch: epoch,
+                outcome: tilo_peer_state::workspace_task::WorkspaceTaskFinish::Cancelled,
+                summary: bounded_summary(message)?,
+            },
+        };
+        let service = self
+            .services
+            .workspace_tasks
+            .as_ref()
+            .ok_or("canonical task owner unavailable")?;
+        let encoded = serde_json::to_vec(&update).map_err(|error| error.to_string())?;
+        let invocation = update_invocation(&run.cluster_id, &run.task_id, epoch, &encoded);
+        let request = OwnerCommitRequest {
+            room: run.cluster_id.clone(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation,
+                authority: WorkspaceTaskAuthority::Agent {
+                    attestor: service.host_certificate(&run.cluster_id)?,
+                    agent_id: run.agent_id.clone(),
+                },
+                command,
+            },
+        };
+        let receipt = service.execute(request.clone()).await?;
+        receipt.validate_for(&request)?;
+        let snapshot = checked_snapshot(service.as_ref(), &run.cluster_id)?;
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == run.task_id)
+            .ok_or("finished task disappeared from owner projection")?;
+        if !task.status.is_finished()
+            && task.status != tilo_desktop_model::WorkspaceTaskStatus::Waiting
+        {
+            return Err("owner did not retain the terminal task state".into());
+        }
+        let mut runs = self
+            .pending_task_runs
+            .lock()
+            .map_err(|_| "task run registry unavailable")?;
+        let current = runs
+            .get_mut(&run_id)
+            .filter(|current| current.lease == run.lease && current.task_epoch == Some(epoch))
+            .ok_or("task run changed before terminal owner receipt")?;
+        if current.terminal {
+            return Err("task run is already terminal".into());
+        }
+        current.terminal = true;
+        drop(runs);
+        Ok(())
+    }
+
+    pub(super) fn validate_owner_task_action_frontier(
+        &self,
+        run: &super::PendingTaskRun,
+    ) -> Result<(), String> {
+        let Some(epoch) = run.task_epoch else {
+            return Ok(());
+        };
+        let service = self
+            .services
+            .workspace_tasks
+            .as_ref()
+            .ok_or("canonical task owner unavailable")?;
+        let snapshot = checked_snapshot(service.as_ref(), &run.cluster_id)?;
+        let control = snapshot
+            .controls
+            .get(&run.task_id)
+            .ok_or("canonical task control disappeared")?;
+        let active = control
+            .active_run
+            .as_ref()
+            .filter(|active| active.epoch == epoch && active.agent_id == run.agent_id)
+            .ok_or("canonical task run is stale")?;
+        let latest = control
+            .directions
+            .last()
+            .map_or(0, |direction| direction.revision);
+        if active.applied_direction_revision != latest {
+            return Err("new task direction must be applied before another action".into());
+        }
+        Ok(())
+    }
+}
+
+fn run_invocation(room: &str, task: &str, epoch: u64) -> uuid::Uuid {
+    let mut hash = blake3::Hasher::new_derive_key("Tilo workspace task run v1");
+    hash.update(room.as_bytes());
+    hash.update(task.as_bytes());
+    hash.update(&epoch.to_le_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    uuid::Uuid::from_bytes(bytes)
+}
+
+fn task_run_planning(
+    route: tilo_desktop_model::WorkspaceTaskRoute,
+) -> Result<runtime_collab::TaskRunPlanning, String> {
+    match route {
+        tilo_desktop_model::WorkspaceTaskRoute::RulesOnly => {
+            Ok(runtime_collab::TaskRunPlanning::RulesOnly)
+        }
+        tilo_desktop_model::WorkspaceTaskRoute::Model => Ok(runtime_collab::TaskRunPlanning::Model),
+        tilo_desktop_model::WorkspaceTaskRoute::Manual => {
+            Err("a manual task cannot be dispatched to an Agent".into())
+        }
+    }
+}
+
+fn bounded_summary(message: &str) -> Result<String, String> {
+    if message.trim().is_empty()
+        || message.len() > tilo_desktop_model::MAX_WORKSPACE_TASK_SUMMARY_BYTES
+    {
+        return Err("task outcome is empty or too long".into());
+    }
+    Ok(message.to_owned())
+}
+
+fn update_invocation(room: &str, task: &str, epoch: u64, update: &[u8]) -> uuid::Uuid {
+    let mut hash = blake3::Hasher::new_derive_key("Tilo workspace task update v1");
+    hash.update(room.as_bytes());
+    hash.update(task.as_bytes());
+    hash.update(&epoch.to_le_bytes());
+    hash.update(update);
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    uuid::Uuid::from_bytes(bytes)
+}
+
+fn checked_snapshot(
+    service: &dyn crate::services::WorkspaceTasks,
+    room: &str,
+) -> Result<crate::services::WorkspaceTaskSnapshot, String> {
+    let snapshot = service.snapshot(room)?;
+    if snapshot.room != room || snapshot.generation == 0 {
+        return Err("task owner returned an unbound room projection".into());
+    }
+    Ok(snapshot)
+}
+
+fn person_command(envelope: &InvocationEnvelope) -> Result<WorkspaceTaskCommand, String> {
+    let encoded = bounded_argument(envelope)?;
+    if envelope.resource == COLLECTION && envelope.action == "queue" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Queue {
+            instruction: String,
+            #[serde(default)]
+            title: Option<String>,
+            agent: String,
+            route: tilo_desktop_model::WorkspaceTaskRoute,
+        }
+        let input: Queue = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        let title = input
+            .title
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| instruction_title(&input.instruction));
+        return Ok(WorkspaceTaskCommand::QueueTask {
+            title,
+            instruction: input.instruction,
+            assigned_agent: input.agent,
+            route: input.route,
+            resource: None,
+        });
+    }
+    if let Some(task_id) = valid_task_target(envelope)
+        && envelope.action == "direct"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Direction {
+            run_epoch: u64,
+            after_revision: u64,
+            text: String,
+        }
+        let input: Direction = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        return Ok(WorkspaceTaskCommand::DirectionForRun {
+            task_id: task_id.into(),
+            run_epoch: input.run_epoch,
+            after_revision: input.after_revision,
+            text: input.text,
+        });
+    }
+    Err("unknown person task command".into())
+}
+
+fn bounded_argument(envelope: &InvocationEnvelope) -> Result<&str, String> {
+    let encoded = envelope
+        .argument
+        .as_deref()
+        .ok_or("task arguments missing")?;
+    if encoded.len() > MAX_TASK_ARGUMENT_BYTES {
+        return Err("task arguments exceed bounded size".into());
+    }
+    Ok(encoded
+        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+        .unwrap_or(encoded))
+}
+
+fn instruction_title(instruction: &str) -> String {
+    instruction
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("Task")
+        .trim()
+        .chars()
+        .take(80)
+        .collect()
+}
+
+fn valid_task_target(envelope: &InvocationEnvelope) -> Option<&str> {
+    envelope
+        .resource
+        .strip_prefix(TASK_PREFIX)
+        .filter(|task| !task.is_empty() && task.len() <= 256)
+}
+
+fn read_task(
+    room: &str,
+    envelope: &InvocationEnvelope,
+    service: &dyn crate::services::WorkspaceTasks,
+) -> Result<serde_json::Value, String> {
+    let task_id = valid_task_target(envelope).ok_or("task read target is invalid")?;
+    if envelope.argument.is_some() {
+        return Err("task read accepts no arguments".into());
+    }
+    let snapshot = checked_snapshot(service, room)?;
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or("task is absent from the current owner projection")?;
+    let control = snapshot.controls.get(task_id);
+    let active = control.and_then(|control| control.active_run.as_ref());
+    let after_revision = control
+        .and_then(|control| control.directions.last())
+        .map_or(0, |direction| direction.revision);
+    Ok(serde_json::json!({
+        "generation": snapshot.generation,
+        "task_id": task.id,
+        "title": task.title,
+        "assigned_agent": task.assigned_agent,
+        "route": task.route,
+        "status": task.status,
+        "run_epoch": control.map(|control| control.run_epoch),
+        "active_agent": active.map(|run| &run.agent_id),
+        "after_revision": after_revision,
+        "applied_revision": active.map(|run| run.applied_direction_revision),
+    }))
+}
+
+fn read_current_tasks(
+    room: &str,
+    envelope: &InvocationEnvelope,
+    service: &dyn crate::services::WorkspaceTasks,
+) -> Result<serde_json::Value, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Query {
+        agent: String,
+    }
+    let encoded = bounded_argument(envelope)?;
+    let query: Query = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+    if query.agent.is_empty()
+        || query.agent.len() > 128
+        || query.agent.chars().any(char::is_control)
+    {
+        return Err("current task query agent is invalid".into());
+    }
+    let snapshot = checked_snapshot(service, room)?;
+    let mut tasks = snapshot
+        .tasks
+        .iter()
+        .filter_map(|task| {
+            let control = snapshot.controls.get(&task.id)?;
+            let active = control.active_run.as_ref()?;
+            (task.status == tilo_desktop_model::WorkspaceTaskStatus::InProgress
+                && task.assigned_agent.as_deref() == Some(query.agent.as_str())
+                && active.agent_id == query.agent)
+                .then(|| {
+                    serde_json::json!({
+                        "task_id": task.id,
+                        "title": task.title,
+                        "assigned_agent": task.assigned_agent,
+                        "status": task.status,
+                        "run_epoch": active.epoch,
+                        "active_agent": active.agent_id,
+                        "after_revision": control.directions.last().map_or(0, |value| value.revision),
+                        "applied_revision": active.applied_direction_revision,
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| left["task_id"].as_str().cmp(&right["task_id"].as_str()));
+    let total = u64::try_from(tasks.len()).map_err(|_| "current task count exceeds u64")?;
+    let complete = tasks.len() <= MAX_CURRENT_TASK_FRONTIERS;
+    tasks.truncate(MAX_CURRENT_TASK_FRONTIERS);
+    Ok(serde_json::json!({
+        "generation": snapshot.generation,
+        "complete": complete,
+        "total": total,
+        "tasks": tasks,
+    }))
+}
+
+fn task_actions(
+    tasks: &[tilo_desktop_model::WorkspaceTask],
+    controls: &std::collections::BTreeMap<String, tilo_desktop_model::WorkspaceTaskControl>,
+) -> Vec<PublishedAction> {
+    let mut actions = vec![current_tasks_action(), queue_action()];
+    for task in tasks {
+        actions.push(task_read_action(task));
+        if task.status == tilo_desktop_model::WorkspaceTaskStatus::InProgress
+            && controls
+                .get(&task.id)
+                .and_then(|control| control.active_run.as_ref())
+                .is_some()
+        {
+            actions.push(effect_action(
+                &format!("{TASK_PREFIX}{}", task.id),
+                "direct",
+                &task.title,
+                "Direct task",
+                vec![
+                    tilo_actions::ActionParam::required(
+                        "run_epoch",
+                        tilo_actions::ParamType::Integer,
+                        "Run epoch returned by read-task",
+                    ),
+                    tilo_actions::ActionParam::required(
+                        "after_revision",
+                        tilo_actions::ParamType::Integer,
+                        "Direction revision returned by read-task",
+                    ),
+                    tilo_actions::ActionParam::required(
+                        "text",
+                        tilo_actions::ParamType::Text,
+                        "New direction for this exact run",
+                    ),
+                ],
+            ));
+        }
+    }
+    actions
+}
+
+fn current_tasks_action() -> PublishedAction {
+    PublishedAction {
+        resource: COLLECTION.into(),
+        action: "read-current-tasks".into(),
+        resource_kind: "task.collection".into(),
+        resource_label: "Tasks".into(),
+        action_label: "Read current agent tasks".into(),
+        description: Some("Read active task run and direction frontiers for one agent".into()),
+        operation_kind: tilo_actions::OperationKind::View,
+        params: vec![tilo_actions::ActionParam::required(
+            "agent",
+            tilo_actions::ParamType::Text,
+            "Admitted workspace agent",
+        )],
+        contract: tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Read,
+            result: tilo_actions::ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            },
+            ..tilo_actions::ActionContract::view()
+        },
+        view: None,
+        input: PublishedInput::None,
+    }
+}
+
+fn queue_action() -> PublishedAction {
+    effect_action(
+        COLLECTION,
+        "queue",
+        "Tasks",
+        "Queue task",
+        vec![
+            tilo_actions::ActionParam::required(
+                "instruction",
+                tilo_actions::ParamType::Text,
+                "Complete task instruction (up to 32 KiB and 8000 characters)",
+            ),
+            tilo_actions::ActionParam::optional(
+                "title",
+                tilo_actions::ParamType::Text,
+                "Short Task Center title; derived from the instruction when omitted",
+            ),
+            tilo_actions::ActionParam::required(
+                "agent",
+                tilo_actions::ParamType::Text,
+                "Assigned admitted workspace Agent",
+            ),
+            tilo_actions::ActionParam::required(
+                "route",
+                tilo_actions::ParamType::Text,
+                "model or rules_only",
+            ),
+        ],
+    )
+}
+
+fn task_read_action(task: &tilo_desktop_model::WorkspaceTask) -> PublishedAction {
+    PublishedAction {
+        resource: format!("{TASK_PREFIX}{}", task.id),
+        action: "read-task".into(),
+        resource_kind: "task".into(),
+        resource_label: task.title.clone(),
+        action_label: "Read current task".into(),
+        description: Some("Read the owner-confirmed run and direction frontier".into()),
+        operation_kind: tilo_actions::OperationKind::View,
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Read,
+            result: tilo_actions::ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            },
+            ..tilo_actions::ActionContract::view()
+        },
+        view: None,
+        input: PublishedInput::None,
+    }
+}
+
+fn effect_action(
+    resource: &str,
+    action: &str,
+    label: &str,
+    action_label: &str,
+    params: Vec<tilo_actions::ActionParam>,
+) -> PublishedAction {
+    PublishedAction {
+        resource: resource.into(),
+        action: action.into(),
+        resource_kind: "task".into(),
+        resource_label: label.into(),
+        action_label: action_label.into(),
+        description: None,
+        operation_kind: tilo_actions::OperationKind::Effect,
+        params,
+        contract: tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Write,
+            result: tilo_actions::ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            },
+            ..Default::default()
+        },
+        view: None,
+        input: PublishedInput::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot);
+
+    impl crate::services::WorkspaceTasks for ReadOnlyTasks {
+        fn requires_room(&self, room: &str) -> bool {
+            room == self.0.room
+        }
+
+        fn snapshot(&self, room: &str) -> Result<crate::services::WorkspaceTaskSnapshot, String> {
+            (room == self.0.room)
+                .then(|| self.0.clone())
+                .ok_or_else(|| "wrong test room".into())
+        }
+
+        fn host_certificate(&self, _room: &str) -> Result<tilo_user_identity::DeviceCert, String> {
+            Err("read-only fixture has no host authority".into())
+        }
+
+        fn execute(
+            &self,
+            _request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
+            Box::pin(async { Err("read-only fixture cannot mutate".into()) })
+        }
+    }
+
+    fn envelope(
+        resource: &str,
+        action: &str,
+        argument: Option<serde_json::Value>,
+    ) -> InvocationEnvelope {
+        InvocationEnvelope {
+            id: 1,
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
+            resource: resource.into(),
+            action: action.into(),
+            argument: argument
+                .map(|value| format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, value)),
+            actor: "not-authority".into(),
+            context: None,
+        }
+    }
+
+    #[test]
+    fn public_queue_keeps_full_instruction_and_rejects_authority_fields() {
+        let instruction = "Review line one.\n\nKeep every authored detail.";
+        let command = person_command(&envelope(
+            COLLECTION,
+            "queue",
+            Some(serde_json::json!({
+                "instruction": instruction,
+                "agent": "scribe",
+                "route": "model",
+            })),
+        ))
+        .unwrap();
+        let WorkspaceTaskCommand::QueueTask {
+            instruction: retained,
+            title,
+            resource,
+            ..
+        } = command
+        else {
+            panic!("queue command")
+        };
+        assert_eq!(retained.as_bytes(), instruction.as_bytes());
+        assert_eq!(title, "Review line one.");
+        assert!(resource.is_none());
+
+        for field in ["caller", "certificate", "room", "invocation"] {
+            let mut arguments = serde_json::json!({
+                "instruction": "Do the task",
+                "agent": "scribe",
+                "route": "rules_only",
+            });
+            arguments[field] = serde_json::json!("forged");
+            assert!(person_command(&envelope(COLLECTION, "queue", Some(arguments))).is_err());
+        }
+    }
+
+    #[test]
+    fn task_surface_never_publishes_instruction_or_fake_stop() {
+        let task = task("task:1", "scribe");
+        let mut controls = std::collections::BTreeMap::new();
+        controls.insert(
+            task.id.clone(),
+            tilo_desktop_model::WorkspaceTaskControl {
+                instruction: Some("private full task instruction".into()),
+                instruction_required: true,
+                ..Default::default()
+            },
+        );
+        let actions = task_actions(&[task], &controls);
+        let encoded = serde_json::to_string(&actions).unwrap();
+        assert!(!encoded.contains("private full task instruction"));
+        assert!(actions.iter().all(|action| action.action != "stop"));
+    }
+
+    #[test]
+    fn owner_reads_publish_only_exact_active_agent_frontiers() {
+        let mut scribe = task("task:scribe", "scribe");
+        scribe.status = tilo_desktop_model::WorkspaceTaskStatus::InProgress;
+        let mut builder = task("task:builder", "builder");
+        builder.status = tilo_desktop_model::WorkspaceTaskStatus::InProgress;
+        let controls = std::collections::BTreeMap::from([
+            (
+                scribe.id.clone(),
+                control("scribe", 4, 2, "never publish this instruction"),
+            ),
+            (
+                builder.id.clone(),
+                control("builder", 1, 0, "other agent private instruction"),
+            ),
+        ]);
+        let service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
+            room: "room-a".into(),
+            generation: 7,
+            tasks: vec![scribe, builder],
+            controls,
+        });
+        let result = read_current_tasks(
+            "room-a",
+            &envelope(
+                COLLECTION,
+                "read-current-tasks",
+                Some(serde_json::json!({"agent": "scribe"})),
+            ),
+            &service,
+        )
+        .unwrap();
+        assert_eq!(result["generation"], 7);
+        assert_eq!(result["complete"], true);
+        assert_eq!(result["total"], 1);
+        assert_eq!(result["tasks"][0]["task_id"], "task:scribe");
+        assert_eq!(result["tasks"][0]["run_epoch"], 4);
+        assert_eq!(result["tasks"][0]["applied_revision"], 2);
+        let encoded = result.to_string();
+        assert!(!encoded.contains("never publish"));
+        assert!(!encoded.contains("other agent"));
+    }
+
+    #[test]
+    fn task_read_refuses_arguments_and_returns_owner_frontier() {
+        let mut task = task("task:1", "scribe");
+        task.status = tilo_desktop_model::WorkspaceTaskStatus::InProgress;
+        let service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
+            room: "room-a".into(),
+            generation: 9,
+            controls: std::collections::BTreeMap::from([(
+                task.id.clone(),
+                control("scribe", 3, 1, "private instruction"),
+            )]),
+            tasks: vec![task],
+        });
+        let mut request = envelope("desktop:task:task:1", "read-task", None);
+        let result = read_task("room-a", &request, &service).unwrap();
+        assert_eq!(result["run_epoch"], 3);
+        assert_eq!(result["active_agent"], "scribe");
+        assert_eq!(result["applied_revision"], 1);
+        assert!(result.get("instruction").is_none());
+        request.argument = Some("{}".into());
+        assert!(read_task("room-a", &request, &service).is_err());
+    }
+
+    fn task(id: &str, agent: &str) -> tilo_desktop_model::WorkspaceTask {
+        tilo_desktop_model::WorkspaceTask {
+            id: id.into(),
+            title: "Review".into(),
+            created_by: "person".into(),
+            assigned_agent: Some(agent.into()),
+            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+            status: tilo_desktop_model::WorkspaceTaskStatus::Queued,
+            resource: None,
+            created_at: 1,
+            updated_at: 1,
+            audit: Vec::new(),
+        }
+    }
+
+    fn control(
+        agent: &str,
+        epoch: u64,
+        applied: u64,
+        instruction: &str,
+    ) -> tilo_desktop_model::WorkspaceTaskControl {
+        tilo_desktop_model::WorkspaceTaskControl {
+            run_epoch: epoch,
+            instruction: Some(instruction.into()),
+            instruction_required: true,
+            active_run: Some(tilo_desktop_model::WorkspaceTaskActiveRun {
+                epoch,
+                agent_id: agent.into(),
+                started_at: 1,
+                applied_direction_revision: applied,
+            }),
+            ..Default::default()
+        }
+    }
+}

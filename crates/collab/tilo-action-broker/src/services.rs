@@ -79,6 +79,46 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
+#[derive(Clone, Debug)]
+pub struct WorkspaceTaskSnapshot {
+    pub room: String,
+    pub generation: u64,
+    pub tasks: Vec<tilo_desktop_model::WorkspaceTask>,
+    pub controls: std::collections::BTreeMap<String, tilo_desktop_model::WorkspaceTaskControl>,
+}
+
+/// Native room Task Center owner. Reads and mutations use the same admitted
+/// canonical document; this is not a presentation cache or an app task store.
+pub trait WorkspaceTasks: Send + Sync {
+    fn requires_room(&self, room: &str) -> bool;
+
+    /// Confirm durable owner continuity.
+    ///
+    /// # Errors
+    /// The owner is unavailable, fenced, or cannot prove store continuity.
+    fn health(&self) -> Result<(), String> {
+        Err("task owner continuity is unavailable".into())
+    }
+
+    /// Read the current admitted Task Center document.
+    ///
+    /// # Errors
+    /// The room is absent, fenced, or its task control is malformed.
+    fn snapshot(&self, room: &str) -> Result<WorkspaceTaskSnapshot, String>;
+
+    /// The exact pinned host certificate used only for host-authored run
+    /// lifecycle commands after a live assigned Agent has been selected.
+    ///
+    /// # Errors
+    /// The room's current host authority is unavailable.
+    fn host_certificate(&self, room: &str) -> Result<tilo_user_identity::DeviceCert, String>;
+
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture;
+}
+
 /// Native room membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
 pub trait WorkspaceMemberships: Send + Sync {
@@ -753,6 +793,7 @@ pub struct HostServices {
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
+    pub workspace_tasks: Option<Arc<dyn WorkspaceTasks>>,
     /// Documents proposed into the room and the owner's answers. Without it
     /// nothing can be proposed.
     pub document_imports: Option<Arc<dyn DocumentImports>>,

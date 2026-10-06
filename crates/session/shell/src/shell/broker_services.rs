@@ -17,6 +17,7 @@ use tilo_action_broker::services::{
     LauncherServices, LegacyWorkspaceProjection, NativeDocumentRead, NativeDocumentReadContext,
     NativeDocumentReads, ShortcutLibraryRequest, ShortcutLibraryServices, WorkspaceAuthority,
     WorkspaceControlServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
+    WorkspaceTaskSnapshot, WorkspaceTasks,
 };
 
 /// The same state.json owner used by canonical enrollment and ingress. Network
@@ -133,6 +134,70 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 &key,
                 std::time::SystemTime::now(),
             )?;
+            if let Some(network) = network {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(receipt)
+        })
+    }
+}
+
+impl WorkspaceTasks for NativeOwnerCommitService {
+    fn requires_room(&self, room: &str) -> bool {
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
+    }
+
+    fn health(&self) -> Result<(), String> {
+        self.owner
+            .as_ref()
+            .ok_or("native task owner unavailable")?
+            .health()
+    }
+
+    fn snapshot(&self, room: &str) -> Result<WorkspaceTaskSnapshot, String> {
+        let owner = self.owner.as_ref().ok_or("native task owner unavailable")?;
+        let room_id = super::state::RoomId::parse(room).ok_or("invalid native task room")?;
+        owner.with_current(room_id, |view| {
+            let document = view
+                .peer()
+                .admitted_room()
+                .ok_or("native room has no admitted task document")?;
+            let snapshot = tilo_peer_state::workspace_task::snapshot(document)?;
+            Ok(WorkspaceTaskSnapshot {
+                room: room.into(),
+                generation: view.generation(),
+                tasks: snapshot.tasks,
+                controls: snapshot.controls,
+            })
+        })
+    }
+
+    fn host_certificate(&self, room: &str) -> Result<tilo_user_identity::DeviceCert, String> {
+        let owner = self.owner.as_ref().ok_or("native task owner unavailable")?;
+        let room_id = super::state::RoomId::parse(room).ok_or("invalid native task room")?;
+        owner.with_current(room_id, |view| {
+            Ok(view.host().unwrap_or_else(|| view.governor()).clone())
+        })
+    }
+
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native task owner unavailable")?;
+            let room =
+                super::state::RoomId::parse(&request.room).ok_or("invalid native task room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("workspace task requires the governing owner".into());
+                }
+            }
+            let receipt =
+                owner.commit_workspace_task_command(request, std::time::SystemTime::now())?;
             if let Some(network) = network {
                 network.schedule_native_owner_publication(room);
             }
@@ -1360,6 +1425,10 @@ pub fn native_services(
                 network: network.clone(),
             }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
         });
+    let workspace_tasks = membership.as_ref().map(|tree| {
+        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
+            as Arc<dyn WorkspaceTasks>
+    });
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
             as Arc<dyn WorkspaceGovernanceServices>
@@ -1383,6 +1452,7 @@ pub fn native_services(
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
         committed_documents,
+        workspace_tasks,
         workspace_memberships,
         resource_views,
         desktop_commands: None,

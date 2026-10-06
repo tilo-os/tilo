@@ -35,6 +35,8 @@ mod published_invocation;
 mod resolved_invocation;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
+#[path = "workspace_tasks.rs"]
+mod workspace_tasks;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
@@ -1268,6 +1270,7 @@ pub struct InvocationEnvelope {
 struct TaskRunEnvelope {
     task_id: String,
     title: String,
+    instruction: Option<String>,
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
@@ -1289,6 +1292,8 @@ struct PendingTaskRun {
     task_id: String,
     lease: String,
     action_context: tilo_actions::ActionContext,
+    /// Canonical owner run epoch. None is an explicitly legacy projection.
+    task_epoch: Option<u64>,
     terminal: bool,
 }
 
@@ -2841,6 +2846,7 @@ pub struct CapnpBrokerState {
     desktop_command_peer: Mutex<Option<u64>>,
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
+    workspace_task_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
@@ -3035,6 +3041,7 @@ impl CapnpBrokerState {
         clear!(self.pending_invocations);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_membership_peers);
+        clear!(self.workspace_task_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
@@ -3605,6 +3612,7 @@ impl CapnpBrokerState {
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 desktop_command_peer: Mutex::new(None),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
+                workspace_task_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -5402,6 +5410,7 @@ impl CapnpBrokerState {
         tx.send(TaskRunEnvelope {
             task_id: task.id.clone(),
             title: task.title.clone(),
+            instruction: None,
             run_id,
             lease: lease.clone(),
             planning: match task.route {
@@ -5430,6 +5439,7 @@ impl CapnpBrokerState {
                     task_id: task.id.clone(),
                     lease,
                     action_context: context,
+                    task_epoch: None,
                     terminal: false,
                 },
             );
@@ -5482,6 +5492,19 @@ impl CapnpBrokerState {
         lease: &str,
     ) -> Result<bool, String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if run.task_epoch.is_some() {
+            let service = self
+                .services
+                .workspace_tasks
+                .as_ref()
+                .ok_or("canonical task owner unavailable")?;
+            let snapshot = service.snapshot(&run.cluster_id)?;
+            return Ok(snapshot
+                .tasks
+                .iter()
+                .find(|task| task.id == run.task_id)
+                .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled));
+        }
         let membership = self
             .membership
             .as_ref()
@@ -5501,7 +5524,7 @@ impl CapnpBrokerState {
         Ok(cancelled)
     }
 
-    fn record_task_run_update(
+    async fn record_task_run_update(
         &self,
         peer_id: u64,
         agent_id: &str,
@@ -5510,6 +5533,11 @@ impl CapnpBrokerState {
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if run.task_epoch.is_some() {
+            return self
+                .record_owner_task_run_update(run_id, &run, update)
+                .await;
+        }
         let (summary, status, terminal) = match update {
             runtime_collab::TaskRunUpdate::Accepted => {
                 ("Agent accepted run".to_string(), None, false)
@@ -5581,6 +5609,7 @@ impl CapnpBrokerState {
         if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
             return Err("the task was cancelled; no further action may start".into());
         }
+        self.validate_owner_task_action_frontier(&run)?;
         let confirmation_required = self
             .surfaces
             .lock()
@@ -8448,7 +8477,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeTaskRunsParams,
         mut results: channel_handle::SubscribeTaskRunsResults,
     ) -> Promise<(), capnp::Error> {
-        if self.state.services.legacy_workspace.is_none() {
+        if self.state.services.legacy_workspace.is_none()
+            && self.state.services.workspace_tasks.is_none()
+        {
             return Promise::err(capnp::Error::failed(
                 "task mutation service unsupported".into(),
             ));
@@ -8520,6 +8551,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             .map_err(|error| capnp::Error::failed(format!("invalid task update: {error}")))?;
             state
                 .record_task_run_update(peer_id, &agent_id, request.get_run_id(), &lease, update)
+                .await
                 .map_err(capnp::Error::failed)
         })
     }
@@ -10507,6 +10539,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 version: 1,
                 task_id: run.task_id,
                 title: run.title,
+                instruction: run.instruction,
                 run_id: run.run_id,
                 lease: run.lease,
                 planning: run.planning,
@@ -11310,6 +11343,9 @@ async fn serve_broker_thread(
         if std::time::Instant::now() >= next_membership_refresh {
             if let Err(error) = state.refresh_workspace_membership_services() {
                 tracing::debug!(%error, "native membership surface could not be refreshed");
+            }
+            if let Err(error) = state.refresh_workspace_task_services() {
+                tracing::debug!(%error, "native task surface could not be refreshed");
             }
             if let Err(error) = state.refresh_workspace_context_services() {
                 tracing::debug!(%error, "native membership context could not be refreshed");
