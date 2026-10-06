@@ -190,8 +190,12 @@ impl ResourceApp for ContactsShell {
     const OPENS: &'static [&'static str] = &["text/vcard", "text/x-vcard"];
     const ARGUMENTS: usize = 1;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::account_editor::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
-        cx.surface(ContactsApp::new())
+        crate::account_editor::build(cx)
     }
 
     /// `new`, `edit`, `editfocus` and `edit-lower` show the contact form;
@@ -289,13 +293,15 @@ impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.import_conflict_rows()
+        let mut rows = self.import_conflict_rows();
+        if let Some(editor) = &self.account_editor {
+            rows.extend(crate::account_editor::review_rows(editor));
+        }
+        rows
     }
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.import_conflict_rows()
-            .into_iter()
-            .find(|row| row.id() == id)
+        self.live_rows().into_iter().find(|row| row.id() == id)
     }
 }
 

@@ -40,7 +40,10 @@ confirmation. `FORGET_ENDPOINT.with((person, association))` retains a tombstone;
 a delayed confirmation cannot restore or retarget that association id.
 Sequential competing associations refuse. Concurrent confirmations remain in
 the replicated record, and resolution refuses ambiguity rather than choosing a
-winner. A changed revision requires review, revocation and a new association id.
+winner. A changed revision requires review and a new association id. `REPLACE_ACCOUNT`
+atomically tombstones the old association and confirms the new revision; a
+refused replacement leaves the old association intact. `REPLACE_ENDPOINT`
+provides the same atomic replacement for unversioned address-book entries.
 
 Deletion excludes a person's endpoints; delayed label projection cannot revive
 them. Contacts undo/restoration needs a separate reviewed reactivation policy.
@@ -81,9 +84,20 @@ account selection behavior.
 
 ## Integration boundaries
 
-The existing shared record and typed resource actions are the cross-app API and
-semantic confirmation surface. A dedicated visual Contacts account editor and
-adapter-supplied identity evidence remain follow-up work. Messages owns its
+Contacts exposes a dedicated inline account editor using shared controls. A
+contact resource's `OpenAccounts` action opens the same editor as its toolbar.
+Additions, edits and removals stage a review before mutating the directory.
+Pending reviews are `contacts.account-review` resources with a row-scoped,
+confirmation-required action. Changing contact, closing, or cancelling invalidates
+the review; changed endpoint snapshots refuse confirmation. Duplicate names show
+a stable UUID suffix in the contact picker.
+
+Manually entered addresses have no identity evidence and cannot produce transport
+routes. Editing an address clears its old provider scope/revision. Provider-driven
+`contacts.accounts` review actions may supply current scope/revision for explicit
+association, but never prove ownership or grant permission. Adapter-supplied
+identity evidence remains Messages integration work. The contact form stays
+mounted while accounts are edited, preserving unsaved drafts. Messages owns its
 confirmation UI, account selector, transports and service histories. This crate
 provides no messaging transport, identity proof, credential custody, or automatic
 cross-service group mapping. An unavailable shared record stays unavailable.

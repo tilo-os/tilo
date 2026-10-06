@@ -452,3 +452,68 @@ fn concurrent_revision_aware_confirmations_refuse_before_routing() {
     assert!(routes(&state, &first(), "signal", &senders).is_empty());
     assert!(routes(&state, &second(), "signal", &senders).is_empty());
 }
+
+#[test]
+fn reviewed_revision_replacement_is_atomic_and_keeps_old_attribution() {
+    let mut record = fixture().expect("fixture operation succeeds");
+    let old = Id::from_raw("old-reference");
+    record
+        .apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+            first(),
+            old.clone(),
+            "signal".into(),
+            "signal-main".into(),
+            "aci:alice".into(),
+            "key-1".into(),
+        )))
+        .expect("confirmation succeeds");
+    let before = record.state().expect("state loads");
+    assert!(
+        record
+            .apply(ContactDirectory::REPLACE_ACCOUNT.with((
+                first(),
+                old.clone(),
+                Id::from_raw("new-reference"),
+                "signal".into(),
+                "signal-main".into(),
+                "aci:alice".into(),
+                String::new()
+            )))
+            .is_err()
+    );
+    assert_eq!(
+        record.state().expect("state loads"),
+        before,
+        "refused replacement must not revoke the old route"
+    );
+    record
+        .apply(ContactDirectory::REPLACE_ACCOUNT.with((
+            first(),
+            old.clone(),
+            Id::from_raw("new-reference"),
+            "signal".into(),
+            "signal-main".into(),
+            "aci:alice".into(),
+            "key-2".into(),
+        )))
+        .expect("reviewed replacement succeeds");
+    let state = record.state().expect("state loads");
+    assert_eq!(
+        state.resolve_account("signal", "signal-main", "aci:alice", "key-2"),
+        Ok(first())
+    );
+    assert!(
+        state
+            .resolve_account("signal", "signal-main", "aci:alice", "key-1")
+            .is_err()
+    );
+    let historical = state
+        .people
+        .get(&first())
+        .expect("person remains")
+        .endpoints
+        .get(&old)
+        .expect("old association remains");
+    assert!(historical.removed);
+    assert_eq!(historical.revision, "key-1");
+}
