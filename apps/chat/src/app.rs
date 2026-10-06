@@ -1351,18 +1351,26 @@ impl ChatApp {
                     | "agent-direction-saved-floating"
                     | "agent-stopping"
                     | "agent-stopping-compact"
+                    | "agent-long-content"
+                    | "agent-long-content-compact"
+                    | "agent-long-content-floating"
             )
         {
+            let agent_name = if scenario.starts_with("agent-long-content") {
+                "Documentation and Accessibility Specialist"
+            } else {
+                "Scribe"
+            };
             self.room_agents = vec!["scribe".into()];
             self.room_names
-                .insert("agent:scribe".into(), "Scribe".into());
+                .insert("agent:scribe".into(), agent_name.into());
             self.active_channel = ChatDoc::agent_conversation_channel_id("ws_acme", "scribe");
             self.direct_agent = Some("scribe".into());
             self.agent_task_context("ws_acme", "scribe");
             self.composer_main.set_agent_draft("ws_acme", "scribe");
             self.composer_main.set_placeholder(&crate::i18n::t_args(
                 "chat-agent-message-placeholder",
-                &[("name", "Scribe".into())],
+                &[("name", agent_name.into())],
             ));
             self.stage_agent_task_controls(scenario);
             self.stage_agent_lifecycle_state(scenario);
@@ -1377,10 +1385,15 @@ impl ChatApp {
             && !scenario.starts_with("agent-message-refused")
             && !scenario.starts_with("agent-permission-revoked")
             && !scenario.starts_with("agent-membership-removed")
+            && !scenario.starts_with("agent-long-content")
         {
             return;
         }
-        let draft = "Keep the private release notes and keyboard evidence here.";
+        let draft = if scenario.starts_with("agent-long-content") {
+            "Preserve this private draft while checking the translated release notes, keyboard navigation, focus restoration, and high-contrast evidence before publishing."
+        } else {
+            "Keep the private release notes and keyboard evidence here."
+        };
         self.composer_main.stage_private_text(draft);
         self.composer_main.select(9, 30);
         self.focus = Focus::Main;
@@ -1408,6 +1421,11 @@ impl ChatApp {
 
     fn stage_agent_task_controls(&mut self, scenario: &str) {
         let stopping = scenario.starts_with("agent-stopping");
+        let title = if scenario.starts_with("agent-long-content") {
+            "Review the international release notes and verify every keyboard navigation path before publishing"
+        } else {
+            "Review the release"
+        };
         let current_staged = self.stage_agent_task_receipt(
             "read-current-tasks",
             serde_json::json!({
@@ -1416,7 +1434,7 @@ impl ChatApp {
                 "total": 1,
                 "tasks": [{
                     "task_id": "task-release",
-                    "title": "Review the release",
+                    "title": title,
                     "assigned_agent": "scribe",
                     "status": "in_progress",
                     "run_epoch": 7,
@@ -1614,7 +1632,10 @@ impl ChatApp {
             | "agent-direction-saved-compact"
             | "agent-direction-saved-floating"
             | "agent-stopping"
-            | "agent-stopping-compact" => {
+            | "agent-stopping-compact"
+            | "agent-long-content"
+            | "agent-long-content-compact"
+            | "agent-long-content-floating" => {
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
@@ -4675,30 +4696,57 @@ impl ChatApp {
                 .with_bounds(self.header_rect())
                 .with_hashed_key(("agent-conversation-heading", agent)),
         ];
-        let status = self
-            .agent_submission_errors
-            .get()
-            .get(&(self.active_ws.clone(), agent.to_owned()))
-            .cloned()
-            .or_else(|| {
-                (!self.direct_agent_is_available())
-                    .then(|| crate::i18n::t("chat-agent-unavailable"))
-            })
-            .or_else(|| {
-                self.agent_message_awaiting_confirmation(agent)
-                    .then(|| crate::i18n::t("chat-agent-message-awaiting-confirmation"))
-            })
-            .or_else(|| {
-                (!self.can_participate()
-                    && self.direct_agent_intent() == AgentComposerIntent::Message)
-                    .then(|| crate::i18n::t("chat-agent-message-read-only"))
-            });
-        if let Some(status) = status {
-            nodes.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(status)
-                    .with_hashed_key(("agent-submission-status", &self.active_ws, agent)),
+        if let Some(tasks) = self.direct_agent_tasks() {
+            let tasks = tasks.borrow();
+            let stopping = matches!(
+                tasks.choice(),
+                ui::agent_task_frontier::AgentTaskChoice::One(ref task)
+                    | ui::agent_task_frontier::AgentTaskChoice::Selected(ref task)
+                    if task.cancellation_requested
+            ) || matches!(
+                tasks.stop_state(),
+                ui::agent_task_frontier::AgentStopState::Stopping { .. }
             );
+            let status = self.direct_agent_status_lines(&tasks, stopping);
+            for (kind, value) in [
+                ("task", Some(status.primary)),
+                ("receipt", status.receipt),
+                ("queue", status.queue),
+            ] {
+                if let Some(value) = value {
+                    nodes.push(
+                        AccessNode::new(Role::StaticText)
+                            .with_name(value)
+                            .with_hashed_key(("agent-task-status", kind, &self.active_ws, agent)),
+                    );
+                }
+            }
+        } else {
+            let status = self
+                .agent_submission_errors
+                .get()
+                .get(&(self.active_ws.clone(), agent.to_owned()))
+                .cloned()
+                .or_else(|| {
+                    (!self.direct_agent_is_available())
+                        .then(|| crate::i18n::t("chat-agent-unavailable"))
+                })
+                .or_else(|| {
+                    self.agent_message_awaiting_confirmation(agent)
+                        .then(|| crate::i18n::t("chat-agent-message-awaiting-confirmation"))
+                })
+                .or_else(|| {
+                    (!self.can_participate()
+                        && self.direct_agent_intent() == AgentComposerIntent::Message)
+                        .then(|| crate::i18n::t("chat-agent-message-read-only"))
+                });
+            if let Some(status) = status {
+                nodes.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(status)
+                        .with_hashed_key(("agent-submission-status", &self.active_ws, agent)),
+                );
+            }
         }
         if !self.direct_agent_intent_allowed(self.direct_agent_intent()) {
             let draft = self.composer_main.value();

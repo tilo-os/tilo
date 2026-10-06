@@ -3331,6 +3331,51 @@ mod tests {
     }
 
     #[test]
+    fn long_agent_task_status_remains_complete_through_accessibility() {
+        use ui::Widget;
+
+        let (mut app, _doc) = app_with_doc();
+        app.stage_scenario("agent-long-content-floating");
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+        render_frame_with_theme(&mut app, 560.0, 560.0, &theme);
+
+        let tree = app.accessibility().expect("Chat accessibility tree");
+        let names = tree
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"Documentation and Accessibility Specialist, agent"));
+        assert!(names.contains(
+            &"Working: Review the international release notes and verify every keyboard navigation path before publishing"
+        ));
+        assert!(names.contains(&"2 queued tasks"));
+        assert!(
+            app.hits.iter().any(|(rect, hit)| {
+                matches!(hit, Hit::Send)
+                    && rect.x0 >= app.rect.x0
+                    && rect.x1 <= app.rect.x1
+                    && rect.y0 >= app.header_rect().y1
+                    && rect.y1 <= app.rect.y1
+            }),
+            "the semantic status additions must not displace the actionable composer"
+        );
+
+        let (mut saved, _doc) = app_with_doc();
+        saved.stage_scenario("agent-direction-saved-compact");
+        render_frame_with_theme(&mut saved, 800.0, 600.0, &theme);
+        let saved_tree = saved.accessibility().expect("saved direction tree");
+        let saved_names = saved_tree
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect::<Vec<_>>();
+        assert!(saved_names.contains(&"Working: Review the release"));
+        assert!(saved_names.contains(&"Direction saved"));
+        assert!(saved_names.contains(&"2 queued tasks"));
+    }
+
+    #[test]
     fn adverse_large_text_agent_composer_stays_below_the_header() {
         for (width, height) in [(800.0, 600.0), (560.0, 560.0)] {
             let (mut app, _doc) = app_with_doc();
