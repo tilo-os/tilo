@@ -3407,8 +3407,20 @@ impl FrameBuilder {
             }
         };
         if handled {
-            if matches!(action, Action::Focus) {
+            // Semantic input bypasses handle_event's tab writeback. Accept it
+            // before the next model sync can restore the previous selection.
+            self.host.flush_active_tab_writeback();
+            let activated_tab_bar = matches!(action, Action::Activate)
+                && semantic_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with("tab:"))
+                && unsafe { (*widget).accessibility() }
+                    .is_some_and(|node| node.role == ui::a11y::Role::TabBar);
+            if matches!(action, Action::Focus) || activated_tab_bar {
                 self.set_native_focus(focus, Some(taffy_id));
+            }
+            if activated_tab_bar && self.chrome().axis_navigation_enabled() {
+                self.chrome.borrow_mut().request_axis_gather();
             }
             if self.host.take_focus_reset() {
                 self.relayout();
@@ -4732,6 +4744,298 @@ mod tests {
             .iter()
             .find(|(_, node)| node.label() == Some(name))
             .cloned()
+    }
+
+    fn axis_a11y_tree() -> (
+        crate::shell::state::WorkspaceTree,
+        crate::shell::state::StripId,
+        Vec<crate::shell::state::GroupId>,
+        Vec<[u64; 2]>,
+    ) {
+        use crate::shell::state::{
+            AppKind, FreshId as _, GroupId, Strip, StripId, Tab, TileContent, WindowGroup,
+            WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
+        };
+        const GROUPS: usize = 5;
+        const GROUP_WIDTH_PERMILLE: u16 = 515;
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let groups: Vec<GroupId> = (0..GROUPS)
+            .map(|i| 1001u64.saturating_add(i as u64))
+            .collect();
+        let tabs: Vec<[u64; 2]> = (0..GROUPS)
+            .map(|i| {
+                let base = (i as u64).saturating_add(1).saturating_mul(10);
+                [base.saturating_add(1), base.saturating_add(2)]
+            })
+            .collect();
+
+        let mk_tab = |id: u64, label: &str| Tab {
+            id,
+            title: label.into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Other("Test".into()),
+                label: label.into(),
+            },
+        };
+
+        let window_groups = groups
+            .iter()
+            .zip(tabs.iter())
+            .enumerate()
+            .map(|(i, (&gid, ids))| WindowGroup {
+                id: gid,
+                tabs: vec![
+                    mk_tab(ids[0], &format!("G{i}-A")),
+                    mk_tab(ids[1], &format!("G{i}-B")),
+                ],
+                active_tab: ids[0],
+                width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
+                maximized: false,
+            })
+            .collect();
+
+        let ws = Workspace {
+            strips: vec![Strip {
+                id: strip_id,
+                name: "Main".into(),
+                window_groups,
+            }],
+            ..Workspace::new(ws_id, "Test")
+        };
+
+        let mut active_strip = HashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = HashMap::new();
+        active_group.insert(strip_id, groups[0]);
+
+        let tree = WorkspaceTree {
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        (tree, strip_id, groups, tabs)
+    }
+
+    #[test]
+    fn axis_a11y_tab_activation_commits_selection_and_focus_before_resync() {
+        for enabled in [false, true] {
+            let (tree, strip, groups, tabs) = axis_a11y_tree();
+            let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+            fb.with_chrome(|chrome| chrome.set_axis_navigation_enabled(enabled));
+            fb.host_mut().run_requested_shortcut_actions();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut focus = None;
+            fb.paint_settled();
+            for (label, group, tab) in [
+                ("G4-A", groups[4], tabs[4][0]),
+                ("G0-B", groups[0], tabs[0][1]),
+            ] {
+                let update = fb.build_a11y_tree_update(focus, 1.0);
+                let (target, node) = exported_node_named(&update, label).expect("tab exported");
+                assert_eq!(node.role(), ui::accesskit::Role::Tab);
+                assert!(node.supports_action(ui::accesskit::Action::Click));
+                assert!(fb.dispatch_a11y_action(
+                    target,
+                    &ui::a11y::Action::Activate,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &mut focus
+                ));
+                assert_eq!(
+                    fb.chrome().tree().desktop.active_group.get(&strip),
+                    Some(&group),
+                    "activation stamps spatial focus before another event; mode={enabled}"
+                );
+                fb.pump_apps(&mut doc, &root);
+                fb.paint_settled();
+                fb.paint_settled();
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                let selected = tree.desktop.active_workspace().unwrap().strips[0]
+                    .window_groups
+                    .iter()
+                    .find(|candidate| candidate.id == group)
+                    .unwrap()
+                    .active_tab;
+                assert_eq!(
+                    selected, tab,
+                    "model resync must retain assistive selection; mode={enabled}"
+                );
+                drop(tree);
+                drop(chrome);
+                let update = fb.build_a11y_tree_update(focus, 1.0);
+                let (_, node) = exported_node_named(&update, label).expect("same tab exported");
+                assert_eq!(node.is_selected(), Some(true));
+                let focused = update
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == update.focus)
+                    .expect("exported focus");
+                assert_eq!(focused.1.role(), ui::accesskit::Role::TabList);
+                assert_eq!(
+                    focused.1.value(),
+                    Some(label),
+                    "assistive focus follows the activated tab bar"
+                );
+                if enabled {
+                    let row = fb
+                        .host_mut()
+                        .group_row_mut_for_tests(strip)
+                        .expect("live row");
+                    let rect = row
+                        .groups
+                        .iter()
+                        .find(|candidate| candidate.id == group)
+                        .unwrap()
+                        .get_rect();
+                    let (x0, x1) = row.visible_canvas_span();
+                    let scroll = row.scroll_x();
+                    assert!(
+                        rect.x0 >= x0 - scroll - 0.5 && rect.x1 <= x1 - scroll + 0.5,
+                        "assistive activation gathers axis focus"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn axis_a11y_tab_activation_follows_its_display_and_gathers_only_that_lane() {
+        use crate::shell::overlay_host::OutputGeometry;
+        let (tree, strip, groups, _) = axis_a11y_tree();
+        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+        let first = OutputGeometry::unscaled(0.0, 0.0, 640.0, 800.0).with_id(10);
+        let mut second = OutputGeometry::unscaled(640.0, 0.0, 640.0, 800.0).with_id(20);
+        second.scale = 1.5;
+        second.scene = Rect::new(640.0, 0.0, 1600.0, 1200.0);
+        fb.set_output_geometry(vec![first, second]);
+        fb.with_chrome(|chrome| {
+            chrome.set_axis_navigation_enabled(true);
+            let mut tree = chrome.tree_mut();
+            let workspaces = tree.desktop.workspaces.clone();
+            for (index, group) in groups.iter().enumerate() {
+                tree.desktop.outputs.move_group(
+                    &workspaces,
+                    *group,
+                    if index == 1 || index == 3 { 20 } else { 10 },
+                );
+            }
+            tree.desktop.outputs.set_focused(10);
+        });
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut focus = None;
+        fb.pump_apps(&mut doc, &root);
+        fb.paint_settled();
+        fb.paint_settled();
+        let other_pan = fb
+            .host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .output_pan(10)
+            .unwrap()
+            .scroll_x();
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (target, _) = exported_node_named(&update, "G3-B").expect("other display tab exported");
+        assert!(fb.dispatch_a11y_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus
+        ));
+        assert_eq!(
+            fb.chrome().tree().desktop.active_group.get(&strip),
+            Some(&groups[3])
+        );
+        assert_eq!(
+            fb.chrome().tree().desktop.outputs.focused_display(),
+            Some(20)
+        );
+        fb.pump_apps(&mut doc, &root);
+        fb.paint_settled();
+        fb.paint_settled();
+        let row = fb.host_mut().group_row_mut_for_tests(strip).unwrap();
+        assert_eq!(
+            row.output_pan(10).unwrap().scroll_x(),
+            other_pan,
+            "assistive gather leaves the other display's pan alone"
+        );
+        let view = row.output_pan(20).unwrap().viewport();
+        let rect = row
+            .groups
+            .iter()
+            .find(|candidate| candidate.id == groups[3])
+            .unwrap()
+            .get_rect();
+        assert!(rect.x0 >= view.x0 - 0.5 && rect.x1 <= view.x1 + 0.5);
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (_, selected) = exported_node_named(&update, "G3-B").unwrap();
+        assert_eq!(selected.is_selected(), Some(true));
+        let (_, focused) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == update.focus)
+            .unwrap();
+        assert_eq!(focused.value(), Some("G3-B"));
+    }
+
+    #[test]
+    fn axis_a11y_media_control_preserves_spatial_and_native_focus() {
+        let (tree, strip, groups, tabs) = axis_a11y_tree();
+        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+        fb.with_chrome(|chrome| chrome.set_axis_navigation_enabled(true));
+        fb.host_mut().run_requested_shortcut_actions();
+        fb.paint_settled();
+        let mut focus = None;
+        fb.focus_first(&mut focus);
+        let before = focus;
+        fb.host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .groups
+            .iter_mut()
+            .find(|group| group.id == groups[4])
+            .unwrap()
+            .bar_mut_for_tests()
+            .set_mark(tabs[4][0], Some(ui::widget::TabMark::Playing));
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (target, node) =
+            exported_node_named(&update, "Mute G4-A").expect("new media control exported");
+        assert_eq!(node.role(), ui::accesskit::Role::Button);
+        let mut doc = AutoCommit::new();
+        assert!(fb.dispatch_a11y_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus
+        ));
+        assert_eq!(
+            fb.chrome().tree().desktop.active_group.get(&strip),
+            Some(&groups[0])
+        );
+        assert_eq!(focus, before, "mute is a media action, not tab selection");
+        assert!(!fb.chrome.borrow_mut().take_axis_gather_request());
+        let intent = fb
+            .host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .groups
+            .iter_mut()
+            .find(|group| group.id == groups[4])
+            .unwrap()
+            .bar_mut_for_tests()
+            .take_mark_click();
+        assert_eq!(intent, Some((tabs[4][0], ui::widget::TabMark::Playing)));
     }
 
     #[test]
