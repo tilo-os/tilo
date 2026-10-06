@@ -1058,9 +1058,24 @@ mod owner_commit_tests {
             manager,
         )
         .unwrap();
+        // The checked app needs its ordinary model and retained surface phases;
+        // presence-only pumping cannot adopt the model or service an invocation.
+        struct HeadlessSurface;
+        impl ui::app::AppSurface for HeadlessSurface {
+            fn scale_factor(&self) -> f64 {
+                1.0
+            }
+            fn inner_size(&self) -> ui::winit::dpi::PhysicalSize<u32> {
+                ui::winit::dpi::PhysicalSize::new(1024, 768)
+            }
+            fn request_redraw(&self) {}
+            fn set_cursor(&self, _: ui::winit::window::CursorIcon) {}
+        }
+        let mut scene = ui::vello::Scene::new();
         let deadline = tilo_test_env::hang_deadline();
         let (surface, action) = loop {
-            app.pump_collab_presence();
+            scene.reset();
+            app.surface_frame(&HeadlessSurface, &mut scene);
             if let Some(found) =
                 broker
                     .published_action_surfaces()
@@ -1078,7 +1093,9 @@ mod owner_commit_tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "actual checked Writer did not publish actions"
+                "actual checked Writer did not publish actions: connection={:?}, surfaces={}",
+                app.collaboration_state(),
+                broker.published_action_surfaces().len()
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
@@ -1093,7 +1110,8 @@ mod owner_commit_tests {
             )
             .unwrap();
         loop {
-            app.pump_collab_presence();
+            scene.reset();
+            app.surface_frame(&HeadlessSurface, &mut scene);
             if job.completion.try_recv().is_ok() {
                 break;
             }

@@ -303,6 +303,23 @@ fn flatpak_catalogue_from(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn flatpak_remote_enabled_from(
+    binary: &std::path::Path,
+    name: &str,
+    enabled: bool,
+) -> Result<String, Error> {
+    require_flatpak_selector(name)?;
+    let mut command = std::process::Command::new(binary);
+    command.args([
+        "remote-modify",
+        "--user",
+        if enabled { "--enable" } else { "--disable" },
+        "--",
+        name,
+    ]);
+    run_host_command(command)
+}
+
 fn flatpak_install_remote_from(
     binary: &std::path::Path,
     remote: &str,
@@ -802,6 +819,13 @@ impl app_host::Server for AppHostServer {
                     WireRemoteAction::Remove => {
                         command.args(["remote-delete", "--user", "--force", &name]);
                     }
+                    WireRemoteAction::Enable | WireRemoteAction::Disable => {
+                        return flatpak_remote_enabled_from(
+                            std::path::Path::new("/usr/bin/flatpak"),
+                            &name,
+                            action == WireRemoteAction::Enable,
+                        );
+                    }
                 }
                 run_host_command(command)
             })
@@ -1052,6 +1076,46 @@ mod command_tests {
             super::registry_catalogue_from(&configured, "Configured source", |_| Ok(vec![entry]))
                 .unwrap_err();
         assert!(error.to_string().contains("exceeds the response limit"));
+    }
+
+    #[test]
+    fn remote_enabled_changes_use_only_account_scope_and_preserve_refusal() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("flatpak");
+        std::fs::write(
+            &binary,
+            r#"#!/bin/sh
+printf '%s\n' "$@"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for (enabled, flag) in [(true, "--enable"), (false, "--disable")] {
+            let result =
+                super::flatpak_remote_enabled_from(&binary, "custom-tools", enabled).unwrap();
+            assert_eq!(
+                result.trim(),
+                format!("remote-modify\n--user\n{flag}\n--\ncustom-tools")
+            );
+        }
+        for name in ["--system", "../other", ""] {
+            assert!(super::flatpak_remote_enabled_from(&binary, name, true).is_err());
+        }
+        std::fs::write(
+            &binary,
+            r"#!/bin/sh
+echo 'No account source with that name' >&2
+exit 1
+",
+        )
+        .unwrap();
+        assert!(
+            super::flatpak_remote_enabled_from(&binary, "custom-tools", false)
+                .unwrap_err()
+                .to_string()
+                .contains("No account source with that name")
+        );
     }
 
     #[test]

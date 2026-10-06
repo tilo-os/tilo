@@ -763,6 +763,16 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(content_hash);
             }
         }
+        CollabRequest::LaunchInstalledApplication {
+            app_id,
+            package_root,
+            ..
+        } => {
+            meter.string_capacity(app_id);
+            if let Some(root) = package_root {
+                meter.string_capacity(root);
+            }
+        }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
@@ -1250,7 +1260,8 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         },
         #[cfg(unix)]
         CollabEvent::ManagedInvocationObservation { result } => meter.add(result.meter_bytes()),
-        CollabEvent::PublishedInvocationResult { result, .. } => match result {
+        CollabEvent::PublishedInvocationResult { result, .. }
+        | CollabEvent::InstalledApplicationLaunchResult { result, .. } => match result {
             Ok((_, update)) => serialized_bytes(update, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -5740,6 +5751,30 @@ async fn dispatch_sdk_request(
                 });
             let _ = inbound_tx
                 .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
+        }
+        CollabRequest::LaunchInstalledApplication {
+            request_id,
+            app_id,
+            package_root,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .launch_installed_application_for(
+                    &app_id,
+                    None,
+                    package_root.as_deref(),
+                    on_behalf_of.map(|id| *id.0.as_bytes()),
+                )
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
         }
         CollabRequest::SubscribeEnrolledTasks { request_id } => {
             let result = route

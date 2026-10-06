@@ -600,6 +600,9 @@ pub struct StoreApp {
     dispatcher: Option<Dispatcher<Store>>,
     /// The serialized package and catalogue worker of a live window.
     worker: Option<StoreWorker>,
+    launch_requests: Vec<ui::collaboration::CollabRequest>,
+    pending_launches: HashMap<u64, std::sync::mpsc::Sender<Result<String, String>>>,
+    next_launch_request: Option<u64>,
     /// Merged item feed.
     items: Vec<StoreItem>,
     /// The complete catalogue directory: every app by id and its search
@@ -705,6 +708,9 @@ impl StoreApp {
         Self {
             dispatcher: None,
             worker: None,
+            launch_requests: Vec::new(),
+            pending_launches: HashMap::new(),
+            next_launch_request: Some(1),
             items: Vec::new(),
             directory: crate::search::StoreDirectory::default(),
             item_index: ui::search::ListIndex::default(),
@@ -1062,7 +1068,7 @@ impl StoreApp {
     pub fn set_worker_busy(&mut self, busy: bool) {
         if self.worker_busy != busy || (!busy && self.active_operation.is_some()) {
             self.worker_busy = busy;
-            if !busy {
+            if !busy && self.pending_launches.is_empty() {
                 self.active_operation = None;
             }
             self.structure_dirty = true;
@@ -2433,12 +2439,41 @@ impl StoreApp {
             }) {
                 browse = browse.on_action(binding);
             }
-            let controls = Box::new(
-                Row::new()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .push(Box::new(browse))
-                    .push(remove),
-            );
+            let mut widgets: Vec<Box<dyn Widget>> = vec![Box::new(browse)];
+            if remote.user_managed {
+                let effect = remote_enabled_effect(remote);
+                let mut toggle = ui::widget::Button::new(
+                    &format!("store.{}.toggle", remote.resource_id()),
+                    &ui::i18n!(if remote.disabled {
+                        "store-remote-enable"
+                    } else {
+                        "store-remote-disable"
+                    }),
+                )
+                .fit_content(40.0);
+                if let Some(binding) = bindings::effect(&effect) {
+                    toggle = toggle.on_action(binding);
+                }
+                widgets.push(Box::new(toggle));
+            }
+            widgets.push(remove);
+            let controls: Box<dyn Widget> = if self.compact_layout() {
+                Box::new(
+                    widgets.into_iter().fold(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(theme.tokens.spacing.s2),
+                        Column::push,
+                    ),
+                )
+            } else {
+                Box::new(
+                    widgets
+                        .into_iter()
+                        .fold(Row::new().with_gap(theme.tokens.spacing.s2), Row::push),
+                )
+            };
             let remote_row: Box<dyn Widget> = if self.compact_layout() {
                 Box::new(
                     Container::new().with_no_padding().with_child(Box::new(
@@ -3430,7 +3465,39 @@ impl StoreApp {
     }
 }
 
+impl ui::widget::Collaborative for StoreApp {
+    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        std::mem::take(&mut self.launch_requests)
+    }
+
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        let ui::collaboration::CollabEvent::InstalledApplicationLaunchResult { request_id, result } =
+            event
+        else {
+            return;
+        };
+        let Some(reply) = self.pending_launches.remove(request_id) else {
+            return;
+        };
+        let result = match result {
+            Ok((_, ui::tilo_actions::InvocationUpdate::Succeeded { .. })) => {
+                Ok(ui::i18n!("store-launch-opened").as_str().to_owned())
+            }
+            Ok((_, ui::tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+                Err(error.message.clone())
+            }
+            Ok((_, ui::tilo_actions::InvocationUpdate::Cancelled { message, .. })) => Err(message
+                .clone()
+                .unwrap_or_else(|| "application launch was cancelled".into())),
+            Ok(_) => Err("the workspace returned an unfinished application launch".into()),
+            Err(error) => Err(error.clone()),
+        };
+        let _ = reply.send(result);
+    }
+}
+
 impl Widget for StoreApp {
+    ui::provides!(dyn ui::widget::Collaborative);
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_worker();
         if let Some(root) = self.root.as_mut() {
@@ -3715,7 +3782,7 @@ impl StoreApp {
         }
     }
 
-    fn inspect_catalogue(&self, app: Option<&str>) -> Result<serde_json::Value, String> {
+    pub(crate) fn inspect_catalogue(&self, app: Option<&str>) -> Result<serde_json::Value, String> {
         let detail = app
             .map(|id| {
                 if !crate::doc_actions::valid_app_id(id) {
@@ -3959,6 +4026,12 @@ impl StoreApp {
                     Finish::Status,
                 ));
             }
+            StoreEffect::EnableRemote { remote } => {
+                return self.admit_remote_enabled(&remote, true);
+            }
+            StoreEffect::DisableRemote { remote } => {
+                return self.admit_remote_enabled(&remote, false);
+            }
             StoreEffect::RemoveRemote { name } => {
                 validate_remote_name(&name)?;
                 if !self
@@ -4197,6 +4270,7 @@ impl StoreApp {
     }
 
     fn start_job(&mut self, job: Job, cx: &mut EffectCx<Store, Self>) -> EffectAnswer {
+        let parent = ui::invocation_scope::current_invoker().and_then(|_| cx.invocation());
         let Job { request, finish } = job;
         let (done, outcome) = std::sync::mpsc::channel();
         let queued = self
@@ -4220,7 +4294,9 @@ impl StoreApp {
                     .recv()
                     .unwrap_or_else(|_| Err("the Store worker stopped".into()))
             },
-            move |app: &mut Self, outcome: Outcome, cx| app.finish_job(&finish, outcome, cx),
+            move |app: &mut Self, outcome: Outcome, cx| {
+                app.finish_job(&finish, outcome, parent, cx)
+            },
         ))
     }
 
@@ -4228,8 +4304,14 @@ impl StoreApp {
         &mut self,
         finish: &Finish,
         outcome: Outcome,
-        cx: &EffectCx<Store, Self>,
+        parent: Option<tilo_actions::InvocationId>,
+        cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
+        if let Ok(finished) = &outcome
+            && let Some(launch) = &finished.launch
+        {
+            return self.start_application_launch(launch.clone(), parent, cx);
+        }
         if *finish == Finish::Package {
             self.active_operation = None;
         } else {
@@ -4259,6 +4341,64 @@ impl StoreApp {
             }
         }
         Ok(Effected::value(finished.status))
+    }
+
+    fn start_application_launch(
+        &mut self,
+        launch: crate::actions::ApplicationLaunch,
+        parent: Option<tilo_actions::InvocationId>,
+        cx: &mut EffectCx<Store, Self>,
+    ) -> EffectAnswer {
+        let Some(request_id) = self.next_launch_request.take() else {
+            self.active_operation = None;
+            return Err("application launch identities are exhausted; reopen the Store".into());
+        };
+        self.next_launch_request = request_id.checked_add(1);
+        let (item, kind) = if let Some(desktop) = launch.app_id.strip_prefix("host:") {
+            (
+                desktop.strip_suffix(".desktop").unwrap_or(desktop),
+                ActionKind::FlatpakOpen,
+            )
+        } else {
+            (launch.app_id.as_str(), ActionKind::Open)
+        };
+        self.active_operation = Some((item.to_owned(), kind));
+        self.structure_dirty = true;
+        let (reply, result) = std::sync::mpsc::channel();
+        self.pending_launches.insert(request_id, reply);
+        self.launch_requests.push(
+            ui::collaboration::CollabRequest::LaunchInstalledApplication {
+                request_id,
+                app_id: launch.app_id,
+                package_root: launch.package_root,
+                on_behalf_of: parent,
+            },
+        );
+        Ok(cx.thread(
+            move |_| {
+                result
+                    .recv_timeout(std::time::Duration::from_secs(20))
+                    .unwrap_or_else(|_| {
+                        Err("the workspace host did not answer the application launch".into())
+                    })
+            },
+            move |app: &mut Self, result, _| {
+                app.pending_launches.remove(&request_id);
+                app.active_operation = None;
+                app.structure_dirty = true;
+                match result {
+                    Ok(status) => {
+                        app.status_line.clone_from(&status);
+                        app.operation_error = None;
+                        Ok(Effected::value(status))
+                    }
+                    Err(error) => {
+                        app.show_failure(&error);
+                        Err(error)
+                    }
+                }
+            },
+        ))
     }
 
     /// Record the registry's case for `app_id`'s report.
@@ -4347,6 +4487,8 @@ impl StoreApp {
             StoreEffect::FLATPAK_OPEN,
             StoreEffect::FLATPAK_REMOVE,
             StoreEffect::FLATPAK_SETUP,
+            StoreEffect::ENABLE_REMOTE,
+            StoreEffect::DISABLE_REMOTE,
         ]
         .into_iter()
         .map(|effect| EffectStatus::unavailable(effect, "flatpak_host_unavailable", reason))
@@ -4504,8 +4646,29 @@ impl StoreApp {
         package_action_label(action, self.flatpak_error.as_deref())
     }
 
+    fn admit_remote_enabled(&self, id: &str, enabled: bool) -> Result<Admitted, String> {
+        if !self.flatpak_available {
+            return Err(flatpak_unavailable_reason(self.flatpak_error.as_deref()).into());
+        }
+        let remote = self
+            .remotes
+            .iter()
+            .find(|remote| remote.resource_id() == id && remote.user_managed)
+            .ok_or_else(|| ui::i18n!("store-remote-managed-change"))?;
+        let name = remote.name.clone();
+        validate_remote_name(&name)?;
+        self.reserve_job()?;
+        Ok(Job::admitted(
+            Request::RemoteSetEnabled { name, enabled },
+            Finish::Status,
+        ))
+    }
+
     fn remote_live_row(&self, remote: &crate::flathub_client::Remote) -> LiveRow {
-        let row = remote_row(remote);
+        let mut row = remote_row(remote);
+        if remote.user_managed {
+            row = row.effect(&remote_enabled_effect(remote));
+        }
         if self.flathub_account_source(&remote.resource_id()).is_ok() {
             row.effect(&StoreEffect::UseFlathubForAccount {
                 remote: remote.resource_id(),
@@ -4594,6 +4757,18 @@ fn case_record(
 const REMOTES_ID: &str = "store:remotes";
 const LATEST_JOB_ID: &str = "store:latest-job";
 const CATALOGUE_SNAPSHOT_ID: &str = "store:catalogue-snapshot";
+
+fn remote_enabled_effect(remote: &crate::flathub_client::Remote) -> StoreEffect {
+    if remote.disabled {
+        StoreEffect::EnableRemote {
+            remote: remote.resource_id(),
+        }
+    } else {
+        StoreEffect::DisableRemote {
+            remote: remote.resource_id(),
+        }
+    }
+}
 
 fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
     crate::resource::STORE_CATALOG.ensure();
@@ -4957,6 +5132,107 @@ mod tests {
                 .unwrap_err()
                 .contains("not installed")
         );
+    }
+
+    #[test]
+    fn remote_enabled_actions_preserve_account_scope_and_declaration() {
+        let mut app = seeded_app();
+        let user = crate::flathub_client::Remote {
+            name: "custom-tools".into(),
+            title: "Custom tools".into(),
+            url: "https://tools.example.test/repo/".into(),
+            disabled: true,
+            user_managed: true,
+        };
+        let system = crate::flathub_client::Remote {
+            user_managed: false,
+            ..user.clone()
+        };
+        app.set_remotes(vec![user.clone(), system.clone()]);
+        for (disabled, expected, enabled) in [
+            (true, "enable-remote", true),
+            (false, "disable-remote", false),
+        ] {
+            let remote = crate::flathub_client::Remote {
+                disabled,
+                ..user.clone()
+            };
+            app.set_remotes(vec![remote.clone(), system.clone()]);
+            let row = app.live_row(&remote.resource_id()).unwrap().into_resource();
+            let action = row
+                .actions
+                .iter()
+                .find(|action| action.id == expected)
+                .unwrap();
+            assert_eq!(
+                action.contract.permission,
+                tilo_actions::PermissionRequirement::Admin
+            );
+            let job = admitted_job(&mut app, remote_enabled_effect(&remote));
+            assert!(
+                matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
+            );
+            let system_row = app.live_row(&system.resource_id()).unwrap().into_resource();
+            assert!(
+                !system_row
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action.id.as_str(), "enable-remote" | "disable-remote"))
+            );
+            assert!(
+                app.admit(StoreEffect::EnableRemote {
+                    remote: system.resource_id()
+                })
+                .is_err()
+            );
+            assert!(
+                app.admit(StoreEffect::DisableRemote {
+                    remote: "remote:user:missing".into()
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn account_remote_enabled_controls_are_accessible_on_the_owner_surface() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_remotes(vec![crate::flathub_client::Remote {
+                name: "custom-tools".into(),
+                title: "Custom tools".into(),
+                url: "https://tools.example.test/repo/".into(),
+                disabled: true,
+                user_managed: true,
+            }]);
+            store.show_remotes();
+        })
+        .unwrap();
+        let control = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-remote-enable").as_str())
+            })
+            .unwrap();
+        assert!(!control.disabled);
+        app.with_surface(|store: &mut StoreApp| {
+            store.remotes[0].disabled = false;
+            store.structure_dirty = true;
+        })
+        .unwrap();
+        let control = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-remote-disable").as_str())
+            })
+            .unwrap();
+        assert!(!control.disabled);
     }
 
     #[test]

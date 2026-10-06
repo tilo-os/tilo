@@ -16,6 +16,7 @@
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
+mod observed_launch;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 #[cfg(test)]
@@ -5807,6 +5808,7 @@ impl CapnpBrokerState {
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::PublishedInvocationResult { .. }
+            | CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
             | CollabEvent::WorkspaceControl { .. }
@@ -8645,22 +8647,34 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::LaunchPublishedApplicationParams,
         mut results: channel_handle::LaunchPublishedApplicationResults,
     ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
         let request = match params.get() {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
+        };
+        let parent = match request
+            .get_on_behalf_of()
+            .and_then(observed_launch::launch_parent)
+        {
+            Ok(parent) => parent,
+            Err(error) => return Promise::err(error),
+        };
+        let actor = match self.launch_actor(parent) {
+            Ok(actor) => actor,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let app_id = match request.get_app_id() {
             Ok(value) => match value.to_str() {
                 Ok(value) => value.to_owned(),
                 Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
             },
+            Err(error) => return Promise::err(error),
+        };
+        let package_root = match request.get_package_root().and_then(|root| {
+            root.to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+                .and_then(observed_launch::package_root)
+        }) {
+            Ok(root) => root,
             Err(error) => return Promise::err(error),
         };
         let Some(membership) = self.state.membership.as_ref() else {
@@ -8688,7 +8702,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 Ok(now) => now / 1_000_000_000,
                 Err(error) => return Promise::err(capnp::Error::failed(error)),
             };
-            let caller = current.policy_actor(&workspace, now);
+            let caller = actor.policy_in(&workspace, now);
             if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
                 != CapDecision::Allow
             {
@@ -8699,44 +8713,35 @@ impl channel_handle::Server for CapnpChannelHandle {
             workspace
         };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match self
+        let now = match self.state.policy_now_ns() {
+            Ok(now) => now / 1_000_000_000,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let author = observed_launch::launch_author(&actor, &workspace, now);
+        let started = self
             .state
             .services
             .launcher
             .as_ref()
             .ok_or_else(|| "application launch unsupported".to_string())
-            .and_then(|service| service.launch(&app_id, &workspace))
-        {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "launch_failed".into(),
-                    message: error,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        };
-        self.state.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: current.broker_actor().id,
-            },
-            update.clone(),
-        );
-        match serde_json::to_string(&update) {
-            Ok(json) => {
-                results.get().set_id(id);
-                results.get().set_update_json(&json);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-        }
+            .and_then(|service| {
+                service.begin_launch(
+                    &app_id,
+                    package_root.as_deref(),
+                    &workspace,
+                    author.as_deref(),
+                )
+            });
+        let actor = actor.id().to_owned();
+        Promise::from_future(async move {
+            let outcome = observed_launch::wait_for_startup(started).await;
+            let update = self.finish_observed_launch(&app_id, actor, parent, id, outcome);
+            let json = serde_json::to_string(&update)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_id(id);
+            results.get().set_update_json(&json);
+            Ok(())
+        })
     }
 
     fn report_continuation(

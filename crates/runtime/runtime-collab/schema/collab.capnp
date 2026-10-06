@@ -202,7 +202,9 @@ interface ChannelHandle {
   cancelPublishedInvocation @23 (id :UInt64) -> (updateJson :Text);
   # Optional content-addressed object to stage read-only for the launched app.
   # Empty keeps the ordinary app-launch behavior.
-  launchPublishedApplication @24 (appId :Text, contentHash :Text)
+  # Optional exact signed installed package root. Empty selects the normal
+  # application; a supplied root must match both its catalogue row and app id.
+  launchPublishedApplication @24 (appId :Text, contentHash :Text, packageRoot :Text, onBehalfOf :Data)
       -> (id :UInt64, updateJson :Text);
 
   # Ask this session to open the "say something about this" surface.
