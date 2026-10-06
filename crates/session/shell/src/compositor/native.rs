@@ -8224,6 +8224,8 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    state.output_management.set_wake(Arc::clone(&session_wake));
+    crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
     }
@@ -9699,6 +9701,9 @@ pub fn run() {
         input_steps.step("focus-persist");
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
+        if state.output_management.poll_staging() {
+            settings_written.store(true, Ordering::Release);
+        }
         if settings_written.swap(false, Ordering::AcqRel) {
             settings_watch.check_now();
         }
@@ -9709,8 +9714,7 @@ pub fn run() {
             input_steps.step("settings-keyboard");
             backend.reload_input_settings();
             input_steps.step("settings-input-devices");
-            // The backend has now reconciled any staged display plan; tell
-            // the output-management clients that asked for it how it went.
+            // Preserve Keep/Revert tracking after an Apply receipt was drained.
             state.output_management.resolve_transactions(
                 settings_store::hardware::DisplayTransaction::load().as_ref(),
             );
@@ -9767,6 +9771,14 @@ pub fn run() {
             input_steps.step("settings-power");
             input_methods.reload(&mut state);
             input_steps.step("settings-input-methods");
+        }
+        // Drain backend receipts even when the storage completion followed
+        // its file-change edge. Only the matching reconciled transaction
+        // acknowledges the admitted request.
+        if state.output_management.has_pending_apply() {
+            state.output_management.resolve_transactions(
+                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            );
         }
         input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
