@@ -753,6 +753,17 @@ fn present_component(
         definition.record_kind.clone(),
     );
     let (checkout, named_new) = match &config.record {
+        Some(existing)
+            if definition.keeps_room_record()
+                && existing == RecordId::package_primary().as_str() =>
+        {
+            (
+                Some(RecordCheckout::package_primary(
+                    definition.record_kind.clone(),
+                )),
+                None,
+            )
+        }
         Some(existing) => (
             Some(RecordCheckout::new(
                 RecordId::parse(existing).ok_or_else(|| error("invalid record id"))?,
@@ -1660,6 +1671,50 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
             .published_bound_resources_of(None)
             .map_err(|e| door_error(&e))?;
         serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
+    })
+}
+
+/// Native catalogue requests, answered by the page's existing certified peer.
+/// Shares the retained request collector with the local media lane.
+/// # Errors
+/// Refuses closed mounts or unencodable requests.
+#[wasm_bindgen]
+pub fn component_catalogue_requests(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let requests = m.media.take_catalogue_requests(&mut m.frame);
+        serde_json::to_string(&requests).map_err(error)
+    })
+}
+
+/// Deliver one certified catalogue answer to this live native app mount.
+/// The app fences the originating request, current resource and timeout.
+/// # Errors
+/// Refuses closed mounts, oversized or non-catalogue answers.
+#[wasm_bindgen]
+pub fn component_catalogue_response(id: u64, response: &str) -> Result<(), JsValue> {
+    if response.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES {
+        return Err(error("catalogue response exceeds its wire budget"));
+    }
+    let message: tilo_actions::remote::RemoteActionMessage =
+        serde_json::from_str(response).map_err(error)?;
+    if !matches!(
+        message,
+        tilo_actions::remote::RemoteActionMessage::CatalogueResponse { .. }
+    ) {
+        return Err(error("not a catalogue response"));
+    }
+    with_mount(id, |m| {
+        // This only reports the originating command's actual system transfer.
+        // The browser's own copy command still refuses absent/expired permission.
+        crate::clipboard::during_input(&m.status, || {
+            m.frame
+                .handle_collaboration_event(&ui::collaboration::CollabEvent::RemoteAction {
+                    message,
+                });
+        });
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
     })
 }
 

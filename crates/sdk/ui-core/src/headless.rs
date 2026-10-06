@@ -1689,6 +1689,12 @@ impl FrameHarness {
         self.root.as_ref()
     }
 
+    /// Deliver an authenticated transport answer through the native widget tree.
+    pub fn handle_collaboration_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        crate::widget::handle_collab_event(self.root.as_mut(), event);
+        self.relayout();
+    }
+
     /// The live document, read-only.
     #[must_use]
     pub fn state(&self) -> &State {

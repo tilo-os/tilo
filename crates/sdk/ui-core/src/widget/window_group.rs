@@ -627,20 +627,20 @@ impl WindowGroup {
     }
 
     pub fn begin_resize(&mut self, pointer_x: f32) {
-        self.resize_origin = Some((pointer_x, self.resolved_width_px()));
+        let visible_width = if self.rect.width() > 1.0 {
+            self.rect.width()
+        } else {
+            self.layout_width_px()
+        };
+        self.set_width_px(visible_width);
+        self.resize_origin = Some((pointer_x, visible_width));
     }
     pub fn update_resize(&mut self, pointer_x: f32) {
         if let Some((origin_x, origin_w)) = self.resize_origin {
             let delta = f64::from(pointer_x - origin_x);
             let usable = self.strip_usable_px;
             let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
-            let next = WindowWidth::from_px(clamped, usable);
-            if next != self.width {
-                self.width = next;
-                // Taffy bakes width as a fixed length; without this flag
-                // the drag updates the field but nothing moves on screen.
-                self.style_dirty = true;
-            }
+            self.set_width_px(clamped);
         }
     }
     pub fn end_resize(&mut self) {
@@ -677,12 +677,13 @@ impl WindowGroup {
     /// [`Self::set_width`] and springs.
     pub fn set_width_px(&mut self, px: f64) {
         let next = WindowWidth::from_px(px, self.strip_usable_px);
+        let animated = self.width_spring.take().is_some();
+        self.last_width_step = None;
         if next == self.width {
+            self.style_dirty |= animated;
             return;
         }
         self.width = next;
-        self.width_spring = None;
-        self.last_width_step = None;
         self.style_dirty = true;
     }
 
@@ -1371,7 +1372,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.maximized && self.close_rect.contains(self.last_cursor) => {
+            } if !self.external_navigation
+                && self.maximized
+                && self.close_rect.contains(self.last_cursor) =>
+            {
                 // Route through the same deferred fade flow as the
                 // per-tab × click (`bar.start_closing` → `closing_hosts`
                 // → sweep) so the group shrinks coherently instead of
@@ -1397,7 +1401,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.maximized && self.restore_rect.contains(self.last_cursor) => {
+            } if !self.external_navigation
+                && self.maximized
+                && self.restore_rect.contains(self.last_cursor) =>
+            {
                 // Handled here (not via bar.pending_max) so the click
                 // never races with a tab selection under the pill's geometry.
                 self.begin_rect_spring_from_current();
@@ -1410,7 +1417,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if !self.maximized && self.hover_resize && !self.new_tab_hit(self.last_cursor) => {
+            } if !self.maximized
+                && self.hover_resize
+                && (self.external_navigation || !self.new_tab_hit(self.last_cursor)) =>
+            {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
@@ -1434,7 +1444,8 @@ impl WindowGroup {
                         ..
                     },
                 ..
-            } if m.state().control_key()
+            } if !self.external_navigation
+                && m.state().control_key()
                 && m.state().shift_key()
                 && matches!(logical_key, Key::Character(s) if s.eq_ignore_ascii_case("p")) =>
             {
@@ -2457,10 +2468,7 @@ impl Widget for WindowGroup {
         // the window's own trailing edge, over its content, where it reads
         // as that app's scrollbar (and stays put when the app's panels go).
         // The east-west cursor already marks the band before it shows.
-        if !self.maximized
-            && !self.external_navigation
-            && (self.hover_resize || self.resize_origin.is_some())
-        {
+        if !self.maximized && (self.hover_resize || self.resize_origin.is_some()) {
             self.draw_resize_grip(scene, transform, theme);
         }
 
@@ -2492,9 +2500,7 @@ impl Widget for WindowGroup {
             self.rect.x1,
             self.rect.y1,
         );
-        if !self.external_navigation
-            && self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect)
-        {
+        if self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect) {
             *ctx.handled = true;
             return;
         }
@@ -2548,16 +2554,7 @@ impl Widget for WindowGroup {
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.external_navigation {
-            return None;
-        }
-        let band = Rect::new(
-            self.rect.x1 - RESIZE_HANDLE_PX,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        if self.resize_origin.is_some() || band.contains(point) {
+        if self.resize_origin.is_some() || self.resize_grab_hit(point) {
             Some(winit::window::CursorIcon::EwResize)
         } else {
             None

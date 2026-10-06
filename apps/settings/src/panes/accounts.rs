@@ -97,7 +97,7 @@ pub enum AccountsEffect {
     #[effect(view)]
     CancelNewPassword,
     /// Check that an account's server accepts its saved sign-in.
-    #[effect(job, row, idempotent, label = "Check connection")]
+    #[effect(job, returns, row, idempotent, label = "Check connection")]
     TestAccount {
         #[param("The account's id")]
         account: String,
@@ -164,12 +164,16 @@ pub(crate) fn answer(
             return Ok(cx.thread(
                 move |_| check(),
                 |_: &mut SettingsApp, outcome: Result<String, String>, _| {
-                    outcome.map(Effected::value)
+                    complete_account_check(outcome)
                 },
             ));
         }
     }
     Ok(Effected::done())
+}
+
+fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
+    outcome.map(Effected::value)
 }
 
 /// What the External Accounts area keeps for the window: the model, read
@@ -2019,6 +2023,62 @@ mod tests {
     use ui::Theme;
 
     struct RejectCandidate;
+
+    struct AcceptSavedCredential;
+
+    impl crate::account_probe::AccountTester for AcceptSavedCredential {
+        fn test(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+        ) -> Result<String, String> {
+            if account.id.as_str() != "connection@example.test"
+                || secret.password != "test-only-password"
+            {
+                return Err("the probe did not receive the saved account credential".into());
+            }
+            Ok("The server accepted the saved sign-in".into())
+        }
+    }
+
+    #[test]
+    fn account_check_returns_its_saved_credential_probe_result() -> Result<(), String> {
+        let (_dir, root) = scratch_root();
+        let id = accounts::AccountId::from("connection@example.test");
+        let account = accounts::Account::new(id.clone(), "email");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account);
+        root.save_store(&store).map_err(|error| error.to_string())?;
+        let mut vault = root.vault();
+        vault.put(&id, &accounts::Secret::password("test-only-password"));
+        vault.try_save()?;
+        let pane = AccountsPane::in_root(root.clone())
+            .with_account_tester(std::sync::Arc::new(AcceptSavedCredential));
+        let check = pane.connection_check(id.as_str())?;
+        let Effected::Done(output) = complete_account_check(check())? else {
+            return Err("the finished account check remained pending".into());
+        };
+        let effect = AccountsEffect::TestAccount {
+            account: id.as_str().into(),
+        };
+        let spec = effect.bound();
+        spec.contract.result.validate(&output)?;
+        if output.value != Some(serde_json::json!("The server accepted the saved sign-in"))
+            || !output.resources.is_empty()
+        {
+            return Err("the account check must return its exact status without resources".into());
+        }
+        if root.vault().get(&id) != vault.get(&id) {
+            return Err("checking the account must preserve its saved credential".into());
+        }
+        let rejecting =
+            AccountsPane::in_root(root).with_account_tester(std::sync::Arc::new(RejectCandidate));
+        let check = rejecting.connection_check(id.as_str())?;
+        if complete_account_check(check()) != Err("server rejected candidate".into()) {
+            return Err("the account check must propagate the probe's rejection".into());
+        }
+        Ok(())
+    }
 
     impl crate::account_probe::AccountTester for RejectCandidate {
         fn test(
