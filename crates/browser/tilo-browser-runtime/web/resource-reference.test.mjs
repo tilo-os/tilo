@@ -92,7 +92,7 @@ test('explicit browser opening hydrates the exact record and invokes only its lo
     assert.deepEqual(steps, [['hydrate', 'so.tilo.chat', 'uuid:1'],
       ['mount', {app: 'so.tilo.chat', record: 'uuid:1'}], ['actions', reference.id],
       ['view', reference.id, 'show']]);
-    assert.equal(sent.length, 1, 'the host is browsed; navigation runs on this browser');
+    assert.equal(sent.length, 2, 'the host is checked again after hydration; navigation runs locally');
   } finally { actions.dispose(); }
 });
 
@@ -130,7 +130,7 @@ test('package-primary resources mount the canonical existing record; ranges neve
     assert.deepEqual(steps, [['so.tilo.chat', ''], {app: 'so.tilo.chat', record: '@tilo:package-primary'}]);
     await assert.rejects(openResourceReference({reference: {...reference, span: {start: 1, end: 2, unit: 'Chars'}},
       provider: source, action: 'show', actions, current: () => true}), /range-aware/);
-    assert.equal(sent.length, 2);
+    assert.equal(sent.length, 3);
   } finally { actions.dispose(); }
 });
 
@@ -198,7 +198,7 @@ test('range navigation retains units and invokes only the declared local range a
 test('invalid and changed range contracts refuse navigation and clean provisional mounts', async () => {
   const range = {action: 'range', start_param: 'start', end_param: 'end', unit_param: 'unit'};
   const ranged = {...view, view: {...view.view, range}};
-  const {actions} = endpoints(() => ({revision: 'r', rows: [{...row, action: ranged}]}));
+  const {actions} = endpoints(() => ({revision: 'r', rows: [{...row, action: ranged}, {...row, action: {address: {...view.address, action: 'range'}, kind: 'View'}}]}));
   let cleaned = 0;
   try {
     for (const span of [{start: -1, end: 2, unit: 'Chars'}, {start: 3, end: 2, unit: 'Bytes'},
@@ -211,5 +211,17 @@ test('invalid and changed range contracts refuse navigation and clean provisiona
       mount: async () => ({actions: () => [{...ranged, view: {...view.view, range: {...range, action: 'other'}}}],
         cleanup: async () => { cleaned++; }, invokeAction: () => assert.fail('changed range must not run')})}), /range view changed/);
     assert.equal(cleaned, 1);
+  } finally { actions.dispose(); }
+});
+
+test('access revoked while hydrating refuses cached local views before navigation', async () => {
+  let reads = 0, cleaned = 0;
+  const {actions} = endpoints(() => ({revision: `r${++reads}`, rows: reads === 1 ? [row] : []}));
+  try {
+    await assert.rejects(openResourceReference({reference, provider, action: 'show', actions,
+      current: () => true, waitRecord: async () => {}, mount: async () => ({actions: () => [view],
+        invokeAction: () => assert.fail('revoked cached resource must not open'),
+        cleanup: async () => { cleaned++; }})}), /not permitted/);
+    assert.equal(reads, 2); assert.equal(cleaned, 1);
   } finally { actions.dispose(); }
 });
