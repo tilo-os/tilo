@@ -71,10 +71,47 @@ pub(crate) enum AgentComposerIntent {
     Steer,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct AgentSubmission {
     pub(crate) text: String,
     pub(crate) intent: AgentComposerIntent,
+    pub(crate) message: Option<AgentMessageSubmission>,
+}
+
+#[derive(Clone)]
+pub(crate) enum AgentMessageSubmission {
+    Discover(ui::LocalState<ui::remote_actions::CatalogueCall>),
+    Confirm {
+        target: tilo_actions::remote::RemoteActionTarget,
+        revision: String,
+        call: ui::LocalState<ui::remote_actions::CatalogueCall>,
+    },
+    Invoke(ui::LocalState<ui::remote_actions::InvocationCall>),
+}
+
+enum AgentMessagePoll {
+    Waiting,
+    Advance(AgentMessageSubmission),
+    Succeeded,
+    Failed,
+}
+
+fn unique_agent_message_target(
+    page: &tilo_actions::remote::CataloguePage,
+    agent: &str,
+) -> Option<tilo_actions::remote::RemoteActionTarget> {
+    let key = format!("chat.person:{agent}");
+    let mut matching = page.rows.iter().filter(|row| {
+        row.app_id == "so.tilo.chat"
+            && row.action.as_ref().is_some_and(|action| {
+                action.address.action == "message"
+                    && action.semantic_identity.as_ref().is_some_and(|identity| {
+                        identity.kind == "chat.agent" && identity.key == key
+                    })
+            })
+    });
+    let target = matching.next()?.target()?;
+    matching.next().is_none().then_some(target)
 }
 
 #[derive(Clone, Debug)]
@@ -2004,12 +2041,100 @@ impl ChatApp {
         self.settle_agent_submissions();
     }
 
+    fn poll_agent_message_submission(
+        &self,
+        agent: &str,
+        submission: &AgentSubmission,
+        message: &AgentMessageSubmission,
+    ) -> AgentMessagePoll {
+        use ui::remote_actions::RemoteCall;
+
+        match message {
+            AgentMessageSubmission::Discover(call) => match call.get() {
+                RemoteCall::Pending => AgentMessagePoll::Waiting,
+                RemoteCall::Refused(_) => AgentMessagePoll::Failed,
+                RemoteCall::Done(page) => {
+                    let Some(target) = unique_agent_message_target(&page, agent) else {
+                        return AgentMessagePoll::Failed;
+                    };
+                    let revision = page.revision;
+                    let call = self.agent_task_actions.catalogue(
+                        tilo_actions::remote::CatalogueQuery::resolve(&target, revision.clone()),
+                    );
+                    AgentMessagePoll::Advance(AgentMessageSubmission::Confirm {
+                        target,
+                        revision,
+                        call,
+                    })
+                }
+            },
+            AgentMessageSubmission::Confirm {
+                target,
+                revision,
+                call,
+            } => match call.get() {
+                RemoteCall::Pending => AgentMessagePoll::Waiting,
+                RemoteCall::Refused(_) => AgentMessagePoll::Failed,
+                RemoteCall::Done(page) => {
+                    if page.revision != *revision
+                        || unique_agent_message_target(&page, agent).as_ref() != Some(target)
+                    {
+                        return AgentMessagePoll::Failed;
+                    }
+                    let call = self.agent_task_actions.invoke(
+                        target.clone(),
+                        tilo_actions::remote::InvokeArgument::Text(submission.text.clone()),
+                        None,
+                    );
+                    AgentMessagePoll::Advance(AgentMessageSubmission::Invoke(call))
+                }
+            },
+            AgentMessageSubmission::Invoke(call) => match call.get() {
+                RemoteCall::Refused(_) => AgentMessagePoll::Failed,
+                RemoteCall::Done(update) if update.is_terminal() => {
+                    if matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
+                        AgentMessagePoll::Succeeded
+                    } else {
+                        AgentMessagePoll::Failed
+                    }
+                }
+                RemoteCall::Pending | RemoteCall::Done(_) => AgentMessagePoll::Waiting,
+            },
+        }
+    }
+
     fn settle_agent_submissions(&mut self) {
         use ui::agent_task_frontier::{AgentDirectionState, AgentQueueState};
 
         let pending = self.agent_submissions.get();
         let mut settled = Vec::new();
+        let mut message_updates = Vec::new();
         for (key, submission) in &pending {
+            if submission.intent == AgentComposerIntent::Message {
+                let Some(message) = submission.message.as_ref() else {
+                    settled.push(key.clone());
+                    continue;
+                };
+                match self.poll_agent_message_submission(&key.1, submission, message) {
+                    AgentMessagePoll::Waiting => {}
+                    AgentMessagePoll::Advance(message) => {
+                        message_updates.push((key.clone(), message));
+                    }
+                    AgentMessagePoll::Succeeded => {
+                        if self
+                            .composer_main
+                            .private_plain_for(&key.0, &key.1)
+                            .as_deref()
+                            == Some(submission.text.as_str())
+                        {
+                            self.composer_main.clear_private_for(&key.0, &key.1);
+                        }
+                        settled.push(key.clone());
+                    }
+                    AgentMessagePoll::Failed => settled.push(key.clone()),
+                }
+                continue;
+            }
             let Some(tasks) = self.agent_tasks.get(key) else {
                 continue;
             };
@@ -2025,7 +2150,7 @@ impl ChatApp {
                 ),
             };
             let failed = match submission.intent {
-                AgentComposerIntent::Message => true,
+                AgentComposerIntent::Message => false,
                 AgentComposerIntent::Queue => {
                     matches!(tasks.queue_state(), AgentQueueState::Failed)
                 }
@@ -2050,6 +2175,15 @@ impl ChatApp {
             } else if failed {
                 settled.push(key.clone());
             }
+        }
+        if !message_updates.is_empty() {
+            self.agent_submissions.update(|pending| {
+                for (key, message) in message_updates {
+                    if let Some(submission) = pending.get_mut(&key) {
+                        submission.message = Some(message);
+                    }
+                }
+            });
         }
         if !settled.is_empty() {
             self.agent_submissions

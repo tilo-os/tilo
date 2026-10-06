@@ -1613,26 +1613,27 @@ impl ChatApp {
             let workspace = self.active_ws.clone();
             let intent = self.direct_agent_intent();
             if intent == crate::app::AgentComposerIntent::Message {
-                let action = actions::post_agent_message_action(
-                    &workspace,
-                    &agent,
-                    &text,
-                    crate::model::AgentIntent::Message,
-                    now_secs(),
-                )
-                .with_body(self.composer_main.clips());
-                #[cfg(test)]
-                self.dispatched.borrow_mut().push(action.clone());
-                let sent = self.dispatch.as_ref().is_some_and(|dispatch| {
-                    dispatch
-                        .apply_now_with(doc, &action, actions::history_context(&action))
-                        .is_ok()
-                });
-                if sent {
-                    self.composer_main.clear_private();
-                    self.jump_to_latest();
-                    self.reload(doc);
+                let key = (workspace, agent);
+                if self.agent_submissions.get().contains_key(&key) {
+                    return;
                 }
+                let call =
+                    self.agent_task_actions
+                        .catalogue(tilo_actions::remote::CatalogueQuery {
+                            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                            ..tilo_actions::remote::CatalogueQuery::default()
+                        });
+                self.agent_submissions.update(|pending| {
+                    pending.insert(
+                        key,
+                        crate::app::AgentSubmission {
+                            text,
+                            intent,
+                            message: Some(crate::app::AgentMessageSubmission::Discover(call)),
+                        },
+                    );
+                });
+                self.poll_agent_tasks();
                 return;
             }
             let tasks = self.agent_task_context(&workspace, &agent);
@@ -1647,7 +1648,11 @@ impl ChatApp {
                 self.agent_submissions.update(|pending| {
                     pending.insert(
                         (workspace, agent),
-                        crate::app::AgentSubmission { text, intent },
+                        crate::app::AgentSubmission {
+                            text,
+                            intent,
+                            message: None,
+                        },
                     );
                 });
                 // A local test host, or an already-warm broker connection, may
@@ -2023,6 +2028,7 @@ mod tests {
     struct TaskControlHost {
         requests: Mutex<Vec<InvokeRequest>>,
         current_unavailable: AtomicBool,
+        message_refused: AtomicBool,
     }
 
     impl TaskControlHost {
@@ -2033,16 +2039,73 @@ mod tests {
         fn make_current_unavailable(&self) {
             self.current_unavailable.store(true, Ordering::Release);
         }
+
+        fn refuse_message(&self) {
+            self.message_refused.store(true, Ordering::Release);
+        }
     }
 
     impl ActionHost for TaskControlHost {
         fn query(
             &self,
             _caller: &Caller,
-            _query: CatalogueQuery,
+            query: CatalogueQuery,
         ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            use tilo_actions::remote::{CatalogueResource, CatalogueRow};
+            use tilo_actions::{
+                ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec,
+                OperationKind, ResourceSemanticIdentity,
+            };
+
+            let action = ActionDescriptor {
+                address: ActionAddress::new("opaque-agent-row", "message"),
+                semantic_identity: ResourceSemanticIdentity::new(
+                    "chat.agent",
+                    "chat.person:scribe",
+                ),
+                resource_kind: "chat.agent".into(),
+                resource_label: "Scribe".into(),
+                action_label: "Message".into(),
+                description: None,
+                locus: ExecutionLocus::ClientLocal,
+                kind: OperationKind::Document,
+                contract: ActionContract::default(),
+                input: InputSpec::Text {
+                    prompt: "Message".into(),
+                    placeholder: "Message Scribe".into(),
+                    collects: tilo_actions::Collects::Words,
+                },
+                params: Vec::new(),
+                view: None,
+            };
+            let row = CatalogueRow {
+                provider: "chat-peer".into(),
+                app_id: "so.tilo.chat".into(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: "opaque-agent-row".into(),
+                    kind: "chat.agent".into(),
+                    label: "Scribe".into(),
+                    presentation: None,
+                },
+                action: Some(action),
+                has_children: false,
+                visibility: None,
+            };
+            let rows = query
+                .target
+                .as_ref()
+                .is_none_or(|target| {
+                    row.action
+                        .as_ref()
+                        .is_some_and(|action| &action.address == target)
+                })
+                .then_some(row)
+                .into_iter()
+                .collect();
             Pending::ready(Ok(CataloguePage {
                 revision: "chat-task-controls-1".into(),
+                rows,
                 exhausted: true,
                 ..CataloguePage::default()
             }))
@@ -2120,6 +2183,12 @@ mod tests {
                     "result": {"cancellation_requested": {"task_id": task, "epoch": 7}},
                     "delivery": "saved"
                 }),
+                "message" if self.message_refused.load(Ordering::Acquire) => {
+                    return Pending::ready(Err(ActionHostError::Refused {
+                        reason: "document owner refused the message".into(),
+                    }));
+                }
+                "message" => serde_json::json!({"message": "committed"}),
                 action => {
                     return Pending::ready(Err(ActionHostError::InvalidRequest {
                         reason: format!("unexpected task action {action}"),
@@ -2196,13 +2265,18 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_agent_route_keeps_private_draft_and_sends_one_message() {
+    fn authenticated_agent_route_keeps_private_draft_until_message_terminal_success() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
         app.room_agents.push("scribe".into());
         app.room_names
             .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
         app.reload(&doc);
 
         app.on_hit(
@@ -2242,13 +2316,99 @@ mod tests {
         );
 
         app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
-        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
-        let messages = ChatDoc::list_messages(&doc, &channel);
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].text, "Keep this private");
-        assert_eq!(messages[0].author, "u_alice");
-        assert_eq!(messages[0].agent_intent, Some(model::AgentIntent::Message));
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Keep this private"),
+            "catalogue resolution is not a durable message acknowledgement"
+        );
+        app.poll_agent_tasks();
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Keep this private"),
+            "starting the public action is not its terminal owner receipt"
+        );
+        app.poll_agent_tasks();
         assert_eq!(app.composer_main.private_plain().as_deref(), Some(""));
+        let messages = host
+            .requests()
+            .into_iter()
+            .filter(|request| request.target.address.action == "message")
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].argument,
+            InvokeArgument::Text("Keep this private".into())
+        );
+        assert!(
+            ChatDoc::list_messages(
+                &doc,
+                &ChatDoc::agent_conversation_channel_id("ws_home", "scribe")
+            )
+            .is_empty(),
+            "the composer never bypasses the published action with a local CRDT write"
+        );
+    }
+
+    #[test]
+    fn refused_agent_message_keeps_the_exact_private_draft() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        host.refuse_message();
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Keep after refusal");
+        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        app.poll_agent_tasks();
+        app.poll_agent_tasks();
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Keep after refusal")
+        );
+        assert!(app.agent_submissions.get().is_empty());
+    }
+
+    #[test]
+    fn terminal_success_does_not_clear_a_draft_edited_after_submission() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "First version");
+        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        app.poll_agent_tasks();
+        type_str(&mut app, &mut doc, " plus a correction");
+        app.poll_agent_tasks();
+
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("First version plus a correction"),
+            "an older success acknowledges only its exact submitted text"
+        );
+        assert!(app.agent_submissions.get().is_empty());
     }
 
     #[test]

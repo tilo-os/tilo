@@ -68,3 +68,10 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# Direct-Agent Message submission resolves and invokes Chat's own current
+# published action so the private composer waits for its durable terminal
+# receipt instead of treating a local document apply as acknowledgement.
+[actions]
+query = true
+invoke = true
