@@ -48,7 +48,7 @@ impl StatePeer {
             );
             workspace.owner.clone_from(&owner);
             workspace.capabilities.clone_from(&caps);
-            workspace.role_of_agent_at(agent, seconds)
+            workspace.role_of_agent_in_room_at(agent, &self.core.room, seconds)
         };
         if let Some(agent) = command.agent()
             && agent_role(agent).is_none_or(|role| role == Role::Denied)
@@ -179,6 +179,164 @@ mod tests {
         )
         .unwrap();
         (peer, governor, other, now)
+    }
+
+    #[test]
+    fn foreign_room_membership_cannot_authorize_an_agent_task() {
+        let (mut peer, governor, _, now) = peer();
+        let key = SigningKey::from_bytes(&[2; 32]);
+        peer.apply_workspace_membership_command(
+            &governor,
+            &crate::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                agent: "scribe".into(),
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+        peer.put_governed_capabilities(
+            &[CapOverride::membership(
+                Subject::agent("scribe"),
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                Verb::Write,
+            )
+            .with_id("other-room-agent")],
+            &key,
+            now,
+        )
+        .unwrap();
+        let command = WorkspaceTaskCommand::Queue {
+            title: "Keep room boundaries".into(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+            resource: None,
+        };
+        let authority = WorkspaceTaskAuthority::Person { caller: governor };
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::from_u128(1),
+                [1; 32],
+                &authority,
+                &command,
+                now
+            )
+            .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        peer.put_governed_capabilities(
+            &[
+                CapOverride::membership(Subject::agent("scribe"), ROOM, Verb::Read)
+                    .with_id("actual-room-agent"),
+            ],
+            &key,
+            now,
+        )
+        .unwrap();
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::from_u128(1),
+                [1; 32],
+                &authority,
+                &command,
+                now
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn execution_phase_rechecks_current_agent_membership_before_mutation() {
+        use tilo_desktop_model::WorkspaceTaskExecutionPhase;
+        let (mut peer, governor, _, now) = peer();
+        let (_, queued) = peer
+            .apply_workspace_task_command(
+                uuid::Uuid::from_u128(1),
+                [1; 32],
+                &WorkspaceTaskAuthority::Person {
+                    caller: governor.clone(),
+                },
+                &WorkspaceTaskCommand::Queue {
+                    title: "Private full instruction is not a phase".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = queued else {
+            panic!("queue result")
+        };
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(2),
+            [2; 32],
+            &WorkspaceTaskAuthority::Host {
+                attestor: governor.clone(),
+            },
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+            now,
+        )
+        .unwrap();
+        let authority = WorkspaceTaskAuthority::Agent {
+            attestor: governor.clone(),
+            agent_id: "scribe".into(),
+        };
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(3),
+            [3; 32],
+            &authority,
+            &WorkspaceTaskCommand::ExecutionPhase {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                sequence: 0,
+                phase: WorkspaceTaskExecutionPhase::Accepted,
+            },
+            now,
+        )
+        .unwrap();
+        assert!(
+            peer.apply_workspace_membership_command(
+                &governor,
+                &crate::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                    agent: "scribe".into()
+                },
+                &SigningKey::from_bytes(&[2; 32]),
+                now,
+            )
+            .unwrap()
+        );
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::from_u128(4),
+                [4; 32],
+                &authority,
+                &WorkspaceTaskCommand::ExecutionPhase {
+                    task_id: task_id.clone(),
+                    run_epoch: 1,
+                    sequence: 1,
+                    phase: WorkspaceTaskExecutionPhase::Planning
+                },
+                now,
+            )
+            .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        let phase = crate::workspace_task::snapshot(peer.admitted_room().unwrap())
+            .unwrap()
+            .controls[&task_id]
+            .execution
+            .clone()
+            .unwrap();
+        assert_eq!(phase.phase, WorkspaceTaskExecutionPhase::Accepted);
+        assert_eq!(phase.sequence, 0);
+        let encoded = serde_json::to_string(&phase).unwrap();
+        assert!(!encoded.contains("Private full instruction"));
+        assert!(!encoded.contains("message"));
     }
 
     #[test]
