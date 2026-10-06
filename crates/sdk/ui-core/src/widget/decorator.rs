@@ -482,6 +482,10 @@ pub trait Decorator {
         self.inner().is_enabled()
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.inner().ime_edit_fingerprint(key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.inner().ime_purpose()
     }
@@ -1086,6 +1090,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn is_enabled(&self) -> bool {
         Decorator::is_enabled(self)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        Decorator::ime_edit_fingerprint(self, key)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {

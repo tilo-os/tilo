@@ -45,6 +45,7 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 agent-control = []
 
 [dependencies]
+agent-provider-config = { path = "../../agent/provider-config" }
 fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
