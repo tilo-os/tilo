@@ -11,6 +11,7 @@
 //! inner calloop loop · [`scanout`] modeset/flip/cursor/card handle · [`paint`] CPU-fallback vello → RGBA bridge.
 
 pub mod access_keys;
+pub mod cpu_present;
 pub mod devices;
 mod direct_retry;
 pub mod gestures;
@@ -52,6 +53,8 @@ pub struct DrmBackend {
     outputs: Vec<Output>,
     /// CPU-fallback vello → RGBA bridge. `None` until the first output is known (can't size the offscreen texture yet); lazily constructed in `submit_frame`.
     paint: Option<paint::VelloDrmBridge>,
+    /// The CPU renderer, when this device cannot run vello on its GPU.
+    cpu: Option<cpu_present::CpuRenderer>,
     /// When `true` the display is DPMS-off / scanout stopped, so [`Backend::submit_frame`]
     /// short-circuits (no paint, no present) until [`Backend::set_dpms`] re-enables it — avoids racing a frame against the disabled CRTC.
     blanked: bool,
@@ -99,6 +102,7 @@ impl DrmBackend {
             inner,
             outputs,
             paint: None,
+            cpu: None,
             blanked: false,
             refresh,
             commands,
@@ -144,9 +148,13 @@ pub struct DrmPresenter {
     scanouts: Vec<ScanoutEntry>,
     outputs: Vec<Output>,
     /// Pointer position in combined coordinates, for the software-cursor fallback only — unused
-    /// when the hardware cursor plane is active. Updated from the loop thread via `Presenter::set_pointer`-equivalent messages.
+    /// when the hardware cursor plane is active. Read from `shared_pointer` at each frame.
     pointer: (f64, f64),
+    /// Where the loop thread last moved the pointer.
+    shared_pointer: Arc<Mutex<(f64, f64)>>,
     paint: Option<paint::VelloDrmBridge>,
+    /// The CPU renderer, when this device cannot run vello on its GPU.
+    cpu: Option<cpu_present::CpuRenderer>,
     blanked: bool,
     /// True between a session pause and matching resume. Distinct from `blanked`: `paused` means these CRTCs aren't ours right now and the hardware must be rebuilt before presenting resumes.
     paused: bool,
@@ -751,6 +759,10 @@ fn physical_flip_proof(
 impl DrmPresenter {
     /// Frame-production body, identical to the pre-split `submit_frame`.
     fn render(&mut self, scene: &Scene) {
+        self.pointer = *self
+            .shared_pointer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let present_gate = self.present_gate.clone();
         let _present_guard = present_gate.as_ref().map(|gate| {
             gate.lock()
@@ -764,6 +776,7 @@ impl DrmPresenter {
             &mut self.scanouts,
             &self.outputs,
             &mut self.paint,
+            &mut self.cpu,
             self.pointer,
             ScanoutFrame {
                 scene,
@@ -793,6 +806,10 @@ impl DrmPresenter {
         if let Some(bridge) = &mut self.paint {
             let _ = bridge.take_phase_timing();
         }
+        self.pointer = *self
+            .shared_pointer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.drain_commands();
         if self.blanked || self.paused {
             return None;
@@ -805,6 +822,7 @@ impl DrmPresenter {
             &mut self.scanouts,
             &self.outputs,
             &mut self.paint,
+            &mut self.cpu,
             self.pointer,
             ScanoutFrame {
                 scene: &frame.scene,
@@ -1431,6 +1449,7 @@ fn paint_scanouts(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
     paint: &mut Option<paint::VelloDrmBridge>,
+    cpu: &mut Option<cpu_present::CpuRenderer>,
     pointer: (f64, f64),
     frame: ScanoutFrame<'_>,
     mut phase_window: Option<&mut PhaseWindow>,
@@ -1447,6 +1466,13 @@ fn paint_scanouts(
     }
     let target_size = combined_geometry(outputs);
     if target_size.0 == 0 || target_size.1 == 0 {
+        return PaintScanoutSample::default();
+    }
+    // Chosen once from the device, never as a fallback: a GPU that cannot
+    // run vello must not be initialised for the desktop at all.
+    if cpu_present::cpu_render_reason().is_some() {
+        let renderer = cpu.get_or_insert_with(cpu_present::CpuRenderer::new);
+        paint_scanouts_cpu(scanouts, outputs, renderer, pointer, frame, target_size);
         return PaintScanoutSample::default();
     }
     if let Some(reason) = paint.as_ref().and_then(paint::VelloDrmBridge::device_lost) {
@@ -1757,6 +1783,82 @@ fn paint_scanouts(
         entry.sync_hdr_readback();
     }
     render_combined_readback(scanouts, outputs, paint, pointer, frame)
+}
+
+/// Longest wait for the previous page flip before a CPU frame is copied.
+/// A flip retires on the next vblank; a much longer wait means the flip was
+/// lost (for instance with the CRTC switched off) and the output is re-set.
+const CPU_FLIP_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Render one frame on the CPU. A single unrotated output at scale one gets
+/// sparse copies into its dumb buffers; any other layout copies the whole
+/// canvas through the established per-output readback.
+fn paint_scanouts_cpu(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    renderer: &mut cpu_present::CpuRenderer,
+    pointer: (f64, f64),
+    frame: ScanoutFrame<'_>,
+    target_size: (u32, u32),
+) {
+    let single = scanouts.len() == 1
+        && outputs.len() == 1
+        && outputs.first().is_some_and(|output| {
+            output.position == (0, 0)
+                && output.scale.to_bits() == 1.0_f32.to_bits()
+                && output.size == target_size
+                && output.transform == settings_store::hardware::OutputTransform::Normal
+        })
+        && scanouts.first().is_some_and(|entry| {
+            entry.transform == settings_store::hardware::OutputTransform::Normal
+                && entry.color_transform.is_none()
+                && entry.scanout.size() == target_size
+        });
+    let damage = frame.damage.filter(|_| single);
+    let cpu_frame = cpu_present::CpuFrame {
+        scene: frame.scene,
+        revision: damage.map_or(0, |damage| damage.revision),
+        previous_revision: damage.and_then(|damage| damage.previous_revision),
+        regions: damage.and_then(|damage| damage.regions),
+    };
+    renderer.update(cpu_frame, target_size);
+
+    if single
+        && let Some(entry) = scanouts.first_mut()
+        && !entry.powered_off
+        && !entry.sync_hdr_readback()
+    {
+        match entry.scanout.wait_cpu_flip(CPU_FLIP_TIMEOUT) {
+            Ok((wait, latency)) => renderer.record_flip_wait(wait, latency),
+            Err(wait) => {
+                eprintln!(
+                    "FRAME-LIFECYCLE event=drm-flip-lost renderer=cpu waited_us={}; setting the output again",
+                    wait.as_micros()
+                );
+                renderer.record_flip_wait(wait, None);
+                entry.scanout.restore();
+                renderer.invalidate_screen();
+            }
+        }
+        entry.scanout.present_cpu(renderer, Some(pointer));
+        renderer.finish_frame();
+        return;
+    }
+
+    drain_page_flip_completions(scanouts);
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        entry.sync_hdr_readback();
+    }
+    let started = Instant::now();
+    let rgba = renderer.screen_rgba();
+    let size = (target_size.0 as usize, target_size.1 as usize);
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        paint_one_scanout(entry, outputs, rgba, size, pointer, None, None);
+    }
+    let pixels = u64::from(target_size.0).saturating_mul(u64::from(target_size.1));
+    renderer.record_present(started.elapsed(), pixels, scanouts.len());
+    renderer.invalidate_screen();
+    renderer.finish_frame();
 }
 
 /// Direct targets in the format the output needs now: the HDR formats in
@@ -2510,7 +2612,10 @@ impl Presenter for DrmPresenter {
     /// Mesa's CPU Vulkan driver compiles each pipeline on its first dispatch, seconds of work
     /// the bridge's warm-up pays up front. Starting it here overlaps the compositor's startup.
     fn prepare(&mut self) {
-        if self.scanouts.iter().all(|entry| entry.powered_off) {
+        // Device selection must precede GPU warm-up as well as frame rendering.
+        if cpu_present::cpu_render_reason().is_some()
+            || self.scanouts.iter().all(|entry| entry.powered_off)
+        {
             return;
         }
         let target_size = combined_geometry(&self.outputs);
@@ -2529,6 +2634,13 @@ impl Presenter for DrmPresenter {
         _output: OutputId,
     ) -> Option<crate::shell::present::PhysicalPresentation> {
         self.render_frame(frame)
+    }
+
+    fn frame_detail(&mut self) -> Option<String> {
+        self.cpu
+            .as_mut()
+            .and_then(cpu_present::CpuRenderer::take_finished)
+            .map(|stats| stats.log_fields())
     }
 
     fn set_dpms(&mut self, on: bool) {
@@ -2587,6 +2699,7 @@ impl Backend for DrmBackend {
             &mut self.inner.scanouts,
             &self.outputs,
             &mut self.paint,
+            &mut self.cpu,
             pointer,
             ScanoutFrame {
                 scene,
@@ -2613,6 +2726,7 @@ impl Backend for DrmBackend {
             &mut self.inner.scanouts,
             &self.outputs,
             &mut self.paint,
+            &mut self.cpu,
             pointer,
             ScanoutFrame {
                 scene: &frame.scene,
@@ -2686,10 +2800,15 @@ impl Backend for DrmBackend {
             return None;
         }
         let scanouts = std::mem::take(&mut self.inner.scanouts);
+        let shared_pointer = self.inner.dispatch.hw_cursor.shared_position();
+        *shared_pointer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.inner.dispatch.pointer;
         Some(Box::new(DrmPresenter {
             scanouts,
             outputs: self.outputs.clone(),
             pointer: self.inner.dispatch.pointer,
+            shared_pointer,
             // wgpu/Vulkan devices must be created on the thread which will
             // drive them.  An inline frame can initialise `self.paint`
             // before this split (for example during startup or a future
@@ -2698,6 +2817,7 @@ impl Backend for DrmBackend {
             // Drop any inline bridge here and let `paint_scanouts` construct
             // a fresh one on the dedicated presentation thread.
             paint: None,
+            cpu: self.cpu.take(),
             blanked: self.blanked,
             paused: self.paused,
             // The scanouts and the commands addressed to them travel together: whoever owns one owns the other.
