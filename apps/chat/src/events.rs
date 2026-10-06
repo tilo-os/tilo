@@ -3376,6 +3376,102 @@ mod tests {
     }
 
     #[test]
+    fn long_agent_header_reserves_kind_through_context_and_large_text() {
+        use ui::Widget;
+        use ui::text_render::TextRenderer;
+
+        let (mut app, _doc) = app_with_doc();
+        app.stage_scenario("agent-long-content-floating");
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+        render_frame_with_theme(&mut app, 560.0, 560.0, &theme);
+
+        let identity = app.header_identity_text();
+        assert_eq!(identity.name, "Documentation and Accessibility Specialist");
+        assert_eq!(identity.kind.as_deref(), Some("Agent"));
+        assert!(identity.context.is_empty());
+        let mut text = TextRenderer::new();
+        let complete_kind =
+            crate::paint::width_of(&mut text, "Agent", &theme.text(ui::tokens::TextRole::Body));
+        let assert_kind_fit = |app: &ChatApp, text: &mut TextRenderer| {
+            let header = app.header_rect();
+            let left = app
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| {
+                    matches!(hit, Hit::ToggleLeftFlap)
+                        .then_some(rect.x1 + f64::from(theme.tokens.spacing.s2))
+                })
+                .unwrap_or(header.x0 + app.chrome.gutter);
+            let cluster_left = app
+                .hits
+                .iter()
+                .filter_map(|(rect, hit)| {
+                    matches!(
+                        hit,
+                        Hit::Search
+                            | Hit::AgentWindow
+                            | Hit::AgentDragHandle
+                            | Hit::ToggleRightFlap
+                    )
+                    .then_some(rect.x0)
+                })
+                .fold(header.x1, f64::min);
+            let available = (cluster_left - f64::from(theme.tokens.spacing.s3) - left).max(0.0);
+            let widths = crate::render_chat::agent_header_widths(text, &theme, available);
+            assert_eq!(
+                widths.kind, complete_kind,
+                "the actual header reserves the complete localized Agent kind"
+            );
+            assert!(
+                widths.name > 0.0,
+                "the long name retains an elided title band"
+            );
+        };
+        assert_kind_fit(&app, &mut text);
+        let heading = app
+            .accessibility()
+            .expect("Chat accessibility tree")
+            .children
+            .into_iter()
+            .find(|node| node.role == ui::a11y::Role::Heading { level: 1 })
+            .expect("direct Agent heading");
+        assert_eq!(
+            heading.name.as_deref(),
+            Some("Documentation and Accessibility Specialist, agent")
+        );
+
+        app.sharing_context = true;
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        let sharing = app.header_identity_text();
+        assert_eq!(sharing.kind.as_deref(), Some("Agent"));
+        assert_eq!(sharing.context, "Sharing live Chat context");
+        assert!(
+            app.semantic_hits()
+                .iter()
+                .any(
+                    |(_, hit, name, ..)| matches!(hit, Hit::StopSharingLiveContext)
+                        && name == "Stop sharing"
+                ),
+            "sharing keeps its independent semantic stop control"
+        );
+        assert_kind_fit(&app, &mut text);
+
+        app.sharing_context = false;
+        app.following_context = true;
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        let following = app.header_identity_text();
+        assert_eq!(following.kind.as_deref(), Some("Agent"));
+        assert!(following.context.starts_with("Following live Chat context"));
+        assert_kind_fit(&app, &mut text);
+
+        let (mut person, _doc) = app_with_doc();
+        person.sharing_context = true;
+        let person_header = person.header_identity_text();
+        assert_eq!(person_header.kind, None, "Person headers stay unlabelled");
+        assert_eq!(person_header.context, "Sharing live Chat context");
+    }
+
+    #[test]
     fn adverse_large_text_agent_composer_stays_below_the_header() {
         for (width, height) in [(800.0, 600.0), (560.0, 560.0)] {
             let (mut app, _doc) = app_with_doc();

@@ -60,6 +60,37 @@ struct MessageColumn {
     text_width: f32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct HeaderIdentityText {
+    pub(crate) name: String,
+    pub(crate) kind: Option<String>,
+    pub(crate) context: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AgentHeaderWidths {
+    pub(crate) name: f64,
+    pub(crate) kind: f64,
+}
+
+pub(crate) fn agent_header_widths(
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    available: f64,
+) -> AgentHeaderWidths {
+    let gap = f64::from(theme.tokens.spacing.s3);
+    let kind = width_of(
+        tr,
+        &crate::i18n::t("chat-agent-kind"),
+        &theme.text(TextRole::Body),
+    )
+    .min(available.max(0.0));
+    AgentHeaderWidths {
+        name: (available - gap - kind).max(0.0),
+        kind,
+    }
+}
+
 /// How a mention of `user` is painted on `ground`: an optional filled band, and
 /// the ink for the run.
 ///
@@ -1028,6 +1059,43 @@ impl ChatApp {
     }
 
     // -------------------------------------------------------------- header
+    pub(crate) fn header_identity_text(&self) -> HeaderIdentityText {
+        let context = if self.sharing_context {
+            crate::i18n::t("chat-context-sharing")
+        } else if self.following_context {
+            crate::i18n::t("chat-context-following")
+        } else {
+            String::new()
+        };
+        if let Some(agent) = &self.direct_agent {
+            return HeaderIdentityText {
+                name: self.agent_display_name(agent),
+                kind: Some(crate::i18n::t("chat-agent-kind")),
+                context,
+            };
+        }
+
+        let (name, topic) = self.channel(&self.active_channel).map_or_else(
+            || (String::new(), String::new()),
+            |channel| {
+                let topic = if self.inbox_open {
+                    self.workspaces
+                        .iter()
+                        .find(|workspace| workspace.id == channel.workspace)
+                        .map_or_else(String::new, |workspace| workspace.name.clone())
+                } else {
+                    channel.topic.clone()
+                };
+                (channel.name.clone(), topic)
+            },
+        );
+        HeaderIdentityText {
+            name,
+            kind: None,
+            context: if context.is_empty() { topic } else { context },
+        }
+    }
+
     /// The conversation's part of the header row: the channel and its topic,
     /// the people button and the call button, over one hairline.
     pub(crate) fn draw_header(
@@ -1061,53 +1129,87 @@ impl ChatApp {
         let controls = self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits);
         let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
 
-        let ch = self.channel(&self.active_channel).cloned();
-        let (name, mut topic) = if let Some(agent) = &self.direct_agent {
-            (
-                self.agent_display_name(agent),
-                crate::i18n::t("chat-agent-kind"),
-            )
-        } else {
-            match &ch {
-                Some(ch) => {
-                    let topic = if self.inbox_open {
-                        self.workspaces
-                            .iter()
-                            .find(|workspace| workspace.id == ch.workspace)
-                            .map_or_else(String::new, |workspace| workspace.name.clone())
-                    } else {
-                        ch.topic.clone()
-                    };
-                    (ch.name.clone(), topic)
-                }
-                None => (String::new(), String::new()),
-            }
-        };
-        if self.sharing_context {
-            topic = crate::i18n::t("chat-context-sharing");
-        } else if self.following_context {
-            topic = crate::i18n::t("chat-context-following");
-        }
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         let max = (cluster_left - f64::from(sp.s3) - left).max(0.0);
         let title_style = theme.text(TextRole::Heading);
-        let drawn = line_in(
-            &mut ctx,
-            &name,
-            &title_style,
-            theme.text_primary,
-            left,
-            h,
-            max,
-        );
-        // The topic is secondary: it shows whole or yields to the name and
-        // the actions, never as an elided fragment.
-        if !topic.is_empty() {
+        let topic_style = theme.text(TextRole::Body);
+        let identity = self.header_identity_text();
+        if let Some(kind) = identity.kind {
+            let widths = agent_header_widths(ctx.text, theme, max);
+            let gap = f64::from(sp.s3);
+            // Agent identity is not optional context. Reserve its complete,
+            // localized kind before eliding a long display name; otherwise a
+            // narrow or large-text header makes the Agent look like a Person.
+            let name_width = line_in(
+                &mut ctx,
+                &identity.name,
+                &title_style,
+                theme.text_primary,
+                left,
+                h,
+                widths.name,
+            );
+            let kind_x = if name_width > 0.0 {
+                left + name_width + gap
+            } else {
+                left
+            };
+            let kind_avail = (left + max - kind_x).max(0.0).min(widths.kind);
+            line_in(
+                &mut ctx,
+                &kind,
+                &topic_style,
+                theme.text_dim,
+                kind_x,
+                h,
+                kind_avail,
+            );
+
+            // Sharing/following is additional context, never a replacement
+            // for the collaborator kind. It appears only when the complete
+            // label fits after both required identity segments.
+            let context_x = kind_x + kind_avail + gap;
+            let context_avail = left + max - context_x;
+            if !identity.context.is_empty()
+                && width_of(ctx.text, &identity.context, &topic_style) <= context_avail
+            {
+                line_in(
+                    &mut ctx,
+                    &identity.context,
+                    &topic_style,
+                    theme.text_dim,
+                    context_x,
+                    h,
+                    context_avail,
+                );
+            }
+        } else {
+            let drawn = line_in(
+                &mut ctx,
+                &identity.name,
+                &title_style,
+                theme.text_primary,
+                left,
+                h,
+                max,
+            );
+            // The topic is secondary: it shows whole or yields to the name
+            // and the actions, never as an elided fragment.
             let tx = left + drawn + f64::from(sp.s3);
             let avail = cluster_left - f64::from(sp.s3) - tx;
             let topic_style = theme.text(TextRole::Body);
-            if width_of(ctx.text, &topic, &topic_style) <= avail {
-                line_in(&mut ctx, &topic, &topic_style, theme.text_dim, tx, h, avail);
+            if !identity.context.is_empty()
+                && width_of(ctx.text, &identity.context, &topic_style) <= avail
+            {
+                line_in(
+                    &mut ctx,
+                    &identity.context,
+                    &topic_style,
+                    theme.text_dim,
+                    tx,
+                    h,
+                    avail,
+                );
             }
         }
     }
