@@ -4238,6 +4238,19 @@ mod tests {
 
     #[test]
     fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
+        fn node_for_target<'a>(
+            node: &'a ui::a11y::AccessNode,
+            target: &str,
+        ) -> Option<&'a ui::a11y::AccessNode> {
+            (node.action_target.as_deref() == Some(target))
+                .then_some(node)
+                .or_else(|| {
+                    node.children
+                        .iter()
+                        .find_map(|child| node_for_target(child, target))
+                })
+        }
+
         let (mut app, mut doc) = app_with_doc();
         app.active_channel = "c_general".into();
         app.focus = Focus::Main;
@@ -4248,6 +4261,11 @@ mod tests {
             .into_iter()
             .find_map(|(_, hit, ..)| matches!(hit, Hit::Send).then(|| hit.semantic_id()))
             .expect("the painted Send button has a semantic target");
+        let accessibility = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
+        assert!(
+            node_for_target(&accessibility, &target).is_some_and(|node| node.state.disabled),
+            "an empty composer keeps Send discoverable and truthfully disabled"
+        );
 
         assert!(!ui::Widget::perform_semantic_action(
             &mut app,

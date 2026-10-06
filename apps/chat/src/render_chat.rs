@@ -2980,7 +2980,10 @@ impl ChatApp {
                 send_face.disabled(true)
             },
         );
-        if send_enabled && interactive {
+        // Keep the stable command in the shared pointer/semantic inventory
+        // while disabled. Typing can enable it without moving the target, and
+        // activation still reports false unless `send_focused` commits work.
+        if interactive && (self.direct_agent.is_none() || self.direct_agent_is_available()) {
             ChatApp::push_hit(hits, send, Hit::Send);
         }
 

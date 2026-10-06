@@ -1097,6 +1097,37 @@ impl ChatApp {
         self.perms.can_participate()
     }
 
+    fn focused_send_enabled(&self) -> bool {
+        if !self.can_participate() {
+            return false;
+        }
+        if matches!(self.focus, Focus::Thread) {
+            return self.thread_draft_key().is_some()
+                && !self.composer_thread.value().trim().is_empty();
+        }
+        let draft = self.composer_main.value();
+        if draft.trim().is_empty() {
+            return false;
+        }
+        if self.direct_agent.is_none() {
+            return true;
+        }
+        self.direct_agent_is_available()
+            && match self.direct_agent_intent() {
+                AgentComposerIntent::Message => true,
+                AgentComposerIntent::Queue => self.direct_agent_tasks().is_some_and(|tasks| {
+                    matches!(
+                        tasks.borrow().discovery(),
+                        ui::agent_task_frontier::AgentTaskDiscovery::Ready
+                            | ui::agent_task_frontier::AgentTaskDiscovery::Incomplete { .. }
+                    )
+                }),
+                AgentComposerIntent::Steer => self
+                    .direct_agent_tasks()
+                    .is_some_and(|tasks| tasks.borrow().can_steer()),
+            }
+    }
+
     /// Whether the local peer may hydrate + render an attachment blob. An
     /// ungranted embed shows a locked card and never requests shared bytes.
     pub(crate) fn embed_allowed(&self, blob: &str) -> bool {
@@ -4979,6 +5010,9 @@ impl Widget for ChatApp {
                 }
                 if matches!(role, Role::ToggleButton) {
                     state = state.checked(selected);
+                }
+                if matches!(hit, Hit::Send) {
+                    state = state.disabled(!self.focused_send_enabled());
                 }
                 let mut node = AccessNode::new(role)
                     .with_name(name)
