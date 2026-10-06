@@ -477,7 +477,7 @@ fn short_id(full: &str) -> String {
 
 /// Coarse relative time string (e.g. "3 hr ago") against the current clock.
 fn relative_time(seconds: i64) -> String {
-    ui::format::relative(chrono::Utc::now().timestamp().saturating_sub(seconds))
+    ui::format::relative(ui::clock::local_now().timestamp().saturating_sub(seconds))
 }
 
 // =====================================================================

@@ -405,7 +405,7 @@ def main() -> int:
 
             step("the palette offers it, in an ordinary row")
             s.modifiers(logo=True)
-            s.key("k")
+            s.key("Space")
             s.modifiers()
             time.sleep(0.5)
             if not check("the palette opened",

@@ -1260,51 +1260,6 @@ pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f
     );
 }
 
-/// Where an eraser took paint off, outlined over the artwork: faint dots,
-/// light under dark so they read over any paint, or `marked` (hovered or
-/// picked) in that colour.
-pub fn eraser_outline(scene: &mut Scene, path: &BezPath, marked: Option<Color>) {
-    let (under, dashes, ink) = match marked {
-        Some(colour) => (
-            Stroke::new(2.5),
-            Stroke::new(1.5).with_dashes(0.0, [6.0, 3.0]),
-            colour,
-        ),
-        None => (
-            Stroke::new(2.0),
-            Stroke::new(1.0).with_dashes(0.0, [2.0, 3.0]),
-            SHADOW_INK.with_alpha(0.75),
-        ),
-    };
-    scene.stroke(
-        &under,
-        Affine::IDENTITY,
-        BLANK_GROUND.multiply_alpha(if marked.is_some() { 0.9 } else { 0.55 }),
-        None,
-        path,
-    );
-    scene.stroke(&dashes, Affine::IDENTITY, ink, None, path);
-}
-
-/// Where a brush or eraser will land, round the pointer: a dark ring
-/// under a light one, so it reads on any paint.
-pub fn footprint_ring(scene: &mut Scene, path: &BezPath) {
-    scene.stroke(
-        &Stroke::new(1.5),
-        Affine::IDENTITY,
-        SHADOW_INK.with_alpha(0.6),
-        None,
-        path,
-    );
-    scene.stroke(
-        &Stroke::new(0.75),
-        Affine::IDENTITY,
-        BLANK_GROUND.multiply_alpha(0.9),
-        None,
-        path,
-    );
-}
-
 fn image(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
     ImageData {
         data: Blob::new(Arc::new(pixels)),
@@ -2323,7 +2278,7 @@ pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
         _ => ui::ParagraphAlign::Start,
     };
     Some(
-        ui::TextStyle::new(narrow(*size))
+        ui::TextStyle::content(narrow(*size))
             .with_family(family)
             .with_weight(tier)
             // The shipped faces are variable: any weight between their
@@ -2633,13 +2588,13 @@ fn draw_grid(
             None,
             &Rect::new(x, y, x + width, y + pixel * 14.0),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &words,
-            font,
             label,
             transform * Affine::translate((x + pixel * 2.0, y + pixel)),
             None,
+            &ui::TextStyle::content(font),
         );
     };
     let lines = |from: f64, to: f64| {

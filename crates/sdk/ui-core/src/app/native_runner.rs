@@ -913,6 +913,8 @@ impl AppHandler {
             return false;
         };
         while let Ok(outcome) = render.frame_complete.try_recv() {
+            self.app
+                .capture_auxiliary_completed("audience", outcome == FrameOutcome::Presented);
             match outcome {
                 FrameOutcome::Presented
                 | FrameOutcome::Reconfigured
@@ -951,6 +953,7 @@ impl AppHandler {
             f64::from(size.width) / scale,
             f64::from(size.height) / scale,
         );
+        let secrets = crate::secret_paint::SecretPaint::begin();
         let drawn = self.app.root_widget.draw_audience_presentation(
             &mut scene,
             Affine::scale(scale),
@@ -958,6 +961,13 @@ impl AppHandler {
             &self.app.theme,
             rect,
         );
+        self.app
+            .capture_auxiliary_drawn("audience", secrets.finish());
+        if !self.app.capture_frame_ready() {
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
+            return true;
+        }
         if !drawn {
             return false;
         }
@@ -970,9 +980,10 @@ impl AppHandler {
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
-                base_color: self.app.theme.bg_app,
+                base_color: self.app.theme.tokens.colors.surfaces.content,
                 damage_regions,
                 full_redraw: true,
+                backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
         {
@@ -981,6 +992,7 @@ impl AppHandler {
             );
             return false;
         }
+        self.app.capture_auxiliary_submitted("audience");
         true
     }
 
@@ -1217,10 +1229,22 @@ impl AppHandler {
                         primary.request_redraw();
                     }
                 }
+                crate::floating_surface::FloatingSurfaceHostMessage::CaptureProtectionApplied {
+                    ..
+                } => {
+                    for surface in &self.floating_windows {
+                        surface.window.request_redraw();
+                    }
+                    if let Some(audience) = &self.audience_presentation {
+                        audience.window.request_redraw();
+                    }
+                    changed = true;
+                }
                 crate::floating_surface::FloatingSurfaceHostMessage::DeviceShellOperation {
                     ..
                 }
                 | crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::Appearance { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
@@ -1310,6 +1334,7 @@ impl AppHandler {
         let Some(surface) = surfaces.get_mut(index) else {
             return false;
         };
+        let capture_id = format!("floating:{}", surface.id);
         if surface.suspended {
             return true;
         }
@@ -1352,6 +1377,7 @@ impl AppHandler {
             return false;
         };
         while let Ok(outcome) = render.frame_complete.try_recv() {
+            app.capture_auxiliary_completed(&capture_id, outcome == FrameOutcome::Presented);
             match outcome {
                 FrameOutcome::Presented
                 | FrameOutcome::Reconfigured
@@ -1384,6 +1410,7 @@ impl AppHandler {
         let scale = surface.window.scale_factor();
         let transform = crate::scale::composite_transform(scale)
             .pre_translate((-surface.desktop_rect.x0, -surface.desktop_rect.y0).into());
+        let secrets = crate::secret_paint::SecretPaint::begin();
         app.root_widget.draw_floating_surfaces(
             &mut scene,
             transform,
@@ -1391,6 +1418,12 @@ impl AppHandler {
             &app.theme,
             &app.presence_ctx,
         );
+        app.capture_auxiliary_drawn(&capture_id, secrets.finish());
+        if !app.capture_frame_ready() {
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
+            return true;
+        }
         announce_frame(&surface.window);
         if render
             .render_tx
@@ -1403,11 +1436,15 @@ impl AppHandler {
                 base_color: Color::TRANSPARENT,
                 damage_regions,
                 full_redraw: true,
+                // The compositor puts this window over the desktop; nothing
+                // under its surfaces is in this scene to blur.
+                backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
         {
             return false;
         }
+        app.capture_auxiliary_submitted(&capture_id);
         true
     }
 
@@ -1545,6 +1582,8 @@ impl AppHandler {
             match outcome {
                 FrameOutcome::Presented => {
                     self.last_primary_frame_presented = self.primary_frames_completed;
+                    self.app
+                        .capture_frame_presented(self.primary_frames_completed);
                     self.primary_retry.observe_for_shared_root(
                         outcome,
                         crate::time::now(),
@@ -1790,6 +1829,11 @@ impl AppHandler {
 
         let t_draw_start = if perf { Some(crate::time::now()) } else { None };
         crate::webview::frame_trace::begin_scene();
+        // Floating chrome (menus, popovers, sheets, the palette, tooltips)
+        // records what lies below it, and the render worker blurs that
+        // backdrop under the material before the frame renders.
+        let backdrop_recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&scene, 0);
         let (transform, window_rect, t_draw_us, mut top_layer) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
         #[cfg(target_os = "linux")]
@@ -1797,6 +1841,8 @@ impl AppHandler {
             self.decorations.draw(app, &mut scene, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
+        let backdrop =
+            crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
         let content_draw_tags = scene.encoding().draw_tags.len();
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
@@ -1916,6 +1962,13 @@ impl AppHandler {
             }
             damage_regions.retain(|rect| !rect.is_zero_area());
         }
+        if !app.capture_frame_ready() {
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
+            // The service socket wakes the event loop when its acknowledgement
+            // arrives. Keep dirty flags until that frame can actually be sent.
+            return;
+        }
         // This must follow damage collection: widget `draw` may update
         // damage geometry and `mark_drawn` consumes persistent dirty flags.
         complete_native_frame_content(app, |app| {
@@ -1981,9 +2034,10 @@ impl AppHandler {
                 scene,
                 width,
                 height,
-                base_color: app.theme.bg_app,
+                base_color: app.theme.tokens.colors.surfaces.content,
                 damage_regions,
                 full_redraw: full_redraw_required,
+                backdrop,
                 on_present: self.dev_reload_timing.take().map(|timing| {
                     let submitted = crate::time::wall();
                     Box::new(move |presented| timing.record(submitted, presented))
@@ -2043,6 +2097,7 @@ impl AppHandler {
             mark_first_frame("first-frame-submitted");
             self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
             let submitted = self.primary_frames_sent;
+            app.capture_frame_submitted(submitted);
             for required in self.floating_source_clear_frames.values_mut() {
                 if required.is_none() {
                     *required = Some(submitted);

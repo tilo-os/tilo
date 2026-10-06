@@ -60,24 +60,14 @@ impl CreateField {
             CreateField::Command => "Command",
         }
     }
-    pub fn label(self) -> &'static str {
-        match self {
-            CreateField::Name => "Name",
-            CreateField::Image => "Image",
-            CreateField::Ports => "Ports (host:container, comma-separated)",
-            CreateField::Env => "Environment (KEY=value, comma-separated)",
-            CreateField::Volumes => "Volumes (name:/path, comma-separated)",
-            CreateField::Command => "Command (optional)",
-        }
-    }
     pub fn placeholder(self) -> &'static str {
         match self {
             CreateField::Name => "my-service",
             CreateField::Image => "docker.io/library/nginx:alpine",
             CreateField::Ports => "8080:80, 8443:443",
             CreateField::Env => "TZ=UTC, LOG_LEVEL=info",
-            CreateField::Volumes => "pgdata:/var/lib/data",
-            CreateField::Command => "leave blank for image default",
+            CreateField::Volumes => "pgdata:/var/lib/postgresql/data",
+            CreateField::Command => "",
         }
     }
     /// Index of this field in [`Self::ALL`].

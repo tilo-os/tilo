@@ -15,7 +15,9 @@ use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 
 use crate::shell::i18n::{t, t_args};
+use ui::TextRole;
 use ui::theme::Theme;
+use ui::widget::ButtonRole;
 
 mod accessibility;
 pub use accessibility::is_sheet_target as is_accessibility_target;
@@ -787,14 +789,14 @@ impl PeerSyncOverlay {
 
         let pad = 20.0;
         let mut y = rect.y0 + pad;
-        let title_size = tokens.typography.scale.base.max(14.0);
-        let body_size = tokens.typography.scale.xs.max(10.0);
+        let title_size = tokens.typography.size(TextRole::Body).max(14.0);
+        let body_size = tokens.typography.size(TextRole::Caption).max(10.0);
         let m = SheetMetrics {
             rect,
             pad,
             avail: rect.width() - pad * 2.0,
             body: body_size,
-            name: tokens.typography.scale.sm.max(12.0),
+            name: tokens.typography.size(TextRole::Caption).max(12.0),
         };
         let title = t(if self.state.invite_review_open {
             "peer-sync-title-review"
@@ -877,7 +879,7 @@ impl PeerSyncOverlay {
         {
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 42.0);
             // Control role (HIG §9.1/§9.5): a row card at the Control radius
-            // (`radii.sm` is for details inside a control) with an edge
+            // (`radii.detail` is for details inside a control) with an edge
             // derived from its lift floor, so it registers in light as well.
             ui::surface::card(
                 scene,
@@ -1126,7 +1128,7 @@ impl PeerSyncOverlay {
         ];
         for (index, line) in lines.iter().enumerate() {
             let color = if index == 4 {
-                colors.accent[5]
+                colors.intent.inverted
             } else {
                 colors.text_primary
             };
@@ -1256,10 +1258,9 @@ impl PeerSyncOverlay {
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // the face is handed the theme-scaled label size explicitly.
             let mut face = ui::widget::ButtonFace::new(brect, &label)
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, bh))
-                .text_size(body);
+                .control_size(ui::widget::ControlSize::Large);
             if primary {
-                face = face.primary();
+                face = face.role(ButtonRole::Primary);
             }
             ui::widget::Button::paint(scene, transform, text, theme, &face);
             self.button_rects.push((button, brect));
@@ -1460,12 +1461,12 @@ fn draw_naming(
     );
     y += f64::from(body) + 8.0;
     let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 38.0);
-    let rr = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.sm));
+    let rr = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.detail));
     scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        colors.accent[5],
+        colors.intent.inverted,
         None,
         &rr,
     );
@@ -1508,7 +1509,7 @@ fn draw_naming(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.accent[5],
+        colors.intent.inverted,
         None,
         &Rect::new(caret_x, field.y0 + 9.0, caret_x + caret_w, field.y1 - 9.0),
     );
@@ -1658,19 +1659,14 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
             .next()
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_default();
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
+        ui::widget::AvatarFace::new(&initial, who).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             Rect::new(
                 center.x - 16.0,
                 center.y - 16.0,
                 center.x + 16.0,
                 center.y + 16.0,
             ),
-            &initial,
-            colors.accent[5],
-            theme,
-            text,
         );
     } else {
         scene.stroke(
@@ -1682,8 +1678,8 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
         );
     }
     let x = center.x + 30.0;
-    let ns = theme.tokens.typography.scale.sm.max(12.0);
-    let ss = theme.tokens.typography.scale.xs.max(10.0);
+    let ns = theme.tokens.typography.size(TextRole::Caption).max(12.0);
+    let ss = theme.tokens.typography.size(TextRole::Caption).max(10.0);
     let who = text.elide_to_width(who, ns, f64_to_f32(rect.x1 - x));
     text.draw_text(
         scene,
@@ -1709,7 +1705,7 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
     let (scene, transform, text, theme) =
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
-    let size = theme.tokens.typography.scale.lg.max(15.0);
+    let size = theme.tokens.typography.size(TextRole::Heading).max(15.0);
     let (_, fh) = text.measure(code, size, None);
     let field = Rect::new(at.x, at.y, at.x + avail, at.y + f64::from(fh) + 20.0);
     scene.fill(
@@ -1717,7 +1713,7 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
         transform,
         colors.lift(0.35),
         None,
-        &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md)),
+        &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
     );
     text.draw_text(
         scene,

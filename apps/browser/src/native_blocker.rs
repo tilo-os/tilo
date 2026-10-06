@@ -40,7 +40,7 @@ impl Default for Status {
     fn default() -> Self {
         Self {
             busy: false,
-            message: "First-run protection".into(),
+            message: "Using the built-in filter list".into(),
             updated: None,
         }
     }

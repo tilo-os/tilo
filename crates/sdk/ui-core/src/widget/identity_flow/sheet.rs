@@ -1,6 +1,6 @@
 //! The one layout the identity ceremony screens share.
 //!
-//! Each screen is a *sheet*: the modal chrome from [`ModalFrame`] — scrim,
+//! Each screen is a *sheet*: the modal chrome of [`modal_dialog`] — scrim,
 //! centred card, title row and action row — with the screen's own rows
 //! stacked inside [`ModalLayout::body`] on the spacing scale. Before this
 //! module every screen placed its content at absolute offsets from a card
@@ -15,7 +15,7 @@
 //! protocol state, so they paint through the shared *faces*
 //! ([`Checkbox::paint`], [`ToggleGroup::paint`], and `Button::paint` via
 //! the modal action row) rather than hosting retained widgets — the same
-//! door [`ModalFrame`] itself uses. The one exception is text entry: a
+//! door [`modal_dialog::layout`] itself uses. The one exception is text entry: a
 //! field is the shared [`TextInput`], embedded the way `ModalPrompt` embeds
 //! it — placed by [`place_field`] / [`place_code_cell`] from the row plan,
 //! drawn and fed events by the screen — so IME, clipboard, selection,
@@ -39,17 +39,14 @@ use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{TextKind, TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::checkbox::{Checkbox, CheckboxFace};
-use crate::widget::modal_frame::{
-    MODAL_CLOSE_SIZE, MODAL_MIN_WIDTH, MODAL_PAD, MODAL_VIEWPORT_MARGIN, ModalAction, ModalFrame,
-    ModalLayout, ModalSpec,
-};
+use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
 use crate::widget::qr::QrWidget;
 use crate::widget::text_input::TextInput;
-use crate::widget::toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup};
+use crate::widget::toggle_group::{SegmentedFace, ToggleGroup};
 
 /// Widest a ceremony card with a form in it is drawn — HIG §9.6's "560 for a
 /// sheet with a form in it".
@@ -82,7 +79,9 @@ pub(super) fn with_layout_renderer<R>(theme: &Theme, f: impl FnOnce(&mut TextRen
     LAYOUT_TEXT.with(|cell| {
         let mut tr = cell.borrow_mut();
         tr.set_text_scale(theme.text_scale);
-        f(&mut tr)
+        tr.set_distinct_letters(theme.tokens.typography.distinct_letters);
+        // Laid out as the security surface it is drawn as.
+        tr.security_surface(f)
     })
 }
 
@@ -218,25 +217,24 @@ pub(super) enum Role {
 }
 
 impl Role {
-    /// Renderer-relative size. Theme type tokens already carry the text
-    /// scale the renderer applies again, so it is divided back out once by
-    /// the renderer's own scale — exactly what [`ModalFrame`] does for its
-    /// title and action labels.
-    pub(super) fn size(self, theme: &Theme, text_renderer: &TextRenderer) -> f32 {
-        let scale = &theme.tokens.typography.scale;
-        let token = match self {
-            Role::Body | Role::Value => scale.base,
-            Role::Label | Role::Caption | Role::Error => scale.sm,
-            Role::Code => scale.x2l,
-        };
-        renderer_type_size(text_renderer, token)
+    /// The theme role this sheet role is set in.
+    pub(super) fn text_role(self) -> TextRole {
+        match self {
+            Role::Body | Role::Value => TextRole::Body,
+            Role::Label => TextRole::Label,
+            Role::Caption | Role::Error => TextRole::Caption,
+            Role::Code => TextRole::LargeTitle,
+        }
     }
 
-    pub(super) fn weight(self) -> TextWeight {
-        match self {
-            Role::Label => TextWeight::Medium,
-            Role::Code => TextWeight::Semibold,
-            Role::Body | Role::Value | Role::Caption | Role::Error => TextWeight::Regular,
+    /// The resolved style: the theme role; the pairing code is a secret
+    /// someone compares character by character.
+    pub(super) fn style(self, theme: &Theme) -> TextStyle {
+        let style = theme.text(self.text_role());
+        if self == Role::Code {
+            style.with_kind(TextKind::Secret)
+        } else {
+            style
         }
     }
 
@@ -244,7 +242,7 @@ impl Role {
     /// title uses, so a palette where `text_primary` fails against the card
     /// fixes every sheet at once.
     pub(super) fn color(self, theme: &Theme) -> Color {
-        let (ink, dim) = ModalFrame::ink(theme);
+        let (ink, dim) = modal_dialog::ink(theme);
         match self {
             Role::Value | Role::Code => ink,
             Role::Body | Role::Label | Role::Caption => dim,
@@ -318,16 +316,13 @@ pub(super) struct SheetSpec<'a> {
 }
 
 impl<'a> SheetSpec<'a> {
-    fn modal(&self, body_height: f64, theme: &Theme) -> ModalSpec<'a> {
-        // `ModalSpec::body_height` is in design pixels; the rows were
-        // measured in scaled pixels, so hand the scale back.
-        let scale = f64::from(theme.text_scale).max(f32::EPSILON.into());
+    fn modal(&self, body_height: f64) -> ModalSpec<'a> {
         ModalSpec::new(self.title)
             .actions(self.actions)
             .max_width(self.max_width)
             .closable(false)
             .dismiss_on_scrim(false)
-            .body_height(body_height / scale)
+            .body_height(body_height)
     }
 }
 
@@ -343,12 +338,7 @@ impl Sheet {
     /// measured: the card's width depends on the viewport and the sheet's
     /// maximum, never on its height.
     pub(super) fn body_width(viewport: Rect, max_width: f64, theme: &Theme) -> f64 {
-        let scale = f64::from(theme.text_scale);
-        let avail = (viewport.width() - MODAL_VIEWPORT_MARGIN * scale * 2.0).max(0.0);
-        let card_w = (max_width * scale)
-            .min(avail)
-            .max((MODAL_MIN_WIDTH * scale).min(avail));
-        (card_w - MODAL_PAD * scale * 2.0).max(0.0)
+        modal_dialog::body_width(viewport, max_width, theme)
     }
 
     /// Resolve the sheet for a body that measured `body_height` tall.
@@ -359,9 +349,9 @@ impl Sheet {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) -> Self {
-        let modal = spec.modal(body_height, theme);
+        let modal = spec.modal(body_height);
         Self {
-            layout: ModalFrame::layout(viewport, &modal, text_renderer, theme),
+            layout: modal_dialog::layout(viewport, &modal, text_renderer, theme),
         }
     }
 
@@ -401,7 +391,7 @@ impl Sheet {
             .iter()
             .map(Rect::height)
             .find(|h| *h > 0.0)
-            .unwrap_or_else(|| MODAL_CLOSE_SIZE * f64::from(theme.text_scale))
+            .unwrap_or_else(|| modal_dialog::action_height(theme))
     }
 
     /// Scrim, card, title. Paint before the body.
@@ -413,8 +403,8 @@ impl Sheet {
         theme: &Theme,
         spec: &SheetSpec<'_>,
     ) {
-        let modal = spec.modal(0.0, theme);
-        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &self.layout, &modal);
+        let modal = spec.modal(0.0);
+        modal_dialog::paint_backdrop(scene, transform, text_renderer, theme, &self.layout, &modal);
     }
 
     /// The action row. Paint after the body.
@@ -426,16 +416,15 @@ impl Sheet {
         theme: &Theme,
         spec: &SheetSpec<'_>,
     ) {
-        let modal = spec.modal(0.0, theme);
-        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &self.layout, &modal);
+        let modal = spec.modal(0.0);
+        modal_dialog::paint_actions(scene, transform, text_renderer, theme, &self.layout, &modal);
     }
 }
 
 /// Height one line of `role` occupies, measured with the style it is drawn
 /// in — never a literal, so a text-scale theme grows the row with the text.
 pub(super) fn line_height(text_renderer: &mut TextRenderer, theme: &Theme, role: Role) -> f64 {
-    let (_, h) =
-        text_renderer.measure_weighted("Ag", role.size(theme, text_renderer), None, role.weight());
+    let (_, h) = text_renderer.measure_style("Ag", None, &role.style(theme));
     f64::from(h)
 }
 
@@ -447,12 +436,7 @@ pub(super) fn measure(
     text: &str,
     max_width: Option<f64>,
 ) -> (f64, f64) {
-    let (w, h) = text_renderer.measure_weighted(
-        text,
-        role.size(theme, text_renderer),
-        max_width.map(narrow),
-        role.weight(),
-    );
+    let (w, h) = text_renderer.measure_style(text, max_width.map(narrow), &role.style(theme));
     (f64::from(w), f64::from(h))
 }
 
@@ -503,24 +487,17 @@ pub(super) fn paint_text_in(
         Align::Center => rect.x0 + (rect.width() - w) / 2.0,
     };
     let y = rect.y0 + (rect.height() - h) / 2.0;
-    let style = TextStyle::new(role.size(ctx.theme, ctx.text)).with_weight(role.weight());
+    let style = role.style(ctx.theme);
     ctx.text(text, &style, color, Point::new(x, y), max_width.map(narrow));
 }
 
 /// Seat an embedded [`TextInput`] in the row the plan gave it. The field
-/// keeps the shared widget's own chrome (raised fill, `radii.md`, the
+/// keeps the shared widget's own chrome (raised fill, `radii.control`, the
 /// focus edge, the standard text inset); the sheet only decides where it
 /// goes and that its text is the sheet's `Value` role, so a field and the
 /// word beside it in a grid are one size.
-pub(super) fn place_field(
-    input: &mut TextInput,
-    rect: Rect,
-    text_renderer: &TextRenderer,
-    theme: &Theme,
-) {
-    // The shared input hands its size to the renderer, which scales it: give
-    // it the renderer-relative `Value` size, not the theme token.
-    input.set_font_size(Role::Value.size(theme, text_renderer));
+pub(super) fn place_field(input: &mut TextInput, rect: Rect) {
+    input.set_text_role(Role::Value.text_role());
     input.apply_layout_external(rect);
 }
 
@@ -564,7 +541,7 @@ pub(super) fn place_code_cell(
     theme: &Theme,
 ) {
     input.set_plain_chrome(true);
-    input.set_font_size(Role::Code.size(theme, text_renderer));
+    input.set_text_role(Role::Code.text_role());
     let (glyph_w, _) = measure(text_renderer, theme, Role::Code, "0", None);
     let w = (glyph_w + theme.caret_width).min(cell.width());
     let x0 = cell.x0 + (cell.width() - w) / 2.0;
@@ -572,7 +549,7 @@ pub(super) fn place_code_cell(
 }
 
 /// The box of a checkbox row: an `s6` square (the retained checkbox's own
-/// size — the face rounds with `radii.md`, so a smaller square would turn
+/// size — the face rounds with `radii.control`, so a smaller square would turn
 /// into a disc) at the row's start, centred on the row. Pure, so the layout
 /// pass can place it without painting.
 pub(super) fn check_box_rect(row: Rect, theme: &Theme) -> Rect {
@@ -595,7 +572,7 @@ pub(super) fn paint_check_row(
     label: &str,
 ) -> Rect {
     // `s6` matches the retained checkbox's own box (the pointer minimum
-    // target); the face rounds with `radii.md`, so a smaller square would
+    // target); the face rounds with `radii.control`, so a smaller square would
     // turn into a disc.
     let box_rect = check_box_rect(row, theme);
     Checkbox::paint(
@@ -648,12 +625,7 @@ pub(super) fn paint_segments(
     selected: usize,
     hovered: Option<usize>,
 ) {
-    let face = SegmentedFace::new(segments, labels, selected)
-        .style(SegmentedStyle::Solid)
-        .radius(f64::from(theme.tokens.radii.md))
-        .text_size(Role::Label.size(theme, text_renderer))
-        .weight(TextWeight::Medium)
-        .hovered(hovered);
+    let face = SegmentedFace::new(segments, labels, selected).hovered(hovered);
     ToggleGroup::paint(scene, transform, text_renderer, theme, &face);
 }
 
@@ -692,7 +664,7 @@ pub(super) fn wrap_chars(
 /// A bare field box with no text — the frame a code digit or a QR
 /// placeholder sits in. It restates the shared `TextInput`'s field chrome
 /// (raised fill, active fill and the two-pixel focus edge while focused,
-/// `radii.md`) so a code cell reads as the same control as the fields
+/// `radii.control`) so a code cell reads as the same control as the fields
 /// around it while the digit inside is a plain-chrome [`TextInput`].
 pub(super) fn paint_cell(
     scene: &mut Scene,
@@ -702,9 +674,9 @@ pub(super) fn paint_cell(
     focused: bool,
 ) {
     let colors = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
     let fill = if focused {
-        theme.bg_active
+        colors.lift_on(colors.surfaces.raised, 1.0)
     } else {
         colors.surfaces.raised
     };
@@ -864,7 +836,7 @@ fn narrow(px: f64) -> f32 {
 mod tests {
     use super::*;
     use crate::widget::Widget;
-    use crate::widget::modal_frame::MODAL_MAX_WIDTH;
+    use crate::widget::modal_dialog::MODAL_MAX_WIDTH;
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
@@ -1145,7 +1117,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut input = TextInput::local();
             let row = Rect::new(100.0, 200.0, 620.0, 234.0);
-            place_field(&mut input, row, &tr, &theme);
+            place_field(&mut input, row);
             assert_eq!(Widget::get_rect(&input), row);
             assert!(
                 !input.is_plain(),
@@ -1185,12 +1157,9 @@ mod tests {
             assert!(side >= glyph + 2.0 * f64::from(theme.tokens.spacing.s2));
         }
 
-        fn roles_divide_the_text_scale_back_out_for_the_renderer() {
+        fn roles_resolve_to_theme_roles_once() {
             let base = Theme::dark();
-            let base_tr = TextRenderer::new();
             let scaled = Theme::dark().with_text_scale(2.0);
-            let mut scaled_tr = TextRenderer::new();
-            scaled_tr.set_text_scale(2.0);
             for role in [
                 Role::Body,
                 Role::Label,
@@ -1200,12 +1169,12 @@ mod tests {
                 Role::Code,
             ] {
                 assert!(
-                    (role.size(&base, &base_tr) - role.size(&scaled, &scaled_tr)).abs() < 0.01,
-                    "{role:?}: the renderer applies the scale; the role must not apply it twice"
+                    (role.style(&scaled).size - role.style(&base).size * 2.0).abs() < 0.01,
+                    "{role:?}: the role carries the text scale exactly once"
                 );
             }
-            assert!(Role::Code.size(&base, &base_tr) > Role::Value.size(&base, &base_tr));
-            assert!(Role::Value.size(&base, &base_tr) > Role::Caption.size(&base, &base_tr));
+            assert!(Role::Code.style(&base).size > Role::Value.style(&base).size);
+            assert!(Role::Value.style(&base).size > Role::Caption.style(&base).size);
         }
 
         fn line_height_grows_with_the_text_scale() {
@@ -1222,7 +1191,7 @@ mod tests {
 
         embedded_fields_take_their_row_and_code_cells_centre_their_digit();
         code_cell_grows_with_the_text_scale();
-        roles_divide_the_text_scale_back_out_for_the_renderer();
+        roles_resolve_to_theme_roles_once();
         line_height_grows_with_the_text_scale();
     }
 }

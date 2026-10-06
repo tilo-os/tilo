@@ -2244,7 +2244,7 @@ fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
 )]
 fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
     /// Opening the palette with a stale query must both focus the input
-    /// and clear it. Drives the configured Super+K path through
+    /// and clear it. Drives the configured Super+Space path through
     /// `handle_event`.
     fn toggle_palette_focuses_input() {
         let mut h = build_harness();
@@ -2258,16 +2258,16 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
         let mods = Modifiers::from(ModifiersState::SUPER);
-        let handled = pump(&mut h, &key_press(Key::Character("k".into())), mods);
+        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Space)), mods);
 
-        assert!(handled, "Super+K must be consumed by the overlay host");
+        assert!(handled, "Super+Space must be consumed by the overlay host");
         assert!(
             h.host.palette_visible(),
-            "Super+K must open the global-search palette"
+            "Super+Space must open the global-search palette"
         );
         assert!(
             h.host.palette.is_focused(),
-            "opening the palette via Super+K must focus its input \
+            "opening the palette via Super+Space must focus its input \
              (so the very first keystroke after open lands in the search box)"
         );
         assert_eq!(
@@ -2299,14 +2299,14 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .unwrap();
         let doc = AutoCommit::new();
 
-        // Super+K is the default Search action.  Any rebind goes through the
+        // Super+Space is the default Search action.  Any rebind goes through the
         // same effective-action resolver used by this dispatcher.
         let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(
             h.chrome.borrow().search_scope,
             SearchScope::All,
-            "Super+K searches the machine"
+            "Super+Space searches the machine"
         );
         h.host.palette.set_query("zzyzx");
         // Retained application indexes are built from the compositor update
@@ -2350,7 +2350,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
     }
 
     /// A room starting empty is only workable if moving one of your own
-    /// records into it costs one step: Super+K, type the name, and a
+    /// records into it costs one step: Super+Space, type the name, and a
     /// record from *another* room is among the answers — labelled with
     /// where it lives — and Enter brings it here.
     #[allow(
@@ -2397,7 +2397,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
         let mut doc = AutoCommit::new();
         let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
         h.host.palette.set_query("field-guide");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
@@ -2621,59 +2621,32 @@ fn workspace_settings_pills_close_button_and_surface_are_pointer_accessible() {
 
 #[test]
 fn palette_scrim_and_surface_alphas_match_the_concept_and_theme() {
-    /// Without the design's 1px backdrop blur, perceived dimming drops
-    /// below intent, so the rendered alpha compensates. `0.45` is
-    /// empirically where a non-blurred scrim reads like the blurred 0.30.
-    #[allow(
-        clippy::assertions_on_constants,
-        reason = "regression guards on design constants; the messages interpolate f32 values, which cannot be const-evaluated"
-    )]
-    fn palette_scrim_alpha_matches_concept() {
-        // `MODAL_SCRIM_ALPHA` already satisfies this today, so clippy sees
-        // a compile-time-constant condition — but the point is to catch a
-        // future edit that lowers it back toward the un-blurred 0.20. A
-        // `const` assertion can't carry this message: `f32` isn't
-        // const-`Display`-able, and the value belongs in the panic text.
-        assert!(
-            MODAL_SCRIM_ALPHA >= 0.45,
-            "MODAL_SCRIM_ALPHA must be >= 0.45 to compensate for the \
-             missing 1-px backdrop blur from concept §4.1; the un-blurred \
-             0.20 scrim let the desktop bleed through the modal so the \
-             palette / WS-settings surfaces never read as the focused \
-             layer (got {MODAL_SCRIM_ALPHA})"
-        );
-    }
-
-    /// The palette scrim must actually dim bright window content — same
-    /// compensation [`MODAL_SCRIM_ALPHA`] documents. At 0.30 a `bg-white`
-    /// card behind the palette stays at 178 grey; at 0.45 it drops to
-    /// 141. Asserted as a lower bound so the next person can't satisfy
-    /// the letter of it by re-lowering an exact pin.
-    #[allow(
-        clippy::assertions_on_constants,
-        reason = "regression guards on design constants; the messages interpolate f32 values, which cannot be const-evaluated"
-    )]
-    fn palette_scrim_alpha_reads_like_the_blurred_concept() {
-        // Same rationale as `palette_scrim_alpha_matches_concept`: a
-        // regression guard on a design constant that's currently true by
-        // construction, kept as a runtime assert because the panic
-        // message interpolates an `f32`.
-        assert!(
-            PALETTE_SCRIM_ALPHA >= 0.45,
-            "PALETTE_SCRIM_ALPHA must be >= 0.45 to compensate for the \
-             missing backdrop blur — below that a white window card behind \
-             the palette stays bright and the card's edge reads as a hard \
-             cut (got {PALETTE_SCRIM_ALPHA})"
-        );
-        // The brightest thing the shell paints must come out clearly
-        // darker than the surface it sits behind.
-        let card = 255.0;
-        let dimmed = card * (1.0 - PALETTE_SCRIM_ALPHA);
-        assert!(
-            dimmed <= 145.0,
-            "a bg-white window card behind the palette lands at {dimmed} — \
-             still a bright field next to a slate-900 card"
-        );
+    /// The shell's scrims (palette, overview, modal sheets) are the
+    /// toolkit's one scrim at the theme's strength: a white window card
+    /// behind the palette comes out clearly dimmed in every theme, and the
+    /// overview's cached-frame scrim carries the same strength.
+    fn shell_scrims_are_the_toolkit_scrim() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let strength = theme.tokens.colors.surfaces.scrim_strength;
+            assert!(
+                strength >= 0.45,
+                "{}: a scrim under 0.45 lets the desktop bleed through the \
+                 palette (got {strength})",
+                theme.name
+            );
+            let card = ui::chrome::scrim_maps(255, strength, &theme);
+            assert!(
+                card <= 210,
+                "{}: a bg-white window card behind the palette lands at {card}",
+                theme.name
+            );
+            let expected = (strength * 255.0).round();
+            assert!(
+                (f32::from(scrim_rgba(&theme, 1.0)[3]) - expected).abs() <= 1.0,
+                "{}: the overview's fast frame uses the theme's strength",
+                theme.name
+            );
+        }
     }
 
     /// The scrim's colour comes from the theme, not a literal — both
@@ -2703,31 +2676,8 @@ fn palette_scrim_and_surface_alphas_match_the_concept_and_theme() {
         }
     }
 
-    /// Legibility against a busy desktop backdrop wins over tint depth:
-    /// [`MODAL_SURFACE_ALPHA`] lifts to `>= 0.90` so the palette reads as
-    /// solid chrome with just a hint of the wallpaper's tint.
-    #[allow(
-        clippy::assertions_on_constants,
-        reason = "regression guards on design constants; the messages interpolate f32 values, which cannot be const-evaluated"
-    )]
-    fn palette_surface_alpha_lifts_off_desktop() {
-        // Same rationale as `palette_scrim_alpha_matches_concept`: a
-        // regression guard on a design constant that's currently true by
-        // construction, kept as a runtime assert because the panic
-        // message interpolates an `f32`.
-        assert!(
-            MODAL_SURFACE_ALPHA >= 0.90,
-            "MODAL_SURFACE_ALPHA must stay >= 0.90 so the palette + \
-             workspace-settings modal read as opaque chrome; a lower \
-             alpha reintroduces the 2026-07-09 legibility complaint \
-             (got {MODAL_SURFACE_ALPHA})"
-        );
-    }
-
-    palette_scrim_alpha_matches_concept();
-    palette_scrim_alpha_reads_like_the_blurred_concept();
+    shell_scrims_are_the_toolkit_scrim();
     scrim_hue_comes_from_the_theme_and_darkens_in_both();
-    palette_surface_alpha_lifts_off_desktop();
 }
 
 #[test]

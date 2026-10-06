@@ -120,10 +120,10 @@ impl EgressPurpose {
     const fn ready_notice(self) -> &'static str {
         match self {
             Self::Activation => {
-                "Windows has a temporary activation connection. Opening the authorised recovery desktop…"
+                "Windows has a temporary activation connection. Opening the recovery desktop…"
             }
             Self::WindowsUpdate => {
-                "Windows has a temporary update connection. Opening the authorised recovery desktop…"
+                "Windows has a temporary update connection. Opening the recovery desktop…"
             }
         }
     }
@@ -208,6 +208,24 @@ impl ApplianceStatus {
         }
     }
 
+    /// A set-up, running, activated appliance with one published app: the
+    /// offline catalogue's appliance.
+    #[must_use]
+    pub fn sample_ready() -> Self {
+        Self {
+            schema_version: 1,
+            configured: true,
+            phase: AppliancePhase::Ready,
+            license: LicenseState::DigitallyActivated,
+            catalog_generation: 1,
+            published_applications: 1,
+            recovery_available: true,
+            power_state: AppliancePowerState::Running,
+            temporary_egress: None,
+            detail: None,
+        }
+    }
+
     #[must_use]
     pub const fn is_provisioned(&self) -> bool {
         self.configured
@@ -229,22 +247,52 @@ impl ApplianceStatus {
         }
     }
 
-    /// A short, factual step for the appliance-management card. This is not
-    /// shown in a published application's normal launch path: activation and
-    /// setup are attributes of the appliance, not of an app window.
+    /// The one sentence the appliance page states its status in: how far
+    /// setup is and, once Windows is ready, whether it is running.
     #[must_use]
-    pub const fn next_step_label(&self) -> &'static str {
-        match self.phase {
-            AppliancePhase::NotProvisioned => "Choose Windows installation media",
-            AppliancePhase::Installing => "Complete Windows Setup in the authorised setup desktop",
-            AppliancePhase::AwaitingGuestBridge => {
-                "Finish Tilo guest integration in the authorised recovery desktop"
+    pub const fn status_statement(&self) -> &'static str {
+        match (&self.phase, self.power_state) {
+            (AppliancePhase::Ready, AppliancePowerState::Running) => {
+                "Windows is running and ready for your apps."
             }
-            AppliancePhase::Ready => "Windows is ready for published applications",
-            AppliancePhase::RepairRequired => {
-                "Open the authorised recovery desktop to repair Windows"
+            (AppliancePhase::Ready, AppliancePowerState::Suspended) => {
+                "Windows is suspended. Resume it to open your apps."
             }
-            AppliancePhase::Unavailable => "Check the appliance status before making changes",
+            (AppliancePhase::Ready, AppliancePowerState::Paused) => {
+                "Windows is paused. Resume it to open your apps."
+            }
+            (AppliancePhase::Ready, AppliancePowerState::ShutDown) => {
+                "Windows is shut down. Start it to open your apps."
+            }
+            (AppliancePhase::Ready, AppliancePowerState::Unknown) => {
+                "Windows is ready for your apps."
+            }
+            (AppliancePhase::NotProvisioned, _) => {
+                "Choose Windows installation media to set it up."
+            }
+            (AppliancePhase::Installing, _) => {
+                "Windows is installing. Finish setup in the setup desktop."
+            }
+            (AppliancePhase::AwaitingGuestBridge, _) => {
+                "Finish connecting Windows to Tilo in the recovery desktop."
+            }
+            (AppliancePhase::RepairRequired, _) => {
+                "Windows needs repair. Open the recovery desktop to fix it."
+            }
+            (AppliancePhase::Unavailable, _) => {
+                "Windows didn't report its status. Check it before making changes."
+            }
+        }
+    }
+
+    /// The appliance's status in a list row: its power state once Windows is
+    /// ready, how far setup is before that.
+    #[must_use]
+    pub const fn summary_label(&self) -> &'static str {
+        match (&self.phase, self.power_state) {
+            (AppliancePhase::Ready, AppliancePowerState::Unknown) => self.phase_label(),
+            (AppliancePhase::Ready, power) => power.label(),
+            _ => self.phase_label(),
         }
     }
 
@@ -253,12 +301,14 @@ impl ApplianceStatus {
     #[must_use]
     pub const fn license_label(&self) -> &'static str {
         match self.license {
-            LicenseState::Unknown => "Activation status unavailable",
-            LicenseState::DigitallyActivated => "Windows reports digitally activated",
-            LicenseState::ProductKeyActivated => "Windows reports product-key activation",
-            LicenseState::OrganisationManaged => "Activation is managed by your organisation",
-            LicenseState::Evaluation => "Windows reports an evaluation licence",
-            LicenseState::Unlicensed => "Windows reports that it is not activated",
+            LicenseState::Unknown => "Windows hasn't reported it yet",
+            LicenseState::DigitallyActivated => {
+                "Windows says it's activated with a digital license"
+            }
+            LicenseState::ProductKeyActivated => "Windows says it's activated with a product key",
+            LicenseState::OrganisationManaged => "Managed by your organization",
+            LicenseState::Evaluation => "Windows says it's an evaluation edition",
+            LicenseState::Unlicensed => "Windows says it isn't activated",
         }
     }
 
@@ -271,10 +321,10 @@ impl ApplianceStatus {
                 Some("Finish Windows Setup, then return here to check its activation status.")
             }
             LicenseState::Unlicensed => Some(
-                "Use the authorised setup or recovery desktop to activate Windows. Tilo does not keep product keys or decide whether a licence is valid.",
+                "Activate Windows from the recovery desktop. Tilo doesn't keep product keys or decide whether a license is valid.",
             ),
             LicenseState::Evaluation => Some(
-                "Evaluation editions have their own terms and expiry. Tilo does not keep product keys or decide whether a licence is valid.",
+                "Evaluation editions have their own terms and expiry date. Tilo doesn't keep product keys or decide whether a license is valid.",
             ),
             LicenseState::DigitallyActivated
             | LicenseState::ProductKeyActivated
@@ -294,6 +344,10 @@ enum OwnerEvent {
 
 /// One narrow nonblocking owner-command queue. It never exposes a generic
 /// command interface to the UI.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "pending status, pending action, checked and offline are independent facts"
+)]
 pub struct ApplianceOwnerClient {
     events: Receiver<OwnerEvent>,
     sender: Sender<OwnerEvent>,
@@ -302,6 +356,11 @@ pub struct ApplianceOwnerClient {
     action_result: Option<Result<String, String>>,
     next_refresh: Instant,
     status: ApplianceStatus,
+    /// A status has arrived (or was given): the appliance is not still
+    /// being checked.
+    checked: bool,
+    /// Never asks the owner helper: the status was given and stays.
+    offline: bool,
 }
 
 impl ApplianceOwnerClient {
@@ -318,9 +377,47 @@ impl ApplianceOwnerClient {
                 .checked_sub(STATUS_INTERVAL)
                 .unwrap_or_else(Instant::now),
             status: ApplianceStatus::unavailable("Checking the Windows appliance…"),
+            checked: false,
+            offline: false,
         };
         client.refresh();
         client
+    }
+
+    /// A client that reports `status` and never runs the owner helper: for
+    /// offline catalogues, screenshots and tests.
+    #[must_use]
+    pub fn offline(status: ApplianceStatus) -> Self {
+        let (sender, events) = mpsc::channel();
+        Self {
+            events,
+            sender,
+            status_pending: false,
+            action_pending: false,
+            action_result: None,
+            next_refresh: ui::time::now(),
+            status,
+            checked: true,
+            offline: true,
+        }
+    }
+
+    /// Refuse a new owner action while one runs, or when this client only
+    /// reports a given status.
+    fn ensure_idle(&self) -> Result<(), String> {
+        if self.offline {
+            return Err("The Windows appliance can't be managed in this session.".into());
+        }
+        if self.action_pending {
+            return Err("A Windows appliance action is already in progress.".into());
+        }
+        Ok(())
+    }
+
+    /// Whether a status has arrived since the client started.
+    #[must_use]
+    pub const fn has_status(&self) -> bool {
+        self.checked
     }
 
     #[must_use]
@@ -334,7 +431,11 @@ impl ApplianceOwnerClient {
     }
 
     pub fn refresh(&mut self) {
-        if self.status_pending || self.action_pending || ui::time::now() < self.next_refresh {
+        if self.offline
+            || self.status_pending
+            || self.action_pending
+            || ui::time::now() < self.next_refresh
+        {
             return;
         }
         self.status_pending = true;
@@ -349,9 +450,7 @@ impl ApplianceOwnerClient {
     ///
     /// Returns an error if an appliance action is already active.
     pub fn import_iso(&mut self, source: File) -> Result<(), String> {
-        if self.action_pending {
-            return Err("A Windows appliance action is already in progress.".into());
-        }
+        self.ensure_idle()?;
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
@@ -371,9 +470,7 @@ impl ApplianceOwnerClient {
     /// Returns an error if the appliance is not provisioned or an action is
     /// already active.
     pub fn open_recovery(&mut self) -> Result<(), String> {
-        if self.action_pending {
-            return Err("A Windows appliance action is already in progress.".into());
-        }
+        self.ensure_idle()?;
         if !self.status.recovery_available {
             return Err(
                 "The Windows recovery desktop is unavailable until the appliance is provisioned."
@@ -391,9 +488,7 @@ impl ApplianceOwnerClient {
     /// Returns an error when another owner action is active or the appliance
     /// has not been provisioned.
     pub fn lifecycle(&mut self, action: LifecycleAction) -> Result<(), String> {
-        if self.action_pending {
-            return Err("A Windows appliance action is already in progress.".into());
-        }
+        self.ensure_idle()?;
         if !self.status.is_provisioned() {
             return Err("Set up the Windows appliance before managing its power state.".into());
         }
@@ -425,9 +520,7 @@ impl ApplianceOwnerClient {
     /// Returns an error when another owner action is active or the appliance
     /// has not been provisioned.
     pub fn open_temporary_egress(&mut self, purpose: EgressPurpose) -> Result<(), String> {
-        if self.action_pending {
-            return Err("A Windows appliance action is already in progress.".into());
-        }
+        self.ensure_idle()?;
         if !self.status.is_provisioned() {
             return Err("Set up the Windows appliance before connecting it temporarily.".into());
         }
@@ -458,9 +551,7 @@ impl ApplianceOwnerClient {
     /// Returns an error when another owner action is pending or no temporary
     /// connection is active.
     pub fn revoke_temporary_egress(&mut self) -> Result<(), String> {
-        if self.action_pending {
-            return Err("A Windows appliance action is already in progress.".into());
-        }
+        self.ensure_idle()?;
         if self.status.temporary_egress.is_none() {
             return Err("There is no active temporary Windows connection to revoke.".into());
         }
@@ -480,9 +571,7 @@ impl ApplianceOwnerClient {
     /// successful `import-iso`: the helper has just prepared the appliance,
     /// while the status cache has not yet had an opportunity to refresh.
     fn start_recovery(&mut self) -> Result<(), String> {
-        if self.action_pending {
-            return Err("A Windows appliance action is already in progress.".into());
-        }
+        self.ensure_idle()?;
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
@@ -496,9 +585,7 @@ impl ApplianceOwnerClient {
                         .spawn()
                         .map(|_| ())
                         .map_err(|error| {
-                            format!(
-                                "Could not open the authorised Windows recovery viewer: {error}"
-                            )
+                            format!("Couldn't open the Windows recovery desktop: {error}")
                         })
                 });
             let _ = sender.send(OwnerEvent::Recovery(result));
@@ -515,16 +602,19 @@ impl ApplianceOwnerClient {
                 OwnerEvent::Status(Ok(status)) if status.schema_version == 1 => {
                     self.status = status;
                     self.status_pending = false;
+                    self.checked = true;
                 }
                 OwnerEvent::Status(Ok(_)) => {
                     self.status = ApplianceStatus::unavailable(
                         "The Windows appliance returned an unsupported status schema.",
                     );
                     self.status_pending = false;
+                    self.checked = true;
                 }
                 OwnerEvent::Status(Err(error)) => {
                     self.status = ApplianceStatus::unavailable(error);
                     self.status_pending = false;
+                    self.checked = true;
                 }
                 OwnerEvent::Imported(Ok(())) => {
                     self.action_pending = false;
@@ -541,8 +631,7 @@ impl ApplianceOwnerClient {
                 }
                 OwnerEvent::Recovery(Ok(())) => {
                     self.action_pending = false;
-                    let detail =
-                        "The authorised Windows setup or recovery desktop is open.".to_string();
+                    let detail = "The Windows setup and recovery desktop is open.".to_string();
                     self.action_result = Some(Ok(detail.clone()));
                     notice = Some(detail);
                 }
@@ -591,7 +680,7 @@ fn command_with_stdin(mut command: Command, source: File) -> Result<std::process
     command
         .stdin(Stdio::from(source))
         .output()
-        .map_err(|error| format!("Could not start the standard authorisation prompt: {error}"))
+        .map_err(|error| format!("Couldn't ask for permission: {error}"))
 }
 
 fn read_status() -> Result<ApplianceStatus, String> {
@@ -631,7 +720,7 @@ impl Default for ApplianceOwnerClient {
 fn output_error(stderr: &[u8]) -> String {
     let detail = String::from_utf8_lossy(stderr).trim().to_string();
     if detail.is_empty() {
-        "The authorisation action did not complete.".into()
+        "Permission wasn't granted.".into()
     } else {
         detail
     }
@@ -654,13 +743,11 @@ mod tests {
             assert_eq!(status.phase_label(), "Ready");
             assert_eq!(status.power_state, AppliancePowerState::Unknown);
             assert_eq!(status.temporary_egress, None);
-            assert_eq!(
-                status.next_step_label(),
-                "Windows is ready for published applications"
-            );
+            assert_eq!(status.status_statement(), "Windows is ready for your apps.");
+            assert_eq!(status.summary_label(), "Ready");
             assert_eq!(
                 status.license_label(),
-                "Windows reports digitally activated"
+                "Windows says it's activated with a digital license"
             );
             assert_eq!(status.license_detail(), None);
         }
@@ -678,14 +765,11 @@ mod tests {
                 temporary_egress: None,
                 detail: None,
             };
-            assert_eq!(
-                status.license_label(),
-                "Windows reports that it is not activated"
-            );
+            assert_eq!(status.license_label(), "Windows says it isn't activated");
             assert!(
                 status
                     .license_detail()
-                    .is_some_and(|detail| detail.contains("does not keep product keys"))
+                    .is_some_and(|detail| detail.contains("doesn't keep product keys"))
             );
         }
         // Case `rejects_untyped_owner_status_fields`.

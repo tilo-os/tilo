@@ -968,13 +968,13 @@ dependencies = [
 name = "backups"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "hex",
  "host-fs",
  "runtime-dylib",
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "taffy",
  "tempfile",
  "tilo-actions",
  "tilo-app",
@@ -2465,6 +2465,7 @@ dependencies = [
 name = "containers"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "bounded-command",
  "runtime-dylib",
  "runtime-portal",
@@ -2577,8 +2578,6 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be17b688510d934ce13f48a2beba700e11583e281e0fda99c22bb256a14eda73"
 dependencies = [
  "bitflags 2.11.0",
  "fontdb",
@@ -8482,7 +8481,6 @@ name = "music"
 version = "0.1.0"
 dependencies = [
  "base64",
- "fnv",
  "gstreamer",
  "hex",
  "image",
@@ -11706,7 +11704,6 @@ dependencies = [
  "russh",
  "serde",
  "serde_json",
- "serial_test",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -13077,7 +13074,6 @@ dependencies = [
  "desktop-policy",
  "hex",
  "launcher",
- "mail",
  "os-actions",
  "package-store",
  "quick-xml 0.41.0",
@@ -14604,15 +14600,8 @@ name = "themes"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
- "serde",
  "serde_json",
- "taffy",
- "tempfile",
  "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-vello",
- "tilo-winit",
  "uuid",
  "workspace-hack",
 ]
@@ -15799,6 +15788,7 @@ dependencies = [
  "tilo-clipboard",
  "tilo-clock",
  "tilo-dialogs",
+ "tilo-files",
  "tilo-location",
  "tilo-media",
  "tilo-notify",
@@ -18328,6 +18318,7 @@ dependencies = [
  "chrono",
  "collab-types",
  "getrandom 0.4.3",
+ "image",
  "serde_json",
  "taffy",
  "tempfile",
@@ -19609,7 +19600,6 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
- "taffy",
  "tempfile",
  "tilo-actions",
  "tilo-app",
