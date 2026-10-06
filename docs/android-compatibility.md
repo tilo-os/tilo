@@ -1,6 +1,6 @@
 # Android applications on Tilo: execution and remaining gaps
 
-Status at 2026-10-06, based on `4b1210dc7c`. **An unchanged Android APK executes
+Status at 2026-10-06, reconciled with published main `869f9d0c18`. **An unchanged Android APK executes
 through Tilo's production compositor and launcher.** Arity 1.1 rendered
 `123+456 = 579`, saved its state on tab close, restored it on relaunch, and
 rendered `234+567 = 801` with separate state in a second workspace. This is
