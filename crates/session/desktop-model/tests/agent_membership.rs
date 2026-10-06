@@ -96,6 +96,36 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
 }
 
 #[test]
+fn authenticated_room_projection_requires_the_exact_durable_room() {
+    let mut ws = room();
+    let durable_room = ws.room.to_string();
+    ws.grant_capability(CapOverride::membership(
+        Subject::agent("member"),
+        durable_room.clone(),
+        Verb::Write,
+    ));
+    ws.grant_capability(CapOverride::membership(
+        Subject::agent("other-room"),
+        "a-different-durable-room",
+        Verb::Write,
+    ));
+
+    assert_eq!(
+        ws.agent_members_in_room_at(&durable_room, NOW),
+        vec![("member".to_string(), CapRole::Editor)]
+    );
+    assert!(
+        ws.agent_members_in_room_at("a-third-room", NOW).is_empty(),
+        "the authenticated projection never treats an arbitrary Room scope as membership"
+    );
+    assert_eq!(
+        ws.agent_members_at(NOW).len(),
+        2,
+        "the legacy replicated reader retains its historical room spelling compatibility"
+    );
+}
+
+#[test]
 fn membership_is_replicated_and_people_and_agents_stay_separate() {
     // Phase `replicated_membership_does_not_depend_on_the_local_workspace_handle`.
     {
