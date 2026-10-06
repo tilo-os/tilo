@@ -8,19 +8,19 @@ use canvas::{
     render::{Options, Renderer},
 };
 use serde_json::json;
+use std::fmt::Write;
 use ui::prelude::TestApp;
 use ui::vello::{Scene, kurbo::Affine};
 
 #[test]
 fn compound_pixel_paths_survive_repeated_zoom_redraws() {
     let mut app = TestApp::<App>::new().unwrap();
-    let d = (0..500)
-        .map(|n| {
-            let x = n % 32;
-            let y = n / 32;
-            format!("M{x} {y}h1v1h-1Z")
-        })
-        .collect::<String>();
+    let mut d = String::new();
+    for n in 0..500 {
+        let x = n % 32;
+        let y = n / 32;
+        write!(d, "M{x} {y}h1v1h-1Z").unwrap();
+    }
     let marks = (0..55)
         .map(|n| json!({"id":format!("colour-{n}"),"shape":{"kind":"path","d":d},"fill":"#f7d48b"}))
         .collect::<Vec<_>>();
