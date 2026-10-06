@@ -15,6 +15,7 @@ import time
 import tomllib
 
 from qualify_apk import digest, pinned, verify_runtime
+from execution_host import add_architecture, native_architecture
 from run_arity_journey import REPO, Journey, wait_for, require_ok, checked_output
 from run_integration_journey import stop, stop_bus_helpers
 
@@ -121,7 +122,7 @@ def exercise_work(journey, output, profile, package, args, documents, grants):
         raise RuntimeError('scoped source or private visits changed unexpectedly')
     (output / 'foreground.txt').write_text(record.read_text())
     result = {'schema': 1, 'completed_at_utc': datetime.now(timezone.utc).isoformat(),
-        'execution': 'production headless Tilo, actual ART, x86_64 software graphics',
+        'execution': 'production headless Tilo, actual ART, ' + args.architecture + ' software graphics',
         'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
         'production_binaries': {n: digest(REPO / 'target/debug' / n) for n in ('shell', 'tilo-launcher')},
         'presented_frame': frame, 'control_notification': control,
@@ -151,7 +152,7 @@ def exercise_denial(journey, output, profile, package, args):
     journey.close()
     (output / 'foreground.txt').write_text(record.read_text())
     return {'schema': 1, 'completed_at_utc': datetime.now(timezone.utc).isoformat(),
-        'execution': 'production headless Tilo, actual ART, x86_64 software graphics',
+        'execution': 'production headless Tilo, actual ART, ' + args.architecture + ' software graphics',
         'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
         'production_binaries': {n: digest(REPO / 'target/debug' / n) for n in ('shell', 'tilo-launcher')},
         'presented_frame': frame, 'foreground_without_notification_capability': 'denied',
@@ -160,6 +161,7 @@ def exercise_denial(journey, output, profile, package, args):
 
 def main(work_driver=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_architecture(parser)
     for name in ('payload', 'runtime-receipt', 'runtime-parent', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('apk', 'signer', 'runtime-receipt'):
@@ -171,6 +173,7 @@ def main(work_driver=None):
     if work_driver is not None:
         expectation.add_argument('--expect-sticky-incompatibility', action='store_true')
     args = parser.parse_args()
+    native_architecture(args.architecture)
     output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / 'app.apk', args.apk_sha256)
@@ -180,7 +183,7 @@ def main(work_driver=None):
             or qualification.get('runtime_receipt_sha256') != args.runtime_receipt_sha256
             or bool(qualification.get('notification_provider_declared')) != (not args.expect_notification_denial)):
         raise RuntimeError('fixture signature, receipt or notification declaration differs')
-    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, 'x86_64')
+    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, args.architecture)
     package = tomllib.loads((payload / 'tilo.toml').read_text())['package']['id']
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:

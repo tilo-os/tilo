@@ -72,8 +72,10 @@ paths, strict C warnings and a link that rejects undefined symbols. The current
 framework DEX is architecture-independent. Stage the new ARM64 entry/bridge and
 that same DEX using separate receipts; the unchanged signed fixture can then be
 prepared for aarch64. Actual ELF/signature/receipt checks passed, with runtime
-acceptance explicitly false. Native ARM64 ART journeys, generated schema/cache
-inputs and physical graphics/input remain separate qualification steps.
+acceptance explicitly false. Execution drivers accept `--architecture aarch64` and require a matching native
+Linux execution host before launching or admitting the runtime receipt. Native
+ARM64 ART journeys, generated schema/cache inputs and physical graphics/input
+remain separate qualification steps.
 
 ## Build and stage
 
@@ -169,6 +171,8 @@ Compile `test_sticky_entry.c` with strict C warnings on the remote builder and
 run `test_sticky_entry.py HARNESS` to check the production fork/exec supervisor's
 normal exit, SIGTERM, missing/malformed journal, successful retry and crash bound.
 These native tests supplement the actual ART journey; they do not replace it.
+The scoped `android-runtime-supervisor` CI group compiles and runs the same
+production harness automatically; no SDK, ART, network or privileges are needed.
 
 For the successful path, prepare `IntegrationActivity` with `--notifications`,
 then use `tools/android/run_integration_journey.py --fixture-grants --help`.
