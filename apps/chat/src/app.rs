@@ -2183,7 +2183,7 @@ impl ChatApp {
             .is_some_and(|submission| {
                 matches!(
                     submission.message.as_ref(),
-                    Some(AgentMessageSubmission::Invoke(_))
+                    Some(AgentMessageSubmission::Invoke { .. })
                 )
             })
     }

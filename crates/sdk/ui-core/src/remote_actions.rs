@@ -130,12 +130,11 @@ struct CatalogueWalk {
 struct Running {
     answer: LocalStateWriter<InvocationCall>,
     cancellation: Option<LocalState<CancellationCall>>,
-    /// At least one non-terminal receipt proved the host dispatched the work.
-    admitted: bool,
     /// When to observe it next, while the host is still running it.
     observe_at: Option<Instant>,
-    /// The host no longer has an answer for work it previously admitted.
-    /// This is unresolved outcome, not proof that nothing ran.
+    /// The host no longer has an answer for work this client dispatched.
+    /// This is unresolved outcome, not proof that nothing ran, even when the
+    /// original admission receipt was lost.
     outcome_uncertain: bool,
 }
 
@@ -283,7 +282,21 @@ impl RemoteActions {
         argument: InvokeArgument,
         confirmation: Option<Confirmation>,
     ) -> LocalState<InvocationCall> {
-        self.invoke_with_id(InvocationId::new(), target, argument, confirmation)
+        self.invoke_tracked(target, argument, confirmation).1
+    }
+
+    /// Invoke an action and retain the caller-owned identity needed to
+    /// reconcile an uncertain outcome before any receipt arrives.
+    #[must_use]
+    pub fn invoke_tracked(
+        &self,
+        target: RemoteActionTarget,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+    ) -> (InvocationId, LocalState<InvocationCall>) {
+        let invocation = InvocationId::new();
+        let call = self.invoke_with_id(invocation, target, argument, confirmation);
+        (invocation, call)
     }
 
     /// Invoke an action with a caller-owned stable identity.
@@ -314,7 +327,6 @@ impl RemoteActions {
             Running {
                 answer: answer.writer(),
                 cancellation: None,
-                admitted: false,
                 observe_at: None,
                 outcome_uncertain: false,
             },
@@ -548,23 +560,13 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         RemoteActionMessage::Update { invocation, state } => {
             match state {
                 Some(state) => settle(inner, invocation, state.update),
-                // Once a non-terminal receipt proved dispatch, losing the
-                // host's retained lookup is uncertainty, not a refusal proving
-                // that nothing ran. Keep the last admitted state and do not
-                // retry either the invocation or observation. Before admission,
-                // the same answer still definitively means nothing ran.
+                // The request was already dispatched before it entered this
+                // map. Losing the host's retained lookup is therefore
+                // uncertainty, not proof that nothing ran, even when its
+                // admission receipt was lost. Keep the last state and do not
+                // retry either the invocation or observation.
                 None => {
-                    if inner
-                        .invocations
-                        .get(&invocation)
-                        .is_some_and(|running| !running.admitted)
-                    {
-                        if let Some(running) = inner.invocations.remove(&invocation) {
-                            running
-                                .answer
-                                .set(RemoteCall::Refused(ActionHostError::UnknownInvocation));
-                        }
-                    } else if let Some(running) = inner.invocations.get_mut(&invocation) {
+                    if let Some(running) = inner.invocations.get_mut(&invocation) {
                         running.outcome_uncertain = true;
                         running.observe_at = None;
                     }
@@ -602,7 +604,6 @@ fn settle(inner: &mut Inner, invocation: InvocationId, update: InvocationUpdate)
     let Some(running) = inner.invocations.get_mut(&invocation) else {
         return;
     };
-    running.admitted = true;
     running.outcome_uncertain = false;
     running.answer.set(RemoteCall::Done(update));
     let background = crate::background::Background::current();

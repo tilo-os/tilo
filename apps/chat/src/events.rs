@@ -2750,7 +2750,7 @@ mod tests {
             give_up_at: std::time::Instant::now(),
             pages_remaining: 0,
         };
-        let message = AgentMessageSubmission::Invoke(call);
+        let message = AgentMessageSubmission::Invoke { invocation, call };
 
         assert!(matches!(
             app.poll_agent_message_submission("ws_home", "scribe", &submission, &message),

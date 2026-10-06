@@ -24,7 +24,10 @@ pub enum AgentMessageSubmission {
         revision: String,
         call: LocalState<CatalogueCall>,
     },
-    LaunchInvoke(LocalState<InvocationCall>),
+    LaunchInvoke {
+        invocation: tilo_actions::InvocationId,
+        call: LocalState<InvocationCall>,
+    },
     AwaitPublisher {
         call: Option<LocalState<CatalogueCall>>,
         retry_at: Instant,
@@ -36,7 +39,10 @@ pub enum AgentMessageSubmission {
         revision: String,
         call: LocalState<CatalogueCall>,
     },
-    Invoke(LocalState<InvocationCall>),
+    Invoke {
+        invocation: tilo_actions::InvocationId,
+        call: LocalState<InvocationCall>,
+    },
 }
 
 #[derive(Clone)]
@@ -173,15 +179,12 @@ pub fn begin_from_offer(
 /// retried under a new invocation identity.
 #[must_use]
 pub fn outcome_uncertain(actions: &RemoteActions, submission: &AgentMessageSubmission) -> bool {
-    let (AgentMessageSubmission::Invoke(call) | AgentMessageSubmission::LaunchInvoke(call)) =
-        submission
+    let (AgentMessageSubmission::Invoke { invocation, call }
+    | AgentMessageSubmission::LaunchInvoke { invocation, call }) = submission
     else {
         return false;
     };
-    let RemoteCall::Done(update) = call.get() else {
-        return false;
-    };
-    !update.is_terminal() && actions.invocation_outcome_uncertain(update.invocation())
+    !call.get().is_settled() && actions.invocation_outcome_uncertain(*invocation)
 }
 
 #[must_use]
@@ -196,9 +199,9 @@ pub fn poll(
 ) -> AgentMessagePoll {
     if !matches!(
         submission,
-        AgentMessageSubmission::LaunchInvoke(_)
+        AgentMessageSubmission::LaunchInvoke { .. }
             | AgentMessageSubmission::AwaitPublisher { .. }
-            | AgentMessageSubmission::Invoke(_)
+            | AgentMessageSubmission::Invoke { .. }
     ) && (crate::time::now() >= resolve_deadline || pages_remaining == 0)
     {
         return AgentMessagePoll::Failed;
@@ -213,7 +216,7 @@ pub fn poll(
             revision,
             call,
         } => poll_launch_confirmation(actions, workspace, target, revision, call, pages_remaining),
-        AgentMessageSubmission::LaunchInvoke(call) => {
+        AgentMessageSubmission::LaunchInvoke { call, .. } => {
             poll_launch_invocation(actions, call, pages_remaining)
         }
         AgentMessageSubmission::AwaitPublisher {
@@ -242,7 +245,7 @@ pub fn poll(
             call,
             pages_remaining,
         ),
-        AgentMessageSubmission::Invoke(call) => poll_invocation(call),
+        AgentMessageSubmission::Invoke { call, .. } => poll_invocation(call),
     }
 }
 
@@ -393,12 +396,9 @@ fn poll_launch_confirmation(
     {
         return AgentMessagePoll::Failed;
     }
+    let (invocation, call) = actions.invoke_tracked(target.clone(), InvokeArgument::None, None);
     AgentMessagePoll::Advance {
-        submission: AgentMessageSubmission::LaunchInvoke(actions.invoke(
-            target.clone(),
-            InvokeArgument::None,
-            None,
-        )),
+        submission: AgentMessageSubmission::LaunchInvoke { invocation, call },
         pages_remaining: pages_remaining.saturating_sub(1),
     }
 }
@@ -616,12 +616,10 @@ fn poll_confirmation(
     if !is_exact_confirmation(&page, agent, target, revision) {
         return AgentMessagePoll::Failed;
     }
+    let (invocation, call) =
+        actions.invoke_tracked(target.clone(), InvokeArgument::Text(text.to_owned()), None);
     AgentMessagePoll::Advance {
-        submission: AgentMessageSubmission::Invoke(actions.invoke(
-            target.clone(),
-            InvokeArgument::Text(text.to_owned()),
-            None,
-        )),
+        submission: AgentMessageSubmission::Invoke { invocation, call },
         pages_remaining: pages_remaining.saturating_sub(1),
     }
 }
@@ -826,7 +824,10 @@ mod tests {
     fn admitted_cold_launch_is_observed_past_discovery_expiry() {
         let invocation = InvocationId::new();
         let call = LocalState::new(RemoteCall::Done(InvocationUpdate::Accepted { invocation }));
-        let submission = AgentMessageSubmission::LaunchInvoke(call.clone());
+        let submission = AgentMessageSubmission::LaunchInvoke {
+            invocation,
+            call: call.clone(),
+        };
         assert!(matches!(
             poll(
                 &RemoteActions::session(),

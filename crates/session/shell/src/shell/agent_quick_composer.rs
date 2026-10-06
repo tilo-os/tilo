@@ -918,7 +918,7 @@ mod tests {
             agent: "scribe".into(),
             actions: Some(actions.clone()),
             pending_message: Some(PendingMessage {
-                state: AgentMessageSubmission::Invoke(call),
+                state: AgentMessageSubmission::Invoke { invocation, call },
                 deadline: std::time::Instant::now(),
                 pages_remaining: 0,
                 text: "Review the release notes".into(),
@@ -944,7 +944,7 @@ mod tests {
                 .pending_message
                 .as_ref()
                 .map(|pending| pending.state.clone()),
-            Some(AgentMessageSubmission::Invoke(call))
+            Some(AgentMessageSubmission::Invoke { call, .. })
                 if matches!(call.get(), RemoteCall::Done(InvocationUpdate::Accepted { .. }))
         ));
     }

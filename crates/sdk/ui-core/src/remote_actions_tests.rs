@@ -515,7 +515,9 @@ fn an_unknown_observation_never_turns_admitted_work_into_a_refusal_or_retry() {
 }
 
 #[test]
-fn an_unknown_invocation_before_admission_is_a_definitive_refusal() {
+fn an_unknown_invocation_before_admission_remains_owned_without_retry() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
     let invocation = InvocationId(uuid::Uuid::from_bytes([0x5e; 16]));
     let mut actions = RemoteActions::session();
     let call = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
@@ -528,12 +530,15 @@ fn an_unknown_invocation_before_admission_is_a_definitive_refusal() {
         },
     });
 
-    assert_eq!(
-        call.get(),
-        RemoteCall::Refused(ActionHostError::UnknownInvocation)
+    assert!(matches!(call.get(), RemoteCall::Pending));
+    assert!(actions.invocation_outcome_uncertain(invocation));
+    assert!(actions.is_busy(), "the dispatched invocation stays owned");
+    clock.advance(OBSERVE_INTERVAL * 2);
+    actions.poll();
+    assert!(
+        actions.take_collab_requests().is_empty(),
+        "a lost admission receipt never authorizes an automatic retry"
     );
-    assert!(!actions.invocation_outcome_uncertain(invocation));
-    assert!(!actions.is_busy());
 }
 
 #[test]
