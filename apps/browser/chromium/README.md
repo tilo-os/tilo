@@ -66,6 +66,15 @@ Diagnostics use stderr or the profile's `cef.log`. Resize dimensions, pointer
 coordinates and wheel deltas are physical pixels; the host converts them to CEF
 logical coordinates using `scale_factor`.
 
+Native editing history advertises `native_edit_history: true` in each tab's
+`ready` / `tab_ready` event. A host without this flag never receives the new
+`edit_history` command. Its only fields are `op`, `tab` and `direction`, where
+`direction` is exactly `undo` or `redo`; extra fields are rejected. It invokes
+CEF's native focused-frame Undo/Redo, without JavaScript or simulated keys. The
+retained WebView offers this through the system `LocalUndo` capability, so the
+same Edit operation services keyboard, menu and automation requests. Command
+queue admission is not a claim that a history entry existed or completed.
+
 Resource navigation uses `scoped_navigation` with a strictly increasing positive
 signed-32-bit `request_id`, a `command` (`navigate`, `back`, `forward`, `reload`,
 or `history_entry`), and the command's URL or history snapshot/entry fields.

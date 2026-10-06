@@ -3547,6 +3547,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             retry_at,
             animation_deadline,
         );
+        // A native field lease can retire and become ready during an idle sync.
+        // Republish its admission even when no model/layout change needs paint;
+        // otherwise a canceled recording's successor waits on a stale stamp.
+        if scheduled_due {
+            self.sync_ime(&window);
+        }
         let deadline = deadline
             .into_iter()
             .chain(

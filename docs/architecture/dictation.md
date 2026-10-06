@@ -593,8 +593,7 @@ launch current compositor/browser builds against an owned profile, drive the
 existing consent action, and assert original-field ACK, insertion, undo,
 focus-change recovery and cancellation through `tilo-control`. It must not
 introduce a production executable override, install a development key or alter
-the user's grants. This fixture has not been assembled or run; namespace and
-recorder feasibility are not end-to-end capture evidence. Real microphone,
+the user's grants. The synthetic assembly and its limits are recorded below. Real microphone,
 device selection and physical-device acceptance remain separate gates.
 
 Small's median cold load is 2.748 seconds. Short final medians are 4.37–4.79
@@ -663,12 +662,52 @@ paths and microphone consent are unchanged. These entry points alone do not
 prove the assembled audio-to-browser journey.
 
 A disposable namespace run assembled the current headless compositor and the
-sandboxed native Chromium fixture on loopback successfully. After an actual
-click within the measured foreign-surface rectangle, the compositor reported
-the correct native keyboard surface and text-input surface, but
-`text_input_active` remained false for the full ten-second observation. Thus
-this run has **not** reached dictation preparation, capture or insertion. The
-browser field-admission/focus path remains to be diagnosed. Separately, the
-fixed-path real worker reached `Ready` inside the same namespace layout and
-reported explicit `WorkerStopped` after owner EOF. Neither result is an
-assembled audio-to-browser success; no microphone consent was given.
+sandboxed native Chromium fixture on loopback successfully. Actual DOM focus
+and the correct Wayland keyboard/text-input surfaces were observed. The initial
+harness incorrectly required standard IME enablement before private preparation
+and used a test-double provider address. The production provider is `actions`;
+invoking `actions/dictation.toggle` after focus completed original-field Prepare
+admission, and only then did standard text input become active. This preserves
+the prohibition on unguarded insertion; it is not a native focus defect.
+Separately, the fixed-path real worker reached `Ready` inside the same namespace
+layout and reported explicit `WorkerStopped` after owner EOF. These observations
+were followed by a full synthetic capture journey. The initial missing audio
+executables were supplied only in the disposable review container. Fedora's
+PipeWire server package transaction failed at its sysusers hook; the cached,
+signature-verified RPM's server executable/configuration were extracted into an
+owned fixture directory instead of creating system accounts or running services
+on the laptop.
+
+The hardware-disabled private PipeWire graph fed public FLEURS `en_us-0` audio
+through the actual pinned recorder and fixed-path worker. Explicit one-session
+consent and original-field Start acknowledgement preceded capture. Finish removed
+the recorder and inserted the corrected final into the original native Chromium
+input at its existing caret. An assembled keyboard Ctrl+Z regression exposed a
+missing WebView local-history capability. WebView now consumes the existing
+system UndoRequest through an explicitly advertised native-history backend;
+Chromium calls its focused frame's native Undo/Redo. Legacy hosts without that
+capability retain their old protocol, and bounded queue admission does not claim
+that an undo entry existed. Ctrl+Z restored the original value and Ctrl+Shift+Z
+restored the dictated value in the assembled journey after this repair.
+The existing Edit executor delegates to this same capability; native history
+availability metadata in menu/action discovery remains unqualified.
+
+A second recording canceled without altering prior text, and its recorder and
+model worker exited. Starting a successor after that cancellation initially
+failed even after observed worker exit. Two native-client scheduling defects
+were identified: querying a pending reply's deadline advanced it another 50 ms,
+and an idle guard poll did not republish private admission when it needed no
+paint. The pending deadline is now owned by actual guard service; admission is
+republished after an idle widget sync without forcing a rendered frame. A
+production guard deadline regression failed before repair, then all nine lease
+regressions passed. The assembled third recording then started after cancellation.
+
+The pointer-focus step in that journey did not reach the second DOM field; this
+failed observation is preserved and does not qualify pointer focus changes. An
+ordinary native Tab key did move DOM focus to the second field, retire the
+original recorder and leave both fields unchanged. The final hardware-isolated
+keyboard journey passed capture, insertion, native Undo/Redo, cancel, observed
+worker teardown, restart and same-window field-focus retirement. It did not use
+physical microphone access, external network, user trust, a published model
+catalogue or a device permission. These synthetic observations do not establish
+support in every text field, real-device latency, or Flow-level recognition.
