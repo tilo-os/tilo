@@ -1292,24 +1292,12 @@ impl MusicApp {
         use crate::actions::MusicEffect;
         use ui::tilo_resource::Effect as _;
         [
-            (MusicEffect::ConnectSpotify, "music-connect-spotify"),
-            (
-                MusicEffect::ConnectSpotifyPlayback,
-                "music-spotify-playback",
-            ),
-            (MusicEffect::SpotifyDevices, "music-spotify-devices"),
+            (MusicEffect::Sources, "music-sources"),
             (MusicEffect::SpotifyQueue, "music-spotify-queue-refresh"),
-            (
-                MusicEffect::SpotifyLibraryMore,
-                "music-spotify-library-more",
-            ),
             (
                 MusicEffect::NewSpotifyPlaylist,
                 "music-spotify-create-playlist",
             ),
-            (MusicEffect::DisconnectSpotify, "music-disconnect-spotify"),
-            (MusicEffect::BrowseSpotify, "music-browse-spotify"),
-            (MusicEffect::BrowseYouTube, "music-browse-youtube"),
         ]
         .into_iter()
         .filter_map(|(effect, key)| {
@@ -1369,7 +1357,7 @@ mod spotify_tests {
     }
 
     #[test]
-    fn spotify_source_buttons_wrap_and_use_semantic_actions() {
+    fn home_has_one_source_picker_with_semantic_actions() {
         use crate::actions::MusicEffect;
         use ui::tilo_resource::Effect as _;
         for effect in [
@@ -1409,19 +1397,27 @@ mod spotify_tests {
                     &mut text,
                     &theme,
                 );
-                assert_eq!(app.source_buttons.len(), 9);
-                for (index, button) in app.source_buttons.iter().enumerate() {
-                    let rect = button.get_rect();
-                    assert!(
-                        rect.width() > 0.0 && rect.height() > 0.0,
-                        "width {width}, scale {scale}, button {index}"
-                    );
-                    assert!(rect.x0 >= 0.0 && rect.x1 <= width);
-                    for other in app.source_buttons.iter().skip(index + 1) {
-                        let overlap = rect.intersect(other.get_rect());
-                        assert!(overlap.width() <= 0.0 || overlap.height() <= 0.0);
-                    }
-                }
+                let visible: Vec<_> = app
+                    .children()
+                    .into_iter()
+                    .filter(|button| button.test_id() == Some("music-sources"))
+                    .collect();
+                assert_eq!(visible.len(), 1, "one compact source picker on Home");
+                let rect = visible[0].get_rect();
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                assert!(rect.x0 >= 0.0 && rect.x1 <= width);
+                assert!(
+                    app.children().into_iter().all(|button| !matches!(
+                        button.test_id(),
+                        Some(
+                            "music-connect-spotify"
+                                | "music-spotify-playback"
+                                | "music-disconnect-spotify"
+                                | "music-spotify-queue-refresh"
+                        )
+                    )),
+                    "Home does not expose backend operations as rows of buttons"
+                );
             }
         }
     }
