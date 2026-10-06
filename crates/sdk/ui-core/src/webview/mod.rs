@@ -570,7 +570,11 @@ pub trait WebViewEngine: Send + Sync {
     /// Suspend painting without discarding the document or its session history.
     fn set_visible(&self, _visible: bool) {}
     /// Keep pointer modifiers current even when no key event reaches the page.
-    fn set_modifiers(&self, _modifiers: KeyModifiers) {}
+    fn set_modifiers(&self, modifiers: KeyModifiers) {
+        if let Some(engine) = self.wrapped() {
+            engine.set_modifiers(modifiers);
+        }
+    }
     /// Native new-window intents, delivered to browser chrome as tab requests.
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         Vec::new()

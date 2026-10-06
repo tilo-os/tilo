@@ -702,12 +702,20 @@ republished after an idle widget sync without forcing a rendered frame. A
 production guard deadline regression failed before repair, then all nine lease
 regressions passed. The assembled third recording then started after cancellation.
 
-The pointer-focus step in that journey did not reach the second DOM field; this
-failed observation is preserved and does not qualify pointer focus changes. An
-ordinary native Tab key did move DOM focus to the second field, retire the
-original recorder and leave both fields unchanged. The final hardware-isolated
-keyboard journey passed capture, insertion, native Undo/Redo, cancel, observed
-worker teardown, restart and same-window field-focus retirement. It did not use
-physical microphone access, external network, user trust, a published model
-catalogue or a device permission. These synthetic observations do not establish
+The first pointer-focus step did not move DOM focus, despite a trusted pointer
+press reaching the correct second field at its current measured coordinates.
+Public synthetic event diagnostics exposed stale Ctrl+Shift from the earlier
+Undo/Redo sequence. Modifier-key releases are not mapped page keys, so the
+WebView now forwards current host modifiers before pointer motion/buttons/scroll
+through the existing backend method, including transparent wrappers. The
+production pointer regression failed before repair; all seven WebView module
+tests passed afterward. The assembled mouse-focus journey then retired capture
+and left both fields unchanged, matching the ordinary native Tab-key journey.
+Separate mouse and keyboard journeys then repeated the full insertion/history/
+cancel/restart sequence with the public FLEURS player still streaming before
+the successor field was focused. Both stopped the original recorder and left
+both field values unchanged; these were active-audio cancellation assertions.
+
+These hardware-isolated journeys used no physical microphone, external network,
+user trust, published model catalogue or device permission. They do not establish
 support in every text field, real-device latency, or Flow-level recognition.
