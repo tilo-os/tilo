@@ -8617,8 +8617,8 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-content",
  "tilo-contact-directory",
+ "tilo-content",
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-net",
@@ -12771,6 +12771,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -16170,6 +16171,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-contact-directory"
+version = "0.1.0"
+dependencies = [
+ "tilo-resource",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-content"
 version = "0.1.0"
 dependencies = [
@@ -16182,15 +16192,6 @@ dependencies = [
  "tilo-paths",
  "tilo-xdg-paths",
  "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-contact-directory"
-version = "0.1.0"
-dependencies = [
- "tilo-resource",
- "uuid",
  "workspace-hack",
 ]
 
@@ -17259,11 +17260,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-actions",
  "tilo-agent-participant",
- "tilo-browser-peer",
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-browser-peer",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-doc",
@@ -18005,6 +18006,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
  "tilo-files",
  "tilo-vm-protocol",
  "tilo-xdg-paths",
@@ -18032,7 +18034,10 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "launcher",
  "libc",
+ "package-store",
+ "runtime-bundle",
  "serde",
  "serde_json",
  "settings-store",
@@ -18041,11 +18046,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-advisory-lock",
+ "tilo-app-package",
  "tilo-clock",
  "tilo-files",
  "tilo-test-env",
  "tilo-vm",
  "tilo-vm-protocol",
+ "toml 1.0.6+spec-1.1.0",
  "uuid",
  "workspace-hack",
 ]

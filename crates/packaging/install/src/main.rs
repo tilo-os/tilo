@@ -973,14 +973,15 @@ fn install(
 /// Where the launcher reads the runtime publishers it accepts; the
 /// launcher's developer override names another list, and the installer
 /// follows it so both judge a bundle alike.
-fn trusted_runtime_publishers() -> Option<Vec<String>> {
+fn trusted_runtime_publishers() -> Result<Option<Vec<String>>, Error> {
     let path = std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || PathBuf::from(runtime_bundle::TRUSTED_PUBLISHERS_FILE),
             PathBuf::from,
         );
-    runtime_bundle::load_trusted_publishers(&path)
+    runtime_bundle::component_pins::load_with_components(&path)
+        .map_err(|error| Error::RuntimeBundle(error.to_string()))
 }
 
 /// Stores the blobs a runtime package carries, or a registry delivers, as
@@ -1133,7 +1134,7 @@ fn check_runtime_bundle(tree: &Path, version: &str) -> Result<(), Error> {
             manifest.version
         )));
     }
-    if let Some(trusted) = trusted_runtime_publishers().filter(|list| !list.is_empty()) {
+    if let Some(trusted) = trusted_runtime_publishers()?.filter(|list| !list.is_empty()) {
         let publisher = manifest
             .publisher_hex
             .unwrap_or_default()

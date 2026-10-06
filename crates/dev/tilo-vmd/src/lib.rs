@@ -5,6 +5,7 @@
 pub mod apply;
 pub mod awake;
 pub mod boot;
+mod cohort;
 pub mod daemon;
 pub mod display;
 pub mod error;
