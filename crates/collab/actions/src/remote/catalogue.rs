@@ -22,6 +22,39 @@ const fn default_page() -> u32 {
     64
 }
 
+/// One exact existing resource whose inert local-view metadata is requested.
+/// The transport supplies identity and current room authority independently.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewResourceQuery {
+    /// Record-local resource address, never a display label.
+    pub id: String,
+    /// Expected resource kind; a different publisher cannot satisfy the lookup.
+    pub kind: String,
+}
+
+/// A host-issued navigation locator. It carries no access grant or credentials.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceViewLocator {
+    /// Host-configured HTTPS listener origin.
+    pub origin: String,
+    /// Current governed room, supplied by the host.
+    pub room: String,
+    /// Certified host device key as hexadecimal.
+    #[serde(rename = "hostDevice")]
+    pub host_device: String,
+    /// Exact existing record provider checked by the host.
+    pub provider: String,
+    /// Operator-configured browser entry. Absent until a compatible bundle is hosted.
+    #[serde(
+        default,
+        rename = "browserPage",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub browser_page: Option<String>,
+}
+
 /// One bounded request for catalogue rows. Every field narrows; the empty
 /// query lists the first page of everything offered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +62,9 @@ pub struct CatalogueQuery {
     /// Only rows from this provider (a token a previous page issued).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Read-only view discovery, separate from the document action catalogue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_resource: Option<ViewResourceQuery>,
     /// Only the direct children of this resource; `None` is the top level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_resource: Option<String>,
@@ -60,6 +96,7 @@ impl Default for CatalogueQuery {
     fn default() -> Self {
         Self {
             provider: None,
+            view_resource: None,
             parent_resource: None,
             needle: String::new(),
             target: None,
@@ -196,6 +233,9 @@ pub struct CataloguePage {
     /// Opaque revision the page, its cursor and its targets belong to.
     pub revision: String,
     pub rows: Vec<CatalogueRow>,
+    /// Present only on a fresh authorized view lookup with a routable host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<ResourceViewLocator>,
     /// For a query naming no provider: the publishers the caller may use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<CatalogueProvider>,
@@ -228,6 +268,14 @@ impl CataloguePage {
         let parent = query.parent_resource.as_deref().unwrap_or("");
         let mut matching = rows.into_iter().filter(|row| {
             row.parent_resource == parent
+                && query.view_resource.as_ref().is_none_or(|wanted| {
+                    row.resource.id == wanted.id
+                        && row.resource.kind == wanted.kind
+                        && row
+                            .action
+                            .as_ref()
+                            .is_some_and(|action| action.kind == crate::OperationKind::View)
+                })
                 && row.matches(&query.needle)
                 && query.target.as_ref().is_none_or(|target| {
                     row.action
@@ -243,6 +291,7 @@ impl CataloguePage {
         Self {
             revision,
             rows,
+            locator: None,
             next_cursor: if more {
                 u64::try_from(next)
                     .unwrap_or(u64::MAX)

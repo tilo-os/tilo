@@ -331,6 +331,8 @@ pub struct Message {
     /// the file the author had selected without reading `text` and without
     /// ever needing a screen position. `None` for an ordinary message.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// Host-resolved existing record provider for this reference.
+    pub source_provider: Option<String>,
     pub attachment: Option<Attachment>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
@@ -737,6 +739,7 @@ mod tests {
             reactions: vec![],
             mentions: vec![],
             reference: None,
+            source_provider: None,
             attachment: None,
             pinned: false,
             work: None,

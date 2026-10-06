@@ -192,7 +192,33 @@ impl ChatApp {
             view.set_mention_paint(paint);
             *painted = fingerprint;
         }
-        view.show(&m.blocks());
+        let blocks = m.blocks();
+        view.show(&blocks);
+        let editor = view.editor_mut();
+        editor.clear_document_selection();
+        if let Some((message, source, start, end)) = &self.revealed_range
+            && message == &m.id
+            && self.revealed_message.as_ref() == Some(message)
+            && source == &m.text
+            && crate::body::plain_text(&blocks) == *source
+        {
+            let position = |offset: usize| {
+                let mut remaining = offset;
+                for (block, content) in blocks.iter().enumerate() {
+                    if remaining <= content.text.len() {
+                        return Some(ui::widget::DocumentPosition {
+                            block,
+                            byte: remaining,
+                        });
+                    }
+                    remaining = remaining.saturating_sub(content.text.len() + 1);
+                }
+                None
+            };
+            if let (Some(anchor), Some(cursor)) = (position(*start), position(*end)) {
+                editor.select_document_range(anchor, cursor);
+            }
+        }
         // The view's paragraphs keep a field's side padding. Lay the view out
         // that far to the leading side so the text itself starts on the
         // message column's edge; the padding is read back from the laid-out
@@ -859,10 +885,11 @@ impl ChatApp {
         } else {
             h.x0 + self.chrome.gutter
         };
-        let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, h, hits);
+        let controls = self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits);
+        let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
 
         let ch = self.channel(&self.active_channel).cloned();
-        let (name, topic) = match &ch {
+        let (name, mut topic) = match &ch {
             Some(ch) => {
                 let topic = if self.inbox_open {
                     self.workspaces
@@ -876,6 +903,11 @@ impl ChatApp {
             }
             None => (String::new(), String::new()),
         };
+        if self.sharing_context {
+            topic = crate::i18n::t("chat-context-sharing");
+        } else if self.following_context {
+            topic = crate::i18n::t("chat-context-following");
+        }
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         let max = (cluster_left - f64::from(sp.s3) - left).max(0.0);
         let title_style = theme.text(TextRole::Heading);
@@ -898,6 +930,50 @@ impl ChatApp {
                 line_in(&mut ctx, &topic, &topic_style, theme.text_dim, tx, h, avail);
             }
         }
+    }
+
+    /// An immediate stop stays visible while navigation is being published.
+    /// Its face is the shared Button, and its input uses the public effect.
+    fn draw_context_stop(
+        &self,
+        paint: PaintCtx<'_>,
+        header: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> Rect {
+        if !self.sharing_context {
+            return header;
+        }
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = paint;
+        let caption = crate::i18n::t("chat-context-stop");
+        let probe = ButtonFace::new(Rect::ZERO, &caption);
+        let width = probe.intrinsic_width(text, theme);
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let edge = header.x1 - self.chrome.gutter;
+        let rect = Rect::new(
+            edge - width,
+            header.center().y - height / 2.0,
+            edge,
+            header.center().y + height / 2.0,
+        );
+        Button::paint(
+            scene,
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+        );
+        Self::push_hit(hits, rect, Hit::StopSharingLiveContext);
+        Rect::new(
+            header.x0,
+            header.y0,
+            rect.x0 - f64::from(theme.tokens.spacing.s2),
+            header.y1,
+        )
     }
 
     /// Whether the sidebar toggle stands in the conversation header (the
@@ -940,12 +1016,12 @@ impl ChatApp {
             return search.x0;
         }
         let right = search.x0 - f64::from(sp.s2);
-        let call_label = if self.call.active {
-            "Show call"
+        let call_label = crate::i18n::t(if self.call.active {
+            "chat-header-call-open"
         } else {
-            "Start call"
-        };
-        let probe = ButtonFace::new(Rect::ZERO, call_label);
+            "chat-header-voice-call"
+        });
+        let probe = ButtonFace::new(Rect::ZERO, &call_label);
         let call_w = probe.intrinsic_width(tr, theme);
         let call = Rect::new(
             right - call_w,
@@ -958,7 +1034,7 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::new(call, call_label).hovered(self.hovered(call)),
+            &ButtonFace::new(call, &call_label).hovered(self.hovered(call)),
         );
         ChatApp::push_hit(hits, call, Hit::StartCall);
 
@@ -1321,6 +1397,11 @@ impl ChatApp {
             header_h,
             body_h,
             work_h,
+            resource_h: if !editing && m.reference.is_some() && m.source_provider.is_some() {
+                2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
+            } else {
+                0.0
+            },
             att_h,
             react_h,
             edited_h,
@@ -1415,8 +1496,55 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
+        if rm.resource_h > 0.0 {
+            self.draw_resource_navigation(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
+        }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
+    }
+
+    fn draw_resource_navigation(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        for (key, hit) in [
+            (
+                "chat-resource-copy-link",
+                Hit::CopyResourceLink(m.id.clone()),
+            ),
+            (
+                "chat-resource-open-link",
+                Hit::OpenResourceLink(m.id.clone()),
+            ),
+        ] {
+            *y += gap;
+            let caption = crate::i18n::t(key);
+            let width = ButtonFace::new(Rect::ZERO, &caption)
+                .intrinsic_width(tr, theme)
+                .min(f64::from(column.text_width));
+            let rect = Rect::new(column.text_x, *y, column.text_x + width, *y + height);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+            );
+            ChatApp::push_hit(hits, rect, hit);
+            *y += height;
+        }
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
@@ -3004,6 +3132,7 @@ struct RowM {
     header_h: f64,
     body_h: f64,
     work_h: f64,
+    resource_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
@@ -3026,6 +3155,7 @@ impl RowM {
             + header
             + body
             + self.work_h
+            + self.resource_h
             + self.edited_h
             + self.att_h
             + self.react_h
@@ -3210,6 +3340,7 @@ mod tests {
             header_h: 0.0,
             body_h: 0.0,
             work_h: 96.0,
+            resource_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,
             edited_h: 0.0,
