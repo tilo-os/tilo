@@ -79,8 +79,8 @@ provider evidence and the existing device grant before I/O.
 
 The same pattern supports unified reads from many accounts while preserving
 which account supplied each result and requiring an explicit sending identity.
-This change adds no Gmail or Calendar integration and does not modify their
-account selection behavior.
+Mail and Calendar consume mailbox hints through the same directory as described
+below; provider credential custody and messaging transport remain separate.
 
 ## Integration boundaries
 
@@ -134,6 +134,42 @@ following a later sidebar selection. The outbox delivery also matches the
 reviewed account ID and email; two accounts sharing an email cannot substitute
 for one another, and removal of the reviewed account refuses delivery. This is an address-book selection, not a
 confirmed endpoint, provider identity proof, workspace permission or SMTP grant.
-No credentials are stored in the directory or draft. Calendar attendee lookup
-and other non-messaging consumers remain to be integrated; provider evidence
-and live Messages journeys remain with the Messages task.
+No credentials are stored in the directory or draft. Provider evidence and
+live Messages journeys remain with the Messages task.
+
+## Calendar attendee selection and invitation handoff
+
+Calendar consumes the same person-owned record read-only. An event's
+`contact-attendees` action opens system search for that event. Each result
+retains the exact person UUID, label, canonical mailbox hint and event; the
+row-bound `add-contact-attendee` action requires confirmation. Same-name people
+and the same address on different people remain separate choices. Edited hints,
+removed people, renamed/deleted events and addresses already on the event
+invalidate old rows. Changing the picker event also invalidates a prior choice.
+
+Only a fresh attendee UUID, reviewed display name and address enter the calendar
+CRDT and ICS output. The private Contacts person UUID is a local selection hint,
+never an event field, endpoint association, collaborator membership or permission.
+`ContactDirectory::email_hints()` is the shared normalization/deletion/deduplication
+API used by both Mail and Calendar, so consumers do not implement separate
+address-book matching policies.
+
+An attendee's `prepare-in-mail` action opens the invitation sender picker.
+Enabled email accounts come read-only from the existing person account record.
+Even two accounts sharing one address produce distinct choices, retaining account
+ID and email; active/default account preferences are ignored. The confirmed
+`prepare-in-mail-from` row returns Mail's typed `prepare-calendar-invitation`
+arguments with the explicit sender. An edited/removed/disabled sender or changed
+attendee or event details invalidate the choice. These Contacts/account pickers are device-local
+operations so a remote workspace participant cannot invoke another person's
+private address-book selection.
+
+Mail requires its own confirmation before saving the local invitation draft,
+checks that exact account ID/email still exists, refuses an existing draft, and
+pins the sender through the same persisted draft and production delivery guard
+as Contacts drafts. No calendar invitation is sent by preparation, and no sender
+credential grant is implied. Calendar's previous sender-free handoff is replaced
+by the explicit picker; callers must discover and confirm an exact row instead
+of supplying a default account implicitly. Fixture tests merge isolated owner
+records, use the real resource/action door and inspect the resulting Mail draft;
+they do not send SMTP messages, upload calendar changes or grant credentials.

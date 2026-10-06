@@ -4116,12 +4116,22 @@ impl MailApp {
                 Ok(ui::framework::Effected::Pending)
             }
             MailEffect::PrepareCalendarInvitation {
+                sender_account,
+                sender_email,
                 to,
                 subject,
                 body,
                 calendar_ics,
             } => {
-                let draft = prepare_calendar_invitation_draft(&to, &subject, &body, &calendar_ics)?;
+                if self.compose.open || self.has_contact_draft_conflict || !self.reveals.is_empty()
+                {
+                    return Err(crate::i18n::t("mail-contact-existing-draft"));
+                }
+                let mut draft =
+                    prepare_calendar_invitation_draft(&to, &subject, &body, &calendar_ics)?;
+                draft.sender =
+                    Some(self.reviewed_invitation_sender(&sender_account, &sender_email)?);
+                self.has_contact_draft_conflict = true;
                 self.reveals.push(Reveal::Invitation(draft));
                 self.dirty = true;
                 Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {

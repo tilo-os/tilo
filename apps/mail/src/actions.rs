@@ -147,8 +147,12 @@ pub enum MailEffect {
     ///
     /// Saves a bounded METHOD:REQUEST invitation as the draft and opens it
     /// for review; nothing is sent.
-    #[effect(permission = "invite", idempotent)]
+    #[effect(permission = "invite", destructive, returns, device_only)]
     PrepareCalendarInvitation {
+        #[param("Reviewed sending account id")]
+        sender_account: String,
+        #[param("Reviewed sending email")]
+        sender_email: String,
         #[param("Invitation recipient")]
         to: String,
         #[param("Invitation subject")]

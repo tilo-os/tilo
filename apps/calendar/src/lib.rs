@@ -44,6 +44,7 @@ pub mod display;
 pub mod doc;
 mod draw_util;
 mod event_popovers;
+mod i18n;
 pub mod ics;
 mod input_context;
 pub mod model;

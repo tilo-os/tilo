@@ -160,15 +160,23 @@ pub enum CalendarEffect {
     ImportIcs,
     /// Prepare invitation in Mail
     ///
-    /// Answers with the arguments of Mail's invitation draft for one attendee;
-    /// nothing is sent.
-    #[effect(returns, permission = "invite")]
+    /// Opens the system picker for an explicit sending account; nothing is sent.
+    #[effect(view, device_only, permission = "invite")]
     PrepareInMail {
         #[param("Event id")]
         event_id: String,
         #[param("Attendee id")]
         attendee_id: String,
     },
+    /// Add attendee from Contacts
+    #[effect(view, device_only)]
+    ContactAttendees { event_id: String },
+    /// Add the exact reviewed address-book hint to this event.
+    #[effect(row, destructive, device_only)]
+    AddContactAttendee { choice: String },
+    /// Prepare invitation with the exact reviewed sender.
+    #[effect(row, destructive, returns, device_only, permission = "invite")]
+    PrepareInMailFrom { choice: String },
     /// Set a calendar's colour
     ///
     /// A display choice of this person, which follows them to their other
@@ -621,6 +629,9 @@ impl ResourceApp for CalendarShell {
             .filter_map(|action| Invoke::apply(action).ok())
             .collect()
     }
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(crate::i18n::catalog())
+    }
 }
 
 impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
@@ -648,6 +659,9 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
             accounts,
             cx.fixture::<SampleAccounts>().is_some(),
         );
+        if cx.mode().is_live() {
+            self.follow_contacts(cx.shared_person::<tilo_contact_directory::ContactDirectory>());
+        }
         if cx.mode().is_live()
             && let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>()
         {
@@ -674,7 +688,13 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
     /// The calendars of the accounts on this device, which can be opened,
     /// shown and hidden.
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.collection_rows()
+        let mut rows = self.collection_rows();
+        rows.extend(self.contact_operation_rows());
+        rows
+    }
+
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.contact_operation_entries()
     }
 }
 

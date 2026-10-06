@@ -1,0 +1,10 @@
+calendar-contact-attendees = Add attendee from Contacts
+calendar-contact-add = Add this attendee
+calendar-contact-choice = { $person } ({ $id }) · { $email } · Event: { $event }
+calendar-invitation-senders = Choose invitation sender
+calendar-invitation-prepare = Prepare invitation with this sender
+calendar-invitation-choice = { $event } · To: { $email } · From: { $sender } ({ $account })
+calendar-contact-stale = This contact, event or sender changed. Choose again.
+calendar-contact-event-missing = The event is no longer available.
+calendar-contact-attendee-missing = The attendee is no longer available.
+calendar-invitation-event = { $title } · { $start } ({ $timezone })

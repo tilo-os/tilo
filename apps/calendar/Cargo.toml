@@ -15,6 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 fnv.workspace = true
+hex.workspace = true
+tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }

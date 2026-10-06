@@ -1111,12 +1111,17 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
             .expect("the sample calendar has an event with a guest");
         let attendee = event.attendees.first().expect("a guest");
         let attendee_email = attendee.email.clone();
+        app.settle();
+        let _sender_owner = super::contact_attendees::tests::attach_senders(&mut app);
+        app.effect(&crate::resource::CalendarEffect::PrepareInMail {
+            event_id: event.id.to_string(),
+            attendee_id: attendee.id.to_string(),
+        })
+        .expect("Calendar opens its invitation sender picker");
+        let (row, effect) = super::contact_attendees::tests::selected_sender(&mut app);
         let output = app
-            .effect(&crate::resource::CalendarEffect::PrepareInMail {
-                event_id: event.id.to_string(),
-                attendee_id: attendee.id.to_string(),
-            })
-            .expect("Calendar answers its invitation effect");
+            .effect_on_confirmed(&row, &effect)
+            .expect("Calendar answers its reviewed invitation effect");
         let value = output.value.expect("typed handoff result");
         assert_eq!(value["delivery"], "not_sent");
         assert_eq!(value["target"]["resource"], "mail.mailbox");

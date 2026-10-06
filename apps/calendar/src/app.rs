@@ -69,6 +69,8 @@ use crate::timeline_interaction::{
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
 use crate::topbar::{Action as TopbarAction, Topbar};
 
+#[path = "contact_attendees.rs"]
+mod contact_attendees;
 mod editor;
 mod month_view;
 mod sidebar_view;
@@ -273,6 +275,10 @@ pub struct CalendarApp {
     sidebar_menu: Popover,
     /// Opens the platform search from the header's search button.
     search_opener: ui::search::SearchOpener,
+    contact_directory:
+        Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
+    contact_event: Option<Id>,
+    invitation_attendee: Option<(Id, Id)>,
     /// The month navigator at the bottom of the sidebar.
     mini_month: DatePicker,
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
@@ -470,6 +476,9 @@ impl CalendarApp {
                 .navigator()
                 .with_accessible_name("Month"),
             search_opener: ui::search::SearchOpener::new(),
+            contact_directory: None,
+            contact_event: None,
+            invitation_attendee: None,
             staged_new_event: false,
             shots_suppress_status: false,
             staged_popover: None,
@@ -4362,8 +4371,21 @@ impl CalendarApp {
             CalendarEffect::PrepareInMail {
                 event_id,
                 attendee_id,
-            } => self
-                .prepare_in_mail(&event_id, &attendee_id)
+            } => {
+                self.open_invitation_senders(&event_id, &attendee_id)?;
+                Ok(Effected::done())
+            }
+            CalendarEffect::ContactAttendees { event_id } => {
+                self.open_contact_attendees(&event_id)?;
+                Ok(Effected::done())
+            }
+            CalendarEffect::AddContactAttendee { choice } => {
+                let action = self.contact_attendee_action(&choice)?;
+                cx.apply(&action);
+                Ok(Effected::done())
+            }
+            CalendarEffect::PrepareInMailFrom { choice } => self
+                .prepare_reviewed_invitation(&choice)
                 .map(Effected::value),
             CalendarEffect::SetColor { id, color } => {
                 let color = crate::model::Palette::from_name(&color)

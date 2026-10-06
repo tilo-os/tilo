@@ -25,15 +25,36 @@ fn email_hints_preserve_ambiguity_case_and_aliases_without_identity_links() {
     let mut record = fixture().expect("fixture succeeds");
     for person in [first(), second()] {
         record
-            .apply(
-                ContactDirectory::PROJECT_EMAILS.with((person, vec!["Alice@EXAMPLE.test".into()])),
-            )
+            .apply(ContactDirectory::PROJECT_EMAILS.with((
+                person,
+                vec![
+                    "Alice@EXAMPLE.test".into(),
+                    "Alice@example.test".into(),
+                    "bad\n@example.test".into(),
+                ],
+            )))
             .expect("hints project");
     }
     let state = record.state().expect("state loads");
     assert_eq!(
         state.email_candidates("Alice@example.test"),
         vec![first(), second()]
+    );
+    assert_eq!(
+        state.email_hints(),
+        vec![
+            super::EmailHint {
+                person: first(),
+                label: "Alex".into(),
+                email: "Alice@example.test".into()
+            },
+            super::EmailHint {
+                person: second(),
+                label: "Alex".into(),
+                email: "Alice@example.test".into()
+            },
+        ],
+        "hints deduplicate within a person, reject invalid mailboxes and preserve different people"
     );
     assert!(state.email_candidates("alice@example.test").is_empty());
     assert!(state.email_candidates("Alice+work@example.test").is_empty());

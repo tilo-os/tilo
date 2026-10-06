@@ -212,7 +212,38 @@ impl ContactDirectory {
     }
 }
 
+/// One address-book mailbox hint. This is a choice to review, never identity proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailHint {
+    pub person: Id,
+    pub label: String,
+    pub email: String,
+}
+
 impl ContactDirectory {
+    /// All live address-book choices, normalized once for every app. Duplicate
+    /// hints of one person collapse; different people always remain separate.
+    pub fn email_hints(&self) -> Vec<EmailHint> {
+        let mut hints = Vec::new();
+        for (id, person) in self.people.iter().filter(|(_, person)| !person.removed) {
+            let mut emails: Vec<_> = person
+                .emails
+                .0
+                .iter()
+                .filter_map(|email| canonical_email_hint(email))
+                .collect();
+            emails.sort();
+            emails.dedup();
+            hints.extend(emails.into_iter().map(|email| EmailHint {
+                person: id.clone(),
+                label: person.label.clone(),
+                email,
+            }));
+        }
+        hints.sort_by(|a, b| (a.person.as_str(), &a.email).cmp(&(b.person.as_str(), &b.email)));
+        hints
+    }
+
     /// Every matching person remains a candidate, including a unique match.
     /// Local-part case and provider-specific aliases are never guessed.
     pub fn email_candidates(&self, email: &str) -> Vec<Id> {

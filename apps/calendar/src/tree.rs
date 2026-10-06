@@ -348,6 +348,12 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
         event_label(&ev.data),
     );
     child = child.with_action(open_spec(event_resource_id(parsed_id)));
+    let mut contacts = crate::resource::CalendarEffect::ContactAttendees {
+        event_id: id.clone(),
+    }
+    .bound();
+    contacts.label = crate::i18n::t("calendar-contact-attendees");
+    child = child.with_action(contacts);
     child = child.with_action(event_update_spec(
         "edit",
         "Rename event",

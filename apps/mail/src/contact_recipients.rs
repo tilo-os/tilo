@@ -63,30 +63,16 @@ impl Choice {
 
 fn choices(directory: &ContactDirectory, accounts: &[crate::account::Account]) -> Vec<Choice> {
     let mut choices = Vec::new();
-    for (id, person) in directory
-        .people
-        .iter()
-        .filter(|(_, person)| !person.removed)
-    {
-        let mut emails: Vec<_> = person
-            .emails
-            .0
-            .iter()
-            .filter_map(|email| canonical_email_hint(email))
-            .collect();
-        emails.sort();
-        emails.dedup();
-        for email in emails {
-            for account in accounts {
-                if canonical_email_hint(&account.config.email).is_some() {
-                    choices.push(Choice {
-                        person: id.as_str().into(),
-                        label: person.label.clone(),
-                        email: email.clone(),
-                        sender_account: account.id.clone(),
-                        sender_email: account.config.email.clone(),
-                    });
-                }
+    for hint in directory.email_hints() {
+        for account in accounts {
+            if canonical_email_hint(&account.config.email).is_some() {
+                choices.push(Choice {
+                    person: hint.person.as_str().into(),
+                    label: hint.label.clone(),
+                    email: hint.email.clone(),
+                    sender_account: account.id.clone(),
+                    sender_email: account.config.email.clone(),
+                });
             }
         }
     }
@@ -198,6 +184,30 @@ impl MailApp {
                 email: sender_email.into(),
             }),
             ..Draft::default()
+        })
+    }
+
+    pub(crate) fn reviewed_invitation_sender(
+        &self,
+        id: &str,
+        email: &str,
+    ) -> Result<DraftSender, String> {
+        let index = self
+            .shared
+            .borrow()
+            .accounts
+            .accounts
+            .iter()
+            .position(|account| {
+                account.id == id
+                    && account.config.email == email
+                    && canonical_email_hint(email).is_some()
+            })
+            .ok_or_else(|| crate::i18n::t("mail-contact-account-changed"))?;
+        self.shared.borrow_mut().accounts.set_active(index);
+        Ok(DraftSender {
+            account: id.into(),
+            email: email.into(),
         })
     }
 
