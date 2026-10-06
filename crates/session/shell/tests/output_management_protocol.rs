@@ -28,6 +28,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use settings_store::SettingsSource;
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use settings_store::hardware::{DisplayTransaction, DisplayTransactionState, OutputTransform};
 use shell::compositor::backend::headless::output_fixture;
@@ -82,6 +83,7 @@ struct Tool {
     mode_sizes: HashMap<ObjectId, (i32, i32)>,
     serial: Option<u32>,
     outcome: Option<&'static str>,
+    outcomes: HashMap<ObjectId, &'static str>,
     power: Vec<Result<zwlr_output_power_v1::Mode, ()>>,
 }
 
@@ -215,7 +217,7 @@ impl Dispatch<ZwlrOutputModeV1, ()> for Tool {
 impl Dispatch<ZwlrOutputConfigurationV1, ()> for Tool {
     fn event(
         state: &mut Self,
-        _: &ZwlrOutputConfigurationV1,
+        configuration: &ZwlrOutputConfigurationV1,
         event: zwlr_output_configuration_v1::Event,
         (): &(),
         _: &Connection,
@@ -227,6 +229,9 @@ impl Dispatch<ZwlrOutputConfigurationV1, ()> for Tool {
             zwlr_output_configuration_v1::Event::Cancelled => "cancelled",
             _ => "unknown",
         });
+        state
+            .outcomes
+            .insert(configuration.id(), state.outcome.unwrap());
     }
 }
 
@@ -269,7 +274,7 @@ wayland_client::delegate_noop!(Tool: ignore ZwlrOutputConfigurationHeadV1);
 
 /// A compositor laid out from a fixture, with one client connected.
 struct Harness {
-    _event_loop: EventLoop<'static, State>,
+    event_loop: EventLoop<'static, State>,
     display: Display<State>,
     state: State,
     _globals: OutputGlobals,
@@ -277,6 +282,7 @@ struct Harness {
     conn: Connection,
     queue: EventQueue<Tool>,
     tool: Tool,
+    staging_woken: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Harness {
@@ -289,6 +295,18 @@ impl Harness {
         let mut globals = OutputGlobals::new();
         globals.sync::<State>(&display.handle(), &outputs, None);
         state.set_output_heads(heads_from_outputs(&outputs));
+        let staging_woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&staging_woken);
+        let (ping, source) = smithay::reexports::calloop::ping::make_ping().unwrap();
+        event_loop
+            .handle()
+            .insert_source(source, move |(), (), _| {
+                observed.store(true, std::sync::atomic::Ordering::Release);
+            })
+            .unwrap();
+        state
+            .output_management
+            .set_wake(Arc::new(move || ping.ping()));
 
         let (client_side, server_side) = UnixStream::pair().expect("socketpair");
         display
@@ -299,7 +317,7 @@ impl Harness {
         let queue = conn.new_event_queue::<Tool>();
         let _registry = conn.display().get_registry(&queue.handle(), ());
         let mut harness = Self {
-            _event_loop: event_loop,
+            event_loop,
             display,
             state,
             _globals: globals,
@@ -307,6 +325,7 @@ impl Harness {
             conn,
             queue,
             tool: Tool::default(),
+            staging_woken,
         };
         let expected = harness.outputs.len();
         harness.pump("registry", |tool| tool.outputs.len() == expected);
@@ -341,6 +360,12 @@ impl Harness {
         while Instant::now() < deadline {
             let _ = self.conn.flush();
             let _ = self.display.dispatch_clients(&mut self.state);
+            self.state.output_management.poll_staging();
+            if self.state.output_management.has_pending_apply() {
+                self.state
+                    .output_management
+                    .resolve_transactions(DisplayTransaction::load().as_ref());
+            }
             let _ = self.display.flush_clients();
             if let Some(guard) = self.conn.prepare_read() {
                 let _ = guard.read();
@@ -352,6 +377,18 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(2));
         }
         panic!("output-management walk stalled at {label}");
+    }
+
+    /// Dispatch the real calloop source, including failures with no file event.
+    fn expect_staging_wake(&mut self) {
+        self.event_loop
+            .dispatch(Some(Duration::from_secs(1)), &mut self.state)
+            .unwrap();
+        assert!(
+            self.staging_woken
+                .swap(false, std::sync::atomic::Ordering::AcqRel),
+            "storage completion must wake an idle event loop"
+        );
     }
 
     fn configuration(&mut self) -> ZwlrOutputConfigurationV1 {
@@ -1048,4 +1085,205 @@ fn wl_output_names_are_the_head_names() {
     heads.sort_unstable();
     assert_eq!(outputs, heads);
     assert_eq!(outputs, ["VIRTUAL-1", "VIRTUAL-2"]);
+}
+
+/// Exercise the real request handler and session records while another
+/// process owns the canonical settings-copy lock. Admission must return
+/// without reporting success before either persistence or backend apply.
+#[test]
+fn output_apply_dispatch_remains_responsive_while_real_storage_is_locked() {
+    use std::sync::mpsc;
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let paths = settings_store::SessionPaths::configured().expect("settings paths");
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    let configuration = harness.configuration();
+    let _panel = harness.enable(&configuration, "VIRTUAL-1");
+    let monitor = harness.enable(&configuration, "VIRTUAL-2");
+    monitor.set_position(0, -1440);
+    configuration.apply();
+    harness.conn.flush().unwrap();
+
+    let lock_path = paths.copy.with_file_name("settings.json.lock");
+    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+    let storage_lock =
+        tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+    let (dispatched, wait) = mpsc::channel();
+    let releaser = std::thread::spawn(move || {
+        let responsive = wait.recv_timeout(Duration::from_millis(500)).is_ok();
+        drop(storage_lock);
+        responsive
+    });
+    harness
+        .display
+        .dispatch_clients(&mut harness.state)
+        .unwrap();
+    let _ = dispatched.send(());
+    let responsive = releaser.join().unwrap();
+    harness.pump("durable staging", |_| DisplayTransaction::load().is_some());
+    shell::shell::durable_writer::global().flush();
+    harness.expect_staging_wake();
+    harness
+        .state
+        .output_management
+        .resolve_transactions(DisplayTransaction::load().as_ref());
+    assert_eq!(
+        harness.tool.outcome, None,
+        "persistence is not backend acceptance"
+    );
+    let transaction = DisplayTransaction::load().unwrap();
+    assert_eq!(transaction.state, DisplayTransactionState::Requested);
+    assert_eq!(
+        transaction.candidate.output_for("VIRTUAL-2").unwrap().y,
+        -1440
+    );
+    let reopened = settings_store::SessionSettings::open(paths).unwrap();
+    assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
+    settings_store::install_source(None);
+    assert!(
+        responsive,
+        "Apply dispatch blocked behind the real storage lock"
+    );
+}
+
+#[test]
+fn output_apply_record_failure_keeps_the_previous_durable_request() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    let mut harness = Harness::privileged("docked-laptop");
+    let first = harness.configuration();
+    harness.enable(&first, "VIRTUAL-1");
+    harness.enable(&first, "VIRTUAL-2");
+    first.apply();
+    harness.pump("first durable request", |_| {
+        DisplayTransaction::load().is_some()
+    });
+    let previous = DisplayTransaction::load().unwrap();
+    shell::shell::durable_writer::global().flush();
+    harness.expect_staging_wake();
+    let saved = paths.device.with_extension("saved");
+    std::fs::rename(&paths.device, &saved).unwrap();
+    std::fs::create_dir(&paths.device).unwrap();
+    let next = harness.configuration();
+    harness.enable(&next, "VIRTUAL-1");
+    harness.enable(&next, "VIRTUAL-2").set_position(0, -1440);
+    next.apply();
+    assert_eq!(harness.outcome("failed durable record"), "failed");
+    harness.expect_staging_wake();
+    let observed = DisplayTransaction::load();
+    std::fs::remove_dir(&paths.device).unwrap();
+    std::fs::rename(saved, &paths.device).unwrap();
+    settings_store::install_source(None);
+    assert_eq!(
+        observed,
+        Some(previous),
+        "failed storage must not replace durable intent"
+    );
+}
+
+#[test]
+fn output_apply_copy_failure_retains_exact_durable_acceptance_without_backend_success() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    let mut harness = Harness::privileged("docked-laptop");
+    std::fs::remove_file(&paths.copy).unwrap();
+    std::fs::create_dir(&paths.copy).unwrap();
+    let configuration = harness.configuration();
+    harness.enable(&configuration, "VIRTUAL-1");
+    harness
+        .enable(&configuration, "VIRTUAL-2")
+        .set_position(0, -1440);
+    configuration.apply();
+    harness.pump("durable record despite copy failure", |_| {
+        DisplayTransaction::load().is_some()
+    });
+    shell::shell::durable_writer::global().flush();
+    harness.state.output_management.poll_staging();
+    harness.expect_staging_wake();
+    let transaction = DisplayTransaction::load().unwrap();
+    harness
+        .state
+        .output_management
+        .resolve_transactions(Some(&transaction));
+    harness.display.flush_clients().unwrap();
+    assert_eq!(
+        harness.tool.outcome, None,
+        "durable acceptance is not backend success"
+    );
+    assert!(harness.state.output_management.has_pending_apply());
+    let durable = settings_store::load_at(&paths.device);
+    assert_eq!(
+        durable["display_transaction"],
+        serde_json::to_value(&transaction).unwrap()
+    );
+    assert_eq!(transaction.state, DisplayTransactionState::Requested);
+    std::fs::remove_dir(&paths.copy).unwrap();
+    session.refresh();
+    assert_eq!(
+        settings_store::load_at(&paths.copy)["display_transaction"],
+        durable["display_transaction"]
+    );
+    settings_store::install_source(None);
+}
+
+#[test]
+fn output_apply_superseded_requests_keep_distinct_storage_and_backend_receipts() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    let mut harness = Harness::privileged("docked-laptop");
+    let lock_path = paths.copy.with_file_name("settings.json.lock");
+    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+    let storage_lock =
+        tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+    let first = harness.configuration();
+    harness.enable(&first, "VIRTUAL-1");
+    harness.enable(&first, "VIRTUAL-2");
+    first.apply();
+    let second = harness.configuration();
+    harness.enable(&second, "VIRTUAL-1");
+    harness.enable(&second, "VIRTUAL-2").set_position(0, -1440);
+    second.apply();
+    harness.conn.flush().unwrap();
+    harness
+        .display
+        .dispatch_clients(&mut harness.state)
+        .unwrap();
+    assert!(
+        DisplayTransaction::load().is_none(),
+        "neither request is durable before the real lock is released"
+    );
+    drop(storage_lock);
+    shell::shell::durable_writer::global().flush();
+    harness.pump("superseded first receipt", |tool| {
+        tool.outcomes.contains_key(&first.id())
+    });
+    assert_eq!(harness.tool.outcomes[&first.id()], "failed");
+    assert!(
+        !harness.tool.outcomes.contains_key(&second.id()),
+        "the current request still needs its backend receipt"
+    );
+    let current = DisplayTransaction::load().unwrap();
+    assert_eq!(current.candidate.output_for("VIRTUAL-2").unwrap().y, -1440);
+    assert_eq!(current.state, DisplayTransactionState::Requested);
+    let mut unrelated = current.clone();
+    unrelated.id = current.id.checked_add(1).unwrap();
+    unrelated.state = DisplayTransactionState::AwaitingConfirmation;
+    harness
+        .state
+        .output_management
+        .resolve_transactions(Some(&unrelated));
+    assert_eq!(harness.outcome("unrelated backend receipt"), "failed");
+    assert_eq!(
+        harness.tool.outcomes[&second.id()],
+        "failed",
+        "an unrelated backend transaction cannot credit this request"
+    );
+    settings_store::install_source(None);
 }
