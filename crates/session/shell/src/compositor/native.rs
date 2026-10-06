@@ -10479,6 +10479,27 @@ pub fn run() {
         state.set_native_dictation_deferred(deferred_field && state.shell_field_active);
         let dictation_blocked =
             session.is_locked() || !frame_builder.host().dictation_input_available();
+        let original_start = {
+            let surface = frame_builder.host_mut().dictation_surface_mut();
+            surface
+                .pending_consent()
+                .then(|| surface.session())
+                .flatten()
+        };
+        let field_start = (!dictation_blocked
+            && original_start
+                .is_some_and(|id| state.native_dictation_start_required(id, Instant::now())))
+        .then(|| {
+            if !deferred_field || !state.shell_field_active {
+                return state.standalone_dictation_start();
+            }
+            frame_builder.start_deferred_text(
+                test_control_ctx.focus,
+                &mut test_control_ctx.doc,
+                &test_control_ctx.root_obj,
+            )
+        })
+        .flatten();
         let dictation_changed = {
             let surface = frame_builder.host_mut().dictation_surface_mut();
             crate::compositor::dictation::frontend::service(
@@ -10486,9 +10507,11 @@ pub fn run() {
                 surface,
                 Instant::now(),
                 dictation_blocked,
+                field_start,
             );
             surface.take_changed()
         };
+        state.private_text_input.service();
         if dictation_changed {
             frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
         }

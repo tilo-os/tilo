@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
 mod linux_header;
+#[cfg(target_os = "linux")]
+mod private_text_input;
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -82,6 +84,8 @@ struct AppHandler {
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<ImeWindowState>,
+    #[cfg(target_os = "linux")]
+    private_input: private_text_input::Bridge,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -1306,12 +1310,28 @@ impl AppHandler {
 
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
+        #[cfg(target_os = "linux")]
+        self.private_input.service(
+            &self.app,
+            window,
+            !self.floating_windows.iter().any(|surface| surface.focused),
+        );
         let next = if self.floating_windows.iter().any(|surface| surface.focused) {
             None
         } else {
-            self.app
-                .ime_window_state()
-                .filter(|_| !self.app.focused_ime_requires_deferred_ack())
+            self.app.ime_window_state().filter(|_| {
+                if !self.app.focused_ime_requires_deferred_ack() {
+                    return true;
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    self.private_input.admitted()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    false
+                }
+            })
         };
         #[cfg(target_os = "android")]
         if super::android_text_input::bridge::installed() {
@@ -3103,6 +3123,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        #[cfg(target_os = "linux")]
+        if let Some(window) = self
+            .window
+            .clone()
+            .filter(|window| window.id() == window_id)
+            && self
+                .private_input
+                .event(&mut self.app, window.as_ref(), &event)
+        {
+            self.sync_ime(&window);
+            return;
+        }
         #[cfg(target_os = "android")]
         if let WindowEvent::Touch(touch) = &event
             && touch.phase == winit::event::TouchPhase::Started
@@ -3232,6 +3264,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
         self.sync_ime(&window);
+        #[cfg(target_os = "linux")]
+        if self.private_input.pending() {
+            request_primary_redraw();
+        }
         if self.last_primary_frame_presented > 0
             && let Some(scenario) = self.native_scenario.take()
         {
@@ -3514,7 +3550,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             auxiliary_startup: awaiting_floating_pixels,
             retry_due: retry_due || auxiliary_retry_due,
         };
-        match crate::render_thread::retry::next_wake(
+        let deadline = crate::render_thread::retry::next_wake(
             crate::time::now(),
             primary_blocked_until,
             any_render_available,
@@ -3522,7 +3558,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             scheduled_deadline,
             retry_at,
             animation_deadline,
-        ) {
+        );
+        #[cfg(target_os = "linux")]
+        let deadline = deadline
+            .into_iter()
+            .chain(
+                self.private_input
+                    .busy()
+                    .then(|| crate::time::now() + Duration::from_millis(50)),
+            )
+            .min();
+        match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
@@ -3961,6 +4007,8 @@ impl App {
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
+            #[cfg(target_os = "linux")]
+            private_input: private_text_input::Bridge::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]

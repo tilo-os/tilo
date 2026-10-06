@@ -342,6 +342,7 @@ fn qualify_queued_finals<W: Widget + 'static>(
 fn qualify_view<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, url: &str) {
     load(engine, url);
     qualify_replacements(view, engine, url);
+    qualify_common_fields(view, engine, url);
     qualify_refusals(view, engine, url);
     qualify_queued_finals(view, engine, url);
     load(engine, url);
@@ -376,6 +377,54 @@ fn qualify_view<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine
     assert_eq!(evaluate(engine, "notes.value"), "alpha beta gamma");
     println!("PASS mounted cancellation: no edit or successor retargeting");
     view.set_focus(false);
+}
+
+fn qualify_common_fields<W: Widget + 'static>(
+    view: &mut Framed<W>,
+    engine: &SharedEngine,
+    url: &str,
+) {
+    for kind in ["search", "tel", "url", "plaintext-only"] {
+        load(engine, url);
+        view.set_focus(false);
+        Framed::harness_mut(view).relayout();
+        let setup = if kind == "plaintext-only" {
+            "let e=document.createElement('div');e.id='commonField';e.contentEditable='plaintext-only';e.textContent='alpha beta gamma';document.body.append(e);e.focus();let r=document.createRange();r.setStart(e.firstChild,6);r.setEnd(e.firstChild,10);let s=getSelection();s.removeAllRanges();s.addRange(r);".to_string()
+        } else {
+            format!(
+                "let e=document.createElement('input');e.id='commonField';e.type={kind:?};e.value='alpha beta gamma';document.body.append(e);e.focus();e.setSelectionRange(6,10);"
+            )
+        };
+        assert_eq!(
+            evaluate(engine, &format!("(()=>{{{setup}return true}})()")),
+            true
+        );
+        view.set_focus(true);
+        wait_ready(view);
+        let stamp = view.ime_edit_fingerprint(&[7; 32]).unwrap();
+        let start = view
+            .start_deferred_text()
+            .expect("original common-field start");
+        assert_eq!(finish(view, &start), Ok(()));
+        assert_eq!(view.ime_edit_fingerprint(&[7; 32]), Some(stamp));
+        let final_receipt = view
+            .commit_deferred_text("日本語 café العربية")
+            .expect("original common-field final");
+        assert_eq!(finish(view, &final_receipt), Ok(()));
+        let value = if kind == "plaintext-only" {
+            "commonField.textContent"
+        } else {
+            "commonField.value"
+        };
+        assert_eq!(evaluate(engine, value), "alpha 日本語 café العربية gamma");
+        assert_eq!(evaluate(engine, "document.execCommand('undo')"), true);
+        assert_eq!(evaluate(engine, value), "alpha beta gamma");
+        assert_eq!(evaluate(engine, "document.execCommand('redo')"), true);
+        assert_eq!(evaluate(engine, value), "alpha 日本語 café العربية gamma");
+        println!(
+            "PASS mounted {kind}: original start/final ACK, Unicode replacement and native undo/redo"
+        );
+    }
 }
 
 fn mount<W: Widget + 'static>(
