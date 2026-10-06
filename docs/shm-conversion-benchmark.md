@@ -24,6 +24,12 @@ and use nearest-rank percentiles; times are milliseconds per complete frame.
 are preserved. Shared-host scheduling can affect tails, especially the baseline
 4K p99; these measurements do not establish an isolated-machine guarantee.
 
+The recorded harness file hash is from measurement time. A later documentation
+comment change makes its run command transport-neutral; the evidence records
+both file hashes and the identical executable-source hash (excluding module
+documentation comments). Production conversion code and raw samples are
+unchanged. The 44–66% reduction at 1080p/4K applies only to this CPU conversion.
+
 | Size | Format | Baseline p50 | Candidate p50 | Less time | p95 baseline / candidate | p99 baseline / candidate |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | 801×601 | Argb8888 | 0.465 | 0.147 | 68.3% | 0.505 / 0.162 | 0.527 / 0.173 |
@@ -41,19 +47,26 @@ predeclared goal of halving median conversion time at 1080p/4K was met for both
 Mapping, capture copies/queues, encoding, GPU upload and scanout are excluded;
 these numbers cannot be converted into whole-frame or whole-desktop speedups.
 
-Reproduce on an existing remote builder:
+Reproduce in the same benchmark environment. Use Cargo there or a configured
+remote Cargo drop-in that executes examples on the builder:
 
 ```bash
-rcargo --on-builder run --locked -j 8 -p shell --release --example shm_swizzle_bench
-rcargo test --locked -j 8 -p shell --lib compositor::surface_readback::tests::
-rcargo test --locked -j 8 -p shell --test it shm_readback::
-rcargo check --locked -j 8 -p shell --tests --examples
+cargo run --locked -j 8 -p shell --release --example shm_swizzle_bench
+cargo test --locked -j 8 -p shell --lib compositor::surface_readback::tests::
+cargo test --locked -j 8 -p shell --test it shm_readback::
+cargo check --locked -j 8 -p shell --tests --examples
 ```
 
 For a paired comparison, build this same example at the base and candidate
 revisions in separate worktrees. Preserve each binary before rebuilding, then
 alternate their execution on the same builder. Keep flags, warmups, fixtures,
 revision, machine and samples with the results. Do not share target directories.
+Copy the same example into the base checkout before building it; the historical
+base predates this harness. Keep all other baseline inputs unchanged.
+
+The [CPU frame-copy investigation](shm-pipeline-benchmark.md) profiles a next
+target in a separate fixture; its results are not a before/after comparison with
+this conversion-only benchmark.
 
 ## Reference and remaining system measurements
 

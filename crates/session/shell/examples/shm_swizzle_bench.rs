@@ -1,6 +1,6 @@
 //! CPU-only benchmark of the production SHM row conversion, excluding mapping,
 //! capture queues, GPU work and display presentation. Reuses frame storage.
-//! Run with `rcargo --on-builder run --locked -p shell --release --example shm_swizzle_bench`.
+//! Run with `cargo run --locked -p shell --release --example shm_swizzle_bench` in the benchmark environment.
 
 use std::hint::black_box;
 use std::time::Instant;
