@@ -1241,10 +1241,14 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
         ak.add_action(AkAction::Click);
     }
     match access.role {
-        Role::Slider | Role::SpinButton => {
+        Role::Slider | Role::Separator | Role::SpinButton => {
             if !access.state.disabled {
                 ak.add_action(AkAction::Increment);
                 ak.add_action(AkAction::Decrement);
+                if matches!(access.role, Role::Slider | Role::Separator) && !access.state.read_only
+                {
+                    ak.add_action(AkAction::SetValue);
+                }
             }
         }
         Role::ComboBox | Role::TreeItem => {
@@ -1879,6 +1883,24 @@ mod tests {
             assert_eq!(update.tree.as_ref().unwrap().root, ROOT_ID);
             assert!(update.nodes.iter().any(|(id, _)| *id == ROOT_ID));
         }
+    }
+
+    #[test]
+    fn sidebar_shared_separator_exports_resize_verbs_to_accesskit() {
+        use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
+        let handle = SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default());
+        let mut root = TestWidget::new(None).with_child(Box::new(handle));
+        let (_taffy, map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &map, None, 1.0);
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == AkRole::Splitter)
+            .expect("actual shared divider exported");
+        for action in [AkAction::Increment, AkAction::Decrement, AkAction::SetValue] {
+            assert!(node.supports_action(action));
+        }
+        assert_eq!(node.value(), Some("50%"));
     }
 
     #[test]
