@@ -5,7 +5,7 @@ const scope = {origin: 'https://host.example', room: 'admitted-room', hostDevice
 const reference = {kind: 'chat.message', id: 'chat.message:m1', label: 'untrusted', span: {start: 1, end: 4, unit: 'Chars'}};
 const provider = 'record:so.tilo.chat:uuid:1';
 const view = {address: {action: 'reveal'}, view: {range: {action: 'range'}}};
-const peer = {resourceScope: scope, resolveResource: async () => ({views: [view]}), whenReady: async () => {}};
+const peer = {resourceScope: scope, resolveResource: async () => ({views: [view], locator: {...scope, provider}}), whenReady: async () => {}};
 const link = () => createResourceLink({peer, page: 'https://web.example/resource.html?token=discard', reference, provider, action: 'reveal'});
 test('an admitted publisher creates a fragment address with no label, account or grant', async () => {
   const url = new URL(await link());
@@ -13,7 +13,7 @@ test('an admitted publisher creates a fragment address with no label, account or
   const address = parseResourceLink(url);
   assert.deepEqual(address, {...scope, version: 1, reference: {kind: reference.kind, id: reference.id, span: reference.span}, provider, action: 'reveal'});
   assert.ok(!url.href.includes('untrusted'));
-  await assert.rejects(createResourceLink({peer: {...peer, resolveResource: async () => ({views: []})},
+  await assert.rejects(createResourceLink({peer: {...peer, resolveResource: async () => ({views: [], locator: {...scope, provider}})},
     page: url, reference, provider, action: 'reveal'}), /unavailable/);
 });
 test('a recipient opens only in the matching admitted host and room', async () => {
@@ -42,7 +42,7 @@ test('link minting freezes the address and refuses changed admitted scope', asyn
   const changing = {...peer, resolveResource: async address => {
     mutable.id = 'different'; mutable.span.end = 999;
     assert.equal(address.id, reference.id); assert.equal(address.span.end, 4);
-    return {views: [view]};
+    return {views: [view], locator: {...scope, provider}};
   }};
   const minted = await createResourceLink({peer: changing, page: 'https://web.example/resource.html',
     reference: mutable, provider, action: 'reveal'});
@@ -50,8 +50,19 @@ test('link minting freezes the address and refuses changed admitted scope', asyn
   assert.equal(parseResourceLink(minted).reference.span.end, 4);
   let scopeNow = scope;
   const moved = {get resourceScope() { return scopeNow; }, resolveResource: async () => {
-    scopeNow = {...scope, room: 'replacement'}; return {views: [view]};
+    scopeNow = {...scope, room: 'replacement'}; return {views: [view], locator: {...scope, provider}};
   }};
   await assert.rejects(createResourceLink({peer: moved, page: 'https://web.example/resource.html',
     reference, provider, action: 'reveal'}), /connection changed/);
+});
+
+test('a copied address requires the exact fresh host-issued locator', async () => {
+  for (const locator of [undefined, {...scope, provider: 'record:other:uuid:1'},
+    {...scope, provider, room: 'other'}, {...scope, provider, hostDevice: 'cd'.repeat(32)},
+    {...scope, provider, origin: 'https://other.example'}]) {
+    await assert.rejects(createResourceLink({peer: {...peer,
+      resolveResource: async () => ({views: [view], locator})},
+      page: 'https://web.example/resource.html', reference, provider, action: 'reveal'}),
+      /host-issued locator/);
+  }
 });

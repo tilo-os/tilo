@@ -938,6 +938,7 @@ async function connect({
     resolveResource(reference, provider) {
       const connection = actions;
       return resolveResourceReference({reference, provider, actions: connection,
+        scope: certifiedPeer.resourceScope,
         current: () => !disposed && snapshot.phase === 'ready' && actions === connection});
     },
     /** Open an exact shared resource through a standalone app's current view
@@ -945,6 +946,7 @@ async function connect({
     openResource(target, reference, provider, action, {signal} = {}) {
       const connection = actions;
       return openResourceReference({reference, provider, action, actions: connection, signal,
+        scope: certifiedPeer.resourceScope,
         current: () => !disposed && snapshot.phase === 'ready' && actions === connection,
         waitRecord: (app, record) => certifiedPeer.whenRecord(app, record, {signal}),
         mount: ({app, record}) => certifiedPeer.mountDesktop(target, {app, record, signal})});

@@ -14839,6 +14839,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-automerge-isolate",
  "tilo-browser-peer",
  "tilo-clock",
  "tilo-document",
@@ -15147,6 +15148,7 @@ dependencies = [
 name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "chrono",
  "collab-types",
  "durable-store",

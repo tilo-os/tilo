@@ -70,6 +70,7 @@ export async function openDeviceCustody({
   crypto = globalThis.crypto,
   locks = globalThis.navigator?.locks,
   preferWebCrypto = true,
+  requireExisting = false,
 }) {
   if (!profile || typeof profile !== 'string') throw new TypeError('profile is required');
   if (!storage) throw new TypeError('storage is required');
@@ -94,6 +95,7 @@ export async function openDeviceCustody({
   try {
     let record = await storage.get(keyRecord(profile));
     if (!record) {
+      if (requireExisting) throw new CustodyError('custody-missing', 'This account has no existing browser device');
       record = preferWebCrypto && await supportsEd25519(subtle)
         ? await createWebCryptoKey(subtle)
         : await createSealedSeed(subtle, random);

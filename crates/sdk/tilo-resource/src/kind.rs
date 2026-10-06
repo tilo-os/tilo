@@ -51,6 +51,7 @@ pub struct ResourceKind {
     name: fn(&dyn Any) -> Option<String>,
     publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::Resource>,
     search: fn(&dyn Any) -> Option<Vec<SearchEntry>>,
+    child: fn(&dyn Any, &str) -> Option<tilo_actions::Resource>,
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
     encode: fn(serde_json::Value) -> Result<EncodedAction, String>,
@@ -80,6 +81,10 @@ fn publish<R: Resource>(id: &str, label: &str, state: &dyn Any) -> Option<tilo_a
     state
         .downcast_ref::<R::State>()
         .map(|state| resource::publish::<R>(id, label, state))
+}
+
+fn child<R: Resource>(state: &dyn Any, id: &str) -> Option<tilo_actions::Resource> {
+    R::child(state.downcast_ref::<R::State>()?, id)
 }
 
 fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
@@ -121,6 +126,7 @@ impl ResourceKind {
             name: resource_label::<R>,
             publish: publish::<R>,
             search: search::<R>,
+            child: child::<R>,
             register: crate::group::register::<R>,
             initialize: R::initialize,
             encode: encode::<R>,
@@ -221,6 +227,16 @@ impl ResourceKind {
     pub fn publish(&self, id: &str, doc: &Doc) -> Result<tilo_actions::Resource, ModelError> {
         let state = self.read(doc)?;
         self.publish_state(id, state.as_ref())
+    }
+
+    /// Read one existing lazy child from the publishing resource's own resolver.
+    /// This returns metadata only and never creates or invokes the child.
+    ///
+    /// # Errors
+    /// Returns why this document does not hold the publishing resource.
+    pub fn child(&self, doc: &Doc, id: &str) -> Result<Option<tilo_actions::Resource>, ModelError> {
+        let state = self.read(doc)?;
+        Ok((self.child)(state.as_ref(), id))
     }
 
     /// [`Self::publish`] from a state [`Self::read`] returned.

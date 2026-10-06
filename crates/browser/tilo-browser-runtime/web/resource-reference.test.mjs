@@ -32,7 +32,8 @@ function endpoints(reply) {
 
 test('shared resource resolves only through its admitted record and current publisher', async () => {
   const {actions, sent} = endpoints(query => {
-    assert.equal(query.provider, provider); assert.equal(query.needle, reference.id);
+    assert.equal(query.provider, provider); assert.deepEqual(query.view_resource, {id: reference.id, kind: reference.kind});
+    assert.equal(query.needle, undefined);
     assert.equal(query.max_results, 256);
     return {revision: 'r1', rows: [row], providers: []};
   });

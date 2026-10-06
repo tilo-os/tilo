@@ -17,6 +17,105 @@ fn governor() -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
+#[cfg(feature = "agents")]
+#[tokio::test]
+async fn view_read_policy_requires_current_certified_person_and_observes_revocation() {
+    use tilo_actions::remote::Caller;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = crate::daemon::Relay::start_with_relay_mode(
+        crate::RelayConfig {
+            state_root: dir.path().to_owned(),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Read-only resource discovery").await.unwrap();
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    {
+        let state = rooms.room(&created.room).await.unwrap();
+        let mut room = state.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = room.peer().clone();
+        candidate
+            .admit_certificate(member.clone(), &key, now)
+            .unwrap();
+        let collaboration = room.collaboration().clone();
+        room.commit(candidate, &key, now, |_, _| Ok(collaboration))
+            .unwrap();
+    }
+    let caller = Caller::authenticated(member.user_public_key, member.device_public_key);
+    let policy = rooms
+        .resource_view_policy(created.workspace_id, &caller, "so.tilo.chat", "")
+        .await
+        .unwrap();
+    assert_eq!(policy.room, created.room);
+    assert_eq!(policy.role, collab_types::Role::Owner);
+    for denied in [
+        Caller::authenticated([9; 32], cert.device_public_key),
+        Caller::authenticated(cert.user_public_key, [9; 32]),
+        Caller::local_person(hex::encode(cert.user_public_key)),
+        Caller::local_agent("agent-with-no-delegation"),
+        Caller::local_app("so.tilo.chat"),
+    ] {
+        assert!(
+            rooms
+                .resource_view_policy(created.workspace_id, &denied, "so.tilo.chat", "")
+                .await
+                .is_none()
+        );
+    }
+    assert!(
+        rooms
+            .resource_view_policy(0, &caller, "so.tilo.chat", "")
+            .await
+            .is_none()
+    );
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let mut revoked = tilo_user_identity::RevocationEntry {
+        user_public_key: cert.user_public_key,
+        revoked_device_public_key: member.device_public_key,
+        revoked_at_ns: now_ns(),
+        reason: tilo_user_identity::RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
+    {
+        let state = rooms.room(&created.room).await.unwrap();
+        let mut room = state.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = room.peer().clone();
+        candidate
+            .publish_governed_revocations(&[revoked], &key, now)
+            .unwrap();
+        let collaboration = room.collaboration().clone();
+        room.commit(candidate, &key, now, |_, _| Ok(collaboration))
+            .unwrap();
+    }
+    assert!(
+        rooms
+            .resource_view_policy(created.workspace_id, &caller, "so.tilo.chat", "")
+            .await
+            .is_none(),
+        "an earlier read policy must not survive a root-signed device revocation"
+    );
+    drop(rooms);
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
 #[test]
 fn a_created_room_restores_with_its_governance_and_publication() {
     let dir = tempfile::tempdir().unwrap();
