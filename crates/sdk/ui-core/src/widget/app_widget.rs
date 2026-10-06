@@ -690,6 +690,17 @@ mod component_adapter {
             Some(self)
         }
 
+        fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            root.observe_physical_input(input);
+        }
+
         // A component's diagnostic probe observes its own record, the
         // document its widgets actually render, not the runner's outer one.
         fn native_input_snapshot(
