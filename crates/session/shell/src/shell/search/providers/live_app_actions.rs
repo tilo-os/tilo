@@ -2886,7 +2886,7 @@ mod tests {
     fn remote_action_pages_never_repeat_and_cursors_are_self_contained() {
         // Phase `remote_actions_page_without_repeats_under_tiny_budgets`.
         {
-            let provider = LiveAppActionsProvider::new(
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(
                 crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
             );
             let chrome = chrome();
@@ -2979,7 +2979,7 @@ mod tests {
         {
             let chrome = chrome();
             let broker = broker_for(&chrome);
-            let provider = LiveAppActionsProvider::new(broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
             let chrome = chrome.borrow();
             let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
             let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
@@ -3085,7 +3085,7 @@ mod tests {
     fn programmatic_directory_actions_resolve_without_entering_palette_search() {
         let chrome = chrome();
         let broker = broker_for(&chrome);
-        let provider = LiveAppActionsProvider::new(broker.clone());
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let state = chrome.borrow();
         let workspace_room = state.tree().desktop.workspaces[0].room;
         let actor = state.local_user_for_room(&workspace_room);
@@ -3367,7 +3367,7 @@ mod tests {
 
     #[test]
     fn a_100001_action_snapshot_reaches_a_unique_tail_without_scanning_the_corpus() {
-        let provider = LiveAppActionsProvider::new(
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
         );
         let chrome = chrome();
@@ -3377,7 +3377,10 @@ mod tests {
         let surface = PublishedSurface {
             peer_id: 1,
             app_id: "so.tilo.fixture".into(),
-            route: CrdtRoute::app("so.tilo.fixture", "room"),
+            route: CrdtRoute::app(
+                "so.tilo.fixture",
+                chrome.tree().desktop.workspaces[0].room.to_string(),
+            ),
             actions: Vec::new(),
             live: true,
         };
@@ -3420,11 +3423,15 @@ mod tests {
 
     #[test]
     fn source_backed_cold_query_does_no_action_index_work_before_refresh() {
+        let chrome = chrome();
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
             peer_id: 1,
             app_id: "so.tilo.fixture".into(),
-            route: CrdtRoute::app("so.tilo.fixture", "room"),
+            route: CrdtRoute::app("so.tilo.fixture", room),
             actions: (0..=4_000)
                 .map(|index| {
                     local_action(
@@ -3439,8 +3446,7 @@ mod tests {
                 .collect(),
             live: true,
         }]);
-        let provider = LiveAppActionsProvider::new(broker);
-        let chrome = chrome();
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
         chrome.borrow_mut().search_scope = crate::shell::chrome_state::SearchScope::All;
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
@@ -3679,7 +3685,7 @@ mod tests {
         {
             let chrome = chrome();
             let broker = broker_for(&chrome);
-            let provider = LiveAppActionsProvider::new(broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
             let cluster_id = chrome.borrow().tree().desktop.workspaces[0]
                 .room
                 .to_string();
