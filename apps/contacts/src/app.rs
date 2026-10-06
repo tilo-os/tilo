@@ -289,7 +289,7 @@ fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
     Box::new(
         ui::widget::Row::new()
             .with_id("contacts.sort-row")
-            .with_padding_rhythm(None, None)
+            .with_padding_rhythm(None, Some(ui::tokens::Rhythm::Related))
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_align_items(taffy::AlignItems::Center)
             .push(Box::new(sort.control_size(ControlSize::Regular))),
