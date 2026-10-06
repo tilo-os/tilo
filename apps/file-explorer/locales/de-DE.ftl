@@ -592,3 +592,7 @@ files-airdrop-verifying = Empfängerüberprüfung und Erlaubnis zum Senden diese
 files-airdrop-address = IP-Adresse des Empfängers
 files-airdrop-port = TLS-Port des Empfängers
 files-airdrop-action-detail = Den gewählten Laborempfänger auf dem Bestätigungsdialog des Systems prüfen, bevor diese Datei einmal gesendet wird.
+
+files-nearby-status = Übertragungsstatus
+files-nearby-transfer-unavailable = Diese Übertragung ist in diesem Dateienfenster nicht mehr verfügbar.
+files-nearby-status-detail = Phase und bestätigte Byteanzahl dieser Übertragung anzeigen.
