@@ -935,5 +935,188 @@
       "every_object_verity_measured": true
     },
     "decision": "Not shipped: deleting 419 MB from the final image view did not remove that amount from the installed object store. Changed layer graph, no repeatability proof."
+  },
+  "artifact_conversion_flags": [
+    "-f",
+    "raw",
+    "-O",
+    "qcow2",
+    "-c",
+    "-o",
+    "compression_type=zstd"
+  ],
+  "supplementary_host_context": {
+    "uname -r": {
+      "returncode": 0,
+      "stdout": "7.2.7-200.fc44.x86_64\n",
+      "stderr": ""
+    },
+    "qemu-system-x86_64 --version": {
+      "returncode": 0,
+      "stdout": "QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers\n",
+      "stderr": ""
+    },
+    "btrfs --version": {
+      "returncode": 0,
+      "stdout": "btrfs-progs v7.1\n-EXPERIMENTAL -INJECT -STATIC +LZO +ZSTD +UDEV +FSVERITY +ZONED CRYPTO=libgcrypt\n",
+      "stderr": ""
+    },
+    "podman --version": {
+      "returncode": 0,
+      "stdout": "podman version 5.8.7\n",
+      "stderr": ""
+    },
+    "zstd --version": {
+      "returncode": 0,
+      "stdout": "*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***\n",
+      "stderr": ""
+    },
+    "lscpu -J": {
+      "returncode": 0,
+      "stdout": "{\n   \"lscpu\": [\n      {\n         \"field\": \"Architecture:\",\n         \"data\": \"x86_64\"\n      },{\n         \"field\": \"CPU op-mode(s):\",\n         \"data\": \"32-bit, 64-bit\"\n      },{\n         \"field\": \"Address sizes:\",\n         \"data\": \"48 bits physical, 48 bits virtual\"\n      },{\n         \"field\": \"Byte Order:\",\n         \"data\": \"Little Endian\"\n      },{\n         \"field\": \"CPU(s):\",\n         \"data\": \"64\"\n      },{\n         \"field\": \"On-line CPU(s) list:\",\n         \"data\": \"0-63\"\n      },{\n         \"field\": \"Vendor ID:\",\n         \"data\": \"AuthenticAMD\"\n      },{\n         \"field\": \"Model name:\",\n         \"data\": \"AMD EPYC 9R45\"\n      },{\n         \"field\": \"CPU family:\",\n         \"data\": \"26\"\n      },{\n         \"field\": \"Model:\",\n         \"data\": \"2\"\n      },{\n         \"field\": \"Thread(s) per core:\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Core(s) per socket:\",\n         \"data\": \"64\"\n      },{\n         \"field\": \"Socket(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Stepping:\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"BogoMIPS:\",\n         \"data\": \"5199.99\"\n      },{\n         \"field\": \"Flags:\",\n         \"data\": \"fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf tsc_known_freq pni pclmulqdq monitor ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch topoext perfctr_core ssbd perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 clzero xsaveerptr rdpru wbnoinvd arat avx512vbmi pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid movdiri movdir64b fsrm avx512_vp2intersect flush_l1d\"\n      },{\n         \"field\": \"Hypervisor vendor:\",\n         \"data\": \"KVM\"\n      },{\n         \"field\": \"Virtualization type:\",\n         \"data\": \"full\"\n      },{\n         \"field\": \"L1d cache:\",\n         \"data\": \"3 MiB (64 instances)\"\n      },{\n         \"field\": \"L1i cache:\",\n         \"data\": \"2 MiB (64 instances)\"\n      },{\n         \"field\": \"L2 cache:\",\n         \"data\": \"64 MiB (64 instances)\"\n      },{\n         \"field\": \"L3 cache:\",\n         \"data\": \"256 MiB (8 instances)\"\n      },{\n         \"field\": \"NUMA node(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"NUMA node0 CPU(s):\",\n         \"data\": \"0-63\"\n      },{\n         \"field\": \"Vulnerability Gather data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Ghostwrite:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Indirect target selection:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Itlb multihit:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability L1tf:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Meltdown:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mmio stale data:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Old microcode:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Reg file data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Retbleed:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Spec rstack overflow:\",\n         \"data\": \"Mitigation; IBPB on VMEXIT only\"\n      },{\n         \"field\": \"Vulnerability Spec store bypass:\",\n         \"data\": \"Mitigation; Speculative Store Bypass disabled via prctl\"\n      },{\n         \"field\": \"Vulnerability Spectre v1:\",\n         \"data\": \"Mitigation; usercopy/swapgs barriers and __user pointer sanitization\"\n      },{\n         \"field\": \"Vulnerability Spectre v2:\",\n         \"data\": \"Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP disabled; PBRSB-eIBRS Not affected; BHI Not affected\"\n      },{\n         \"field\": \"Vulnerability Srbds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsa:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsx async abort:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Vmscape:\",\n         \"data\": \"Not affected\"\n      }\n   ]\n}\n",
+      "stderr": ""
+    },
+    "kvm_available": false,
+    "render_nodes": []
+  },
+  "current_main_refresh_12f4dfb": {
+    "installation": {
+      "provenance": {
+        "image": "registry.tilo.so/tilo/tilo-ci@sha256:7a733a3f1a9fc79ca96f61a667f1b813c91251e822d93a999a5a9c240984cbce",
+        "manifest_digest_verified": true,
+        "config_digest_verified": true,
+        "source": "12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3",
+        "rust_lto": "off",
+        "compressed_layers_bytes": 5045428358
+      },
+      "original_image_id": "sha256:65f8a7f281f5bceb752d5b07f2b7b41f13f21d925484c684626dca9725665548",
+      "assembly_compression_level": 1,
+      "install-first.log": {
+        "rc": 1,
+        "wall_seconds": 87.4346904480044
+      },
+      "composefs_digest": "e1a2f7a75b88be411d90105f2a4632268f2976b47ed67ace5d95e6e369960e89b6d78ab7823fd0fc876b4b8a412d4974bb7428b66ca64f05467a971711a7745d",
+      "install-final.log": {
+        "rc": 0,
+        "wall_seconds": 43.75451099999191
+      },
+      "installed_image_id": "sha256:06f5ff21a03e18b7967c88889822aad5ebe85db8a61e5d59ec813ec161abfe19",
+      "complete_install_passed": true,
+      "install_log_tail": "tes/sector, 8 sectors/cluster\n\u001b[1;36m[tilo]\u001b[0m 2/4 mounted /dev/loop0p2 -> /tmp/tilo-os-perf-20261006/production-main12/.mnt, /dev/loop0p1 -> /tmp/tilo-os-perf-20261006/production-main12/.mnt/boot\n\u001b[1;36m[tilo]\u001b[0m 3/4 bootc install to-filesystem --generic-image --skip-fetch-check --target-imgref sha256:06f5ff21a03e18b7967c88889822aad5ebe85db8a61e5d59ec813ec161abfe19 --composefs-backend --source-imgref docker://localhost:5000/sha256:disk-install /run/tilo-install-target\nInstalling image: docker://sha256:06f5ff21a03e18b7967c88889822aad5ebe85db8a61e5d59ec813ec161abfe19\nBootloader: systemd\nInstalling bootloader via systemd-boot\nTrimming root\n.: 14.9 GiB (15986823168 bytes) trimmed\nFinalizing filesystem root\nTrimming boot\nboot: 1.9 GiB (2024275968 bytes) trimmed\nFinalizing filesystem boot\nInstallation complete!\ncomposefs objects with fs-verity: 76338 of 76338\n\u001b[1;36m[tilo]\u001b[0m 4/4 leaving the raw image in place\n\u001b[1;36m[tilo]\u001b[0m DONE: /tmp/tilo-os-perf-20261006/production-main12/disk.raw\n"
+    },
+    "installed": {
+      "disk": "/tmp/tilo-os-perf-20261006/production-main12/disk.raw",
+      "filesystem_usage": "Overall:\n    Device size:\t\t       23621251072\n    Device allocated:\t\t       10225713152\n    Device unallocated:\t\t       13395537920\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        7536689152\n    Free (estimated):\t\t       15666409472\t(min: 8968640512)\n    Free (statfs, df):\t\t       15665315840\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t                 0\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:8598323200, Used:6327451648 (73.59%)\n   /dev/loop0p2\t8598323200\n\nMetadata,DUP: Size:805306368, Used:604602368 (75.08%)\n   /dev/loop0p2\t1610612736\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/loop0p2\t  16777216\n\nUnallocated:\n   /dev/loop0p2\t13395537920\n",
+      "physical_used_bytes": 7536689152,
+      "object_count": 76338,
+      "objects_logical_bytes": 12005806498,
+      "objects_verity_fingerprint_sha256": "aeaff77f31a7a4d56308eb8fca540cde4a8f2cd4c5f5a8fdbb23b01db92176bd",
+      "every_object_verity_measured": true
+    },
+    "qcow_zstd": {
+      "file_bytes": 5976621056,
+      "sha256": "3d588d57bb0eede581cc2ed4968568eb3de8bc9b91b67208c0770dc5f764fdda",
+      "conversion_flags": [
+        "-f",
+        "raw",
+        "-O",
+        "qcow2",
+        "-c",
+        "-o",
+        "compression_type=zstd"
+      ],
+      "lossless_compare": "Images are identical.\n",
+      "qemu_check_passed": true
+    },
+    "qcow_uncompressed": {
+      "file_bytes": 8053063680,
+      "sha256": "4804b1caaceff9b1b18db5b83c5750eb323acc3de0c613a3c05d0448c65fd79f",
+      "lossless_compare": "Images are identical.\n",
+      "qemu_check_passed": true
+    },
+    "boot": {
+      "env": {
+        "TILO_DISTROBOX": "",
+        "TILO_RUN": "/tmp/tilo-os-perf-20261006/production-boot-main12-02",
+        "TILO_VM_CYCLE": "os-perf-main12-02",
+        "TILO_ACCEL": "tcg",
+        "TILO_MEM": "4096",
+        "TILO_SMP": "4",
+        "TILO_SSH_PORT": "22481",
+        "TILO_XRES": "1280",
+        "TILO_YRES": "720"
+      },
+      "account_provisioned": false,
+      "disk_artifact": {
+        "file_bytes": 5976621056,
+        "sha256": "3d588d57bb0eede581cc2ed4968568eb3de8bc9b91b67208c0770dc5f764fdda",
+        "conversion_flags": [
+          "-f",
+          "raw",
+          "-O",
+          "qcow2",
+          "-c",
+          "-o",
+          "compression_type=zstd"
+        ],
+        "lossless_compare": "Images are identical.\n",
+        "qemu_check_passed": true
+      },
+      "boot_rc": 0,
+      "wait_rc": 0,
+      "host_to_ready_seconds": 81.67057748399384,
+      "greeter_state": {
+        "app": "greeter",
+        "phase": "sign-in",
+        "account": null,
+        "session": "Tilo",
+        "sessions": [
+          "Tilo"
+        ],
+        "session_choice": false,
+        "session_diagnostics": null,
+        "status": "",
+        "username": "",
+        "challenge": null,
+        "cancellation_requested": false,
+        "accounts": [],
+        "notice": null,
+        "accepts_input": true,
+        "image": {
+          "composefs": "e1a2f7a75b88be411d90105f2a4632268f2976b47ed67ace5d95e6e369960e89b6d78ab7823fd0fc876b4b8a412d4974bb7428b66ca64f05467a971711a7745d"
+        }
+      },
+      "cleanup": "stopped"
+    },
+    "failed_final_probe_boot": {
+      "env": {
+        "TILO_DISTROBOX": "",
+        "TILO_RUN": "/tmp/tilo-os-perf-20261006/production-boot-main12",
+        "TILO_VM_CYCLE": "os-perf-main12",
+        "TILO_ACCEL": "tcg",
+        "TILO_MEM": "4096",
+        "TILO_SMP": "4",
+        "TILO_SSH_PORT": "22481",
+        "TILO_XRES": "1280",
+        "TILO_YRES": "720"
+      },
+      "account_provisioned": false,
+      "boot_rc": 0,
+      "wait_rc": 0,
+      "host_to_ready_seconds": 80.38200679700822,
+      "cleanup": "stopped",
+      "final_probe": {
+        "command": "installer-console.py state-dump",
+        "returncode": 2,
+        "reason": "unsupported subcommand; corrected fresh child rerun uses state"
+      }
+    },
+    "shipping_release_note": "72696 is release-apps.yml, not an optimized OS image release. This baseline is the verified current-main LTO-off CI rootfs.",
+    "cleanup": {
+      "vms_stopped": true,
+      "mounts_detached": true,
+      "level3_script_restored": true,
+      "redundant_raw_deleted": true
+    }
   }
 }
