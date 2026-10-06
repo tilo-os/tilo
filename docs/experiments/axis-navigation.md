@@ -36,7 +36,15 @@ focus or display changes, on lock/fullscreen, or when a pointer drag interrupts.
 
 Validation uses the production `ShellOverlayHost`, real retained layout and
 keyboard/wheel event routing in `strip_navigation`, plus provider invocation in
-the shell-action tests. Before broader UX review, verify on a headless/native
-session: mixed-density output hotplug, oversized windows, repeated swipe changes,
-lock/unlock and assistive action invocation. This is a prototype, not a claim of
-visual equivalence or hardware performance measurements.
+the shell-action tests. Native `FrameBuilder` regressions also dispatch AccessKit
+tab activation, asserting selection survives model resync, an already-selected
+tab focuses its group, and accessibility focus follows the tab bar. A mixed-scale
+case activates a tab on the other display and gathers only that display's lane.
+Semantic activation commits through the same writeback boundary as pointer input;
+it cannot be overwritten by the next model sync.
+
+Offscreen journeys exercise keyboard and repeated wheel navigation, native
+assistive activation and tree exports in light, dark and high-contrast themes.
+Before broader UX review, verify real touchpad and AT-SPI screen-reader journeys,
+mixed-density output hotplug, oversized windows and performance on hardware.
+This is a prototype, not a claim of visual equivalence or hardware measurements.
