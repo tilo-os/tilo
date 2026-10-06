@@ -1,7 +1,7 @@
 //! Real native clock, certified local action, and durable terminal owner barrier.
 use crate::shell::{
-    broker_services::NativeCertificates, collab_broker, native_workspace_owner,
-    state::WorkspaceTree,
+    broker_services::NativeCertificates, certified_action_session::ActionSessionSource,
+    collab_broker, native_workspace_owner, state::WorkspaceTree,
 };
 use std::time::{Duration, Instant};
 use tilo_action_broker::peer_actions::CertificateAuthority;
@@ -122,6 +122,86 @@ fn wait_for_membership_surface(
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn desktop_action_session_retains_the_selected_certified_person_and_original_custody() {
+    use crate::shell::search::providers::live_app_actions::LiveAppActionsProvider;
+    use tilo_actions::remote::PendingPoll;
+
+    let fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let surface = wait_for_membership_surface(&actions, fixture.room);
+    let sessions = ActionSessionSource::new(actions.clone());
+    let expected = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    assert!(
+        sessions
+            .open(
+                &fixture.room.to_string(),
+                Some("display-label-is-not-authority")
+            )
+            .is_err(),
+        "a displayed Person label cannot choose action authority"
+    );
+    assert!(
+        sessions
+            .open(&uuid::Uuid::new_v4().to_string(), Some(&expected))
+            .is_err(),
+        "selected identity evidence cannot be rebound to another room"
+    );
+    let action = surface
+        .actions
+        .iter()
+        .find(|action| action.resource == "desktop:workspace" && action.action == "add-agent")
+        .expect("membership surface publishes Add Agent");
+    let provider = LiveAppActionsProvider::new(actions.clone());
+    let mut pending = provider.begin_published_for_test(
+        &surface,
+        action,
+        expected,
+        &serde_json::json!({"agent":"scribe", "preset":"operator"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    let job = loop {
+        match pending.poll_ready() {
+            PendingPoll::Ready(Ok((job, receipt))) => {
+                assert!(!receipt.invocation.0.is_nil());
+                break job;
+            }
+            PendingPoll::Ready(Err(error)) => panic!("certified action refused: {error}"),
+            PendingPoll::Abandoned => panic!("certified action admission was abandoned"),
+            PendingPoll::Waiting => {
+                assert!(
+                    Instant::now() < deadline,
+                    "certified action admission timed out"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+    loop {
+        match actions.status(job) {
+            Some(InvocationUpdate::Succeeded { .. }) => break,
+            Some(InvocationUpdate::Failed { error, .. }) => {
+                panic!("certified owner action lost original custody: {error:?}")
+            }
+            _ => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "certified desktop action did not reach durable completion"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(sessions);
+    drop(provider);
+    drop(actions);
+    drop(fixture);
 }
 
 fn fixture() -> NativeFixture {
