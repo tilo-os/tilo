@@ -335,7 +335,7 @@ impl LibraryPhoto {
         {
             parts.push(format!("Description: {}", analysis.description));
         }
-        parts.join(" · ")
+        parts.join(". ")
     }
 
     /// A short provenance line for a gallery card. The details
@@ -364,7 +364,7 @@ impl LibraryPhoto {
         {
             parts.push(analysis.description.clone());
         }
-        parts.join(" · ")
+        parts.join(", ")
     }
 
     /// Strip a content-addressed photograph's machine-local source location

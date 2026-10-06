@@ -573,7 +573,7 @@ fn document_declarations() -> Vec<ActionDecl<ArtworkResource>> {
         decl::<NewArtwork>(
             "new-artwork",
             "New artwork",
-            "Start over on a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
+            "Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
             CanvasAction::NewArtwork,
         ),
         ActionDecl::new("open-artwork", "Open artwork", params_of::<OpenArtwork>(), |args, _now| {

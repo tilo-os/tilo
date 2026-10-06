@@ -236,7 +236,7 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
     app.harness().key("Shift");
     let shown = |app: &mut TestApp<App>| app.harness().targets().contains_key("canvas-dock");
     let before = shown(&mut app);
-    app.harness().click_named("canvas-sidebar").unwrap();
+    app.harness().click_named("nav-shell-inspector").unwrap();
     for _ in 0..4 {
         app.harness().key("Shift");
     }
@@ -245,7 +245,7 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
         before,
         "the toggle shows or hides the panels"
     );
-    app.harness().click_named("canvas-sidebar").unwrap();
+    app.harness().click_named("nav-shell-inspector").unwrap();
     for _ in 0..4 {
         app.harness().key("Shift");
     }
@@ -350,8 +350,28 @@ fn naming_a_layer_folder_is_one_edit_with_one_undo_step() {
     let mut app = TestApp::<App>::new().unwrap();
     app.call("add-layer", serde_json::json!({"id":"hut", "name":"Hut"}))
         .unwrap();
+    app.harness().resize((1200, 900)).unwrap();
+    app.harness().click_named("canvas-welcome-close").unwrap();
     let before = app.state();
-    app.harness().click_named("canvas-layer-folder").unwrap();
+    let mut revealed = false;
+    for _ in 0..20 {
+        let target = app.harness().targets()["canvas-layer-folder"];
+        if target.y1 <= 900.0 {
+            app.harness().click_named("canvas-layer-folder").unwrap();
+            revealed = true;
+            break;
+        }
+        app.harness()
+            .send(&ui::winit::event::WindowEvent::CursorMoved {
+                device_id: ui::winit::event::DeviceId::dummy(),
+                position: ui::winit::dpi::PhysicalPosition::new(target.center().x, 850.0),
+            });
+        app.harness().scroll(0.0, -2.0);
+    }
+    assert!(
+        revealed,
+        "the folder field is reachable through the layer panel"
+    );
     app.harness().type_text("Night scene");
     assert_eq!(
         app.state(),

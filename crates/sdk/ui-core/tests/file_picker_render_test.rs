@@ -57,10 +57,10 @@ fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
-/// The desktop the picker floats over in each preset: the theme's own
-/// app background, so the frame reads the way the shell composites it.
+/// The ground the picker floats over in each preset: an app's window
+/// ground, so the frame reads the way the shell composites it.
 fn backdrop(theme: &Theme) -> Color {
-    theme.bg_app
+    theme.tokens.colors.surfaces.content
 }
 
 fn render(

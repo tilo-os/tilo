@@ -181,7 +181,7 @@ pub enum EbookAction {
     SetProgress {
         book_id: String,
         chapter: usize,
-        page: usize,
+        block: usize,
         fraction: f32,
         /// `0` preserves the existing last-opened time. A nonzero timestamp
         /// is minted by the caller and makes an explicit open replayable.
@@ -430,7 +430,8 @@ impl EbookAction {
             Self::SetReadingSettings { before, settings } => {
                 for value in [before, settings] {
                     if !value.font_scale.is_finite()
-                        || !(Settings::FONT_MIN..=Settings::FONT_MAX).contains(&value.font_scale)
+                        || !(Settings::READING_SCALE_MIN..=Settings::READING_SCALE_MAX)
+                            .contains(&value.font_scale)
                         || !value.line_spacing.is_finite()
                         || !(Settings::SPACING_MIN..=Settings::SPACING_MAX)
                             .contains(&value.line_spacing)
@@ -477,13 +478,13 @@ impl EbookAction {
             Self::SetProgress {
                 book_id,
                 chapter,
-                page,
+                block,
                 fraction,
                 opened,
             } => {
                 Self::validate_book_id(book_id)?;
                 if *chapter > i64::MAX as usize
-                    || *page > i64::MAX as usize
+                    || *block > i64::MAX as usize
                     || !fraction.is_finite()
                     || !(0.0..=1.0).contains(fraction)
                     || *opened > i64::MAX as u64
@@ -661,7 +662,7 @@ impl EbookAction {
         doc: &mut Doc,
         book_id: &str,
         chapter: usize,
-        page: usize,
+        block: usize,
         fraction: f32,
         opened: u64,
     ) {
@@ -670,7 +671,7 @@ impl EbookAction {
             book_id,
             &Progress {
                 chapter,
-                page,
+                block,
                 fraction: fraction.clamp(0.0, 1.0),
                 opened,
             },
@@ -995,11 +996,11 @@ impl Action for EbookAction {
             EbookAction::SetProgress {
                 book_id,
                 chapter,
-                page,
+                block,
                 fraction,
                 opened,
             } => {
-                Self::apply_set_progress(doc, book_id, *chapter, *page, *fraction, *opened);
+                Self::apply_set_progress(doc, book_id, *chapter, *block, *fraction, *opened);
                 Ok(())
             }
             EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
@@ -1278,7 +1279,7 @@ pub fn set_progress_action(book_id: &str, progress: Progress) -> EbookAction {
     EbookAction::SetProgress {
         book_id: book_id.to_string(),
         chapter: progress.chapter,
-        page: progress.page,
+        block: progress.block,
         fraction: progress.fraction.clamp(0.0, 1.0),
         opened: progress.opened,
     }
@@ -1472,11 +1473,7 @@ fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
             preview.pop();
         }
         ResourcePresentation {
-            detail: Some(format!(
-                "Chapter {} · {}",
-                annotation.chapter + 1,
-                annotation.color.as_str()
-            )),
+            detail: Some(format!("Chapter {}", annotation.chapter + 1)),
             badge: Some(annotation.kind.label().into()),
             preview: (!preview.is_empty()).then_some(preview),
         }
@@ -1796,7 +1793,7 @@ pub(crate) fn settings_document_resource(
         next.mode = mode;
         root = root.with_action(encode_spec(
             &format!("mode-{}", mode.as_str()),
-            &format!("Use {} reading", mode.label()),
+            &format!("{} layout", mode.label()),
             &set_reading_settings_action(settings.clone(), next),
         ));
     }
@@ -1805,7 +1802,7 @@ pub(crate) fn settings_document_resource(
         next.composition = composition;
         root = root.with_action(encode_spec(
             &format!("composition-{}", composition.as_str()),
-            &format!("Use {} composition", composition.label()),
+            &format!("{} text", composition.label()),
             &set_reading_settings_action(settings.clone(), next),
         ));
     }
@@ -2302,7 +2299,7 @@ mod tests {
     fn reading_progress() -> Progress {
         Progress {
             chapter: 2,
-            page: 7,
+            block: 7,
             fraction: 0.625,
             opened: 1_700_000_000_000,
         }

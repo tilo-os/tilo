@@ -181,7 +181,6 @@ mod tests {
                     value: "Hello".into(),
                 },
                 role: UiTextRole::Title,
-                size: None,
             }],
             gap: None,
             no_padding: false,

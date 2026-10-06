@@ -14,7 +14,7 @@ use std::ops::Range;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -23,7 +23,6 @@ use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController
 use crate::selection::KeySelection;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
@@ -31,8 +30,6 @@ use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
-const BAR_THICKNESS: f64 = 8.0;
-const BAR_MARGIN: f64 = 2.0;
 
 fn px(value: f64) -> f32 {
     #[allow(
@@ -243,19 +240,44 @@ where
     }
 }
 
-type RowBuilder<M> =
-    Box<dyn for<'a> FnMut(&M, usize, &<M as ListModel>::Key, ListRowState<'a>) -> Element>;
+type RowBuilder<M> = Box<
+    dyn for<'a> FnMut(&M, usize, &<M as ListModel>::Key, ListRowState<'a>, RowSelection) -> Element,
+>;
 type KeyCallback<K> = Box<dyn FnMut(K)>;
+type ContextCallback<K> = Box<dyn FnMut(K, Point, Rect)>;
 type SemanticKey<K> = Box<dyn Fn(&K) -> String>;
 type SelectCallback<K> = Box<dyn FnMut(K, bool)>;
 type ReorderValidator<M> =
     Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 
+/// A row's selection with its neighbours', for a delegate that paints its
+/// own selection: a run of selected rows is one lift
+/// ([`crate::chrome::RowJoin`]), and a separator hides beside a selected
+/// row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RowSelection {
+    pub selected: bool,
+    /// The row above is selected.
+    pub above: bool,
+    /// The row below is selected.
+    pub below: bool,
+    /// A row follows this one.
+    pub has_next: bool,
+}
+
+impl RowSelection {
+    /// The lift's join with its selected neighbours.
+    pub fn join(self) -> crate::chrome::RowJoin {
+        crate::chrome::RowJoin::new(self.above, self.below)
+    }
+}
+
 struct MountedRow<K> {
     key: K,
     index: usize,
     state: MountedRowState,
+    selection: RowSelection,
     widget: Element,
     node: Option<NodeId>,
 }
@@ -285,6 +307,11 @@ pub struct VirtualList<M: ListModel> {
     test_id: Option<String>,
     model: M,
     row_builder: RowBuilder<M>,
+    /// The delegate reads [`RowSelection`]: a mounted row is rebuilt when
+    /// its own or a neighbour's selection changes.
+    selection_aware: bool,
+    /// The delegate paints the selection; the list paints only focus.
+    delegate_selection: bool,
     viewport: SparseVirtualViewport<M::Key>,
     mounted: Vec<MountedRow<M::Key>>,
     selection: KeySelection<M::Key>,
@@ -292,6 +319,9 @@ pub struct VirtualList<M: ListModel> {
     focused_key: Option<M::Key>,
     on_select: Option<SelectCallback<M::Key>>,
     on_activate: Option<KeyCallback<M::Key>>,
+    on_context: Option<ContextCallback<M::Key>>,
+    /// The last row a click landed on and when, for a double click.
+    last_click: Option<(M::Key, Instant)>,
     semantic_key: Option<SemanticKey<M::Key>>,
     accessible_name: Option<String>,
     rect: Rect,
@@ -304,6 +334,12 @@ pub struct VirtualList<M: ListModel> {
     momentum: ScrollMomentum,
     reduce_motion: bool,
     vbar: Scrollbar,
+    /// `metrics.scrollbar_gutter` and the row lift's bleed, from the last
+    /// layout's theme.
+    gutter: f64,
+    bleed: f64,
+    /// Whether the rows were last laid out beside a scroll bar.
+    rows_beside_bar: bool,
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
     requested_range: Option<Range<usize>>,
@@ -332,7 +368,38 @@ impl<M: ListModel> VirtualList<M> {
     pub fn new_async(
         model: M,
         estimated_row_height: f32,
-        row_builder: impl for<'a> FnMut(&M, usize, &M::Key, ListRowState<'a>) -> Element + 'static,
+        mut row_builder: impl for<'a> FnMut(&M, usize, &M::Key, ListRowState<'a>) -> Element + 'static,
+    ) -> Self {
+        Self::build(
+            model,
+            estimated_row_height,
+            Box::new(move |model, index, key, state, _| row_builder(model, index, key, state)),
+            false,
+        )
+    }
+
+    /// Build a list whose delegate paints its own selection from the
+    /// [`RowSelection`] it receives (a run of selected rows as one lift, a
+    /// separator hidden beside a selected row). The list rebuilds a mounted
+    /// row when its own or a neighbour's selection changes, and paints only
+    /// the keyboard focus. A [`ListRow`](crate::widget::ListRow) delegate
+    /// takes the selection without being rebuilt.
+    pub fn with_selection_delegate(
+        model: M,
+        estimated_row_height: f32,
+        row_builder: impl for<'a> FnMut(&M, usize, &M::Key, ListRowState<'a>, RowSelection) -> Element
+        + 'static,
+    ) -> Self {
+        let mut list = Self::build(model, estimated_row_height, Box::new(row_builder), true);
+        list.delegate_selection = true;
+        list
+    }
+
+    fn build(
+        model: M,
+        estimated_row_height: f32,
+        row_builder: RowBuilder<M>,
+        selection_aware: bool,
     ) -> Self {
         let mut viewport = SparseVirtualViewport::new(f64::from(estimated_row_height));
         viewport.set_viewport(DEFAULT_VIEWPORT_HEIGHT);
@@ -341,7 +408,9 @@ impl<M: ListModel> VirtualList<M> {
         let mut list = Self {
             test_id: None,
             model,
-            row_builder: Box::new(row_builder),
+            row_builder,
+            selection_aware,
+            delegate_selection: false,
             viewport,
             mounted: Vec::new(),
             selection: KeySelection::new(),
@@ -349,6 +418,8 @@ impl<M: ListModel> VirtualList<M> {
             focused_key: None,
             on_select: None,
             on_activate: None,
+            on_context: None,
+            last_click: None,
             semantic_key: None,
             accessible_name: None,
             rect: Rect::ZERO,
@@ -361,6 +432,9 @@ impl<M: ListModel> VirtualList<M> {
             momentum: ScrollMomentum::new(),
             reduce_motion: false,
             vbar: Scrollbar::vertical(),
+            gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
+            bleed: f64::from(crate::tokens::Spacing::BASE.s2),
+            rows_beside_bar: false,
             last_tick: None,
             last_anchor: None,
             requested_range: None,
@@ -371,6 +445,27 @@ impl<M: ListModel> VirtualList<M> {
         };
         list.refresh_anchor();
         list
+    }
+
+    /// Run `f` with the row's key, the pointer and the row's rect when a row
+    /// is right-clicked (or asked for its menu by assistive technology). The
+    /// row is selected first, unless it already is.
+    #[must_use]
+    pub fn on_context(mut self, f: impl FnMut(M::Key, Point, Rect) + 'static) -> Self {
+        self.on_context = Some(Box::new(f));
+        self
+    }
+
+    /// Scroll the row of `key` into view and make it the focused row.
+    pub fn reveal(&mut self, key: &M::Key) -> bool {
+        let Some(index) = self.model.index_of(key) else {
+            return false;
+        };
+        self.focused_key = Some(key.clone());
+        self.viewport
+            .scroll_to_index(index, ScrollAlignment::Nearest);
+        self.visible_window_changed();
+        true
     }
 
     /// Give this list a stable app-test/inspection id.
@@ -611,11 +706,71 @@ impl<M: ListModel> VirtualList<M> {
         if !self.scroll_metrics().overflows() {
             return None;
         }
-        let x1 = self.rect.x1 - BAR_MARGIN;
-        let x0 = x1 - BAR_THICKNESS;
-        let y0 = self.rect.y0 + BAR_MARGIN;
-        let y1 = self.rect.y1 - BAR_MARGIN;
-        (y1 > y0).then_some(Rect::new(x0, y0, x1, y1))
+        let track = crate::widget::scrollbar::vertical_track(self.rect, self.gutter);
+        (track.y1 > track.y0).then_some(track)
+    }
+
+    /// The rect a row's lift takes: the list's width, less the bar's gutter
+    /// while the rows stand beside the bar.
+    fn lift_rect(&self, top: f64, height: f64) -> Rect {
+        let x1 = if self.rows_beside_bar {
+            self.rect.x1 - self.gutter
+        } else {
+            self.rect.x1
+        };
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + top,
+            x1,
+            self.rect.y0 + top + height,
+        )
+    }
+
+    /// `index`'s selection and its neighbours'.
+    fn row_selection(&self, index: usize) -> RowSelection {
+        let selected = |i: Option<usize>| {
+            i.and_then(|i| self.model.key_at(i))
+                .is_some_and(|key| self.selection.is_selected(&key))
+        };
+        RowSelection {
+            selected: selected(Some(index)),
+            above: selected(index.checked_sub(1)),
+            below: selected(index.checked_add(1)),
+            has_next: index.saturating_add(1) < self.model.len(),
+        }
+    }
+
+    /// Hand every mounted row its current selection: a `ListRow` takes it
+    /// in place, any other selection-aware delegate is rebuilt.
+    fn push_row_selection(&mut self) {
+        if !self.delegate_selection && !self.selection_aware {
+            return;
+        }
+        let selections: Vec<RowSelection> = self
+            .mounted
+            .iter()
+            .map(|row| self.row_selection(row.index))
+            .collect();
+        let delegate = self.delegate_selection;
+        let mut rebuild = false;
+        for (row, selection) in self.mounted.iter_mut().zip(selections) {
+            if delegate
+                && let Some(list_row) = row
+                    .widget
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
+            {
+                list_row.set_selected(selection.selected);
+                list_row.set_join(selection.join());
+                list_row.set_separator(selection.has_next, selection.below);
+                row.selection = selection;
+            } else if row.selection != selection {
+                rebuild = true;
+            }
+        }
+        if rebuild {
+            self.reconcile_mounted();
+        }
     }
 
     #[must_use]
@@ -679,16 +834,30 @@ impl<M: ListModel> VirtualList<M> {
             }
             let state = self.model.row_state(index);
             let mounted_state = MountedRowState::from(state);
+            let selection = if self.selection_aware {
+                self.row_selection(index)
+            } else {
+                RowSelection::default()
+            };
             let mut row = old
                 .remove(&key)
-                .filter(|row| row.state == mounted_state)
+                .filter(|row| {
+                    row.state == mounted_state
+                        && (!self.selection_aware
+                            || row.selection == selection
+                            || row
+                                .widget
+                                .as_any()
+                                .is_some_and(|any| any.is::<crate::widget::ListRow>()))
+                })
                 .unwrap_or_else(|| {
                     replaced = true;
                     MountedRow {
-                        widget: (self.row_builder)(&self.model, index, &key, state),
+                        widget: (self.row_builder)(&self.model, index, &key, state, selection),
                         key: key.clone(),
                         index,
                         state: mounted_state,
+                        selection,
                         node: None,
                     }
                 });
@@ -806,6 +975,50 @@ impl<M: ListModel> VirtualList<M> {
             self.selection.select_only(key.clone());
         }
         self.emit_selection(key);
+    }
+
+    /// A completed click on the row of `key`: select it by the modifiers, and
+    /// activate it when it is the second click on the same row in time.
+    fn click_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
+        let state = modifiers.state();
+        let toggle = state.control_key() || state.super_key();
+        let extend = state.shift_key();
+        self.apply_selection(key.clone(), toggle, extend);
+        self.focused_key = Some(key.clone());
+        let now = crate::time::now();
+        let double = !toggle
+            && !extend
+            && self.last_click.as_ref().is_some_and(|(last, at)| {
+                *last == key
+                    && now.saturating_duration_since(*at) < crate::gesture::multi_click_interval()
+            });
+        if double {
+            self.last_click = None;
+            if let Some(callback) = &mut self.on_activate {
+                callback(key);
+            }
+        } else {
+            self.last_click = Some((key, now));
+        }
+    }
+
+    /// Open the row's context menu: select it unless it already is, then
+    /// hand the host the key, the point and the row's rect.
+    fn open_context(&mut self, index: usize, key: M::Key, point: Point) {
+        if !self.selection.is_selected(&key) {
+            self.apply_selection(key.clone(), false, false);
+        }
+        self.focused_key = Some(key.clone());
+        let rect = match (
+            self.viewport.item_view_top(index),
+            self.viewport.item_height(index),
+        ) {
+            (Some(top), Some(height)) => self.lift_rect(top, height),
+            _ => self.rect,
+        };
+        if let Some(callback) = &mut self.on_context {
+            callback(key, point, rect);
+        }
     }
 
     fn emit_selection(&mut self, key: M::Key) {
@@ -1105,14 +1318,26 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         if self.reduce_motion {
             self.momentum.stop();
         }
+        self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        self.bleed = crate::chrome::row_bleed(theme);
         self.reconcile_mounted();
+        // Rows stand one bleed in from the list's edges, so their lift (and
+        // a ListRow's) fills the list; beside the bar they leave its gutter.
+        self.rows_beside_bar = self.scroll_metrics().overflows();
+        let left = px(self.bleed);
+        let right = px(self.bleed
+            + if self.rows_beside_bar {
+                self.gutter
+            } else {
+                0.0
+            });
         let mut child_nodes = Vec::with_capacity(self.mounted.len());
         for row in &mut self.mounted {
             let child = row.widget.build_layout(taffy, theme, node_map);
             let mut style = taffy.style(child).cloned().unwrap_or_default();
             style.position = taffy::Position::Absolute;
-            style.inset.left = length(0.0_f32);
-            style.inset.right = length(0.0_f32);
+            style.inset.left = length(left);
+            style.inset.right = length(right);
             style.inset.top = length(px(self
                 .viewport
                 .item_view_top(row.index)
@@ -1189,32 +1414,52 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             transform,
             &self.rect,
         );
-        let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
-        for row in &mut self.mounted {
-            let Some(top) = self.viewport.item_view_top(row.index) else {
+        let accent = theme.tokens.colors.intent.inverted;
+        self.push_row_selection();
+        let rects: Vec<Option<Rect>> = self
+            .mounted
+            .iter()
+            .map(|row| {
+                let top = self.viewport.item_view_top(row.index)?;
+                let height = self.viewport.item_height(row.index)?;
+                Some(self.lift_rect(top, height))
+            })
+            .collect();
+        let selections: Vec<RowSelection> = self
+            .mounted
+            .iter()
+            .map(|row| self.row_selection(row.index))
+            .collect();
+        for ((row, row_rect), selection) in self.mounted.iter_mut().zip(rects).zip(selections) {
+            let Some(row_rect) = row_rect else {
                 continue;
             };
-            let Some(height) = self.viewport.item_height(row.index) else {
-                continue;
-            };
-            let row_rect = Rect::new(
-                self.rect.x0,
-                self.rect.y0 + top,
-                self.rect.x1,
-                self.rect.y0 + top + height,
-            );
-            if self.selection.is_selected(&row.key) {
-                crate::widget::data_table::paint_selected_row(
-                    scene, transform, theme, row_rect, 1.0,
+            // The same selection a ListRow paints, so a list of ListRows
+            // reads identically to a painted one; a run of selected rows is
+            // one lift. A delegate that owns its selection paints its own.
+            if !self.delegate_selection {
+                crate::chrome::paint_row_selection_joined(
+                    scene,
+                    transform,
+                    row_rect,
+                    crate::chrome::SelectionState::active(selection.selected),
+                    theme.tokens.colors.surfaces.content,
+                    theme,
+                    if selection.selected {
+                        selection.join()
+                    } else {
+                        crate::chrome::RowJoin::NONE
+                    },
                 );
             }
             if self.is_focused && self.focused_key.as_ref() == Some(&row.key) {
-                scene.stroke(
-                    &Stroke::new(2.0),
+                let radius = f64::from(theme.tokens.radii.item);
+                crate::widget::paint_focus_ring(
+                    scene,
                     transform,
-                    theme.tokens.colors.border_focus,
-                    None,
-                    &row_rect,
+                    row_rect.inset(-2.0),
+                    (radius - 2.0).max(0.0),
+                    theme,
                 );
             }
             row.widget
@@ -1232,24 +1477,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         scene.pop_layer();
 
         if let Some(track) = self.scrollbar_track() {
-            let radius = BAR_THICKNESS / 2.0;
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 crate::widget::scrollbar::track_color(theme),
                 None,
-                &RoundedRect::from_rect(track, radius),
+                &RoundedRect::from_rect(track, track.width() / 2.0),
             );
-            if let Some(thumb) = self.vbar.thumb_rect(track, self.scroll_metrics()) {
-                let color = crate::widget::scrollbar::thumb_color(theme, self.vbar.is_active());
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    color,
-                    None,
-                    &RoundedRect::from_rect(thumb, radius),
-                );
-            }
+            self.vbar
+                .draw(scene, transform, track, self.scroll_metrics(), theme, false);
         }
     }
 
@@ -1322,14 +1558,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     if let Some(dropped) = self.reorder.finish() {
                         self.commit_reorder(dropped);
                     } else if !active && let Some(key) = source {
-                        let toggle = ctx.modifiers.state().control_key()
-                            || ctx.modifiers.state().super_key();
-                        self.apply_selection(
-                            key.clone(),
-                            toggle,
-                            ctx.modifiers.state().shift_key(),
-                        );
-                        self.focused_key = Some(key);
+                        self.click_row(key, *ctx.modifiers);
                     }
                     *ctx.handled = true;
                 } else if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
@@ -1341,15 +1570,20 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                             self.last_tick = Some(crate::time::now());
                         }
                     } else if let Some((_, key)) = self.row_at_cursor() {
-                        let toggle = ctx.modifiers.state().control_key()
-                            || ctx.modifiers.state().super_key();
-                        self.apply_selection(
-                            key.clone(),
-                            toggle,
-                            ctx.modifiers.state().shift_key(),
-                        );
-                        self.focused_key = Some(key);
+                        self.click_row(key, *ctx.modifiers);
                     }
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if self.on_context.is_some() => {
+                if let (Some((index, key)), Some(point)) = (self.row_at_cursor(), self.last_cursor)
+                {
+                    self.open_context(index, key, point);
+                    *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 }
             }
@@ -1508,10 +1742,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     self.viewport.item_view_top(row.index),
                     self.viewport.item_height(row.index),
                 ) {
+                    // The row's own box: one bleed in from the list's edges.
+                    let widget = row.widget.get_rect();
                     item = item.with_bounds(Rect::new(
-                        self.rect.x0,
+                        widget.x0,
                         self.rect.y0 + top,
-                        self.rect.x1,
+                        widget.x1,
                         self.rect.y0 + top + height,
                     ));
                 }
@@ -1579,6 +1815,17 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 self.viewport
                     .scroll_to_index(index, ScrollAlignment::Nearest);
                 self.visible_window_changed();
+                true
+            }
+            Action::ShowContextMenu if self.on_context.is_some() => {
+                let point = match (
+                    self.viewport.item_view_top(index),
+                    self.viewport.item_height(index),
+                ) {
+                    (Some(top), Some(height)) => self.lift_rect(top, height).center(),
+                    _ => self.rect.center(),
+                };
+                self.open_context(index, key, point);
                 true
             }
             _ => false,
@@ -2031,9 +2278,12 @@ mod tests {
 
             let semantics = Widget::accessibility(&list).expect("list semantics");
             let first = semantics.children.first().expect("first mounted row");
+            // One bleed in from the list's edges, and clear of the bar's
+            // gutter while the rows overflow.
+            let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
             assert_eq!(
                 first.bounds.expect("row bounds").to_rect(),
-                Rect::new(0.0, -10.0, 300.0, 14.0)
+                Rect::new(8.0, -10.0, 300.0 - gutter - 8.0, 14.0)
             );
             assert_eq!(
                 list.mounted[0].widget.get_rect(),
@@ -2095,7 +2345,8 @@ mod tests {
             list.set_scroll_offset(list.max_scroll_offset());
             let bottom = list.scrollbar_thumb().expect("scrollbar remains visible");
             assert!(bottom.y0 > top.y0);
-            assert!((bottom.y1 - (list.rect.y1 - BAR_MARGIN)).abs() < 0.001);
+            let track = crate::widget::scrollbar::vertical_track(list.rect, list.gutter);
+            assert!((bottom.y1 - track.y1).abs() < 0.001);
         }
 
         // Case `paged_hundred_million_row_list_requests_only_the_window_and_wakes_on_state_changes`.
@@ -2518,5 +2769,130 @@ mod tests {
             dispatch(&mut list, &left(ElementState::Released), &taffy, node);
             assert_eq!(list.model().items(), &[0, 1]);
         }
+    }
+
+    fn plain_rows(count: u32) -> VirtualList<VecListModel<u32, u32>> {
+        VirtualList::from_items(
+            (0..count).collect(),
+            40.0,
+            |item| *item,
+            |item, _, _| Box::new(crate::widget::Text::new(&format!("row {item}"))) as Element,
+        )
+        .unwrap()
+        .with_viewport_height(200.0)
+    }
+
+    #[test]
+    fn rows_stand_a_bleed_in_and_the_bar_takes_the_shared_gutter() {
+        let mut list = plain_rows(100);
+        let _ = lay_out(&mut list, 300.0);
+        let theme = Theme::dark();
+        let bleed = crate::chrome::row_bleed(&theme);
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let row = list.mounted[0].widget.get_rect();
+        assert!((row.x0 - bleed).abs() < 0.5, "a bleed in: {row:?}");
+        assert!(
+            (row.x1 - (300.0 - gutter - bleed)).abs() < 0.5,
+            "clear of the bar: {row:?}"
+        );
+        let track = list.scrollbar_track().unwrap();
+        assert!(track.x0 >= 300.0 - gutter && track.x1 <= 300.0);
+        // Without overflow the rows take the list's width less the bleed.
+        let mut short = plain_rows(2);
+        let _ = lay_out(&mut short, 300.0);
+        let row = short.mounted[0].widget.get_rect();
+        assert!((row.x1 - (300.0 - bleed)).abs() < 0.5);
+        assert!(short.scrollbar_track().is_none());
+    }
+
+    #[test]
+    fn reveal_scrolls_a_row_into_view_and_focuses_it() {
+        let mut list = plain_rows(1000);
+        let _ = lay_out(&mut list, 300.0);
+        assert!(list.reveal(&700));
+        let _ = lay_out(&mut list, 300.0);
+        assert_eq!(list.focused_key(), Some(&700));
+        assert!(list.visible_range().contains(&700));
+        assert!(!list.reveal(&5000), "an unknown key reveals nothing");
+    }
+
+    #[test]
+    fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
+        let activated = Rc::new(RefCell::new(Vec::new()));
+        let menus = Rc::new(RefCell::new(Vec::new()));
+        let (a, m) = (Rc::clone(&activated), Rc::clone(&menus));
+        let mut list = plain_rows(10)
+            .on_activate(move |key| a.borrow_mut().push(key))
+            .on_context(move |key, _, rect| m.borrow_mut().push((key, rect)));
+        let (taffy, node) = lay_out(&mut list, 300.0);
+        let middle = |list: &VirtualList<VecListModel<u32, u32>>, index: usize| {
+            list.rect.y0
+                + list.viewport.item_view_top(index).unwrap()
+                + list.viewport.item_height(index).unwrap() / 2.0
+        };
+        let row_one = middle(&list, 1);
+        let row_three = middle(&list, 3);
+        let click = |list: &mut VirtualList<VecListModel<u32, u32>>| {
+            dispatch(list, &cursor(row_one), &taffy, node);
+            dispatch(list, &left(ElementState::Pressed), &taffy, node);
+            dispatch(list, &left(ElementState::Released), &taffy, node);
+        };
+        click(&mut list);
+        assert!(activated.borrow().is_empty(), "one click selects");
+        assert!(list.selection().is_selected(&1));
+        click(&mut list);
+        assert_eq!(*activated.borrow(), [1], "the second click activates");
+        dispatch(&mut list, &cursor(row_three), &taffy, node);
+        assert!(dispatch(
+            &mut list,
+            &WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+            },
+            &taffy,
+            node,
+        ));
+        let menus = menus.borrow();
+        assert_eq!(menus.len(), 1);
+        assert_eq!(menus[0].0, 3);
+        assert!(
+            list.selection().is_selected(&3),
+            "the row is selected first"
+        );
+        assert!(menus[0].1.contains(Point::new(20.0, row_three)));
+    }
+
+    #[test]
+    fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
+        let model = VecListModel::new((0..6_u32).collect(), |i| *i).unwrap();
+        let mut list = VirtualList::with_selection_delegate(model, 40.0, |_, _, key, _, _| {
+            Box::new(crate::widget::ListRow::new(
+                format!("r{key}"),
+                format!("Row {key}"),
+            )) as Element
+        })
+        .multi_select(true)
+        .with_viewport_height(400.0);
+        let _ = lay_out(&mut list, 300.0);
+        list.selection_mut().select_only(1);
+        list.selection_mut().toggle(2);
+        list.push_row_selection();
+        let joins: Vec<crate::chrome::RowJoin> = list
+            .mounted
+            .iter_mut()
+            .take(4)
+            .map(|row| {
+                row.widget
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
+                    .unwrap()
+                    .join()
+            })
+            .collect();
+        assert_eq!(joins[1], crate::chrome::RowJoin::new(false, true));
+        assert_eq!(joins[2], crate::chrome::RowJoin::new(true, false));
+        assert!(list.row_selection(0).below);
+        assert!(list.row_selection(3).above);
     }
 }

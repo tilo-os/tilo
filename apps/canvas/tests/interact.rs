@@ -133,7 +133,18 @@ impl Desk {
     }
 
     fn key(&mut self, key: &str) {
-        self.app.harness().key(key);
+        if let Some((modifier, key)) = key.split_once('+')
+            && matches!(
+                modifier.to_ascii_lowercase().as_str(),
+                "ctrl" | "shift" | "alt"
+            )
+        {
+            self.hold(&[modifier]);
+            self.app.harness().key(key);
+            self.hold(&[]);
+        } else {
+            self.app.harness().key(key);
+        }
     }
 
     fn hold(&mut self, keys: &[&str]) {
@@ -186,7 +197,7 @@ impl Desk {
         self.app.harness().set_theme(ui::Theme::light());
         self.app
             .harness()
-            .render_window_png(&dir.join(format!("{name}.png")));
+            .render_png(&dir.join(format!("{name}.png")));
     }
 }
 
@@ -714,8 +725,8 @@ fn zoom_keys_change_how_far_a_drag_goes() {
     desk.hold(&["ctrl"]);
     desk.key("a");
     desk.hold(&[]);
-    desk.key("+");
-    desk.key("+");
+    desk.key("=");
+    desk.key("=");
     let zoom = desk.zoom * 1.25 * 1.25;
     let centre = desk.canvas.center();
     desk.hold(&["ctrl"]);
@@ -1137,7 +1148,7 @@ fn pixel_pinch_zoom_keeps_the_cell_under_the_pointer() {
         )
         .unwrap();
     desk.key("Ctrl+1");
-    desk.key("+");
+    desk.key("=");
     let focal = (desk.canvas.center().x + 60.0, desk.canvas.center().y + 45.0);
     desk.app.harness().send(&WindowEvent::CursorMoved {
         device_id: ui::winit::event::DeviceId::dummy(),
@@ -1241,5 +1252,139 @@ fn opening_a_differently_sized_artwork_fits_after_manual_pixel_zoom() {
         points[0][0] > 2100.0,
         "new artwork is fitted, not painted through the old 2x zoom: {:?}",
         points[0]
+    );
+}
+
+#[test]
+fn pixel_pinch_follows_small_deltas_instead_of_jumping_whole_zoom_levels() {
+    small_pixel_zoom_deltas(false);
+}
+
+#[test]
+fn pixel_trackpad_wheel_follows_small_deltas_instead_of_jumping_whole_zoom_levels() {
+    small_pixel_zoom_deltas(true);
+}
+
+fn small_pixel_zoom_deltas(wheel: bool) {
+    let mut desk = Desk::open();
+    desk.app
+        .harness()
+        .perform_semantic_named(
+            "canvas-workspace",
+            Some("canvas-workspace:segment:3"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    desk.key("Ctrl+1");
+    desk.key("=");
+    let canvas = *desk
+        .app
+        .harness()
+        .targets()
+        .get("canvas")
+        .expect("the canvas is visible");
+    let focal = canvas.center();
+    desk.app.harness().click_at(focal.x, focal.y);
+    let anchor = desk.art().marks.last().unwrap().shape.clone();
+    if wheel {
+        desk.hold(&["ctrl"]);
+    }
+    for _ in 0..20 {
+        let event = if wheel {
+            WindowEvent::MouseWheel {
+                device_id: ui::winit::event::DeviceId::dummy(),
+                delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+                    ui::winit::dpi::PhysicalPosition::new(0.0, 2.4),
+                ),
+                phase: ui::winit::event::TouchPhase::Moved,
+            }
+        } else {
+            WindowEvent::PinchGesture {
+                device_id: ui::winit::event::DeviceId::dummy(),
+                delta: 0.01,
+                phase: ui::winit::event::TouchPhase::Moved,
+            }
+        };
+        desk.app.harness().send(&event);
+    }
+    desk.hold(&[]);
+    desk.app.harness().click_at(focal.x, focal.y);
+    assert_eq!(
+        desk.art().marks.last().unwrap().shape,
+        anchor,
+        "small deltas preserve the focal cell"
+    );
+    desk.app.harness().click_at(focal.x + 100.0, focal.y);
+    let art = desk.art();
+    let x = |shape: &Shape| match shape {
+        Shape::Stroke { points, .. } => points.first().and_then(|point| point.first()).copied(),
+        _ => None,
+    };
+    let span = x(&art.marks.last().unwrap().shape).expect("a pixel stroke")
+        - x(&anchor).expect("a pixel anchor stroke");
+    assert!(
+        (40.0..=43.0).contains(&span),
+        "twenty 1% inputs should enlarge 2x to about 2.44x, not jump through twenty integer scales: {span}"
+    );
+}
+
+#[test]
+fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
+    let mut desk = Desk::open();
+    desk.key("Ctrl+1");
+    desk.key("=");
+    let canvas = desk.app.harness().targets()["canvas"];
+    let focal = canvas.center();
+    desk.app.harness().send(&WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: ui::winit::dpi::PhysicalPosition::new(focal.x, focal.y),
+    });
+    desk.hold(&["ctrl"]);
+    desk.app.harness().scroll(0.0, 1.0);
+    assert!(
+        desk.app.harness().frame_schedule().needs_animation_frame,
+        "one wheel notch schedules intermediate frames without further input"
+    );
+    desk.hold(&[]);
+    assert!(
+        desk.app
+            .harness()
+            .settle_for_capture(std::time::Duration::from_secs(2)),
+        "the shared motion driver settles"
+    );
+    assert!(
+        !desk.app.harness().frame_schedule().needs_animation_frame,
+        "zoom stops scheduling frames after settling"
+    );
+}
+
+#[test]
+fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
+    let mut desk = Desk::open();
+    desk.key("Ctrl+1");
+    desk.key("=");
+    let canvas = desk.app.harness().targets()["canvas"];
+    desk.app.harness().send(&WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: ui::winit::dpi::PhysicalPosition::new(canvas.center().x, canvas.center().y),
+    });
+    desk.hold(&["ctrl"]);
+    desk.app.harness().scroll(0.0, 1.0);
+    assert!(desk.app.harness().frame_schedule().needs_animation_frame);
+    let mut theme = ui::Theme::dark();
+    theme.reduce_motion = true;
+    desk.app.harness().set_theme(theme);
+    desk.hold(&[]);
+    assert!(
+        desk.app
+            .harness()
+            .settle_for_capture(std::time::Duration::from_secs(1))
+    );
+    desk.hold(&["ctrl"]);
+    desk.app.harness().scroll(0.0, 1.0);
+    desk.hold(&[]);
+    assert!(
+        !desk.app.harness().frame_schedule().needs_animation_frame,
+        "reduced-motion wheel zoom completes without scheduling interpolation frames"
     );
 }

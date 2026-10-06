@@ -30,7 +30,7 @@ pub fn of_document(doc: &AutoCommit) -> Option<String> {
 }
 
 pub fn of_deck(deck: &Deck) -> String {
-    let mut out = format!("{} · {} slides\n", deck.title.trim(), deck.slides.len());
+    let mut out = format!("{} ({} slides)\n", deck.title.trim(), deck.slides.len());
     for (index, slide) in deck.slides.iter().enumerate() {
         let _ = writeln!(
             out,
@@ -99,7 +99,7 @@ mod tests {
         };
         let (c, a) = (ids(&cover), ids(&agenda));
         let expected = format!(
-            "Launch · 2 slides\n\
+            "Launch (2 slides)\n\
              \nSlide 1 (title) {{#{}}}\n# Product Launch {{#{}}}\nOctober 2026 {{#{}}}\nNotes: Welcome everyone\n\
              \nSlide 2 (title-content) {{#{}}}\n# Agenda {{#{}}}\n[rect] {{#{}}}\nGoals↵Timeline {{#{}}}\n[image] {{#{}}}\n",
             cover.id, c[0], c[1], agenda.id, a[0], a[1], a[2], a[3]

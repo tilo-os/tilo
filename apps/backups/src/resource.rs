@@ -129,7 +129,7 @@ impl ResourceApp for BackupsShell {
                 ),
             },
             _ => DemoRepository {
-                catalog: Catalog::sample(),
+                catalog: Catalog::sample(ui::clock::local_now().naive_local()),
                 location: BackupLocation::default(),
                 error: None,
             },
