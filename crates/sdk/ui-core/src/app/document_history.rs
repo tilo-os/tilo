@@ -862,6 +862,9 @@ impl App {
     #[must_use]
     pub fn without_native_document_chrome(mut self) -> Self {
         self.native_document_chrome = false;
+        if let Some(history) = &mut self.history {
+            history.remove_open_button();
+        }
         self
     }
 
