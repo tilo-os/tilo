@@ -61,6 +61,7 @@ default = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"]
 x11 = ["x11-dl", "bytemuck", "percent-encoding", "xkbcommon-dl/x11", "x11rb"]
 wayland = [
     "wayland-client",
+    "wayland-scanner",
     "wayland-backend",
     "wayland-protocols",
     "wayland-protocols-plasma",
@@ -274,6 +275,7 @@ wayland-backend = { version = "0.3.10", default-features = false, features = [
     "client_system",
 ], optional = true }
 wayland-client = { version = "0.31.10", optional = true }
+wayland-scanner = { version = "0.31.11", optional = true }
 wayland-protocols = { version = "0.32.8", features = [
     "staging",
     "unstable",
