@@ -830,6 +830,12 @@ settings-about-uptime = Uptime
 settings-about-hardware-card = Hardware
 settings-about-processor = Processor
 settings-about-memory = Memory
+accounts-browser-identity-title = Tilo browser identities
+accounts-browser-identity-about = Public account choices for existing browser sign-ins. Hiding or removing a choice does not revoke sign-in or resource permissions.
+accounts-browser-identity-hide = Hide from browser picker
+accounts-browser-identity-show = Show in browser picker
+accounts-browser-identity-remove = Remove browser choice
+
 accounts-vault-local = No keyring is available, so passwords are kept in a private file on this device. Unlock or install a keyring for stronger protection.
 accounts-empty-sample = You have no accounts yet. The entries below are examples of what you can add — use “Add” to create a real one.
 accounts-empty = You have no accounts yet. Use “Add” to connect your first account.
@@ -1762,4 +1768,7 @@ settings-printers-jobs-read-error = Can't list print jobs: { $error }
 settings-printers-scanners-read-error = Can't list scanners: { $error }
 agent-key-read-error = Can't tell whether a key is saved: { $error }
 
+shortcut-name-dictation-toggle = Start or finish dictation
+shortcut-name-dictation-finish = Finish dictation
+shortcut-name-dictation-cancel = Cancel dictation
 shortcut-name-tab-menu = Show tab menu

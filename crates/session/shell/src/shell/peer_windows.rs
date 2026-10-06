@@ -729,16 +729,28 @@ pub fn opened_here(
 ) -> Option<(crate::shell::state::WorkspaceId, StripId, GroupId, TabId)> {
     let local_salt = tree.local_salt();
     tree.desktop.workspaces.iter().find_map(|ws| {
-        ws.strips.iter().find_map(|strip| {
-            strip.window_groups.iter().find_map(|group| {
-                group.tabs.iter().find_map(|tab| {
-                    let ours = crate::shell::state::peer_salt_of(tab.id) == local_salt;
-                    let hosts = matches!(
-                        &tab.tile,
-                        TileContent::Foreign { app_id: a, .. } if a.eq_ignore_ascii_case(app_id)
-                    );
-                    (ours && hosts).then_some((ws.id, strip.id, group.id, tab.id))
-                })
+        opened_locally_in_workspace(ws, app_id, local_salt)
+            .map(|(strip, group, tab)| (ws.id, strip, group, tab))
+    })
+}
+
+/// A mapped local window within this workspace only. Ordinary Open Terminal
+/// returns to its existing room record; explicit new-window actions remain
+/// responsible for asking for another instance.
+pub(crate) fn opened_locally_in_workspace(
+    ws: &Workspace,
+    app_id: &str,
+    local_salt: u16,
+) -> Option<(StripId, GroupId, TabId)> {
+    ws.strips.iter().find_map(|strip| {
+        strip.window_groups.iter().find_map(|group| {
+            group.tabs.iter().find_map(|tab| {
+                let ours = crate::shell::state::peer_salt_of(tab.id) == local_salt;
+                let hosts = matches!(
+                    &tab.tile,
+                    TileContent::Foreign { app_id: a, .. } if a.eq_ignore_ascii_case(app_id)
+                );
+                (ours && hosts).then_some((strip.id, group.id, tab.id))
             })
         })
     })
@@ -910,6 +922,32 @@ mod tests {
             Some((other_id, strip_id, group_id, tab_id))
         );
         assert!(opened_here(&tree, "so.tilo.notes").is_none());
+        assert_eq!(
+            opened_locally_in_workspace(&tree.desktop.workspaces[1], SETTINGS, tree.local_salt()),
+            Some((strip_id, group_id, tab_id)),
+        );
+        assert!(
+            opened_locally_in_workspace(&tree.desktop.workspaces[0], SETTINGS, tree.local_salt())
+                .is_none(),
+            "an ordinary Open must stay in its workspace"
+        );
+        assert!(
+            opened_locally_in_workspace(
+                &tree.desktop.workspaces[1],
+                "so.tilo.terminal",
+                tree.local_salt()
+            )
+            .is_none()
+        );
+        assert!(
+            opened_locally_in_workspace(
+                &tree.desktop.workspaces[1],
+                SETTINGS,
+                tree.local_salt().wrapping_add(1)
+            )
+            .is_none(),
+            "a foreign device's tab is not a local mapped instance"
+        );
     }
 
     #[test]

@@ -573,6 +573,7 @@ files-place-recent = Recent
 files-empty-recent = Files you open or create appear here
 files-recent-reveal = Open containing folder
 files-recent-forget = Remove from Recent
+files-recent-action-unavailable = This recent item is no longer available. Open Recent and choose a current item.
 files-recent-not-a-folder = Recent is not a folder; open one to add files
 
 ## Cloud accounts
@@ -592,3 +593,7 @@ files-airdrop-verifying = Waiting for receiver verification and permission to se
 files-airdrop-address = Receiver's literal IP address
 files-airdrop-port = Receiver's TLS port
 files-airdrop-action-detail = Verify a manually selected lab receiver on the compositor's sheet before sending this file once.
+
+files-nearby-status = Transfer status
+files-nearby-transfer-unavailable = This transfer is no longer available in this Files window.
+files-nearby-status-detail = Read this transfer’s phase and confirmed byte counts.

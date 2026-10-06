@@ -369,6 +369,7 @@ suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_notes_latency_test.py",
+  "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
   "scripts/perf/collect_file_explorer_native_test.py",
   "scripts/perf/collect_scratchpad_native_test.py",
@@ -460,6 +461,10 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/resource-link.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/resource-session.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
   "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
@@ -599,6 +604,8 @@ inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
   ".cargo/config.toml",
   "examples/apps/", "examples/README.md", "docs/examples.md",
+  # Task guides are embedded by the CLI from the published documentation.
+  "docs/developers/tasks/",
   # The portability lint compiles in the policy gate's rules table, and the
   # capability check the table of what each capability's code uses.
   "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
@@ -670,6 +677,7 @@ inputs = [
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  "crates/dev/tilo-app-cli/src/guide.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
   # Android packaging copies the standalone font catalog out of the SDK.
@@ -758,6 +766,15 @@ inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
 readers = ["crates/runtime/ush/tests/serve_handoff.rs"]
 
 [[cargo]]
+package = "local-model-service"
+# Verifies the actual image catalogue and public trust keys retain their signature.
+inputs = [
+  "os/usr/share/tilo/system-extensions/local-model-catalog.json",
+  "os/usr/share/tilo/system-extensions/local-model-keys.json",
+]
+readers = ["crates/agent/local-model-service/src/main.rs"]
+
+[[cargo]]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
@@ -822,6 +839,7 @@ readers = [
   "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
   "crates/session/shell/src/shell/test_support.rs",
+  "crates/session/shell/tests/input_method_wire.rs",
 ]
 
 [[cargo]]

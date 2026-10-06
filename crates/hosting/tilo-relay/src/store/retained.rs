@@ -1292,6 +1292,78 @@ impl WorkspaceStore {
         Ok(written)
     }
 
+    /// Read-only channel projection with limits checked before file allocation.
+    /// Uses the same committed selection and active lineage selectors as replay;
+    /// never publishes a generation or confers collection authority.
+    #[cfg(feature = "agents")]
+    pub(crate) fn load_view_channel(
+        &self,
+        channel: &[u8; 32],
+        max_bytes: usize,
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        let mut budget = ViewReadBudget {
+            bytes: max_bytes,
+            entries: 8192,
+        };
+        let mut out = Vec::new();
+        if let Some(selected) = current(&self.root.join(super::shell_selection::DIRECTORY))? {
+            let mut manifest = fs::File::open(selected.join("basis.manifest"))?;
+            while let Some(meta) = super::bounded::read_meta(&mut manifest)? {
+                budget.entry()?;
+                // Selected basis records can span channels; their ciphertext is
+                // conservatively charged to the same read budget before routing.
+                let bytes = budget.read(&self.root.join(meta.source))?;
+                if view_channel_matches(&bytes, self.workspace_id, channel) {
+                    out.push(bytes);
+                }
+            }
+        }
+        let v2 = self.root.join(RETAINED_DIR).join("v2");
+        if !v2.exists() {
+            return Ok(out);
+        }
+        let suffix = format!("-{}", hex::encode(channel));
+        let mut lineages = Vec::new();
+        for entry in fs::read_dir(v2)? {
+            budget.entry()?;
+            let entry = entry?;
+            if entry.file_type()?.is_dir() && entry.file_name().to_string_lossy().ends_with(&suffix)
+            {
+                lineages.push(entry);
+            }
+        }
+        lineages.sort_by_key(fs::DirEntry::file_name);
+        for lineage in lineages {
+            let Some(active) = current(&lineage.path())? else {
+                continue;
+            };
+            let mut paths = Vec::new();
+            for entry in fs::read_dir(active)? {
+                budget.entry()?;
+                let entry = entry?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".delta")
+                    && !name.starts_with('.')
+                    && entry.file_type()?.is_file()
+                {
+                    paths.push(entry);
+                }
+            }
+            paths.sort_by_key(|entry| (entry.file_name() != "checkpoint.delta", entry.file_name()));
+            for entry in paths {
+                let bytes = budget.read(&entry.path())?;
+                if !view_channel_matches(&bytes, self.workspace_id, channel) {
+                    return Err(invalid("retained view channel mismatch"));
+                }
+                out.push(bytes);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|bytes| seen.insert(*blake3::hash(bytes).as_bytes()));
+        Ok(out)
+    }
+
     pub(super) fn load_shared(&self) -> Result<Vec<Vec<u8>>, StoreError> {
         let mut out = Vec::new();
         // Compatibility/admin reads do not grant proof or GC authority, but
@@ -1325,10 +1397,79 @@ impl WorkspaceStore {
     }
 }
 
+#[cfg(feature = "agents")]
+fn view_channel_matches(bytes: &[u8], workspace: u64, channel: &[u8; 32]) -> bool {
+    payload(bytes, workspace).is_some_and(|(_, value)| {
+        let (CoeditPayload::Checkpoint {
+            channel: actual, ..
+        }
+        | CoeditPayload::RetainedDelta {
+            channel: actual, ..
+        }) = value;
+        actual == *channel
+    })
+}
+
+#[cfg(feature = "agents")]
+struct ViewReadBudget {
+    bytes: usize,
+    entries: usize,
+}
+
+#[cfg(feature = "agents")]
+impl ViewReadBudget {
+    fn entry(&mut self) -> Result<(), StoreError> {
+        self.entries = self
+            .entries
+            .checked_sub(1)
+            .ok_or_else(|| invalid("view read entry budget exceeded"))?;
+        Ok(())
+    }
+    fn read(&mut self, path: &Path) -> Result<Vec<u8>, StoreError> {
+        use std::io::Read as _;
+        let file = fs::File::open(path)?;
+        let size = usize::try_from(file.metadata()?.len())
+            .map_err(|_| invalid("oversized view source"))?;
+        if size > self.bytes {
+            return Err(invalid("view read byte budget exceeded"));
+        }
+        let mut bytes = Vec::new();
+        // Limit the read too, so an unexpectedly growing file cannot exceed it.
+        file.take(self.bytes.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)?;
+        self.bytes = self
+            .bytes
+            .checked_sub(bytes.len())
+            .ok_or_else(|| invalid("view read byte budget exceeded"))?;
+        Ok(bytes)
+    }
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::super::bounded::{Step, WorkLimit};
     use super::*;
+
+    #[cfg(feature = "agents")]
+    #[test]
+    fn view_channel_reads_are_bounded_isolated_and_leave_retention_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let checkpoint = message(true, 1);
+        let delta = message(false, 2);
+        store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
+        store.retain_delta(&[9; 32], 1, &delta).unwrap();
+        let retained = store.load_retained().unwrap();
+        let size = checkpoint.len() + delta.len();
+        assert_eq!(store.load_view_channel(&[9; 32], size).unwrap(), retained);
+        assert!(store.load_view_channel(&[9; 32], size - 1).is_err());
+        assert!(store.load_view_channel(&[8; 32], 0).unwrap().is_empty());
+        assert_eq!(
+            store.load_retained().unwrap(),
+            retained,
+            "bounded view reads must not rewrite committed retained history"
+        );
+    }
 
     fn message(checkpoint: bool, value: u8) -> Vec<u8> {
         let payload = if checkpoint {

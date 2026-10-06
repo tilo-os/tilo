@@ -5306,6 +5306,15 @@ async fn dispatch_sdk_request(
                         description: view.description,
                         open_action: view.open_action,
                         primary: view.primary,
+                        range: view
+                            .range
+                            .as_ref()
+                            .map(|range| runtime_collab::ExportedViewRange {
+                                action: range.action.clone(),
+                                start_param: range.start_param.clone(),
+                                end_param: range.end_param.clone(),
+                                unit_param: range.unit_param.clone(),
+                            }),
                         mount: view.mount.map(|mount| runtime_collab::ExportedViewMount {
                             action: mount.action,
                             capability_param: mount.capability_param,

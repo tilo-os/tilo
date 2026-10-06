@@ -77,6 +77,7 @@ use crate::compositor::surface_readback::{
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
 use ui::TextRole;
 
+mod commit_damage;
 mod sheets;
 pub use sheets::{PointRoute, SheetLink};
 
@@ -692,6 +693,9 @@ fn sync_dmabuf(fd: libc::c_int, flags: u64) {
 
 /// Per-surface capture + placement state.
 struct ForeignEntry {
+    damage_history: commit_damage::History,
+    #[cfg(any(test, target_os = "linux"))]
+    capture_damage: HashMap<u64, u64>,
     /// Most recent frame, row-major RGBA (`width*height*4` bytes) — reused across commits so a steady-state client costs no reallocation.
     rgba: Vec<u8>,
     width: u32,
@@ -766,6 +770,9 @@ impl ForeignEntry {
 
     fn new() -> Self {
         Self {
+            damage_history: commit_damage::History::default(),
+            #[cfg(any(test, target_os = "linux"))]
+            capture_damage: HashMap::new(),
             rgba: Vec::new(),
             width: 0,
             height: 0,
@@ -1090,6 +1097,7 @@ struct ShmJob {
     surface: SurfaceId,
     /// The surface's shm capture count when this job was queued.
     generation: u64,
+    damage_generation: u64,
     payload: OwnedShmFrame,
 }
 
@@ -1334,7 +1342,13 @@ impl AsyncShmCapture {
                         let Some(job) = job else { break };
                         match owned_shm_to_rgba(&job.payload, &mut rgba) {
                             Ok((width, height)) => {
-                                store().publish_rgba(job.surface, &rgba, width, height);
+                                store().publish_captured_rgba(
+                                    job.surface,
+                                    &rgba,
+                                    width,
+                                    height,
+                                    job.damage_generation,
+                                );
                             }
                             Err(error) => {
                                 tracing::warn!(
@@ -1747,6 +1761,18 @@ impl ForeignFrameStore {
         dmabuf: Dmabuf,
         colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
     ) -> Option<(u64, Barrier)> {
+        self.prepare_dmabuf_capture_with_damage(id, client, dmabuf, colorimetry, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn prepare_dmabuf_capture_with_damage(
+        &self,
+        id: SurfaceId,
+        client: Client,
+        dmabuf: Dmabuf,
+        colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+        damage: Option<Vec<Rect>>,
+    ) -> Option<(u64, Barrier)> {
         let token = self
             .next_capture
             .fetch_add(1, Ordering::Relaxed)
@@ -1754,6 +1780,8 @@ impl ForeignFrameStore {
         self.with_entry(id, |entry| {
             entry.capture_tokens.push_back(token);
             entry.colorimetry = colorimetry;
+            let generation = entry.damage_history.begin(damage);
+            entry.capture_damage.insert(token, generation);
         });
         let worker = ASYNC_DMABUF_CAPTURE.get_or_init(AsyncDmabufCapture::spawn);
         match worker {
@@ -1772,6 +1800,7 @@ impl ForeignFrameStore {
                 // No worker owns this token, so it must not remain at the
                 // head of the per-commit queue and steal a later result.
                 self.with_entry(id, |entry| {
+                    entry.capture_damage.remove(&token);
                     if let Some(position) = entry.capture_tokens.iter().position(|v| *v == token) {
                         entry.capture_tokens.remove(position);
                     }
@@ -1784,16 +1813,27 @@ impl ForeignFrameStore {
 
     #[cfg(target_os = "linux")]
     pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> Option<u64> {
+        self.prepare_shm_capture_with_damage(id, frame, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn prepare_shm_capture_with_damage(
+        &self,
+        id: SurfaceId,
+        frame: OwnedShmFrame,
+        damage: Option<Vec<Rect>>,
+    ) -> Option<u64> {
         let worker = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn);
         match worker {
             Ok(worker) => {
-                let generation = self.with_entry(id, |entry| {
+                let (generation, damage_generation) = self.with_entry(id, |entry| {
                     entry.shm_queued = entry.shm_queued.wrapping_add(1);
-                    entry.shm_queued
+                    (entry.shm_queued, entry.damage_history.begin(damage))
                 });
                 worker.enqueue(ShmJob {
                     surface: id,
                     generation,
+                    damage_generation,
                     payload: frame,
                 });
                 Some(generation)
@@ -1887,6 +1927,7 @@ impl ForeignFrameStore {
             return None;
         }
         entry.capture_tokens.pop_front();
+        let damage_generation = entry.capture_damage.remove(&token);
         let ready = entry.ready_captures.remove(&token)?;
         let (outcome, imported, recycled) = match ready.result {
             Ok((width, height, route)) => {
@@ -1896,6 +1937,11 @@ impl ForeignFrameStore {
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
+                let generation =
+                    damage_generation.unwrap_or_else(|| entry.damage_history.begin(None));
+                entry
+                    .damage_history
+                    .publish(entry.seq, generation, (width, height));
                 entry.activated_capture = Some(token);
                 entry.last_error = None;
                 let outcome = match route {
@@ -1929,6 +1975,24 @@ impl ForeignFrameStore {
     #[cfg(test)]
     fn activate_dmabuf_capture(&self, id: SurfaceId) -> Option<CaptureOutcome> {
         let token = self.with_entry(id, |entry| entry.capture_tokens.front().copied())?;
+        self.activate_dmabuf_capture_token(id, token)
+    }
+
+    /// Activate a completed owned GPU copy through the ordinary capture-token path.
+    #[cfg(test)]
+    pub(crate) fn publish_gpu_for_test(
+        &self,
+        id: SurfaceId,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> Option<CaptureOutcome> {
+        let token = self
+            .next_capture
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.with_entry(id, |entry| entry.capture_tokens.push_back(token));
+        if !self.stage_gpu_capture(id, token, frame) {
+            return None;
+        }
         self.activate_dmabuf_capture_token(id, token)
     }
 
@@ -1966,8 +2030,50 @@ impl ForeignFrameStore {
             e.width = width;
             e.height = height;
             e.seq = e.seq.wrapping_add(1);
+            let generation = e.damage_history.begin(None);
+            e.damage_history.publish(e.seq, generation, (width, height));
             e.last_error = None;
         });
+    }
+
+    #[cfg(target_os = "linux")]
+    fn publish_captured_rgba(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) {
+        self.with_entry(id, |entry| {
+            entry.mapped = true;
+            entry.hdr = None;
+            entry.gpu = None;
+            entry.rgba.clear();
+            entry.rgba.extend_from_slice(rgba);
+            entry.width = width;
+            entry.height = height;
+            entry.seq = entry.seq.wrapping_add(1);
+            entry
+                .damage_history
+                .publish(entry.seq, generation, (width, height));
+            entry.last_error = None;
+        });
+    }
+
+    /// Buffer-pixel damage across every captured frame since a previous paint.
+    /// Missing/coalesced metadata, extent changes and history overflow return
+    /// None so callers retain the whole-image damage fallback.
+    pub fn frame_damage_between(
+        &self,
+        id: SurfaceId,
+        previous: u64,
+        current: u64,
+        size: (u32, u32),
+    ) -> Option<Vec<Rect>> {
+        self.with_entry(id, |entry| {
+            entry.damage_history.between(previous, current, size)
+        })
     }
 
     /// Record that the last capture failed and drop the stale frame.
@@ -2888,6 +2994,14 @@ impl ForeignSurfaceWidget {
         }
     }
 
+    fn record_foreign_damage(&self, image: &ImageData, transform: Affine, dst: Rect) {
+        super::foreign_damage::record(
+            self.surface_id,
+            image,
+            transform.transform_rect_bbox(self.rect.union(dst)),
+        );
+    }
+
     /// Register the frame's full-precision plane, when it has one, for the
     /// image about to be drawn at `brush_transform` into `dst`.
     fn record_hdr_layer(
@@ -3115,6 +3229,7 @@ impl Widget for ForeignSurfaceWidget {
             let sx = dst.width() / f64::from(image.width);
             let sy = dst.height() / f64::from(image.height);
             let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
+            self.record_foreign_damage(&image, transform, dst);
             let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
             self.record_hdr_layer(&image, brush_transform, transform, dst);
             if self.preserve_transparency {

@@ -26,6 +26,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # labels, local folders, drafts) are exported as replayable actions and a Ctrl+K
 # resource tree. See `src/actions.rs`.
 tilo-actions = { path = "../../crates/collab/actions" }
+# Read-only address-book hints; selection never confirms identity or sends mail.
+tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
 # The shared multi-account store + encrypted secret vault. Mail reads its
 # email accounts from here (Settings owns the write lifecycle); credentials
 # are sealed in the vault, never in the plaintext store.

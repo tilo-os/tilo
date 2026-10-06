@@ -66,6 +66,22 @@ impl AppCatalogue {
         self.apps.iter().copied()
     }
 
+    /// Read existing resource view descriptors without mounting or initializing
+    /// an application. The document remains owned by its original room.
+    #[must_use]
+    pub fn resource_views(
+        &self,
+        app_id: &str,
+        doc: &automerge::AutoCommit,
+        wanted: &tilo_actions::remote::ViewResourceQuery,
+        permissions: &PermissionContext,
+    ) -> Vec<ActionDescriptor> {
+        let Some(kind) = self.kind(app_id) else {
+            return Vec::new();
+        };
+        discover_views(kind, app_id, doc, wanted, permissions)
+    }
+
     /// The resource type `app_id`'s records hold.
     fn kind(&self, app_id: &str) -> Option<ResourceKind> {
         let definition = self.get(app_id)?;
@@ -238,6 +254,27 @@ impl Replica {
         self.participant.operations()
     }
 
+    /// Discover one existing resource's local view metadata under the caller's
+    /// current read policy. Views are inert; `invoke` remains document-only.
+    #[must_use]
+    pub fn resource_views(
+        &self,
+        id: &str,
+        kind: &str,
+        permissions: &PermissionContext,
+    ) -> Vec<ActionDescriptor> {
+        discover_views(
+            *self.participant.kind(),
+            self.app_id,
+            self.participant.doc(),
+            &tilo_actions::remote::ViewResourceQuery {
+                id: id.to_owned(),
+                kind: kind.to_owned(),
+            },
+            permissions,
+        )
+    }
+
     /// Perform one published operation through the resource's own door:
     /// permission, confirmation and strict argument binding exactly as for
     /// a person. The change it made is taken with [`Self::take_mutation`].
@@ -336,4 +373,36 @@ fn genesis(
     records
         .read(&checkout.id, |doc| doc.clone().save())
         .ok_or_else(|| AppError::Launch("the new record did not open".into()))
+}
+
+fn discover_views(
+    resource_kind: ResourceKind,
+    app_id: &str,
+    doc: &automerge::AutoCommit,
+    wanted: &tilo_actions::remote::ViewResourceQuery,
+    permissions: &PermissionContext,
+) -> Vec<ActionDescriptor> {
+    let published = match resource_kind.child(doc, &wanted.id) {
+        Ok(Some(child)) if child.id.as_str() == wanted.id => child,
+        _ => match resource_kind.publish(resource_kind.kind(), doc) {
+            Ok(published) => published,
+            Err(_) => return Vec::new(),
+        },
+    };
+    let Some(permitted) = permissions.permitted_resource(app_id, published) else {
+        return Vec::new();
+    };
+    tilo_actions::door::survey(&[permitted])
+        .into_iter()
+        .filter(|descriptor| {
+            descriptor.address.resource.as_str() == wanted.id
+                && descriptor.resource_kind == wanted.kind
+                && descriptor.kind == tilo_actions::OperationKind::View
+                && permissions.check(&ui::permissions::PermissionScope::action(
+                    app_id,
+                    descriptor.address.action.clone(),
+                    collab_types::caps::Verb::Read,
+                ))
+        })
+        .collect()
 }

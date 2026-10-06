@@ -79,3 +79,84 @@ Run `cargo test --locked -p shell --lib tab_drag_ -j 4` and the existing
 The `tab_drag_cancel` offscreen scenario records before, lifted, cancelled and
 released frames. Physical touch, keyboard and screen-reader qualification
 remain separate device checks.
+
+## Recent files through the resource door
+
+At baseline `12f4dfb2d5`, Recent's pointer menu could open a file's containing
+folder or forget its recent-use entry, but its published file rows exposed
+neither action. The resource journey failed at the missing `reveal` action.
+This made the same everyday task unavailable to automation and assistive
+technology using the app's public surface.
+
+Recent rows now publish localized **Open containing folder** (`reveal`) and
+**Remove from Recent** (`forget-recent`). Invoke the first to open the parent
+folder with the exact file selected, then Back to return to Recent. Invoke the
+second to remove only that device's recent-use entry; the file and other Recent
+items remain intact, including after reopening the window. Both use the same
+commands as the existing pointer menu. They are view operations: a Viewer can
+use them, while Denied access is refused through the framework's existing door.
+
+The effects resolve an opaque published row in the current Recent view. They
+refuse retained requests in an ordinary folder, deleted targets, withdrawn
+rows and caller attempts to substitute a path. The existing collaborative
+record reveal outside Recent keeps its host and permission checks. No new
+clipboard transport, permission grant, shared history mutation, asset or
+dependency is introduced. The code is original work under AGPL-3.0-only.
+
+```sh
+cargo test --locked -p file-explorer --lib recent_resource_tests -j 4
+cargo test --locked -p file-explorer --lib open_with_tests -j 4
+cargo check --locked -p file-explorer --all-targets -j 4
+cargo check --locked -p shell --tests -j 4
+cargo run --locked -p file-explorer -j 4 -- --shots target/recent.png --scenario recent --theme dark
+```
+
+Capture `recent`, `recent-menu`, `recent-revealed` and `recent-forgotten` in
+dark, light and high-contrast themes. Each uses a fresh scratch home, actual
+Recent settings and production command handlers. Generated frames and logs
+belong in PR/CI evidence, never source control. These captures and simulated
+roles do not qualify physical touch, a native screen reader or older-hardware
+latency.
+
+## Keeping file selection through sorting
+
+At baseline `1ab90c8c0f`, sorting Files left the selected row numbers in place.
+Selecting `a.txt` and `c.txt`, then invoking `sort-size`, silently selected
+`b.txt` and `a.txt` instead. A subsequent Copy used those wrong files.
+
+Sort columns, the view menu and published sort actions now preserve the same
+files, the keyboard cursor and the Shift range anchor. The cursor still follows
+an item deselected by Ctrl-click. The next Shift gesture extends from that
+item's new row. A click remembered before sorting cannot turn a click on a
+different file into a double-click and open it.
+An active inline rename follows its original file as well, keeping the draft
+name and editor focus. At the intermediate candidate `f32dfec47a`, the rename
+regression still renamed `b.txt` while editing `a.txt` after sorting by size;
+the final regression checks the renamed file's exact bytes and leaves `b.txt`
+untouched.
+
+The implementation uses the shared selection model and remaps only its tracked
+items against the existing directory snapshot. It adds linear listing work and
+storage proportional to the selection, without reading file contents or changing
+shared state, permissions, or the clipboard transport. Sorting does not rename
+or replace entries; metadata refresh continues using its existing record-aware
+identity handling.
+
+The production regression copies a multiselection into a scratch destination
+after invoking the published sort action and checks the exact file bytes and
+absence of the unselected file. Additional journeys exercise every published
+sort, Shift extension, a deselected cursor, an empty selection, active rename and click/open
+continuity. Run:
+
+```sh
+cargo test --locked -p file-explorer --lib sort_selection_tests -j 4
+cargo test --locked -p tilo-ui --lib remapping_selection -j 4
+cargo check --locked -p shell --tests -j 4
+```
+
+The `selection-sort`, `selection-sorted` and `selection-reversed` Files capture
+scenarios show the same Notes and Recipes files selected before sorting, after
+sorting by size, and after reversing that order. Capture each with the existing
+`--shots` runner in dark, light and high-contrast themes. They use the prepared
+scratch home. Physical assistive technology and older-hardware performance
+remain separate device checks.

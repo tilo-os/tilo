@@ -81,6 +81,39 @@ pub trait ContentCipher: Send {
     }
 }
 
+/// A read-only adapter over content keys the caller already owns.
+/// It cannot seal a document, enroll a device, or obtain missing keys.
+#[must_use]
+pub fn content_key_reader(keys: channel_crypto::ChannelContentKeys) -> Box<dyn ContentCipher> {
+    Box::new(ContentKeyReader(crate::channels::KeysCipher(keys)))
+}
+
+struct ContentKeyReader(crate::channels::KeysCipher);
+
+impl ContentCipher for ContentKeyReader {
+    fn seal(
+        &mut self,
+        _artifact: collab_types::ArtifactId,
+        _retention: ContentRetention,
+        _cleartext: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        Err("a content-key reader cannot seal documents".into())
+    }
+
+    fn open(
+        &mut self,
+        artifact: collab_types::ArtifactId,
+        metadata: &EncryptionMetadata,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.0.open(artifact, metadata, payload)
+    }
+
+    fn holds_epoch(&self, epoch: u64) -> bool {
+        self.0.holds_epoch(epoch)
+    }
+}
+
 /// The installed content ciphers, by route. A route without one is
 /// cleartext.
 pub type Ciphers = std::collections::BTreeMap<DocumentRoute, Box<dyn ContentCipher>>;
@@ -477,6 +510,41 @@ mod tests {
     use super::*;
     use automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
     use tilo_automerge::ApplyIncoming as _;
+
+    #[test]
+    fn a_content_key_reader_opens_existing_content_but_cannot_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = collab_types::document_channel_id("app", "room", "record");
+        let steward = channel_crypto::ChannelSteward::open_or_create(
+            dir.path(),
+            channel,
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            &channel_crypto::VaultKey::new([8; 32]),
+        )
+        .unwrap();
+        let keys = steward.content_keys().unwrap();
+        let artifact = collab_types::ArtifactId::new();
+        let (metadata, payload) = keys
+            .seal_content(artifact, ContentRetention::Delta, b"existing content")
+            .unwrap();
+        let mut reader = content_key_reader(keys);
+        assert!(reader.holds_epoch(metadata.epoch));
+        assert_eq!(
+            reader.open(artifact, &metadata, &payload).unwrap(),
+            b"existing content"
+        );
+        assert!(
+            reader
+                .open(collab_types::ArtifactId::new(), &metadata, &payload)
+                .is_err()
+        );
+        assert_eq!(
+            reader
+                .seal(artifact, ContentRetention::Delta, b"attempted edit")
+                .unwrap_err(),
+            "a content-key reader cannot seal documents"
+        );
+    }
 
     fn opened(
         artifact: collab_types::ArtifactId,
