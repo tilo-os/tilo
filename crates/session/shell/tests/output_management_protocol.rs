@@ -354,6 +354,28 @@ impl Harness {
         panic!("output-management walk stalled at {label}");
     }
 
+    // A separate client owns and reads its own event queue; this loop only
+    // drives the server while that worker dispatches its own responses.
+    fn pump_separate_client(&mut self, label: &str, done: impl Fn() -> bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        while Instant::now() < deadline {
+            let dispatched_at = Instant::now();
+            self.display.dispatch_clients(&mut self.state).unwrap();
+            if dispatched_at.elapsed() > Duration::from_millis(100) {
+                eprintln!(
+                    "separate client server dispatch: {:?}",
+                    dispatched_at.elapsed()
+                );
+            }
+            self.display.flush_clients().unwrap();
+            if done() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("separate output-management client stalled at {label}");
+    }
+
     fn configuration(&mut self) -> ZwlrOutputConfigurationV1 {
         let serial = self.tool.serial.expect("serial");
         self.configuration_at(serial)
@@ -1048,4 +1070,115 @@ fn wl_output_names_are_the_head_names() {
     heads.sort_unstable();
     assert_eq!(outputs, heads);
     assert_eq!(outputs, ["VIRTUAL-1", "VIRTUAL-2"]);
+}
+
+#[test]
+fn greeter_adopts_announced_panel_dpi_and_preserves_other_output_properties() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    // Prepare the empty fixture's crash-durable config directory before the
+    // bounded protocol client starts. The actual request still uses the real
+    // file transaction; cold directory creation is not a protocol round trip.
+    settings_store::update_document_at(&settings_store::settings_path().unwrap(), |_| {}).unwrap();
+    let mut harness = Harness::privileged("portrait-plus-4k");
+    let mut heads = heads_from_outputs(&harness.outputs);
+    // A 14-inch 4K panel advertised by an unconfigured kiosk at 1x.
+    // Preserve the adjacent portrait monitor's power, rotation and position.
+    let panel = heads
+        .iter_mut()
+        .find(|head| head.name() == "VIRTUAL-2")
+        .unwrap();
+    panel.scale = 1.0;
+    panel.descriptor.vrr = true;
+    panel.adaptive_sync = true;
+    panel.physical_size_mm = Some((309, 174));
+    harness.state.set_output_heads(heads.clone());
+    harness.pump("unconfigured kiosk", |tool| {
+        tool.head("VIRTUAL-2").1.scale == Some(1.0)
+    });
+    assert_eq!(harness.tool.head("VIRTUAL-2").1.scale, Some(1.0));
+
+    let previous_transaction = DisplayTransaction::load().map(|value| value.id);
+
+    let (client, server) = UnixStream::pair().expect("socketpair");
+    harness
+        .display
+        .handle()
+        .insert_client(server, ClientState::privileged_tool_arc(None))
+        .unwrap();
+    let connection = Connection::from_socket(client).unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        sender
+            .send(greeter::output_scale::configure_connection(&connection))
+            .unwrap();
+    });
+    harness.pump_separate_client("greeter output request", || {
+        DisplayTransaction::load().is_some_and(|value| Some(value.id) != previous_transaction)
+            || worker.is_finished()
+    });
+    let mut transaction = DisplayTransaction::load().unwrap_or_else(|| {
+        panic!(
+            "greeter did not request the scale change: {:?}",
+            receiver.try_recv()
+        )
+    });
+    assert_ne!(Some(transaction.id), previous_transaction);
+    let candidate = transaction.candidate.output_for("VIRTUAL-2").unwrap();
+    assert_eq!(candidate.scale, 2.0);
+    assert!(candidate.vrr, "scaling preserves active adaptive sync");
+    let portrait = transaction.candidate.output_for("VIRTUAL-1").unwrap();
+    assert_eq!(portrait.transform, OutputTransform::Rotate90);
+    assert_eq!(portrait.scale, 1.0);
+    assert_eq!(portrait.vrr, heads[0].adaptive_sync);
+    assert!(portrait.enabled);
+    assert_eq!((portrait.x, portrait.y), heads[0].position);
+    assert_eq!(candidate.mode, heads[1].current_mode);
+    let mode = candidate.mode.unwrap();
+    // The existing backend acceptance is the protocol's successful boundary.
+    transaction.state = DisplayTransactionState::AwaitingConfirmation;
+    transaction.save().unwrap();
+    harness
+        .state
+        .output_management
+        .resolve_transactions(Some(&transaction));
+    harness.pump_separate_client("greeter acceptance", || worker.is_finished());
+    assert_eq!(receiver.recv().unwrap(), Ok(()));
+    worker.join().unwrap();
+    // The announced native mode and accepted 2x scale define the logical
+    // window; do not substitute a font/text scale for the compositor scale.
+    let landscape = (mode.width / 2, mode.height / 2);
+    for viewport in [landscape, (landscape.1, landscape.0)] {
+        for theme in [
+            ui::Theme::dark(),
+            ui::Theme::light(),
+            ui::Theme::high_contrast(),
+        ] {
+            let app = greeter::GreeterApp::for_shot(greeter::greeter_app::AuthScenario::Personal);
+            let frame =
+                ui::headless::FrameHarness::for_root(ui::State::new(), app, viewport, theme);
+            let targets = frame.targets();
+            let password = targets
+                .get("greeter.password")
+                .expect("real password control");
+            let submit = targets.get("greeter.login").expect("real sign-in control");
+            let window =
+                vello::kurbo::Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
+            assert!(
+                window.contains_rect(*password),
+                "native scaled portrait/landscape keeps password visible: {password:?}"
+            );
+            assert!(
+                window.contains_rect(*submit),
+                "native scaled portrait/landscape keeps sign-in visible: {submit:?}"
+            );
+            assert!(
+                password.height() * candidate.scale >= 64.0,
+                "the actual announced scale gives the shared password control a usable physical height"
+            );
+            assert!(
+                submit.height() * candidate.scale >= 64.0,
+                "the actual announced scale gives the shared sign-in action a usable physical height"
+            );
+        }
+    }
 }
