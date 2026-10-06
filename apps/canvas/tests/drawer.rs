@@ -65,11 +65,18 @@ fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
             "{name} leaves the phone viewport: {rect:?}"
         );
     }
+    let add_picture = targets
+        .get("canvas-add-picture")
+        .expect("adding a picture remains mounted");
+    assert!(add_picture.x0 >= 0.0 && add_picture.x1 <= 390.0);
+    assert!(
+        add_picture.y0 > targets["canvas-welcome-new"].y1,
+        "the touch import action is below the welcome, outside its scrolling viewport"
+    );
     let header: Vec<_> = targets
         .iter()
         .filter(|(name, rect)| {
             (name.starts_with("canvas-zoom-")
-                || name.as_str() == "canvas-add-picture"
                 || name.as_str() == "canvas-menu"
                 || name.ends_with("nav-shell-inspector")
                 || name.as_str() == "standalone-history-open")
@@ -92,5 +99,33 @@ fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
                 "header controls overlap: {name} {rect:?}; {other} {other_rect:?}"
             );
         }
+    }
+}
+
+#[test]
+fn phone_tools_live_below_the_artwork_and_survive_rotation() {
+    let mut app =
+        TestApp::<App>::capture_at(Some("landscape"), (390, 844)).expect("the actual artwork view");
+    for viewport in [(390, 844), (844, 390)] {
+        app.harness().resize(viewport).expect("rotation lays out");
+        assert!(
+            app.harness()
+                .settle_for_capture(std::time::Duration::from_secs(2))
+        );
+        let targets = app.harness().targets();
+        let tools = targets.get("Tool").expect("the shared tool control");
+        assert!(
+            tools.width() > tools.height(),
+            "tools are a horizontal strip: {tools:?}"
+        );
+        assert!(
+            tools.y0 > f64::from(viewport.1) / 2.0,
+            "tools sit below the artwork: {tools:?}"
+        );
+        let audit = app.harness().native_app_audit();
+        assert!(
+            audit.is_certified(),
+            "the mobile composition keeps every canonical action: {audit:#?}"
+        );
     }
 }
