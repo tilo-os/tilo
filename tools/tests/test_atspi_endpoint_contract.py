@@ -12,6 +12,36 @@ SPEC.loader.exec_module(contract)
 
 
 class AtspiEndpointContractTests(unittest.TestCase):
+    def test_shared_factory_retains_both_adapters_before_new_windows_are_shown(self):
+        source = (SCRIPT.parents[2] / "crates/sdk/ui-core/src/app/native_runner.rs").read_text()
+        self.assertEqual(contract.adapter_registration_errors(source), [])
+        registration = "create_accessibility_adapter(event_loop, &window, self.a11y_proxy.clone());"
+        self.assertEqual(source.count(registration), 2)
+        for occurrence in (0, 1):
+            with self.subTest(view=occurrence):
+                parts = source.split(registration)
+                mutated = registration.join(parts[:occurrence + 1]) + "None;" + registration.join(parts[occurrence + 1:])
+                self.assertTrue(contract.adapter_registration_errors(mutated))
+        with self.subTest(phase="unconnected constructor is not a provider"):
+            self.assertTrue(contract.adapter_registration_errors(source.replace(
+                "Some(PrimaryA11yAdapter::with_event_loop_proxy(",
+                "drop(PrimaryA11yAdapter::with_event_loop_proxy(",
+            )))
+        for name in ("resumed", "create_native_floating_window"):
+            with self.subTest(phase="registration after visibility", view=name):
+                body = contract.function_body(source, name)
+                self.assertIsNotNone(body)
+                delayed = body.replace(registration, "None;", 1)
+                creation = delayed.find(".create_window(")
+                show = delayed.find("window.set_visible(true);", creation)
+                self.assertGreater(show, creation)
+                delayed = delayed[:show] + delayed[show:].replace(
+                    "window.set_visible(true);",
+                    "window.set_visible(true);\n" + ("self.a11y_adapter = " if name == "resumed" else "let a11y_adapter = ") + registration,
+                    1,
+                )
+                self.assertTrue(contract.adapter_registration_errors(source.replace(body, delayed)))
+
     def audit_update(self, update, *, source="crates/sdk/ui-core/src/app.rs", cargo='accesskit_winit = "0.34.0"'):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
