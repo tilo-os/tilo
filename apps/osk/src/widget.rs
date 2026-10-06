@@ -467,8 +467,8 @@ impl OskWidget {
 
     // --- builders -------------------------------------------------------
 
-    /// Use the height assigned by the host's keyboard panel. The key rows
-    /// share the remaining height after the toolbar and suggestions.
+    /// Use the host's keyboard panel, keeping themed row heights when it is
+    /// taller than the keyboard and fitting shorter panels without overflow.
     #[must_use]
     pub fn with_surface_height(mut self) -> Self {
         self.fill_surface = true;
@@ -2013,8 +2013,23 @@ impl OskWidget {
     /// Split the laid-out rect into the toolbar, suggestion and key bands and
     /// place what each shows: the keys, or the emoji panel's face.
     fn layout_bands(&mut self) {
+        // A host may assign a whole phone viewport to this surface. Keep the
+        // keyboard docked at its bottom at the themed row height; a keyboard
+        // panel must not turn that spare space into enormous key wells.
+        let height = f64::from(
+            self.toolbar_height
+                + self.suggestion_height
+                + self.current_layout().row_count() as f32 * self.target_key_height,
+        )
+        .min(self.rect.height());
+        let keyboard_rect = Rect::new(
+            self.rect.x0,
+            self.rect.y1 - height,
+            self.rect.x1,
+            self.rect.y1,
+        );
         let geometry = keyboard_geometry(
-            self.rect,
+            keyboard_rect,
             self.current_layout(),
             &self.toolbar,
             &self.suggestions,
@@ -2946,6 +2961,28 @@ mod tests {
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn a_tall_phone_surface_keeps_normal_keyboard_rows_docked_and_touchable() {
+        let mut osk = OskWidget::new().with_surface_height();
+        lay_out(&mut osk, 390.0, 844.0);
+        let height = f64::from(keyboard_height(
+            osk.current_layout().row_count(),
+            &osk.spacing,
+            &osk.metrics,
+        ));
+        assert!((osk.content_rect.height() - height).abs() < 0.01);
+        assert!((osk.content_rect.y1 - 844.0).abs() < 0.01);
+        let (_, q) = key_rect(&osk, "q");
+        assert!(q.height() <= f64::from(osk.metrics.header_height));
+        assert!(!osk.key_area.contains(Point::new(195.0, 100.0)));
+        finger(&mut osk, 1, TouchPhase::Started, q.center());
+        finger(&mut osk, 1, TouchPhase::Ended, q.center());
+        assert_eq!(osk.pending_text(), "q");
+        lay_out(&mut osk, 844.0, 220.0);
+        assert!(osk.content_rect.y0 >= 0.0);
+        assert!(osk.content_rect.y1 <= 220.0);
+    }
 
     fn lay_out(osk: &mut OskWidget, w: f32, h: f32) {
         let theme = Theme::dark();
