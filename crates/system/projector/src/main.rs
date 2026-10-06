@@ -1161,9 +1161,10 @@ fn forward_sender_diagnostics(
     }
 }
 
-/// `(device, connected session, receiver-message channel)` — the result of
+/// `(runtime owner, device, connected session, receiver-message channel)` — the result of
 /// [`connect_cast_device`].
 type CastConnection = (
+    fcast_sender_sdk::context::CastContext,
     Arc<dyn fcast_sender_sdk::device::CastingDevice>,
     ConnectedSession,
     mpsc::Receiver<String>,
@@ -1211,7 +1212,9 @@ fn connect_cast_device(
     let connected = connected_rx
         .recv_timeout(Duration::from_secs(8))
         .map_err(|_| "receiver did not accept the connection in time".to_owned())??;
-    Ok((device, connected, fault_rx))
+    // The device keeps only a runtime handle. Its CastContext owns the runtime;
+    // dropping it here aborts the worker before the first media LOAD.
+    Ok((context, device, connected, fault_rx))
 }
 
 /// The pieces of a running cast session the adaptive feedback loop needs to
@@ -1365,7 +1368,8 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
         telemetry.clone(),
     )?;
 
-    let (device, connected, fault_rx) = connect_cast_device(protocol, address, port, name)?;
+    let (_context, device, connected, fault_rx) =
+        connect_cast_device(protocol, address, port, name)?;
     maximum_profile = stream_policy.ceiling(connected.receiver_resolution);
     let local_addr = connected.local_addr;
     let initial_profile = initial_capture_profile(stream_policy, maximum_profile);
@@ -1885,34 +1889,15 @@ mod tests {
                 );
             });
 
-            let context = fcast_sender_sdk::context::CastContext::new().expect("Cast context");
-            let device = context.create_device_from_info(DeviceInfo {
-                name: "FCast simulator".to_owned(),
-                protocol: ProtocolType::FCast,
-                addresses: vec![IpAddr::v4(127, 0, 0, 1)],
+            // Exercise the production connection helper: the returned owner must
+            // keep its runtime alive while LOAD reaches the receiver.
+            let (_context, device, _connected, _fault_rx) = connect_cast_device(
+                ProtocolType::FCast,
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
                 port,
-                txt_records: HashMap::new(),
-            });
-            let (connected_tx, connected_rx) = mpsc::channel();
-            let (faults, _fault_rx) = mpsc::channel();
-            device
-                .connect(
-                    Some(ApplicationInfo {
-                        name: "tilo-projector".to_owned(),
-                        version: env!("CARGO_PKG_VERSION").to_owned(),
-                        display_name: "Tilo Screen Projection".to_owned(),
-                    }),
-                    Arc::new(SessionEvents {
-                        connected: Mutex::new(Some(connected_tx)),
-                        faults,
-                    }),
-                    0,
-                )
-                .expect("connect to simulator");
-            connected_rx
-                .recv_timeout(tilo_test_env::hang_bound())
-                .expect("connected event")
-                .expect("successful connection");
+                "FCast simulator".to_owned(),
+            )
+            .expect("production connection to simulator");
             device
                 .load(
                     LoadRequest::Url {
