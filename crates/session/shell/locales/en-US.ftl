@@ -2361,8 +2361,7 @@ nearby-error-name-not-portable = source name is not portable
 # AirDrop lab receiver verification
 airdrop-verify-title = Verify AirDrop receiver
 airdrop-verify-send-once = Send once
-airdrop-verify-detail =
-    File: { $name }
+airdrop-verify-detail = File: { $name }
     Size: { $bytes } bytes
     Receiver: { $endpoint }
     Enter the receiver's SHA-256 certificate fingerprint as 64 hexadecimal digits from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
