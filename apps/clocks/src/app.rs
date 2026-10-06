@@ -633,7 +633,7 @@ fn timers_screen(
     let list_controls = controls.clone();
     let list = ModelView::from_state(state, move |s| {
         if s.clocks.timers.is_empty() {
-            return Box::new(Spacer::new());
+            return Box::new(Column::new().with_no_padding().with_intrinsic_height());
         }
         let mut col = Column::new()
             .with_no_padding()
@@ -653,7 +653,7 @@ fn timers_screen(
     let add_error = validation_error.clone();
     let error = ModelView::from_state(validation_error, |message| {
         message.as_ref().map_or_else(
-            || Box::new(Spacer::new()) as Element,
+            || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
             |message| {
                 Box::new(clock_card(
                     "Timer needs a duration",
@@ -728,6 +728,7 @@ fn timers_screen(
             "Custom timer",
             Box::new(
                 Column::new()
+                    .with_intrinsic_height()
                     .push(Box::new(
                         TextInput::from_state(&custom_label)
                             .with_id("clocks.timer.custom.label")
@@ -773,6 +774,7 @@ fn timers_screen(
     .with_card_width(ui::widget::CardWidth::Wide);
     Box::new(
         Column::new()
+            .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Section)
             .push(Box::new(
                 Text::new("Timers")
@@ -890,6 +892,7 @@ pub(crate) const STOPWATCH: usize = 3;
 
 fn surface(
     mode: &ui::LocalState<usize>,
+    selection: &ui::LocalState<Option<String>>,
     state: &ui::LocalState<Shown>,
     controls: &Controls,
     notice: &ui::LocalState<Option<(String, String)>>,
@@ -907,7 +910,7 @@ fn surface(
     let dismiss_notice = notice.clone();
     let due_notice = ModelView::from_state(notice, move |notice| {
         notice.as_ref().map_or_else(
-            || Box::new(Spacer::new()) as Element,
+            || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
             |(title, body)| {
                 Box::new(clock_card(
                     title,
@@ -936,7 +939,6 @@ fn surface(
         (TIMERS, "Timers", Icon::Clock),
         (STOPWATCH, "Stopwatch", Icon::Clock),
     ];
-    let selection = ui::LocalState::new(Some(mode.get().to_string()));
     let sidebar = ui::widget::NavList::new(vec![ui::widget::NavSection::untitled(
         "screens",
         sections
@@ -946,7 +948,7 @@ fn surface(
     )])
     .with_id("clocks.screens")
     .with_accessible_name("Clocks")
-    .bind_selection(&selection)
+    .bind_selection(selection)
     .on_select(move |id| {
         if let Ok(mode) = id.parse::<usize>() {
             mode_state.set(mode);
@@ -987,6 +989,8 @@ pub struct ClocksApp {
     next_clock_tick: ui::time::Instant,
     /// The open section: World, Alarms, Timers, Stopwatch.
     pub(crate) mode: ui::LocalState<usize>,
+    /// The retained navigation projects the same mode as the content.
+    selection: ui::LocalState<Option<String>>,
     /// The host's notifications, resolved on first use.
     notifications: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
     pub(crate) pending_notifications: Vec<PendingNotification>,
@@ -1009,6 +1013,7 @@ impl ClocksApp {
         let notice = ui::LocalState::new(None);
         let validation_error = ui::LocalState::new(None);
         let mode = ui::LocalState::new(WORLD);
+        let selection = ui::LocalState::new(Some(WORLD.to_string()));
         let activations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         if live {
             let sink = activations.clone();
@@ -1021,7 +1026,14 @@ impl ClocksApp {
             });
         }
         Self {
-            inner: surface(&mode, &state, &controls, &notice, &validation_error),
+            inner: surface(
+                &mode,
+                &selection,
+                &state,
+                &controls,
+                &notice,
+                &validation_error,
+            ),
             state,
             dispatcher: controls.dispatcher,
             device,
@@ -1031,6 +1043,7 @@ impl ClocksApp {
             notice,
             next_clock_tick: ui::time::now(),
             mode,
+            selection,
             notifications: None,
             pending_notifications: Vec::new(),
             next_notification_attempt: ui::time::now(),
@@ -1333,6 +1346,10 @@ impl Widget for ClocksApp {
         }
         // Countdowns move every second without any change to the clocks.
         self.state.update(|_| {});
+        let selected = Some(self.mode.get().to_string());
+        if self.selection.get() != selected {
+            self.selection.set(selected);
+        }
         self.inner.sync(d, p);
     }
     fn build_layout(

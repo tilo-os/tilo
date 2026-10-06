@@ -231,3 +231,29 @@ fn a_capture_shows_a_key_without_reading_the_machine_s() {
     assert_eq!(app.state().domain, "lovelace.dev");
     assert!(home.key().is_none(), "a capture writes no key");
 }
+
+#[test]
+fn narrow_key_actions_reserve_their_wrapped_rows_before_namespaces() {
+    let mut app =
+        TestApp::<App>::capture_at(Some("key"), (390, 844)).expect("the narrow capture opens");
+    let targets = app.harness().targets();
+    let heading = targets
+        .get("namespaces-heading")
+        .expect("namespace heading bounds");
+    for id in ["copy-proof", "copy-secret", "check-status"] {
+        let button = targets
+            .get(id)
+            .unwrap_or_else(|| panic!("{id} is laid out"));
+        assert!(
+            button.x0 >= 0.0 && button.x1 <= 390.0,
+            "{id} fits: {button:?}"
+        );
+        assert!(
+            button.y1 <= heading.y0,
+            "{id} precedes namespace heading: {button:?}, {heading:?}"
+        );
+    }
+    app.harness()
+        .expect(&SemanticExpectation::named("proof-line").name_contains("tilo-publisher="))
+        .expect("scrolling retains the exact published proof value");
+}

@@ -326,7 +326,13 @@ fn value_group(label: &str, value: &str, id: &str, help: Option<&str>) -> Elemen
         .with_intrinsic_height()
         .push(Box::new(Text::new(label).with_role(TextRole::Caption)))
         .push(Box::new(
-            Text::new(value).with_id(id).with_role(TextRole::Body),
+            Scrollable::new_horizontal()
+                .fit_content_height()
+                .always_visible()
+                .with_semantic_key(format!("{id}-well"))
+                .with_child(Box::new(
+                    Text::new(value).with_id(id).with_role(TextRole::Code),
+                )),
         ));
     if let Some(help) = help {
         column = column.push(Box::new(Text::new(help).with_role(TextRole::Caption)));
@@ -340,9 +346,12 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
     let button = |id: &str, label: &str, effect: &KeyEffect| {
         actions.bind_effect_invocation(Button::new(id, label), effect)
     };
-    let mut column = Column::new().with_no_padding().push(Box::new(
-        Text::new("publisher-key-heading").with_role(TextRole::Heading),
-    ));
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(
+            Text::new("publisher-key-heading").with_role(TextRole::Heading),
+        ));
     match &pane.key {
         KeyState::Missing => {
             column = column
@@ -391,6 +400,39 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
     Box::new(column)
 }
 
+/// The published namespace claims, bound to their canonical profile edits.
+fn namespace_form(cx: &ViewCx<Publisher>) -> Column {
+    let registry = cx
+        .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
+        .with_id("registry-input");
+    let domain = cx
+        .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
+        .with_id("domain-input")
+        .with_placeholder("publisher-domain-placeholder");
+    let forge = cx
+        .input(
+            |profile| profile.forge_account.clone(),
+            Publisher::SET_FORGE_ACCOUNT,
+        )
+        .with_id("forge-input")
+        .with_placeholder("publisher-forge-placeholder");
+    let contact = cx
+        .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
+        .with_id("contact-input")
+        .with_placeholder("publisher-contact-placeholder");
+    ui::column![
+        Text::new("publisher-namespace-heading")
+            .with_id("namespaces-heading")
+            .with_role(TextRole::Heading),
+        Text::new("publisher-namespace-help"),
+        labeled_field("publisher-domain-label", domain),
+        labeled_field("publisher-forge-label", forge),
+        labeled_field("publisher-contact-label", contact),
+        labeled_field("publisher-registry-label", registry),
+    ]
+    .with_intrinsic_height()
+}
+
 /// The app: the key on this machine, and an application for namespaces.
 pub struct App;
 
@@ -432,32 +474,7 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<Publisher>) -> Element {
         crate::install_catalog();
-        let registry = cx
-            .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
-            .with_id("registry-input");
-        let domain = cx
-            .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
-            .with_id("domain-input")
-            .with_placeholder("publisher-domain-placeholder");
-        let forge = cx
-            .input(
-                |profile| profile.forge_account.clone(),
-                Publisher::SET_FORGE_ACCOUNT,
-            )
-            .with_id("forge-input")
-            .with_placeholder("publisher-forge-placeholder");
-        let contact = cx
-            .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
-            .with_id("contact-input")
-            .with_placeholder("publisher-contact-placeholder");
-        let form = ui::column![
-            Text::new("publisher-namespace-heading").with_role(TextRole::Heading),
-            Text::new("publisher-namespace-help"),
-            labeled_field("publisher-domain-label", domain),
-            labeled_field("publisher-forge-label", forge),
-            labeled_field("publisher-contact-label", contact),
-            labeled_field("publisher-registry-label", registry),
-        ];
+        let form = namespace_form(cx);
         // The key is this machine's, not the version's: a past version shows
         // the application it held and nothing that acts on the key.
         let secrets = cx.storage().secrets();
@@ -530,7 +547,13 @@ impl ResourceApp for App {
             }
             Box::new(column)
         });
-        Box::new(ui::column![key, form, apply_button, notice])
+        Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_child(Box::new(
+                    ui::column![key, form, apply_button, notice].with_intrinsic_height(),
+                )),
+        )
     }
 }
 
