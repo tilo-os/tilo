@@ -117,3 +117,41 @@ Recent settings and production command handlers. Generated frames and logs
 belong in PR/CI evidence, never source control. These captures and simulated
 roles do not qualify physical touch, a native screen reader or older-hardware
 latency.
+
+## Keeping file selection through sorting
+
+At baseline `1ab90c8c0f`, sorting Files left the selected row numbers in place.
+Selecting `a.txt` and `c.txt`, then invoking `sort-size`, silently selected
+`b.txt` and `a.txt` instead. A subsequent Copy used those wrong files.
+
+Sort columns, the view menu and published sort actions now preserve the same
+files, the keyboard cursor and the Shift range anchor. The cursor still follows
+an item deselected by Ctrl-click. The next Shift gesture extends from that
+item's new row. A click remembered before sorting cannot turn a click on a
+different file into a double-click and open it.
+
+The implementation uses the shared selection model and remaps only its tracked
+items against the existing directory snapshot. It adds linear listing work and
+storage proportional to the selection, without reading file contents or changing
+shared state, permissions, or the clipboard transport. Sorting does not rename
+or replace entries; metadata refresh continues using its existing record-aware
+identity handling.
+
+The production regression copies a multiselection into a scratch destination
+after invoking the published sort action and checks the exact file bytes and
+absence of the unselected file. Additional journeys exercise every published
+sort, Shift extension, a deselected cursor, an empty selection and click/open
+continuity. Run:
+
+```sh
+cargo test --locked -p file-explorer --lib sort_selection_tests -j 4
+cargo test --locked -p tilo-ui --lib remapping_selection -j 4
+cargo check --locked -p shell --tests -j 4
+```
+
+The `selection-sort`, `selection-sorted` and `selection-reversed` Files capture
+scenarios show the same Notes and Recipes files selected before sorting, after
+sorting by size, and after reversing that order. Capture each with the existing
+`--shots` runner in dark, light and high-contrast themes. They use the prepared
+scratch home. Physical assistive technology and older-hardware performance
+remain separate device checks.
