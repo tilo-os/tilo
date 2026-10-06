@@ -1911,7 +1911,16 @@ impl RecordSet {
                 return Err(RecordOpenError::IdentityMismatch);
             }
             let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
-            validate_identity(doc, want, &self.home)?;
+            if validate_identity(doc, want, &self.home).is_err() {
+                let bridge = self
+                    .native_initial
+                    .as_ref()
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
+                let read = bridge
+                    .record(&self.package_id, &self.home, want)
+                    .map_err(RecordOpenError::Initialization)?;
+                validate_creation_capture(doc, want, &self.home, &read)?;
+            }
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
         if let Some(bridge) = &self.native_initial {
@@ -1919,11 +1928,24 @@ impl RecordSet {
                 .record(&self.package_id, &self.home, want)
                 .map_err(RecordOpenError::Initialization)?;
             let store = app_state::DocStore::exclusive(backend, key)?;
-            let (mut doc, autosave) =
-                crate::persist::finish_canonical_initial(store, read, |doc| {
-                    validate_identity(doc, want, &self.home).map_err(|error| error.to_string())
-                })
-                .map_err(RecordOpenError::Initialization)?;
+            let creation = read.clone();
+            let creation_heads = creation_capture_heads(&read)?;
+            let (mut doc, autosave) = crate::persist::finish_canonical_created(
+                store,
+                read,
+                |doc| validate_identity(doc, want, &self.home).map_err(|error| error.to_string()),
+                |doc| {
+                    validate_created_graph(
+                        doc,
+                        want,
+                        &self.home,
+                        creation.creation_workspace().map(|scope| scope.id.as_str()),
+                        &creation_heads,
+                    )
+                    .map_err(|error| error.to_string())
+                },
+            )
+            .map_err(RecordOpenError::Initialization)?;
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
                 want.id.clone(),
@@ -2127,6 +2149,63 @@ impl RecordSet {
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
 impl RecordStore {
+    /// Initialize only the exact host-created original record, never an empty restore.
+    pub(crate) fn initialize_admitted_record(
+        &self,
+        checkout: &RecordCheckout,
+        initialization: &crate::collaboration::native_initial::RecordInitialization,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), RecordOpenError> {
+        let original = self.read_checked(&checkout.id, Clone::clone)?;
+        let workspace = initialization.workspace().ok_or_else(|| {
+            RecordOpenError::Initialization("original creation scope unavailable".into())
+        })?;
+        if workspace.id != self.0.borrow().home {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        initialization.validate_original(&original, checkout, &workspace.id)?;
+        let original_heads = original.base_heads();
+        let mut document = original.clone();
+        genesis(&mut document, checkout, &workspace.id, initialize)?;
+        let mut preserved = original;
+        document
+            .merge_incoming(&mut preserved)
+            .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
+        seed(&mut document).map_err(RecordOpenError::Initialization)?;
+        document.commit();
+        validate_identity(&document, checkout, &workspace.id)?;
+        let bytes = document.save();
+        initialization
+            .commit(checkout.kind.as_str(), bytes)
+            .map_err(RecordOpenError::Initialization)?;
+        // Ordinary peer merges require an already initialized local identity.
+        // Only this exact original creation may install its acknowledged genesis.
+        // Recheck after the blocking owner ACK: never replace intervening edits.
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+        if set.home != workspace.id {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        let slot = set
+            .open
+            .get_mut(&checkout.id)
+            .filter(|slot| slot.kind == checkout.kind)
+            .ok_or(RecordOpenError::IdentityMismatch)?;
+        let current = slot.doc.as_mut().ok_or(RecordOpenError::Busy)?;
+        if current.pending_ops() != 0 || current.base_heads() != original_heads {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        slot.history.rebase(&mut document);
+        slot.action_state.generation = slot
+            .action_state
+            .generation
+            .and_then(|generation| generation.checked_add(1));
+        *current = document;
+        if let Some(writer) = &mut slot.autosave {
+            writer.request(current);
+        }
+        Ok(())
+    }
     pub(crate) fn from_owner(owner: std::rc::Rc<std::cell::RefCell<RecordSet>>) -> Self {
         Self(owner)
     }
@@ -2346,6 +2425,72 @@ fn validate_identity(
         return Err(RecordOpenError::IdentityMismatch);
     }
     Ok(())
+}
+
+fn validate_created_identity(
+    doc: &AutoCommit,
+    want: &RecordCheckout,
+    workspace: &str,
+    creation_room: Option<&str>,
+) -> Result<(), RecordOpenError> {
+    if creation_room != Some(workspace)
+        || workspace.is_empty()
+        || !want.is_valid_local_storage_request()
+        || !primary_document(doc)
+        || home(doc).is_some_and(|found| found != workspace)
+        || room_scope(doc).is_some_and(|found| found != workspace)
+        || transfer::is_retired(doc)
+    {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_creation_capture(
+    doc: &AutoCommit,
+    want: &RecordCheckout,
+    workspace: &str,
+    read: &crate::collaboration::CommittedDocument,
+) -> Result<(), RecordOpenError> {
+    let heads = creation_capture_heads(read)?;
+    validate_created_graph(
+        doc,
+        want,
+        workspace,
+        read.creation_workspace().map(|scope| scope.id.as_str()),
+        &heads,
+    )
+}
+
+fn validate_created_graph(
+    doc: &AutoCommit,
+    want: &RecordCheckout,
+    workspace: &str,
+    creation_room: Option<&str>,
+    heads: &[automerge::ChangeHash],
+) -> Result<(), RecordOpenError> {
+    validate_created_identity(doc, want, workspace, creation_room)?;
+    if doc.pending_ops() != 0 || doc.base_heads() != heads {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn creation_capture_heads(
+    read: &crate::collaboration::CommittedDocument,
+) -> Result<Vec<automerge::ChangeHash>, RecordOpenError> {
+    read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err(RecordOpenError::Initialization(
+                "creation capture is not a snapshot".into(),
+            ));
+        };
+        let original = AutoCommit::load(bytes).map_err(|_| {
+            RecordOpenError::Initialization("creation capture snapshot cannot be parsed".into())
+        })?;
+        Ok(original.base_heads())
+    })
+    .map_err(RecordOpenError::Initialization)?
 }
 
 #[derive(Clone)]
@@ -2588,8 +2733,9 @@ impl RecordStore {
     }
 
     /// The route native component admission joins before the factory runs:
-    /// the open record's, or a live New reservation's, whose genesis the
-    /// factory has yet to write. The reservation is the custody proof there.
+    /// the open record's, a live New reservation's, or an exact native original
+    /// creation capture whose genesis the factory has yet to write. This does
+    /// not make the record publishable before the owner's Initialize reply.
     pub(crate) fn admission_route(
         &self,
         checkout: &RecordCheckout,
@@ -2600,6 +2746,26 @@ impl RecordStore {
                 if reserved.kind != checkout.kind {
                     return Err(RecordOpenError::IdentityMismatch);
                 }
+                return set.wire_route(&checkout.id);
+            }
+            if set
+                .open
+                .get(&checkout.id)
+                .is_some_and(|slot| slot.kind != checkout.kind)
+            {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
+            if let Some(doc) = set.peek(&checkout.id)
+                && validate_identity(doc, checkout, &set.home).is_err()
+            {
+                let bridge = set
+                    .native_initial
+                    .as_ref()
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
+                let read = bridge
+                    .record(&set.package_id, &set.home, checkout)
+                    .map_err(RecordOpenError::Initialization)?;
+                validate_creation_capture(doc, checkout, &set.home, &read)?;
                 return set.wire_route(&checkout.id);
             }
         }

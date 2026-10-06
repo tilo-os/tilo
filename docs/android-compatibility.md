@@ -277,19 +277,49 @@ denied former metadata/reads/writes after grant revocation and relaunch.
 Metadata requires a read-authorized open inside the unchanged launcher sandbox,
 then observes that descriptor with `fstat`; a swapped path cannot redirect the
 metadata lookup. MIME is inferred from the caller-supplied filename without reading
-content. This remains a local file-URI path: Android content providers, cold P2P
-hydration, persisted URI authority and already-open descriptor revocation remain
+content. This remains a file-URI path: Android content providers,
+persisted URI authority and already-open descriptor revocation remain
 unqualified. The [document journey source](../tools/android/run_document_journey.py)
 records actual runtime, APK and production binary pins outside tracked source.
 The original signed integration, denial and Arity APKs are rerun against the new
 runtime to preserve their prior behavior.
+
+## Cold filesystem restoration
+
+The document APK also reads through independent production FUSE host/recipient
+processes on the remote builder. The recipient's persistent store initially has
+neither the manifest nor its chunk. Immediately before the real picker selection,
+the file is still projected. Actual APK reads restore both blobs with exact bytes.
+After close, the existing safe eviction control waits for durable completion;
+independent stopped-store inspection requires both blobs to be `NotFound`.
+The recipient restarts, and the same signed APK repeats its successful read,
+metadata and editor-mode assertions, restoring both blobs again. Revocation
+denials then run with the source still resident, rather than relying on missing
+data to produce a refusal. All owned mounts, processes and grants are cleaned up.
+
+This exposed and fixed a production chooser bug: Save used the first granted
+folder even when that folder was read-only. Open uses read-authorized roots and
+Save uses write-authorized roots; the chosen path still needs final authorization.
+A service regression test covers separate input/output folders without a save hint.
+
+Repeat with `run_document_journey.py --cold-hydration` and the production
+`fs`/`android_hydration_fixture` binaries, following the
+[fixture instructions](../tools/android/mediation/README.md).
+The exact-record share has a generated filename and no sibling; an independently
+authored fixture input asserts its name. The original Unicode/existing-sibling
+journey remains separate. The accepted cold APK SHA-256 is
+`90965424611eb98666fcc06dfc01f1ea7f3b11221f71f41cdce0b5cf1a0be8a2`,
+with signer `05331ce2f12843658fcea5d4d69c214647abee538bfe8c8dc1cc02417153ff0a`.
+Reports and PNGs stay outside tracked source. This is real FUSE/ART execution on
+one remote x86-64 host with software graphics, not qualification of a signed OS
+image, multiple physical machines, native Btrfs projection, ARM64 or physical GPU.
 
 ## Compatibility assessment
 
 | Area | Confirmed | Remaining acceptance |
 | --- | --- | --- |
 | Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation | Real GPU/DRM, resize/rotation, ARM64, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
-| Files/state | App-private history and separate room state; approved local document metadata/read/save, Unicode names and editor modes; read-only/sibling denial; revoked metadata/read/write denied on relaunch | Android content providers, cold P2P hydration, sharing, persisted URI authority, immediate running-process revocation and legacy external storage mapping |
+| Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source | Android content providers, Android sharing intents, persisted URI authority, immediate running-process revocation, native projection and legacy external storage mapping |
 | Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability | Full Android notification tags, actions, resource mapping and background persistence |
 | Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
 | Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks, owned compositor teardown | Workspace stop, compositor loss, background workers, service apps, updates and migration |

@@ -1054,3 +1054,26 @@ fn confirmation_follows_the_arguments_and_a_surface_withholds_an_action() {
     assert!(format!("{refused:?}").contains("recording"), "{refused:?}");
     assert!(app.state().outbox.is_empty());
 }
+
+#[test]
+fn background_effect_return_values_keep_their_declared_result_contract() {
+    use tilo_resource::Effect as _;
+    let export = FileEffect::Export.bound().contract;
+    assert!(matches!(
+        export.execution,
+        tilo_actions::ExecutionMode::Background { cancellable: false }
+    ));
+    assert!(export.validate_declaration().is_empty());
+    let output = tilo_actions::ActionOutput {
+        value: Some(serde_json::json!({ "file": "exported.eml" })),
+        resources: Vec::new(),
+    };
+    export.result.validate(&output).unwrap();
+    let import = FileEffect::Import.bound().contract;
+    assert!(import.validate_declaration().is_empty());
+    assert!(import.result.validate(&output).is_err());
+    import
+        .result
+        .validate(&tilo_actions::ActionOutput::default())
+        .unwrap();
+}

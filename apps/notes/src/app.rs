@@ -399,6 +399,8 @@ pub struct NotesApp {
     /// the selected page binds to its collaborative block list, because binding
     /// rebuilds the editor and otherwise resets focus to block zero.
     pending_block_reveal: Option<(PageId, String)>,
+    /// Validated against current text again after the editor binds.
+    pending_block_range: Option<(PageId, String, String, usize, usize)>,
     /// Search/resource snapshot keyed by each block's durable Automerge Text
     /// object id, refreshed from the collaborative document on every sync.
     search_blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
@@ -618,6 +620,7 @@ impl NotesApp {
             route_history: ui::NavStack::new(initial_route),
             history_target: None,
             pending_block_reveal: None,
+            pending_block_range: None,
             search_blocks: HashMap::new(),
             backlink_index: HashMap::new(),
             search_heads: None,
@@ -2092,6 +2095,7 @@ impl ui::application_view::ApplicationViewState for NotesApp {
         self.bound_page = self.workspace.selected();
         self.pending_events.clear();
         self.pending_block_reveal = None;
+        self.pending_block_range = None;
         self.pending_responsive_view = Some((local.drawer_open, false));
         self.prepared_local_focus = Some(focus);
         self.refresh_link_pages();
@@ -2132,6 +2136,59 @@ impl ui::application_view::ApplicationViewState for NotesApp {
 /// The action target prefix of the save status surface's buttons.
 const SAVE_STATUS_TARGET: &str = "notes.save-status";
 
+impl NotesApp {
+    fn finish_block_reveal(&mut self) {
+        if self
+            .pending_block_range
+            .as_ref()
+            .is_some_and(|(page, block, text, _, _)| {
+                self.search_blocks
+                    .get(page)
+                    .and_then(|blocks| blocks.iter().find(|current| current.id == *block))
+                    .is_none_or(|current| current.text != *text)
+            })
+        {
+            self.pending_block_range = None;
+            self.pending_block_reveal = None;
+        }
+        if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
+            && self.bound_page == Some(*page)
+            && let Some(index) = self
+                .search_blocks
+                .get(page)
+                .and_then(|blocks| blocks.iter().position(|block| block.id == *block_id))
+            && self.main.reveal_block(index)
+        {
+            self.pending_block_reveal = None;
+            if let Some((page, block, text, start, end)) = self.pending_block_range.take()
+                && let Some(current) = self
+                    .search_blocks
+                    .get(&page)
+                    .and_then(|blocks| blocks.get(index))
+                && current.id == block
+                && current.text == text
+                && self
+                    .main
+                    .editor()
+                    .blocks()
+                    .get(index)
+                    .is_some_and(|bound| bound.line.value() == text)
+            {
+                self.main.editor_mut().select_document_range(
+                    ui::widget::DocumentPosition {
+                        block: index,
+                        byte: start,
+                    },
+                    ui::widget::DocumentPosition {
+                        block: index,
+                        byte: end,
+                    },
+                );
+            }
+        }
+    }
+}
+
 impl Widget for NotesApp {
     ui::provides!(
         dyn ui::resources::PublishesResources,
@@ -2163,10 +2220,18 @@ impl Widget for NotesApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A scheduled sync only presents when update reports a change. Mark
+        // the expired chip dirty so reduced motion still removes it; paint
+        // consumes its deadline, leaving an idle window asleep afterward.
+        let feedback_expired = self
+            .save_surface
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= ui::time::now());
+        self.self_dirty |= feedback_expired;
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path)
+        self.shell.update(state, path) || feedback_expired
     }
 
     fn native_input_snapshot(
@@ -2241,16 +2306,7 @@ impl Widget for NotesApp {
         self.drain_transclusion_opens();
         self.refresh_search_blocks(state);
         self.main.set_backlinks(self.selected_backlink_chips());
-        if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
-            && self.bound_page == Some(*page)
-            && let Some(index) = self
-                .search_blocks
-                .get(page)
-                .and_then(|blocks| blocks.iter().position(|block| block.id == *block_id))
-            && self.main.reveal_block(index)
-        {
-            self.pending_block_reveal = None;
-        }
+        self.finish_block_reveal();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -2447,6 +2503,30 @@ impl Widget for NotesApp {
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
             || self.shell.needs_animation_frame()
             || !self.transfer_toasts.is_empty()
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let mut earliest = self.save_surface.next_wake_deadline();
+        for child in self.children() {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+            }
+        }
+        earliest
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|child| child.has_pending_visual_work())
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        self.save_surface.next_wake_deadline().is_some()
+            || self
+                .children()
+                .iter()
+                .any(|child| child.has_transient_feedback())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -3192,6 +3272,113 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[test]
+    fn published_block_range_selects_unicode_in_the_real_editor_without_editing() {
+        use tilo_document::{RichText, RichTextAction};
+        use ui::tilo_resource::Invoke;
+        let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+        app.call("new-page", serde_json::json!({"value": "Range fixture"}))
+            .unwrap();
+        let page = app.state().pages()[0].id;
+        app.invoke_child::<RichText>(
+            &actions::page_body_id(page),
+            Invoke::apply(&RichTextAction::AppendParagraph {
+                text: "café notes".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.settle();
+        let block = app.read_document(|doc| {
+            NotesDoc::page_block_snapshots(doc, page)
+                .into_iter()
+                .find(|(_, text)| text == "café notes")
+                .unwrap()
+                .0
+        });
+        let resource = actions::block_resource_id(page, &block);
+        let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+        for (start, end, unit) in [(3, 4, "Chars"), (3, 5, "Bytes")] {
+            app.call_on(
+                &resource,
+                "reveal-block-range",
+                serde_json::json!({
+                    "start": start, "end": end, "unit": unit,
+                }),
+            )
+            .unwrap();
+            app.settle();
+            assert_eq!(
+                app.surface_mut::<NotesApp>()
+                    .main
+                    .editor()
+                    .selected_text()
+                    .as_deref(),
+                Some("é")
+            );
+            assert_eq!(
+                app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+                before
+            );
+        }
+        for (start, end, unit) in [
+            (4, 3, "Chars"),
+            (4, 5, "Bytes"),
+            (0, 100, "Chars"),
+            (0, 1, "Pixels"),
+        ] {
+            assert!(
+                app.call_on(
+                    &resource,
+                    "reveal-block-range",
+                    serde_json::json!({
+                        "start": start, "end": end, "unit": unit,
+                    })
+                )
+                .is_err()
+            );
+            assert_eq!(
+                app.surface_mut::<NotesApp>()
+                    .main
+                    .editor()
+                    .selected_text()
+                    .as_deref(),
+                Some("é")
+            );
+        }
+        assert_eq!(
+            app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+            before
+        );
+    }
+
+    #[test]
+    fn a_block_edit_before_binding_discards_the_pending_range() {
+        let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
+        let block = app.search_blocks[&page][0].id.clone();
+        let shown =
+            <crate::resource::Notebook as ui::tilo_resource::Resource>::read(&state.doc).unwrap();
+        app.open_block_range(&shown, page, block.clone(), (0, 1, "Chars"))
+            .unwrap();
+        let action = actions::edit_body_action(
+            page,
+            tilo_document::RichTextAction::SpliceText {
+                region: tilo_document::action::RegionKind::Body,
+                block,
+                at: 0,
+                del: 0,
+                ins: "changed before bind ".into(),
+            },
+        );
+        app.apply_action(&mut Edits::lend(&mut state.doc), &action);
+        app.frame(&mut state.doc, &state.root);
+        assert!(app.pending_block_range.is_none());
+        assert!(
+            app.main.editor().selected_text().is_none(),
+            "never select offsets against different text"
+        );
+    }
+
     /// The dispatcher the framework attaches to the notebook surface, for a
     /// test that drives `NotesApp` over a document of its own.
     fn framework_dispatcher() -> ui::framework::Dispatcher<crate::resource::Notebook> {
@@ -3563,7 +3750,7 @@ mod tests {
 
         eprintln!("phase reduced_motion_stops_notes_owned_status_bubble_frames");
         {
-            let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+            let (mut app, state, _tmp, _) = app_seeded_into_doc();
             app.theme.reduce_motion = false;
             app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
@@ -3575,6 +3762,19 @@ mod tests {
                 !app.needs_animation_frame(),
                 "reduced motion must not keep the compositor awake for a decorative fade"
             );
+            assert!(
+                app.next_wake_deadline().is_some(),
+                "the reduced-motion chip must still schedule its removal"
+            );
+            assert!(
+                app.has_transient_feedback(),
+                "scene comparisons must observe the transient chip"
+            );
+            assert!(
+                !app.has_pending_visual_work(),
+                "captures can include save feedback without waiting out its lifetime"
+            );
+            assert_expired_save_feedback_presents(&mut app, &state);
         }
 
         eprintln!("phase unchanged_document_heads_skip_full_search_snapshot_work");
@@ -3585,6 +3785,31 @@ mod tests {
             app.refresh_search_blocks(&state.doc);
             assert!(app.search_blocks.is_empty());
         }
+    }
+
+    fn assert_expired_save_feedback_presents(app: &mut NotesApp, state: &ui::State) {
+        app.save_surface.poke(
+            ui::time::now()
+                .checked_sub(ui::time::Duration::from_secs(3))
+                .expect("the test clock can age the transient chip"),
+        );
+        app.mark_drawn();
+        assert!(!app.self_dirty);
+        assert!(
+            app.update(&state.doc, &state.root),
+            "deadline sync must request the chip-removal frame"
+        );
+        assert!(app.self_dirty, "the native host must present the change");
+        app.draw_status_bubble(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+        );
+        assert!(
+            app.save_surface.next_wake_deadline().is_none(),
+            "painting the removal consumes the one-shot wake"
+        );
     }
 
     /// A notebook holding one "Welcome" note of several paragraphs, and the

@@ -109,6 +109,8 @@ pub struct NewMessage {
     /// time and carried verbatim, so it survives into the document instead
     /// of being lost at the composer.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// Existing source record provider; no credentials, host URL or grant.
+    pub source_provider: Option<String>,
     /// An agent's record of what it is doing with the message this one
     /// replies to. Written by the agent at the moment it takes a summons, so
     /// the reply exists — and says so — before there is an outcome.
@@ -333,6 +335,48 @@ impl ChatDoc {
             ChannelKind::Voice,
             0,
         );
+    }
+
+    /// Initialize only the exact workspace admitted by the native host.
+    ///
+    /// # Errors
+    ///
+    /// Refuses rebinding a previously initialized Chat record to another room.
+    pub fn seed_workspace(
+        doc: &mut AutoCommit,
+        workspace: &str,
+        workspace_name: &str,
+        creator: &str,
+        creator_name: &str,
+        creator_initials: &str,
+        color_idx: usize,
+    ) -> Result<(), String> {
+        if Self::is_seeded(doc) {
+            return Self::list_workspaces(doc)
+                .iter()
+                .any(|existing| existing.id == workspace)
+                .then_some(())
+                .ok_or_else(|| "Chat is already initialized for another workspace".into());
+        }
+        let _ = doc.put(&ROOT, "seeded", true);
+        Self::put_shared_roots(doc);
+        Self::put_user(
+            doc,
+            creator,
+            creator_name,
+            creator_initials,
+            color_idx,
+            Presence::Online,
+        );
+        Self::put_workspace(
+            doc,
+            workspace,
+            workspace_name,
+            &monogram(workspace_name),
+            0,
+            0,
+        );
+        Ok(())
     }
 
     /// Populate the document with a believable demo workspace if it is
@@ -1123,6 +1167,7 @@ impl ChatDoc {
             edited,
             mentions,
             reference,
+            source_provider,
             work,
         } = nm;
 
@@ -1146,6 +1191,12 @@ impl ChatDoc {
         Self::write_reactions(doc, &block, &reactions);
         Self::write_mentions(doc, &block, &mentions);
         Self::write_reference(doc, &block, reference.as_ref());
+        if let Some(provider) = source_provider
+            .as_deref()
+            .filter(|p| crate::actions::valid_source_provider(p))
+        {
+            let _ = doc.put(&block, "source_provider", provider);
+        }
         if let Some(work) = work.as_ref() {
             Self::write_work(doc, &block, work);
         }
@@ -2084,6 +2135,8 @@ impl ChatDoc {
                 reactions: Self::read_reactions(doc, &m),
                 mentions: Self::read_mentions(doc, &m),
                 reference: Self::read_reference(doc, &m),
+                source_provider: read_str(doc, &m, "source_provider")
+                    .filter(|provider| crate::actions::valid_source_provider(provider)),
                 attachment: Self::read_attachment(doc, &m),
                 work: Self::read_work(doc, &m),
                 pinned: read_bool(doc, &m, "pinned").unwrap_or(false),

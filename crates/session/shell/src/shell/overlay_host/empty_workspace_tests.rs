@@ -322,6 +322,7 @@ fn host_with_live_app(
         actions: actions
             .iter()
             .map(|action| PublishedAction {
+                semantic_identity: None,
                 resource: resource.into(),
                 action: (*action).into(),
                 resource_kind: resource.into(),

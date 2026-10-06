@@ -50,24 +50,24 @@ fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<
         .collect()
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "both `chrome` and `tree` back the values handed to `f` at the final call, which is \
-              the whole point of this function — there is no earlier point to drop either guard"
-)]
 fn with_action_gate<R>(
     chrome_handle: &crate::shell::chrome_state::Chrome,
     f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
 ) -> Result<R, String> {
     let chrome = chrome_handle.borrow();
-    let tree = chrome.tree();
-    let workspace = tree
-        .desktop
-        .active_workspace()
-        .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
+    // Visibility is an inert snapshot, not mutation authority. Do not retain
+    // the membership read lock while callbacks recheck certified admission:
+    // a queued writer can make a nested read wait on our own outer guard.
+    let workspace = {
+        let tree = chrome.tree();
+        tree.desktop
+            .active_workspace()
+            .cloned()
+            .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?
+    };
     let actor_id = chrome.local_user_for_room(&workspace.room);
     let actor = workspace.actor_for_person(&actor_id);
-    let gate = CapabilityVisibility::new(workspace, actor);
+    let gate = CapabilityVisibility::new(&workspace, actor);
     Ok(f(&chrome, &gate))
 }
 use smithay::reexports::calloop::{self, EventLoop, Interest, Mode, PostAction, generic::Generic};
@@ -2741,6 +2741,14 @@ impl ControlState for FrameBuilderControlState<'_> {
     /// Enumerate the exported action surface through the *same* provider
     /// registry that feeds the Ctrl+K palette — but renders nothing.
     fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+        self.enumerate_actions_with_programmatic(query, false)
+    }
+
+    fn enumerate_actions_with_programmatic(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+    ) -> Result<serde_json::Value, String> {
         let (doc, root) = self
             .doc
             .ok_or_else(|| "control state has no live document".to_string())?;
@@ -2748,9 +2756,19 @@ impl ControlState for FrameBuilderControlState<'_> {
         // The borrow lives only for the closure; `ActionCatalog` owns its results
         // outright, so the catalogue outlives the guards it was built through.
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb
-                .host()
-                .action_catalog(query, chrome, doc, root, gate)
+            self.fb.host().action_catalog_query(
+                &crate::shell::search::QueryArgs {
+                    needle: query,
+                    scope: crate::shell::chrome_state::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome,
+                    doc,
+                    doc_root: root,
+                },
+                gate,
+                include_programmatic,
+            )
         })?;
         let actions: Vec<serde_json::Value> = catalog
             .enumerate()
@@ -2775,6 +2793,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "room": hierarchy.map(|value| &value.room),
                     "record": hierarchy.map(|value| &value.record),
                     "resource": hierarchy.map(|value| &value.resource),
+                    "semantic_identity": hierarchy.and_then(|value| value.semantic_identity.as_ref()),
                     "operation": hierarchy.map(|value| &value.operation),
                 })
             })
@@ -9751,7 +9770,7 @@ pub fn run() {
         }
         input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
-        input_methods.tick();
+        input_methods.tick(&mut state);
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
         }
@@ -12430,6 +12449,63 @@ mod tests {
     }
 
     #[test]
+    fn action_gate_releases_membership_lock_before_real_callback() {
+        use crate::shell::state::{FreshId as _, WorkspaceId};
+        use tilo_action_broker::services::WorkspaceAuthority as _;
+
+        let id = WorkspaceId::new();
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        tree.desktop
+            .workspaces
+            .push(crate::shell::state::Workspace::new(id, "Gate test"));
+        tree.desktop.active = id;
+        let handle = tree.shared();
+        let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+            handle.clone(),
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
+        with_action_gate(&chrome, |_, gate| {
+            let write = handle.try_write().expect(
+                "action callback must not inherit a membership read guard that blocks writers",
+            );
+            drop(write);
+            let current = crate::shell::broker_services::NativeWorkspaceAuthority(handle.clone())
+                .snapshot()
+                .expect("the real certified-admission membership source remains readable");
+            assert_eq!(current.active, id);
+            assert!(
+                !gate.can_see(
+                    &ResourceRef::new("applications", "so.tilo.chat"),
+                    &crate::shell::search::ResourceKind::Application,
+                ),
+                "snapshot visibility must still deny an ungranted application write"
+            );
+            assert!(
+                gate.can_see(
+                    &ResourceRef::new("notes", "note"),
+                    &crate::shell::search::ResourceKind::Note,
+                ),
+                "ordinary view-only resources retain their existing visibility"
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn action_gate_missing_workspace_never_calls_the_callback() {
+        let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
+        assert!(
+            with_action_gate(&chrome, |_, _| panic!(
+                "missing workspace cannot expose actions"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn dispatched_client_requests_get_a_follow_up_tick() {
         let now = Instant::now();
         let frame = now + Duration::from_millis(8);
@@ -13815,6 +13891,26 @@ mod tests {
         tree.shared()
     }
 
+    fn attach_directory_fixture(
+        frame_builder: &mut FrameBuilder,
+        directory: &crate::shell::collab_broker_capnp::tests::LocalDirectoryFixture,
+    ) {
+        frame_builder
+            .host_mut()
+            .attach_app_action_broker(directory.broker.clone());
+        // This fixture has a test-owned room authority, not a signed desktop
+        // session. Bind the search caller to that same explicit fixture; never
+        // let a socket test depend on the machine's selected identity.
+        crate::shell::overlay_host::install_fixture_search_provider(
+            frame_builder.host_mut(),
+            std::rc::Rc::new(
+                crate::shell::search::providers::LiveAppActionsProvider::new_with_fixture_identity(
+                    directory.broker.clone(),
+                ),
+            ),
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -13836,9 +13932,7 @@ mod tests {
                         tree.clone(),
                     );
                 let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-                frame_builder
-                    .host_mut()
-                    .attach_app_action_broker(directory.broker.clone());
+                attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
                 let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
@@ -14060,9 +14154,7 @@ mod tests {
                         tree.clone(),
                     );
                 let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-                frame_builder
-                    .host_mut()
-                    .attach_app_action_broker(directory.broker.clone());
+                attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
                 let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
@@ -14175,9 +14267,7 @@ mod tests {
                         tree.clone(),
                     );
                 let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-                frame_builder
-                    .host_mut()
-                    .attach_app_action_broker(directory.broker.clone());
+                attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
                 let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
@@ -15286,6 +15376,7 @@ mod tests {
                         presentation: None,
                     },
                     action: Some(tilo_actions::ActionDescriptor {
+                        semantic_identity: None,
                         address: tilo_actions::ActionAddress::new(
                             "calculator.graph:curve2d:stable-17",
                             "toggle-visibility",

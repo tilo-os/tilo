@@ -57,6 +57,7 @@ fn row(
         app_id: app.into(),
         parent_resource: String::new(),
         action: Some(ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(&resource.id, action),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),

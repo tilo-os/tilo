@@ -305,7 +305,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         });
         let answers = if options.job || options.cancellable {
             let cancellable = options.cancellable;
-            quote!(#krate::effect::Answers::Later { cancellable: #cancellable })
+            let returns = options.returns;
+            quote!(#krate::effect::Answers::Later { cancellable: #cancellable, returns: #returns })
         } else if options.content {
             quote!(#krate::effect::Answers::Content)
         } else if options.returns {

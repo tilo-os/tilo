@@ -4,6 +4,125 @@ use crate::services::LaunchReadiness;
 use tilo_actions::InvocationId;
 
 impl CapnpChannelHandle {
+    pub(super) fn begin_original_launch(
+        &self,
+        app: &str,
+        root: Option<&str>,
+        workspace: &tilo_desktop_model::Workspace,
+        author: Option<&str>,
+        parent: Option<InvocationId>,
+    ) -> Result<LaunchReadiness, String> {
+        let original = self.launch_original_context(parent, app, root)?;
+        self.state
+            .services
+            .launcher
+            .as_ref()
+            .ok_or_else(|| "application launch unsupported".to_string())?
+            .begin_launch_from_original(app, root, workspace, author, original)
+    }
+
+    pub(super) fn launch_original_context(
+        &self,
+        parent: Option<InvocationId>,
+        app: &str,
+        root: Option<&str>,
+    ) -> Result<Option<crate::services::ObservedApplicationLaunch>, String> {
+        let Some(parent) = parent else {
+            return Ok(None);
+        };
+        // Agent launch authority remains its existing continuation path; it
+        // cannot become a Person delegation merely by requesting authorship.
+        if self.launch_actor(Some(parent))?.is_agent() {
+            return Ok(None);
+        }
+        let original = {
+            let pending = self
+                .state
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?;
+            let mut matches = pending.values().filter(|entry| {
+                entry.peer_id == self.peer_id
+                    && entry.update.invocation() == parent
+                    && entry.cluster_id == self.route().cluster_id
+            });
+            let entry = matches
+                .next()
+                .ok_or("original launch invocation disappeared")?;
+            if matches.next().is_some()
+                || entry.update.is_terminal()
+                || entry.cancellation_requested_at.is_some()
+            {
+                return Err("original launch invocation is no longer active".into());
+            }
+            let original = entry
+                .original
+                .clone()
+                .ok_or("original certified launch caller unavailable")?;
+            drop(matches);
+            drop(pending);
+            original
+        };
+        let grant_original = original.clone();
+        let state = std::sync::Arc::downgrade(&self.state);
+        let route = self.route();
+        let identity = self.verified_identity.clone();
+        let peer = self.peer_id;
+        let check = move || {
+            let state = state.upgrade().ok_or("application launch broker stopped")?;
+            state
+                .revalidate_admission(&route, &identity)
+                .map_err(|error| error.to_string())?;
+            let pending = state
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?;
+            let active = pending
+                .values()
+                .filter(|entry| entry.peer_id == peer && entry.update.invocation() == parent)
+                .collect::<Vec<_>>();
+            let valid = matches!(active.as_slice(), [entry]
+                if entry.cluster_id == route.cluster_id && !entry.update.is_terminal()
+                && entry.cancellation_requested_at.is_none()
+                && entry.original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original)));
+            drop(active);
+            drop(pending);
+            if !valid {
+                return Err("original launch invocation is no longer active".into());
+            }
+            let result = original.launch_person_certificate(&state, &route.cluster_id);
+            drop(state);
+            result
+        };
+        let check = std::sync::Arc::new(check);
+        check()?;
+        let grant_check = check.clone();
+        let state = std::sync::Arc::downgrade(&self.state);
+        let workspace_id = self.route().cluster_id;
+        let grant_room = workspace_id.clone();
+        let grant_app = app.to_owned();
+        let grant = std::sync::Arc::new(move |certificate: &tilo_user_identity::DeviceCert| {
+            if grant_check()? != *certificate {
+                return Err("original launch certificate changed".into());
+            }
+            let state = state.upgrade().ok_or("application launch broker stopped")?;
+            grant_original.launch_administrator_certificate(&state, &grant_room)?;
+            let result = state.invoke_workspace_membership(&grant_room,
+                    &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                        app: grant_app.clone(),
+                    }, certificate);
+            drop(state);
+            result
+        });
+        Ok(Some(crate::services::ObservedApplicationLaunch::new(
+            workspace_id,
+            app.to_owned(),
+            root.map(str::to_owned),
+            check,
+            grant,
+        )))
+    }
+
     pub(super) fn launch_actor(&self, parent: Option<InvocationId>) -> Result<BrokerActor, String> {
         let current = self
             .state

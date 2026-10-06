@@ -161,6 +161,7 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
 
 fn descriptor(action: &PublishedAction) -> ActionDescriptor {
     ActionDescriptor {
+        semantic_identity: action.semantic_identity.clone(),
         address: ActionAddress::new(&action.resource, &action.action),
         resource_kind: action.resource_kind.clone(),
         resource_label: action.resource_label.clone(),
@@ -208,6 +209,7 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         )
     };
     ActionDescriptor {
+        semantic_identity: None,
         address: ActionAddress::new(
             format!("{APPLICATION_RESOURCE_PREFIX}{}", app.package_id),
             APPLICATION_OPEN_ACTION,
@@ -229,6 +231,7 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
 
 fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
     ActionDescriptor {
+        semantic_identity: None,
         address: ActionAddress::new(
             format!("{APPLICATION_RESOURCE_PREFIX}{package_id}"),
             APPLICATION_CLOSE_ACTION,
@@ -1453,6 +1456,7 @@ impl CapnpBrokerState {
             (surface, offered),
             InvocationInputs {
                 caller: Some(caller),
+                requested: Some(request.invocation),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument,
                 actor: &actor,
@@ -1537,6 +1541,7 @@ impl CapnpBrokerState {
             &address.action,
             InvocationInputs {
                 caller: Some(caller),
+                requested: Some(request.invocation),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument: argument.as_deref(),
                 actor: &actor,
@@ -2325,6 +2330,7 @@ fn directory_page(
 ) -> Result<CataloguePage, ActionHostError> {
     match reply.map_err(bridge_error)? {
         ActionDirectoryBridgeResponse::Page(page) => Ok(CataloguePage {
+            locator: None,
             rows: page
                 .rows
                 .iter()
