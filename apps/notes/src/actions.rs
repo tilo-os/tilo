@@ -496,6 +496,8 @@ fn page_tree_action(
     page: PageId,
     command: PageTreeCommand,
 ) -> Option<NotesAction> {
+    #[cfg(test)]
+    let _profile = crate::cpu_profile::Phase::start("page_tree_action");
     let mut workspace = workspace.clone();
     let mut before = workspace
         .pages()
@@ -503,28 +505,7 @@ fn page_tree_action(
         .map(PageData::from_meta)
         .collect::<Vec<_>>();
     before.sort_by(|a, b| a.id.cmp(&b.id));
-    let changed = match command {
-        PageTreeCommand::MoveUp => workspace.move_sibling(page, -1),
-        PageTreeCommand::MoveDown => workspace.move_sibling(page, 1),
-        PageTreeCommand::Indent => {
-            let current = workspace.get(page)?;
-            let siblings = workspace.children_of(current.parent);
-            let index = siblings.iter().position(|candidate| candidate.id == page)?;
-            let previous = siblings.get(index.checked_sub(1)?)?.id;
-            workspace.move_to(page, Some(previous), None)
-        }
-        PageTreeCommand::Outdent => {
-            let current = workspace.get(page)?;
-            let parent = workspace.get(current.parent?)?;
-            let before = workspace
-                .children_of(parent.parent)
-                .iter()
-                .skip_while(|candidate| candidate.id != parent.id)
-                .nth(1)
-                .map(|candidate| candidate.id);
-            workspace.move_to(page, parent.parent, before)
-        }
-    };
+    let changed = move_page_tree(&mut workspace, page, command)?;
     if !changed {
         return None;
     }
@@ -629,6 +610,35 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
         label: title,
     });
     context
+}
+
+fn move_page_tree(
+    workspace: &mut crate::Workspace,
+    page: PageId,
+    command: PageTreeCommand,
+) -> Option<bool> {
+    Some(match command {
+        PageTreeCommand::MoveUp => workspace.move_sibling(page, -1),
+        PageTreeCommand::MoveDown => workspace.move_sibling(page, 1),
+        PageTreeCommand::Indent => {
+            let current = workspace.get(page)?;
+            let siblings = workspace.children_of(current.parent);
+            let index = siblings.iter().position(|candidate| candidate.id == page)?;
+            let previous = siblings.get(index.checked_sub(1)?)?.id;
+            workspace.move_to(page, Some(previous), None)
+        }
+        PageTreeCommand::Outdent => {
+            let current = workspace.get(page)?;
+            let parent = workspace.get(current.parent?)?;
+            let before = workspace
+                .children_of(parent.parent)
+                .iter()
+                .skip_while(|candidate| candidate.id != parent.id)
+                .nth(1)
+                .map(|candidate| candidate.id);
+            workspace.move_to(page, parent.parent, before)
+        }
+    })
 }
 
 /// Rewrite the display text of every UUID-backed reference after its target is
@@ -1427,15 +1437,103 @@ fn decorate_backlinks(resource: &mut Resource, targets: &HashSet<PageId>) {
     }
 }
 
+#[derive(Serialize)]
+enum TreeAction<'a> {
+    UpdatePageTree {
+        before: &'a serde_json::value::RawValue,
+        after: Vec<&'a serde_json::value::RawValue>,
+    },
+}
+
+/// Immutable metadata encoding shared only within this resource publication.
+/// Every command still carries the complete original preimage and postimage.
+struct PageTreeSnapshot<'a> {
+    pages: Vec<&'a PageMeta>,
+    encoded: Vec<Box<serde_json::value::RawValue>>,
+    before: Box<serde_json::value::RawValue>,
+}
+
+impl<'a> PageTreeSnapshot<'a> {
+    fn new(pages: &'a [PageMeta]) -> Option<Self> {
+        let mut pages = pages.iter().collect::<Vec<_>>();
+        pages.sort_by_key(|page| page.id);
+        let encoded = pages
+            .iter()
+            .map(|page| serde_json::value::to_raw_value(&PageData::from_meta(page)))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let before = serde_json::value::to_raw_value(&encoded).ok()?;
+        Some(Self {
+            pages,
+            encoded,
+            before,
+        })
+    }
+
+    fn spec(
+        &self,
+        workspace: &crate::Workspace,
+        page: PageId,
+        command: PageTreeCommand,
+        id: &str,
+        label: &str,
+    ) -> Option<ActionSpec> {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("page_tree_action");
+        // Tree operations only read and mutate metadata. Rich-text bodies and
+        // tag assignments never participate in authoring a tree operation.
+        let mut moved = crate::Workspace::default();
+        moved.data.pages = workspace.pages().to_vec();
+        if !move_page_tree(&mut moved, page, command)? {
+            return None;
+        }
+        let moved_pages = moved
+            .pages()
+            .iter()
+            .map(|page| (page.id, page))
+            .collect::<HashMap<_, _>>();
+        let changed = self
+            .pages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, original)| {
+                let after = *moved_pages.get(&original.id)?;
+                (after != *original).then_some((index, PageData::from_meta(after)))
+            })
+            .map(|(index, page)| serde_json::value::to_raw_value(&page).map(|value| (index, value)))
+            .collect::<Result<HashMap<_, _>, _>>()
+            .ok()?;
+        let after = self
+            .encoded
+            .iter()
+            .enumerate()
+            .map(|(index, before)| changed.get(&index).unwrap_or(before).as_ref())
+            .collect::<Vec<_>>();
+        let encoded = EncodedAction::encode_operation(
+            NOTES_ACTION_TYPE,
+            &TreeAction::UpdatePageTree {
+                before: &self.before,
+                after,
+            },
+        )
+        .ok()?;
+        Some(
+            ActionSpec::immediate_encoded(id, label, ExecutionLocus::ClientLocal, encoded)
+                .reversible(),
+        )
+    }
+}
+
 /// Index a durable page list once before building its contextual resource
 /// snapshot. This avoids the old recursive `pages.iter().filter(...)` scan at
 /// every node (quadratic for a wide notebook).
 struct PageResourceIndex<'a> {
     children: HashMap<Option<PageId>, Vec<&'a PageMeta>>,
+    tree: Option<PageTreeSnapshot<'a>>,
 }
 
 impl<'a> PageResourceIndex<'a> {
-    fn new(pages: &'a [PageMeta]) -> Self {
+    fn new(pages: &'a [PageMeta], tree_pages: &'a [PageMeta]) -> Self {
         let mut children: HashMap<Option<PageId>, Vec<&PageMeta>> = HashMap::new();
         for page in pages {
             children.entry(page.parent).or_default().push(page);
@@ -1443,7 +1541,10 @@ impl<'a> PageResourceIndex<'a> {
         for siblings in children.values_mut() {
             siblings.sort_by(|a, b| crate::model::sibling_order(a, b));
         }
-        Self { children }
+        Self {
+            children,
+            tree: PageTreeSnapshot::new(tree_pages),
+        }
     }
 
     fn children_of(&self, parent: Option<PageId>) -> &[&'a PageMeta] {
@@ -1465,7 +1566,7 @@ pub(crate) fn page_resource_in(
     workspace: Option<&crate::Workspace>,
     bodies: &Bodies,
 ) -> Resource {
-    let index = PageResourceIndex::new(pages);
+    let index = PageResourceIndex::new(pages, workspace.map_or(pages, crate::Workspace::pages));
     let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
     page_resource_from_index(m, &index, bodies, workspace, 0, &mut remaining)
 }
@@ -1476,7 +1577,7 @@ pub(crate) fn notebook_page_children(
     workspace: &crate::Workspace,
     bodies: &Bodies,
 ) -> Vec<Resource> {
-    let index = PageResourceIndex::new(workspace.pages());
+    let index = PageResourceIndex::new(workspace.pages(), workspace.pages());
     let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
     index
         .children_of(None)
@@ -1520,6 +1621,8 @@ pub(crate) fn page_body_dispatcher(
 /// A page's body, published as the rich-text resource it is: its actions
 /// apply as the notebook's [`NotesAction::EditBody`] on that page.
 fn page_body_child(page: &PageMeta, state: Option<&tilo_document::RichTextState>) -> Resource {
+    #[cfg(test)]
+    let _profile = crate::cpu_profile::Phase::start("page_body_resource");
     let id = page_body_id(page.id);
     let mut body = ui::tilo_resource::publish_child::<RichText, crate::resource::Notebook>(
         &id,
@@ -1583,16 +1686,25 @@ fn page_resource_from_index(
             .with_continuation_identity(continuation::builder(domain)),
         );
     }
-    for (id, label, command) in [
-        ("move-up", "Move note up", PageTreeCommand::MoveUp),
-        ("move-down", "Move note down", PageTreeCommand::MoveDown),
-        ("indent", "Indent note", PageTreeCommand::Indent),
-        ("outdent", "Outdent note", PageTreeCommand::Outdent),
-    ] {
-        if let Some(workspace) = workspace
-            && let Some(action) = page_tree_action(workspace, m.id, command)
-        {
-            res = res.with_action(immediate_spec(id, label, &action));
+    {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("page_tree_commands");
+        for (id, label, command) in [
+            ("move-up", "Move note up", PageTreeCommand::MoveUp),
+            ("move-down", "Move note down", PageTreeCommand::MoveDown),
+            ("indent", "Indent note", PageTreeCommand::Indent),
+            ("outdent", "Outdent note", PageTreeCommand::Outdent),
+        ] {
+            if let Some(workspace) = workspace {
+                let spec = match &index.tree {
+                    Some(tree) => tree.spec(workspace, m.id, command, id, label),
+                    None => page_tree_action(workspace, m.id, command)
+                        .map(|action| immediate_spec(id, label, &action)),
+                };
+                if let Some(spec) = spec {
+                    res = res.with_action(spec);
+                }
+            }
         }
     }
     res = res.with_action(NotesEffect::ExportMarkdown { page: m.id }.bound());
@@ -1844,6 +1956,8 @@ fn notebook_resource(workspace: &crate::Workspace) -> Resource {
 /// rich-text body, membership actions for every tag and the notes linking to
 /// it; and the tag catalogue.
 pub(crate) fn notebook_children(workspace: &crate::Workspace) -> Vec<Resource> {
+    #[cfg(test)]
+    let _profile = crate::cpu_profile::Phase::start("notebook_children");
     let ctx = NotesResourceCtx::of(workspace);
     let mut children = notebook_page_children(workspace, &workspace.bodies);
     children.push(tags_resource(&ctx));
@@ -2247,6 +2361,75 @@ mod tests {
     use tilo_actions::{ActionInput, ExecutionMode, LocalTransport, OperationKind, ResultSpec};
     use ui::tilo_resource::Resource as _;
     use uuid::Uuid;
+
+    #[test]
+    fn page_tree_snapshot_preserves_exact_commands_and_availability() {
+        let mut workspace = Workspace::new();
+        let a = workspace.create_page(None);
+        let b = workspace.create_page(None);
+        let child = workspace.create_page(Some(a));
+        workspace.get_mut(a).unwrap().title = "Quoted \" note\n雪".into();
+        // Concurrent equal ordering keys exercise the existing re-key branch.
+        let order = workspace.get(a).unwrap().order.clone();
+        workspace.get_mut(b).unwrap().order = order;
+        let snapshot = PageTreeSnapshot::new(workspace.pages()).unwrap();
+        for page in [a, b, child, PageId::new_v4()] {
+            let published = workspace.get(page).map(|meta| {
+                page_resource_in(meta, workspace.pages(), Some(&workspace), &workspace.bodies)
+            });
+            for (id, command) in [
+                ("move-up", PageTreeCommand::MoveUp),
+                ("move-down", PageTreeCommand::MoveDown),
+                ("indent", PageTreeCommand::Indent),
+                ("outdent", PageTreeCommand::Outdent),
+            ] {
+                let expected = page_tree_action(&workspace, page, command)
+                    .map(|action| immediate_spec("tree", "Move note", &action));
+                let actual = snapshot.spec(&workspace, page, command, "tree", "Move note");
+                assert_eq!(actual.is_some(), expected.is_some());
+                let published = published
+                    .as_ref()
+                    .and_then(|resource| resource.actions.iter().find(|action| action.id == id));
+                assert_eq!(published.is_some(), expected.is_some());
+                if let (Some(actual), Some(expected)) = (actual, expected) {
+                    assert_eq!(actual.locus, expected.locus);
+                    assert_eq!(actual.contract, expected.contract);
+                    let actual = actual.build_json(&serde_json::Map::new()).unwrap();
+                    let expected = expected.build_json(&serde_json::Map::new()).unwrap();
+                    assert_eq!(actual, expected);
+                    assert_eq!(
+                        published
+                            .unwrap()
+                            .build_json(&serde_json::Map::new())
+                            .unwrap(),
+                        expected
+                    );
+                    let decoded: NotesAction = serde_json::from_slice(&actual.payload).unwrap();
+                    assert_eq!(encode(&decoded), actual);
+                }
+            }
+        }
+        // A fresh publication observes later metadata, never a prior snapshot.
+        workspace.get_mut(b).unwrap().title = "Renamed".into();
+        let contextual = [workspace.get(child).unwrap().clone()];
+        let index = PageResourceIndex::new(&contextual, workspace.pages());
+        let fresh = index.tree.unwrap();
+        let expected = page_tree_action(&workspace, child, PageTreeCommand::Outdent).unwrap();
+        assert_eq!(
+            fresh
+                .spec(
+                    &workspace,
+                    child,
+                    PageTreeCommand::Outdent,
+                    "tree",
+                    "Move note"
+                )
+                .unwrap()
+                .build_json(&serde_json::Map::new())
+                .unwrap(),
+            encode(&expected)
+        );
+    }
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
