@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::{
     Scene,
-    kurbo::{Affine, BezPath, Point, Rect},
+    kurbo::{Affine, BezPath, Point, Rect, Stroke},
     peniko::Fill,
 };
 use winit::{
@@ -32,6 +32,30 @@ pub struct KeyboardMapKey {
     pub outline: Vec<Point>,
     /// Compiled legends in native XKB level order.
     pub levels: Vec<String>,
+}
+
+impl KeyboardMapKey {
+    fn legend_rect(&self) -> Rect {
+        let mut rect = self.outline.iter().fold(Rect::ZERO, |rect, point| {
+            if rect.is_zero_area() {
+                Rect::new(point.x, point.y, point.x + 0.01, point.y + 0.01)
+            } else {
+                rect.union_pt(*point)
+            }
+        });
+        // Orthogonal physical models include concave Enter keys. Their
+        // bounding box contains a neighbour's space; the common horizontal
+        // core keeps every fitted legend inside the actual physical outline.
+        let middle = (rect.x0 + rect.x1) / 2.0;
+        for point in &self.outline {
+            if point.x < middle {
+                rect.x0 = rect.x0.max(point.x);
+            } else if point.x > middle {
+                rect.x1 = rect.x1.min(point.x);
+            }
+        }
+        rect
+    }
 }
 
 #[derive(Default)]
@@ -224,57 +248,68 @@ impl KeyboardMap {
             colours.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, fill, None, &path);
-        let rect = key.outline.iter().fold(Rect::ZERO, |rect, point| {
-            if rect.is_zero_area() {
-                Rect::new(point.x, point.y, point.x + 0.01, point.y + 0.01)
-            } else {
-                rect.union_pt(*point)
-            }
-        });
-        // Four corners retain base, Shift, AltGr and Shift+AltGr independently.
-        // Additional XKB levels remain in the accessible map's value.
+        let rect = key.legend_rect();
+        let scale = self.rect.width() / self.model_size.width.max(1.0);
+        // A screen-pixel outline remains visible independently of surface fill
+        // contrast, including high contrast themes and narrow previews.
+        scene.stroke(
+            &Stroke::new(1.0 / scale),
+            transform,
+            colours.border_standard,
+            None,
+            &path,
+        );
         let style = theme.text(TextRole::Caption);
         let ink = if pressed {
             colours.surfaces.content
         } else {
             colours.text_primary
         };
-        let scale = self.rect.width() / self.model_size.width.max(1.0);
-        for (index, legend) in key
+        // Preserve all native levels in metadata, but paint equivalent legends
+        // once. Repeated function/control levels must not crowd the keycap.
+        let mut legends: Vec<&str> = Vec::new();
+        for legend in key
             .levels
             .iter()
             .skip(if self.extra_levels { 4 } else { 0 })
             .take(4)
-            .enumerate()
         {
-            if legend.is_empty() {
-                continue;
+            if !legend.is_empty() && !legends.contains(&legend.as_str()) {
+                legends.push(legend);
             }
+        }
+        let padding = f64::from(theme.tokens.spacing.s1) / scale;
+        let inner = rect.inset(-padding.min(rect.width().min(rect.height()) / 8.0));
+        for (index, legend) in legends.iter().enumerate() {
+            let cell = if legends.len() == 1 {
+                inner
+            } else {
+                let middle_x = (inner.x0 + inner.x1) / 2.0;
+                let middle_y = (inner.y0 + inner.y1) / 2.0;
+                Rect::new(
+                    if index < 2 { inner.x0 } else { middle_x },
+                    if index % 2 == 0 { middle_y } else { inner.y0 },
+                    if index < 2 { middle_x } else { inner.x1 },
+                    if index % 2 == 0 { inner.y1 } else { middle_y },
+                )
+            };
             let (width, height) = renderer.measure_style(legend, None, &style);
-            let left = index < 2;
-            let bottom = index % 2 == 0;
-            let x = if key.levels.len() == 1 {
-                (rect.x0 + rect.x1 - f64::from(width) / scale) / 2.0
-            } else if left {
-                rect.x0 + 2.0
+            let prominence = if index == 0 {
+                1.0
             } else {
-                rect.x1 - f64::from(width) / scale - 2.0
+                f64::from(style.size / theme.text(TextRole::Body).size)
             };
-            let y = if key.levels.len() == 1 {
-                (rect.y0 + rect.y1 - f64::from(height) / scale) / 2.0
-            } else if bottom {
-                rect.y1 - f64::from(height) / scale - 1.0
-            } else {
-                rect.y0 + 1.0
-            };
+            let fit = prominence
+                .min(cell.width() * scale / f64::from(width.max(1.0)))
+                .min(cell.height() * scale / f64::from(height.max(1.0)));
+            let x = (cell.x0 + cell.x1 - f64::from(width) * fit / scale) / 2.0;
+            let y = (cell.y0 + cell.y1 - f64::from(height) * fit / scale) / 2.0;
             renderer.draw_style(
                 scene,
                 legend,
                 ink,
-                transform * Affine::translate((x, y)) * Affine::scale(1.0 / scale),
-                Some(crate::num::f32_of_f64(
-                    (rect.width() * scale - 4.0).max(1.0),
-                )),
+                transform * Affine::translate((x, y)) * Affine::scale(fit / scale),
+                None,
                 &style,
             );
         }
