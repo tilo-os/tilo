@@ -278,8 +278,8 @@ Metadata requires a read-authorized open inside the unchanged launcher sandbox,
 then observes that descriptor with `fstat`; a swapped path cannot redirect the
 metadata lookup. MIME is inferred from the caller-supplied filename without reading
 content. This remains a file-URI path: Android content providers,
-persisted URI authority and already-open descriptor revocation remain
-unqualified. The [document journey source](../tools/android/run_document_journey.py)
+persisted URI authority remain unqualified. The separate foreground-worker journey
+below covers interruption of already-open descriptors. The [document journey source](../tools/android/run_document_journey.py)
 records actual runtime, APK and production binary pins outside tracked source.
 The original signed integration, denial and Arity APKs are rerun against the new
 runtime to preserve their prior behavior.
@@ -314,15 +314,88 @@ Reports and PNGs stay outside tracked source. This is real FUSE/ART execution on
 one remote x86-64 host with software graphics, not qualification of a signed OS
 image, multiple physical machines, native Btrfs projection, ARM64 or physical GPU.
 
+## Started-service lifecycle
+
+The owned SDK-built `ServiceActivity` APK reproduced a concrete runtime defect:
+two `startService` calls both received request ID zero, an older
+`stopSelfResult` returned true, and neither completion invoked `onDestroy`.
+Android requires a distinct start-request token and rejects a stop for an older
+request. See the [Android Service API](https://developer.android.com/reference/android/app/Service#stopSelfResult(int)).
+
+The bounded framework patch now reserves increasing IDs before main-looper
+dispatch, verifies the registered service instance when stopping, and calls
+`onDestroy` on the main looper. It changes neither launcher permissions nor host
+authority. All eight modified upstream sources are hash-pinned before mutation.
+
+On 2026-10-06, the unchanged signed APK passed on the patched actual ART runtime:
+IDs 1 and 2, stale stop false, current stop true, exactly one main-looper service
+destruction, ordered activity pause/stop/destroy, three preserved visits in one
+workspace and a fresh independent visit in another. Every launch presented an
+Android frame through the production Tilo compositor with enforced Landlock and
+no-new-privileges. Camera permission remained denied and no grants were added.
+Run `tools/android/run_service_journey.py --help` for the pinned before/after
+journey; source and build instructions are in `tools/android/mediation/README.md`.
+Generated reports, original screenshots, APKs and signing material stay outside
+tracked source.
+
+This qualifies a self-stopping started service in the existing isolated APK
+process. Sticky restarts, bound-client lifetimes, process-loss recovery and service survival after closing an activity
+still need separate app journeys. This run did not exercise new file grants or
+their revocation, signed OS admission, physical devices or ARM64.
+
+## Foreground worker and live grant withdrawal
+
+The owned SDK-23 `ForegroundActivity` APK reproduced two defects on current
+main's actual ART runtime: `startForeground` accepted invalid arguments and
+returned without sending its notification, and revocation left the running
+sandbox's already-open output descriptor writable. The baseline wrote six more
+ticks after withdrawal; relaunch denied the former file authority.
+
+The bounded framework patch now requires a nonzero notification ID, a notification
+and the existing filtered host provider. It marks the ongoing notice through
+[GIO's category API](https://docs.gtk.org/gio/method.Notification.set_category.html).
+The compositor makes that notice persistent only for an authenticated Tilo caller
+and tracks its unique bus owner. Another sender cannot replace or close it;
+owner disconnection withdraws it. Service destruction removes the notice.
+Modern foreground permission checks still deny permission, and media/detach
+variants explicitly report unsupported behavior. This grants no independent
+background execution or sticky restart authority; sticky/redelivery requests are
+reported as unsupported process recovery.
+
+Accepted filesystem policy publication now interrupts supervised immutable
+sandboxes retaining revoked grants, rather than leaving old open descriptors
+usable. The original process identity and durable room scope this interruption;
+new restrictions and grant expiry use the same route. A queued launch rechecks
+authority before its gate opens. Private per-launch capability files stay with
+the supervisor; concurrent launches of the same package cannot overwrite each
+other's grants. Policy acceptance is asynchronous, so this is
+not a claim that the control request itself synchronously closes descriptors.
+
+On 2026-10-06 the unchanged signed APK passed with the changed framework and
+production compositor: a persistent notice outlasted the ordinary toast lifetime,
+normal worker stop withdrew it, accepted grant withdrawal interrupted the old
+sandbox and removed its notice, and relaunch denied metadata/read/write while
+preserving three private visits. The worker returned `START_STICKY`, but authority
+withdrawal caused no automatic restart. An unrelated real bus client could not
+close or replace the notice or gain persistence by supplying the category.
+Only the fixture's new source-read and output-write grants were used and revoked.
+Run `tools/android/run_foreground_journey.py --help`; generated JSON, logs, APKs
+and screenshots belong under `target/` or outside source.
+
+This qualifies a scoped worker in the existing APK process, with software graphics
+on remote x86_64. It does not establish foreground media/typed service support,
+sticky process recovery, service survival after activity closure, signed OS image
+admission, ARM64 or physical-device success.
+
 ## Compatibility assessment
 
 | Area | Confirmed | Remaining acceptance |
 | --- | --- | --- |
 | Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation | Real GPU/DRM, resize/rotation, ARM64, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
-| Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source | Android content providers, Android sharing intents, persisted URI authority, immediate running-process revocation, native projection and legacy external storage mapping |
-| Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability | Full Android notification tags, actions, resource mapping and background persistence |
+| Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source; accepted withdrawal interrupts an old sandbox holding open descriptors | Android content providers, Android sharing intents, persisted URI authority, native projection and legacy external storage mapping |
+| Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability; ongoing notice persistence, owner cleanup and unrelated-sender denial | Full Android notification tags, actions, resource mapping and independent background persistence |
 | Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
-| Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks, owned compositor teardown | Workspace stop, compositor loss, background workers, service apps, updates and migration |
+| Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks; started-service request IDs and stale/current self-stop with main-looper destruction; scoped foreground worker stop and revocation interruption; owned compositor teardown | Workspace stop, compositor loss, bound/typed/media services, sticky recovery, updates and migration |
 | Security | Production launcher and authenticated surface adoption; mandatory fully enforced Landlock and no-new-privileges; negative file/network fixture | Malicious JNI/ART probes, cross-room input/bus/clipboard, broader native attack surface review |
 | Collaboration/accessibility | Foreign surface display, semantic shell actions, real picker AT-SPI actions and external Android TextView content description | APK state is not system-owned CRDT state; complete Android semantic resource/action and accessibility coverage |
 

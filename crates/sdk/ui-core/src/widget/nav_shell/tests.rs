@@ -10,6 +10,7 @@ mod capabilities;
 struct Probe {
     id: &'static str,
     deadline: Option<Instant>,
+    animating: bool,
     rect: Rect,
     events: SharedRc<Cell<usize>>,
 }
@@ -21,6 +22,7 @@ impl Probe {
             Box::new(Self {
                 id,
                 deadline: None,
+                animating: false,
                 rect: Rect::ZERO,
                 events: SharedRc::clone(&events),
             }),
@@ -66,10 +68,19 @@ impl Widget for Probe {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.animating = false;
     }
 
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
         self.events.set(self.events.get().saturating_add(1));
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.animating
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.animating
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -1080,4 +1091,36 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
     h.perform_a11y_action(back.0, &crate::a11y::Action::Activate)
         .expect("Back cancels the in-flight navigation through AT");
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+}
+
+#[test]
+fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
+    let (mut inspector, _) = Probe::boxed("inspector");
+    inspector
+        .as_any_mut()
+        .unwrap()
+        .downcast_mut::<Probe>()
+        .unwrap()
+        .animating = true;
+    let shell = NavShell::new()
+        .content(Probe::boxed("content").0)
+        .inspector(inspector);
+    let mut h = harness(shell, 800, 534, Theme::dark());
+    assert!(h.settle_for_capture(crate::time::Duration::from_secs(1)));
+    let shell = h.root::<NavShell>();
+    assert!(!shell.is_inspector_open());
+    assert!(!shell.needs_animation_frame());
+    assert!(!shell.needs_redraw());
+    assert!(
+        shell.inspector.as_ref().unwrap().needs_animation_frame(),
+        "the hidden animation is retained"
+    );
+    h.root_mut::<NavShell>().open_inspector();
+    assert!(h.settle_for_capture(crate::time::Duration::from_secs(1)));
+    let shell = h.root::<NavShell>();
+    assert!(shell.is_inspector_open());
+    assert!(
+        !shell.inspector.as_ref().unwrap().needs_animation_frame(),
+        "opening the drawer paints the retained animation"
+    );
 }

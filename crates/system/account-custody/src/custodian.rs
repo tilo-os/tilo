@@ -358,6 +358,48 @@ impl Custodian {
         Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
     }
 
+    /// Begin sign-in with a non-empty subset of this use's configured scopes.
+    /// Client registration, endpoints and PKCE validation remain unchanged.
+    ///
+    /// # Errors
+    /// Unconfigured use, an unconfigured scope, or a loopback failure.
+    pub fn begin_sign_in_for_scopes(
+        &self,
+        oauth_use: OAuthUse,
+        scopes: &[&str],
+        login_hint: Option<&str>,
+    ) -> Result<Authorization, CustodyError> {
+        let (mut provider, registration) = self.use_config(oauth_use)?;
+        if scopes.is_empty()
+            || scopes
+                .iter()
+                .any(|scope| !provider.scopes.iter().any(|allowed| allowed == scope))
+        {
+            return Err(CustodyError::SignIn(
+                "Requested scopes are not configured for this use".into(),
+            ));
+        }
+        provider.scopes = scopes.iter().map(|scope| (*scope).to_string()).collect();
+        Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
+    }
+
+    /// Provider-confirmed scope metadata, without releasing credentials.
+    /// `None` means the provider or an older grant did not supply metadata.
+    ///
+    /// # Errors
+    /// Missing grant or an unreadable vault.
+    pub fn oauth_scopes(&self, id: &AccountId) -> Result<Option<String>, CustodyError> {
+        let vault = self.vault();
+        if let Some(error) = vault.recovery_error() {
+            return Err(CustodyError::Storage(error.to_string()));
+        }
+        let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
+        let Some((Grant::Oauth2 { tokens }, _)) = decode_grant(&secret) else {
+            return Err(CustodyError::NeedsAuthentication);
+        };
+        Ok(tokens.scope)
+    }
+
     /// Seal a sign-in result as `id`'s grant, replacing any earlier one.
     ///
     /// # Errors
@@ -446,6 +488,10 @@ impl Custodian {
                 }
                 Err(error) => return Err(error.into()),
             };
+            let mut renewed = renewed;
+            if renewed.scope.is_none() {
+                renewed.scope = tokens.scope;
+            }
             tokens = renewed;
             vault.put(id, &oauth_secret(&tokens));
             vault.try_save().map_err(CustodyError::Storage)?;

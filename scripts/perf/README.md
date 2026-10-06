@@ -96,6 +96,23 @@ device/image identity with comparative runs. The clock starts at the original
 kernel/libinput event and ends at hardware presentation; it excludes peripheral
 scan time and panel pixel response.
 
+To attribute a Linux capture to client CPU stages, use a runtime that emits
+the native render timing rows, then analyze that same capture:
+
+```sh
+python3 scripts/perf/physical_notes_stages.py \
+  --capture target/yoga-notes-after-update \
+  --out target/yoga-notes-after-update/client-stages.json
+```
+
+The analyzer requires the verified changed Notes body and KMS presentation,
+then joins render stages using the process, worker lifetime, CPU frame and
+render worker identities. Missing render stages fail analysis. Older clients
+without the optional post-draw main-thread stages report that absence explicitly.
+The output is private and refuses to overwrite an existing report. These CPU
+durations include scheduling and logging; they do not measure GPU execution or
+certify performance.
+
 ## What's blocked
 
 - Rebuilding the bootc qcow2 to measure the boot-time delta against

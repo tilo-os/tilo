@@ -166,6 +166,29 @@ pub(crate) fn block_on<T>(
         .map_err(|error| error.to_string())?
 }
 
+/// A radio operation prepared on the owning session thread and executed by
+/// its worker. It carries no borrowed dispatcher or credential.
+pub type RadioWork = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RadioChange {
+    Wifi(bool),
+    Airplane(bool),
+}
+
+impl RadioChange {
+    /// Execute the exact typed operation using this dispatcher's authority.
+    ///
+    /// # Errors
+    /// Returns the dispatcher's original radio-operation refusal.
+    pub fn execute(self, dispatcher: &dyn Dispatcher) -> Result<(), String> {
+        match self {
+            Self::Wifi(enabled) => dispatcher.set_wifi(enabled),
+            Self::Airplane(enabled) => dispatcher.set_airplane_mode(enabled),
+        }
+    }
+}
+
 /// Side-effect interface for the OS actions. The default production impl
 /// ([`RealDispatcher`]) calls into the free functions in the per-domain modules; tests
 /// substitute a recording impl so the click handler can be asserted on without shelling out.
@@ -205,6 +228,13 @@ pub trait Dispatcher {
     /// Returns an error message if the network manager is unavailable or the underlying call
     /// fails.
     fn set_wifi(&self, enabled: bool) -> Result<(), String>;
+    /// Prepare an owned radio operation without starting it. Explicit legacy
+    /// dispatchers may return `None` and retain their synchronous contract;
+    /// the production dispatcher always provides worker-safe operations.
+    fn prepare_radio_change(&self, _change: RadioChange) -> Option<RadioWork> {
+        None
+    }
+
     /// Enable or disable the Bluetooth radio.
     ///
     /// # Errors
@@ -342,6 +372,10 @@ pub trait Dispatcher {
 pub struct RealDispatcher;
 
 impl Dispatcher for RealDispatcher {
+    fn prepare_radio_change(&self, change: RadioChange) -> Option<RadioWork> {
+        Some(Box::new(move || change.execute(&Self)))
+    }
+
     fn set_brightness(&self, pct: f32) -> Result<(), String> {
         display::set_brightness(pct)
     }

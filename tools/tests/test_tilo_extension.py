@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -473,6 +474,54 @@ class Downloads(unittest.TestCase):
         self.assertEqual(status["state"], "waiting-for-network")
         self.assertEqual(status["last_error"], "")
         self.assertEqual(machine.requests, [])
+
+
+class OfflineStartup(unittest.TestCase):
+    def test_empty_activation_does_not_load_download_or_archive_libraries(self):
+        machine = Machine(self)
+        child = r'''
+import importlib.machinery
+import importlib.util
+import sys
+from pathlib import Path
+
+for name in ("urllib.request", "ssl", "tarfile"):
+    assert name not in sys.modules, "test setup preloaded " + name
+
+class OfflineImports:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {"urllib.request", "ssl", "tarfile"}:
+            raise AssertionError("offline activation loaded " + fullname)
+
+sys.meta_path.insert(0, OfflineImports())
+loader = importlib.machinery.SourceFileLoader("offline_extension", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+sys.modules[loader.name] = module
+loader.exec_module(module)
+assert module.activate(module.Layout(Path(sys.argv[2]))) == 0
+'''
+        result = subprocess.run(
+            [sys.executable, "-", str(HELPER), str(machine.root)],
+            input=child, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_lazy_opener_keeps_https_only_redirects(self):
+        import urllib.request
+
+        opener = ext._http_opener()
+        self.assertIs(opener, ext._http_opener())
+        redirect = next(handler for handler in opener.handlers
+                        if isinstance(handler, urllib.request.HTTPRedirectHandler))
+        request = urllib.request.Request("https://publisher.example/source")
+        with self.assertRaisesRegex(urllib.error.HTTPError, "redirect away from HTTPS refused") as refused:
+            redirect.redirect_request(request, None, 302, "redirect", {},
+                                      "http://publisher.example/mirror")
+        refused.exception.close()
+        allowed = redirect.redirect_request(request, None, 302, "redirect", {},
+                                            "https://publisher.example/mirror")
+        self.assertEqual(allowed.full_url, "https://publisher.example/mirror")
 
 
 class Lifecycle(unittest.TestCase):

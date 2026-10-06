@@ -1069,6 +1069,7 @@ launch-error-no-workspace = Wähle einen Arbeitsbereich und versuche es dann ern
 launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerelemente.
 launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
+launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
@@ -2392,6 +2393,7 @@ a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
 a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
+lock-screen-unlock = Sitzung entsperren
 
 search-provider-permission-prompts = Berechtigungsanfragen
 permission-request-expired = Diese Berechtigungsanfrage ist nicht mehr offen

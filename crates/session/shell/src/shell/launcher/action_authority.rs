@@ -1,4 +1,5 @@
-//! Read-only action admission projection; never sandbox or record grants.
+//! Project accepted action policy and interrupt withdrawn sandbox authority.
+//! This observer never creates or expands grants.
 use super::{InstalledApp, LaunchCommand, lock, runtime_dir};
 use crate::shell::state::RoomId;
 use collab_types::caps::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
@@ -7,6 +8,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "linux")]
+mod sandbox_revocation;
 
 #[derive(Clone)]
 struct RoomPolicy {
@@ -28,6 +32,8 @@ struct Published {
     rooms: BTreeMap<RoomId, RoomPolicy>,
     bindings: BTreeMap<Binding, BindingState>,
     next_refresh: Option<Instant>,
+    #[cfg(target_os = "linux")]
+    sandboxes: BTreeMap<u32, sandbox_revocation::Sandbox>,
 }
 static PUBLISHED: LazyLock<Mutex<Published>> = LazyLock::new(|| Mutex::new(Published::default()));
 
@@ -60,6 +66,8 @@ impl Export {
     pub(crate) fn publish(self) {
         let mut published = lock(&PUBLISHED);
         published.rooms = self.0;
+        #[cfg(target_os = "linux")]
+        sandbox_revocation::reconcile(&mut published);
         let bindings: Vec<_> = published.bindings.keys().cloned().collect();
         for binding in bindings {
             if let Err(error) = write_binding(&mut published, &binding, false) {
@@ -200,7 +208,12 @@ pub(super) fn attach(
     drop(published);
     command.args.push("--action-authority".into());
     command.args.push(path.display().to_string());
-    Ok(Lease(binding))
+    Ok(Lease {
+        binding,
+        capabilities: Vec::new(),
+        pid: None,
+        capabilities_file: None,
+    })
 }
 
 /// A missing projection does not grant Admin or refuse a manifest-only launch.
@@ -220,7 +233,51 @@ pub(super) fn attach_optional(
 
 /// Keeps the lease tied to the existing launch supervisor, including a held
 /// launch, rather than an unrelated timer or a package-name process scan.
-pub(crate) struct Lease(Binding);
+pub(crate) struct Lease {
+    binding: Binding,
+    capabilities: Vec<CapOverride>,
+    pid: Option<u32>,
+    capabilities_file: Option<tempfile::NamedTempFile>,
+}
+impl Lease {
+    pub(super) fn with_sandbox_capabilities(
+        mut self,
+        capabilities: Vec<CapOverride>,
+        file: Option<tempfile::NamedTempFile>,
+    ) -> Self {
+        self.capabilities = capabilities;
+        self.capabilities_file = file;
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn register_sandbox(&mut self, pid: u32) -> std::io::Result<()> {
+        // Opening a document queues its grant on the existing state writer.
+        // Wait on this launch worker, before taking PUBLISHED or opening the
+        // child gate. A refused/superseded write still cannot authorize it.
+        if !self.capabilities.is_empty()
+            && !crate::shell::durable_writer::global().flush_timeout(Duration::from_secs(10))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "filesystem authority publication did not complete",
+            ));
+        }
+        let mut published = lock(&PUBLISHED);
+        let sandbox =
+            sandbox_revocation::Sandbox::capture(pid, self.binding.clone(), &self.capabilities)?;
+        if !sandbox.authorized(&published) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "filesystem authority changed while the application launch was pending",
+            ));
+        }
+        published.sandboxes.insert(pid, sandbox);
+        drop(published);
+        self.pid = Some(pid);
+        Ok(())
+    }
+}
 impl std::fmt::Debug for Lease {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ActionAuthorityLease")
@@ -229,11 +286,15 @@ impl std::fmt::Debug for Lease {
 impl Drop for Lease {
     fn drop(&mut self) {
         let mut published = lock(&PUBLISHED);
-        if let Some(state) = published.bindings.get_mut(&self.0) {
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = self.pid {
+            published.sandboxes.remove(&pid);
+        }
+        if let Some(state) = published.bindings.get_mut(&self.binding) {
             state.borrowers = state.borrowers.saturating_sub(1);
             if state.borrowers == 0 {
-                published.bindings.remove(&self.0);
-                let _ = std::fs::remove_file(binding_path(&self.0));
+                published.bindings.remove(&self.binding);
+                let _ = std::fs::remove_file(binding_path(&self.binding));
             }
         }
         if published.bindings.is_empty() {
@@ -257,6 +318,8 @@ pub(crate) fn tick(now: Instant) {
     drop(published);
     crate::shell::durable_writer::global().submit(authority_root().join("heartbeat"), || {
         let mut published = lock(&PUBLISHED);
+        #[cfg(target_os = "linux")]
+        sandbox_revocation::reconcile(&mut published);
         let bindings: Vec<_> = published.bindings.keys().cloned().collect();
         for binding in bindings {
             if let Err(error) = write_binding(&mut published, &binding, true) {
@@ -420,7 +483,7 @@ mod tests {
             managed_agent_id: None,
         };
         let first = attach(&app, room, &mut command).unwrap();
-        let binding = first.0.clone();
+        let binding = first.binding.clone();
         let path = binding_path(&binding);
         assert_eq!(
             command.args,

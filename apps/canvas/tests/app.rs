@@ -268,11 +268,11 @@ fn an_earlier_version_chosen_in_the_history_is_restored() {
         .expect("paint");
     assert_eq!(app.state().marks.len(), 2);
 
-    // The dock's second tab is the history.
+    // The dock's third tab is history, after Layers and Objects.
     app.harness()
         .perform_semantic_named(
             "canvas-dock",
-            Some("canvas-dock:segment:1"),
+            Some("canvas-dock:segment:2"),
             &ui::a11y::Action::Activate,
         )
         .expect("the history tab opens");

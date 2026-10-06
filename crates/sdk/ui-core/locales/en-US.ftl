@@ -383,6 +383,16 @@ relative-ago-years = { $count ->
 
 # A software participant in history, presence and activity rows.
 participant-agent = { $name } · Agent
+interaction-agent = Agent
+interaction-collaborator = Collaborator
+interaction-action-status = { $action } ({ $phase }) - { $name }
+interaction-inspecting = Inspecting
+interaction-applying = Applying
+interaction-waiting = Waiting
+interaction-committed = Committed
+interaction-failed = Failed
+interaction-cancelled = Cancelled
+interaction-progress = { $label } - { $done }/{ $total }
 participant-unknown-agent = Unknown agent
 
 # History as published actions, for the palette, scripts, agents and assistive technology.
@@ -470,6 +480,7 @@ dictation-cancel = Cancel
 
 music-home-heading = Your music
 music-connect-spotify = Connect Spotify
+music-connect-spotify-library = Enable full library and device controls
 music-spotify-playback = Authorize playback
 music-spotify-playback-authorized = Spotify • Playback grant authorized; Premium checked before audio
 music-spotify-devices = Spotify devices
