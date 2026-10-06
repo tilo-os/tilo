@@ -117,7 +117,6 @@ impl Command {
                 "Ctrl+J",
             ),
             (Command::ToggleSidebar, "View: Toggle Sidebar", "Ctrl+B"),
-            (Command::NextTheme, "Preferences: Cycle Color Theme", ""),
             (Command::GoToProblems, "View: Focus Problems", ""),
             (Command::GoToSearch, "View: Focus Search Results", ""),
             (Command::GoToTerminal, "View: Focus Terminal", ""),

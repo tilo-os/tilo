@@ -23,6 +23,24 @@ fn duplicate(source: &str, target: usize, group: std::ops::Range<usize>, keyboar
     );
     let rect = semantic_rect(&live, &format!("notes.block:{}", before[target].id));
     live.click_at(rect.x0 + 8.0, rect.center().y);
+    let before_focus = before;
+    let before = fixture
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_blocks(doc, fixture.child)
+        })
+        .unwrap();
+    let mut expected_focus = before_focus;
+    if matches!(
+        expected_focus[target].kind,
+        ui::widget::BlockKind::Table { .. }
+    ) {
+        expected_focus[target].kind = ui::widget::BlockKind::Table { visual: false };
+    }
+    assert_eq!(
+        before, expected_focus,
+        "focusing source only changes the table presentation; content and identities are preserved"
+    );
     let revision_before = revision(&fixture, &checkout);
     if keyboard {
         live.set_modifiers(&["ctrl".into()]);

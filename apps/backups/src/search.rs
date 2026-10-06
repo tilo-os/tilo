@@ -20,7 +20,10 @@ pub fn snapshot_entries(backups: &Catalog) -> Vec<SearchEntry> {
         .iter()
         .map(|snapshot| {
             SearchEntry::new(
-                format!("{} backup", snapshot.time),
+                snapshot
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| format!("{} backup", snapshot.taken)),
                 format!(
                     "{} {} {} {}",
                     snapshot.id,
@@ -32,7 +35,7 @@ pub fn snapshot_entries(backups: &Catalog) -> Vec<SearchEntry> {
             .invoking(ActionAddress::new(snapshot_resource_id(snapshot), "open"))
             .grouped(SNAPSHOT_KIND)
             .subtitled(format!(
-                "{} · {} · {}",
+                "{} backup, retained {} ({}).",
                 snapshot.kind.label(),
                 snapshot.retention.label(),
                 ui::format::bytes(snapshot.size_bytes)
@@ -68,13 +71,17 @@ mod tests {
     use ui::search::testing::{Corpus, LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     fn large_catalog(corpus: Corpus) -> Catalog {
-        let mut catalog = Catalog::sample();
+        let mut catalog = Catalog::sample(
+            chrono::DateTime::from_timestamp(1_782_835_500, 0)
+                .expect("fixture timestamp")
+                .naive_utc(),
+        );
         let template = catalog.snapshots[0].clone();
         catalog.snapshots = corpus
             .map(|row| {
                 let mut snapshot = template.clone();
                 snapshot.id = format!("snapshot-{:06}", row.index);
-                snapshot.time = row.text;
+                snapshot.label = Some(row.text);
                 snapshot
             })
             .collect();
@@ -103,7 +110,7 @@ mod tests {
             3_000,
         );
         let catalog = loaded.expect("the corpus was loaded");
-        let page = provider.search_page(LATE_HIT_NEEDLE, None, 8, 4);
+        let page = provider.search_page(&ui::search::SearchQuery::new(LATE_HIT_NEEDLE), None, 8, 4);
         assert_eq!(page.results.len(), 1, "the one recovery point that matches");
         let address = hit.action_address().expect("canonical address");
         assert_eq!(address.resource, "backups.snapshot:snapshot-002999");
@@ -119,7 +126,7 @@ mod tests {
         );
         assert!(resource.actions.iter().any(|action| action.id == "verify"));
         assert!(resource.actions.iter().any(|action| action.id == "restore"));
-        let page = provider.search_page("snapshot", None, 17, 5);
+        let page = provider.search_page(&ui::search::SearchQuery::new("snapshot"), None, 17, 5);
         assert!(page.inspected <= 17);
         assert!(page.results.len() <= 5);
         assert!(page.next.is_some(), "the complete history remains pageable");
@@ -127,9 +134,13 @@ mod tests {
 
     /// Case of `snapshot_search_is_bounded_and_invalidated_by_catalog_refresh`.
     fn catalog_refresh_invalidates_existing_search_cursors() {
-        let catalog = Catalog::sample();
+        let catalog = Catalog::sample(
+            chrono::DateTime::from_timestamp(1_782_835_500, 0)
+                .expect("fixture timestamp")
+                .naive_utc(),
+        );
         let mut refreshed = catalog.clone();
-        refreshed.snapshots[0].time = "changed recovery time".into();
+        refreshed.snapshots[0].label = Some("changed recovery time".into());
         assert_ne!(
             snapshot_entries(&catalog),
             snapshot_entries(&refreshed),
@@ -139,7 +150,7 @@ mod tests {
             source(&refreshed)
                 .search("changed recovery")
                 .iter()
-                .any(|hit| hit.title == "changed recovery time backup")
+                .any(|hit| hit.title == "changed recovery time")
         );
     }
 }

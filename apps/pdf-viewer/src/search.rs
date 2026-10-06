@@ -68,7 +68,7 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
                 "bookmark outline contents {title} page {page} level {} open",
                 usize::from(*level) + 1
             ),
-            format!("Contents · page {page}"),
+            format!("Contents on page {page}"),
             ActionAddress::new(&resource, "go-to"),
         ));
     }
@@ -89,7 +89,7 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
                 ctx.doc_id, ctx.search_token
             );
             entries.push(entry(
-                format!("Match {} · page {page}", index + 1),
+                format!("Match {} on page {page}", index + 1),
                 format!(
                     "find result {} page {page} match {} open",
                     ctx.search_query,

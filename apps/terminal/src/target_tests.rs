@@ -340,7 +340,12 @@ fn the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported() {
     let host = ui::i18n::I18nManager::lookup("terminal-target-host", None);
     let manage = ui::i18n::I18nManager::lookup("terminal-target-manage", None);
     assert_eq!(labels[0], "Default");
-    assert_eq!(labels[1], "✓ Work", "the current target is marked");
+    assert_eq!(labels[1], "Work");
+    assert_eq!(
+        widget.target_menu_checked(),
+        Some(vec![false, true, false, false]),
+        "the current target is checked"
+    );
     assert_eq!(labels[2], host);
     assert_eq!(labels.last(), Some(&manage));
     assert!(!labels.iter().any(|l| l.contains("linux")));
