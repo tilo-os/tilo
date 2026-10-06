@@ -707,6 +707,25 @@ impl ResourceInvocationScope {
         // Retain metadata even if authority elapsed inside the callback.
         result.and_then(|value| self.check().map(|()| value))
     }
+
+    /// Retain only an actual successful executor action's exact change range.
+    /// This private SDK seam is descriptive: the final owner still validates
+    /// the original invocation, typed operation and resulting document fact.
+    pub(crate) fn retain_executed_action(
+        &self,
+        document: &mut AutoCommit,
+        envelope: &tilo_actions::ActionEnvelope,
+    ) -> Result<(), String> {
+        self.check_read_loan(document)?;
+        let hashes = document
+            .get_changes(&envelope.base_change_hashes())
+            .into_iter()
+            .map(|change| change.hash())
+            .collect();
+        self.provenance
+            .borrow_mut()
+            .record_action(hashes, &self.lease, envelope)
+    }
 }
 
 impl std::fmt::Debug for ResourceInvocationScope {
@@ -758,6 +777,12 @@ pub(crate) struct InvocationProvenance {
 struct RetainedContribution {
     lease: PublishedInvocationLease,
     committed: Arc<AtomicBool>,
+    action: Option<Arc<RetainedAction>>,
+}
+
+struct RetainedAction {
+    envelope: tilo_actions::ActionEnvelope,
+    encoded_bytes: usize,
 }
 struct MutationSpan {
     cursor: Vec<ChangeHash>,
@@ -877,7 +902,62 @@ impl InvocationProvenance {
                 .or_insert_with(|| RetainedContribution {
                     lease: lease.clone(),
                     committed: Arc::new(AtomicBool::new(false)),
+                    action: None,
                 });
+        }
+        Ok(())
+    }
+
+    fn record_action(
+        &mut self,
+        hashes: Vec<ChangeHash>,
+        lease: &PublishedInvocationLease,
+        envelope: &tilo_actions::ActionEnvelope,
+    ) -> Result<(), String> {
+        let encoded_bytes = serde_json::to_vec(envelope)
+            .map_err(|_| "executed action correlation encoding failed")?
+            .len();
+        // Match the existing document transport ceiling, rather than silently
+        // narrowing otherwise admitted typed document operations.
+        if encoded_bytes > collab_types::MAX_DOCUMENT_TRANSFER_BYTES {
+            return Err("executed action correlation exceeds document capacity".into());
+        }
+        let mut identities = std::collections::HashSet::new();
+        let mut retained_bytes = encoded_bytes;
+        for action in self
+            .contributions
+            .values()
+            .filter_map(|entry| entry.action.as_ref())
+        {
+            if identities.insert(Arc::as_ptr(action)) {
+                retained_bytes = retained_bytes
+                    .checked_add(action.encoded_bytes)
+                    .ok_or("executed action correlation capacity exhausted")?;
+            }
+        }
+        if retained_bytes > collab_types::MAX_DOCUMENT_TRANSFER_BYTES {
+            return Err("retained executed action correlations exceed document capacity".into());
+        }
+        self.record(hashes.clone(), lease)?;
+        for hash in &hashes {
+            let retained = self
+                .contributions
+                .get(hash)
+                .ok_or("executed action lost its exact contribution")?;
+            if !retained.lease.same_invocation(lease) || retained.action.is_some() {
+                return Err("executed action overlaps another contribution".into());
+            }
+        }
+        let action = Arc::new(RetainedAction {
+            envelope: envelope.clone(),
+            encoded_bytes,
+        });
+        for hash in hashes {
+            let retained = self
+                .contributions
+                .get_mut(&hash)
+                .ok_or("executed action lost its exact contribution")?;
+            retained.action = Some(action.clone());
         }
         Ok(())
     }
@@ -926,15 +1006,20 @@ impl InvocationProvenance {
                 }
                 acknowledgements.push(retained.committed.clone());
                 let lease = &retained.lease;
-                if let Some(group) = contributions
-                    .iter_mut()
-                    .find(|group| group.lease.same_invocation(lease))
-                {
+                if let Some(group) = contributions.iter_mut().find(|group| {
+                    group.lease.same_invocation(lease)
+                        && match (&group.action, &retained.action) {
+                            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                }) {
                     group.hashes.insert(*hash);
                 } else {
                     contributions.push(Contribution {
                         lease: lease.clone(),
                         hashes: [*hash].into(),
+                        action: retained.action.clone(),
                     });
                 }
             }
@@ -957,6 +1042,7 @@ impl InvocationProvenance {
 struct Contribution {
     lease: PublishedInvocationLease,
     hashes: BTreeSet<ChangeHash>,
+    action: Option<Arc<RetainedAction>>,
 }
 struct DocumentAuthorizationInner {
     route: RouteSpec,
@@ -976,6 +1062,17 @@ struct DocumentAuthorizationInner {
 /// wire fields. Captured original guards outlive terminal invocation tracking.
 #[derive(Clone)]
 pub struct DocumentAuthorization(Arc<DocumentAuthorizationInner>);
+
+/// Borrowed descriptive facts from the actual retained SDK execution span.
+/// Only the final owner can validate the opaque original token; neither these
+/// fields nor a typed action alone grants document/input admission authority.
+pub struct OwnerActionContribution<'a> {
+    pub request: &'a PublishedInvocationRequest,
+    pub route: &'a RouteSpec,
+    pub original: &'a (dyn std::any::Any + Send + Sync),
+    pub changes: &'a BTreeSet<ChangeHash>,
+    pub action: Option<&'a tilo_actions::ActionEnvelope>,
+}
 impl std::fmt::Debug for DocumentAuthorization {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("DocumentAuthorization(..)")
@@ -1114,6 +1211,36 @@ impl DocumentAuthorization {
         Ok(())
     }
 
+    /// Validate original contributor custody together with exact executed
+    /// action/change correlation. Untyped callbacks remain visible with None;
+    /// an owner must never infer a typed action from their labels or JSON.
+    ///
+    /// # Errors
+    /// Missing/mismatched original custody, or any owner validator refusal.
+    pub fn validate_owner_action_contributors(
+        &self,
+        mut validate: impl FnMut(OwnerActionContribution<'_>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for group in &self.0.contributions {
+            if group.lease.route != self.0.route {
+                return Err("document contributor route mismatch".into());
+            }
+            let original = group
+                .lease
+                .owner_token
+                .as_ref()
+                .ok_or("required contributor has no final-owner custody token")?;
+            validate(OwnerActionContribution {
+                request: &group.lease.request,
+                route: &group.lease.route,
+                original: original.as_ref(),
+                changes: &group.hashes,
+                action: group.action.as_ref().map(|action| &action.envelope),
+            })?;
+        }
+        Ok(())
+    }
+
     #[cfg_attr(
         not(feature = "broker-transport"),
         allow(dead_code, reason = "only the broker transport commits documents")
@@ -1135,6 +1262,11 @@ impl DocumentAuthorization {
             bytes = bytes
                 .checked_add(std::mem::size_of::<Contribution>())?
                 .checked_add(group.hashes.len().checked_mul(64)?)?;
+            if let Some(action) = &group.action {
+                bytes = bytes
+                    .checked_add(std::mem::size_of::<RetainedAction>())?
+                    .checked_add(action.encoded_bytes)?;
+            }
             let request = &group.lease.request;
             for len in [
                 request.address.resource.capacity(),

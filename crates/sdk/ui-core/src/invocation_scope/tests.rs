@@ -88,6 +88,284 @@ fn publication(
         .unwrap()
 }
 
+fn invoke_actual_typed_dispatch(
+    fixture: &mut crate::bound_dispatch::legacy_document_tests::Fixture,
+    caller: &ResourceInvocationScope,
+) -> Result<(), tilo_actions::DoorError> {
+    use crate::bound_dispatch::legacy_document::{
+        LegacyDocumentServices, LegacyInvocation, invoke_legacy_document_scoped,
+    };
+    invoke_legacy_document_scoped(
+        &mut fixture.tile,
+        &fixture.target,
+        LegacyDocumentServices {
+            registry: &crate::bound_dispatch::legacy_document_tests::registry(),
+            transport: &mut tilo_actions::LocalTransport::default(),
+            qualified_local_transport: true,
+            authority: &crate::permissions::PermissionContext::permissive(),
+            author: &crate::permissions::UserId("fixture-user".into()),
+        },
+        LegacyInvocation {
+            argument: None,
+            arguments: None,
+            actor: "fixture-user",
+            broker_admitted: false,
+            ambient: None,
+        },
+        Some(caller),
+    )
+    .map(|_| ())
+}
+
+fn actual_dispatch_scope(
+    fixture: &crate::bound_dispatch::legacy_document_tests::Fixture,
+    id: u64,
+    time: &Arc<AtomicU64>,
+) -> ResourceInvocationScope {
+    let mut caller = scope(fixture, id, "fixture-user", 200, time);
+    caller.lease.request.address = fixture.target.address.clone();
+    let declaration = fixture.probe.spec.borrow();
+    caller.lease = caller
+        .lease
+        .clone()
+        .with_dispatch_spec(PublishedInvocationSpec {
+            kind: declaration.kind,
+            contract: declaration.contract.clone(),
+            params: declaration.params().to_vec(),
+            input: tilo_actions::InputSpec::None,
+            directory_revision: None,
+        })
+        .unwrap();
+    caller
+}
+
+fn actual_untyped_edit(
+    fixture: &crate::bound_dispatch::legacy_document_tests::Fixture,
+    caller: &ResourceInvocationScope,
+    label: &str,
+) -> Vec<ChangeHash> {
+    fixture
+        .store
+        .with_action_state(&fixture.checkout.id, |doc, history, _| {
+            let before = doc.base_heads();
+            caller
+                .with_document_mutation(doc, |doc| {
+                    doc.put(ROOT, "value", 1).unwrap();
+                    doc.put(ROOT, label, true).unwrap();
+                    Ok(())
+                })
+                .unwrap();
+            let changes = doc
+                .get_changes(&before)
+                .into_iter()
+                .map(|change| change.hash())
+                .collect();
+            assert!(history.record_committed_action_authored(
+                doc,
+                before,
+                None,
+                None,
+                Some(crate::permissions::UserId("fixture-user".into()))
+            ));
+            changes
+        })
+        .unwrap()
+}
+
+#[test]
+fn shared_actual_dispatch_isolates_typed_range_after_untyped_same_document_edit() {
+    let mut fixture = fixture(982);
+    let time = Arc::new(AtomicU64::new(99));
+    let caller = actual_dispatch_scope(&fixture, 83, &time);
+    let before = fixture
+        .store
+        .read(&fixture.checkout.id, |doc| doc.base_heads())
+        .unwrap();
+    let preceding = actual_untyped_edit(&fixture, &caller, "untyped-shared-before");
+    let declaration = fixture.probe.spec.borrow().clone();
+    let tilo_actions::ActionInput::Immediate(encoded) = &declaration.input else {
+        panic!("actual fixture has an immediate action")
+    };
+    let resource = tilo_actions::Resource::new("controlled.value", "controlled", "Owned value")
+        .with_action(declaration.clone());
+    let store = fixture.store.clone();
+    store
+        .with_checked(&fixture.checkout.id, |doc| {
+            caller.with_document_mutation(doc, |doc| {
+                let started = crate::bound_dispatch::execute_resource_operation(
+                    &mut fixture.tile,
+                    doc,
+                    &ROOT,
+                    &crate::bound_dispatch::legacy_document_tests::registry(),
+                    &mut tilo_actions::LocalTransport::default(),
+                    crate::bound_dispatch::ResourceOperation {
+                        address: &caller.lease.request.address,
+                        resource: &resource,
+                        spec: &declaration,
+                        encoded: encoded.clone(),
+                        actor: "fixture-user",
+                        local_author: "fixture-user",
+                        broker_admitted: true,
+                        invocation: caller.lease.request.invocation,
+                        source_invocation: Some(caller.lease.request.invocation),
+                        ambient: None,
+                        scope: Some(&caller),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+                assert!(matches!(
+                    started,
+                    crate::widget::ResourceOperationStart::Completed(_)
+                ));
+                Ok(())
+            })
+        })
+        .unwrap()
+        .unwrap();
+    let (_, authorization, actual) = publication(&fixture, &before).unwrap();
+    let mut observed = BTreeSet::new();
+    let mut typed = 0;
+    authorization
+        .validate_owner_action_contributors(|contribution| {
+            observed.extend(contribution.changes.iter().copied());
+            if let Some(action) = contribution.action {
+                typed += 1;
+                assert!(
+                    preceding
+                        .iter()
+                        .all(|hash| !contribution.changes.contains(hash))
+                );
+                assert_eq!(
+                    action.context.as_ref().unwrap().source_invocation,
+                    Some(caller.lease.request.invocation)
+                );
+                assert_eq!(action.action, *encoded);
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(typed, 1);
+    assert_eq!(observed, actual.into_iter().collect());
+}
+
+#[test]
+fn actual_typed_dispatch_keeps_identical_actions_separate_from_untyped_changes() {
+    let mut fixture = fixture(980);
+    let time = Arc::new(AtomicU64::new(99));
+    let caller = actual_dispatch_scope(&fixture, 81, &time);
+    let before = fixture
+        .store
+        .read(&fixture.checkout.id, |doc| doc.base_heads())
+        .unwrap();
+    let preceding = actual_untyped_edit(&fixture, &caller, "untyped-before-action");
+    invoke_actual_typed_dispatch(&mut fixture, &caller).unwrap();
+    let intervening = actual_untyped_edit(&fixture, &caller, "untyped-between-actions");
+    invoke_actual_typed_dispatch(&mut fixture, &caller).unwrap();
+    let (_, authorization, actual) = publication(&fixture, &before).unwrap();
+    let mut actions = Vec::new();
+    let mut observed = BTreeSet::new();
+    let mut untyped = 0;
+    authorization
+        .validate_owner_action_contributors(|contribution| {
+            assert_eq!(contribution.request, &caller.lease.request);
+            assert_eq!(
+                contribution
+                    .original
+                    .downcast_ref::<OriginalCaller>()
+                    .unwrap()
+                    .actor,
+                "fixture-user"
+            );
+            for hash in contribution.changes {
+                assert!(observed.insert(*hash));
+            }
+            if let Some(action) = contribution.action {
+                assert!(!contribution.changes.is_empty());
+                assert!(
+                    preceding
+                        .iter()
+                        .chain(&intervening)
+                        .all(|hash| !contribution.changes.contains(hash))
+                );
+                actions.push((action.id, action.action.clone()));
+            } else {
+                untyped += 1;
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(observed, actual.into_iter().collect());
+    assert_eq!(untyped, 1);
+    assert_eq!(actions.len(), 2);
+    assert_ne!(actions[0].0, actions[1].0);
+    assert_eq!(actions[0].1, actions[1].1);
+    let weak = Arc::downgrade(
+        authorization
+            .0
+            .contributions
+            .iter()
+            .find_map(|group| group.action.as_ref())
+            .unwrap(),
+    );
+    authorization.acknowledge_committed();
+    drop(authorization);
+    // Beginning the next actual owner turn releases acknowledged cold payloads.
+    fixture
+        .store
+        .with_checked(&fixture.checkout.id, |doc| {
+            caller.with_document_mutation(doc, |_| Ok(()))
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(weak.strong_count(), 0);
+}
+
+#[test]
+fn actual_empty_or_failed_dispatch_never_invents_typed_contributors() {
+    let mut fixture = fixture(981);
+    let time = Arc::new(AtomicU64::new(99));
+    let caller = actual_dispatch_scope(&fixture, 82, &time);
+    let before = fixture
+        .store
+        .read(&fixture.checkout.id, |doc| doc.base_heads())
+        .unwrap();
+    // Existing value is already 1: the real executor produces no change.
+    fixture.probe.spec.borrow_mut().input = tilo_actions::ActionInput::Immediate(
+        tilo_actions::EncodedAction::encode(
+            "controlled.legacy",
+            &crate::bound_dispatch::legacy_document_tests::SetValue {
+                value: 1,
+                fail: false,
+                remote: false,
+            },
+        )
+        .unwrap(),
+    );
+    invoke_actual_typed_dispatch(&mut fixture, &caller).unwrap();
+    fixture.probe.spec.borrow_mut().input = tilo_actions::ActionInput::Immediate(
+        tilo_actions::EncodedAction::encode(
+            "controlled.legacy",
+            &crate::bound_dispatch::legacy_document_tests::SetValue {
+                value: 2,
+                fail: true,
+                remote: false,
+            },
+        )
+        .unwrap(),
+    );
+    assert!(invoke_actual_typed_dispatch(&mut fixture, &caller).is_err());
+    let (_, authorization, actual) = publication(&fixture, &before).unwrap();
+    assert!(actual.is_empty());
+    let mut count = 0;
+    authorization
+        .validate_owner_action_contributors(|_| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
 #[test]
 fn causal_scope_nested_contributors_survive_partial_error_and_match_actual_range() {
     let fixture = fixture(951);

@@ -1933,6 +1933,11 @@ pub(crate) fn execute_resource_operation(
             .as_ref()
             .map(|envelope| envelope.base_change_hashes());
         if let Some(envelope) = applied {
+            if let Some(scope) = scope {
+                scope
+                    .retain_executed_action(doc, &envelope)
+                    .map_err(tilo_actions::DoorError::Failed)?;
+            }
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
             crate::history_mode::capability::document_action_applied(

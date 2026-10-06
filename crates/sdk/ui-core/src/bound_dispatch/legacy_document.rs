@@ -861,6 +861,11 @@ fn execute_owned(
                         "Local action was unexpectedly submitted",
                     ));
                 };
+                if let Some(scope) = scope {
+                    scope
+                        .retain_executed_action(doc, &envelope)
+                        .map_err(DoorError::Failed)?;
+                }
                 let changed = history.record_committed_action_authored(
                     doc,
                     envelope.base_change_hashes(),
