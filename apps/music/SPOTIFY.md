@@ -7,6 +7,31 @@ identity when the catalogue changes. The live app starts empty. The
 `spotify-home`, `spotify-devices`, `spotify-error`, `spotify-queue` and
 `spotify-create` captures use fixtures only.
 
+## Packaging and runtime admission
+
+The production package must declare `music.library` in its signed
+`[resources].kinds`; Music's authored manifest includes that declaration for
+the release collection's direct packaging path. `tilo-app package apps/music
+--platform linux --arch x86_64` also discovers the manual `Resource`
+implementation and the resource kinds in normal local dependencies. It builds
+a self-contained Linux executable and signs its manifest and payload together.
+Use an authorized publisher identity through the normal signing service or
+approved publisher-key custody; an ephemeral signature is not release acceptance.
+Fully strip the release executable's symbol table before distribution: the
+desktop package's wire and materialized payload are each limited to 64 MiB.
+An already built and stripped executable can use the supported
+`tilo-app-package pack-desktop --manifest apps/music/tilo-app.toml --executable
+<music> --platform linux --arch x86_64 --isa x86-64-v3 --identity <approved path>
+--output <music-linux-x86_64.tapp>` path without rebuilding. The ISA must match
+the compiler policy; the current workspace uses `x86-64-v3`.
+
+An existing image package whose manifest lacks `music.library` cannot host the
+shared library or publish its action directory. Install the verified updated
+package through the ordinary app installer, preserving the expected publisher
+and package-root checks. Do not edit installed metadata, use runtime `--dev`,
+or replace admission with a test manifest. Signing, publishing, persistent
+installation and a visible sign-in each require the user's applicable approval.
+
 ## Authorization
 
 The task registration supplies public client ID
