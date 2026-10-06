@@ -56,6 +56,19 @@ impl Stewardship {
         }
     }
 
+    /// Read keys only for an already-open channel. No initialization occurs.
+    #[cfg(feature = "agents")]
+    pub(super) fn existing_keys(
+        &self,
+        channel: ChannelId,
+    ) -> Result<channel_crypto::ChannelContentKeys, String> {
+        self.stewards
+            .get(&channel)
+            .ok_or("the source channel is not open on this host")?
+            .content_keys()
+            .map_err(|error| error.to_string())
+    }
+
     fn device(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
     }

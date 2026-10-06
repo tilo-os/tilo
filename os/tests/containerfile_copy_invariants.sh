@@ -114,7 +114,11 @@ containerfile="$repo/os/Containerfile"
 # component updates carry the same owned reexec path as the OS image.
 # The public /usr/bin/ush symlink deliberately exposes the same confined
 # runtime already installed at /usr/libexec/tilo-ush.
-expected_contract=a192031eac51818062fa12249d9f2786af41c7395be29119ad246d7a86d8ddd4
+# The confined speech worker and its full MIT notice are deliberate additions.
+# Cisco requires the complete OpenH264 binary license notice in a licensing
+# information location. Only that text is added to extension-files; Cisco
+# binaries remain separately downloaded by opted-in devices.
+expected_contract=37864ff82a6627989e4520842138fb72a55530846ceb93c93021f05b048d00f4
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

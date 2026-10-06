@@ -45,6 +45,9 @@ use agent_provider_config::local::{
 use clap::Parser;
 use ed25519_dalek::{Signer as _, SigningKey};
 use local_model_service::SignedRuntime;
+use local_model_service::catalog::{
+    CATALOG_SIGNATURE_DOMAIN, CatalogPayload, SignedCatalog, catalog_signing_bytes,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use system_extension::{
@@ -109,7 +112,6 @@ fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<File> {
     options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     options.open(path)
 }
-const CATALOG_SIGNATURE_DOMAIN: &str = "tilo.local-model.catalog.v1";
 
 #[derive(Parser)]
 #[command(
@@ -210,23 +212,6 @@ struct ArtifactSource {
     sha256: Option<String>,
     /// Optional expected size; when present it must match the file.
     size_bytes: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct CatalogPayload {
-    schema: u16,
-    models: Vec<LocalModelRelease>,
-    runtimes: Vec<SignedRuntime>,
-    recommendation: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct SignedCatalog {
-    schema: u16,
-    signature_domain: String,
-    key_id: String,
-    signature: Vec<u8>,
-    payload: CatalogPayload,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -455,21 +440,6 @@ fn compile(
         },
         trust,
     ))
-}
-
-fn catalog_signing_bytes(payload: &CatalogPayload) -> Result<Vec<u8>, String> {
-    let encoded = serde_json::to_vec(payload)
-        .map_err(|error| format!("could not encode signing payload: {error}"))?;
-    let mut bytes = Vec::with_capacity(
-        CATALOG_SIGNATURE_DOMAIN
-            .len()
-            .saturating_add(1)
-            .saturating_add(encoded.len()),
-    );
-    bytes.extend_from_slice(CATALOG_SIGNATURE_DOMAIN.as_bytes());
-    bytes.push(0);
-    bytes.extend_from_slice(&encoded);
-    Ok(bytes)
 }
 
 fn resolve_artifact(
@@ -763,6 +733,36 @@ mod tests {
             face_recognition: false,
             segmentation: true,
         }
+    }
+
+    #[test]
+    fn speech_format_is_signed_without_becoming_a_chat_recommendation() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let temp = tempfile::tempdir().unwrap();
+        let mut catalog = source(temp.path());
+        let mut speech = in_process_source(temp.path());
+        speech.artifact_format = ModelArtifactFormat::WhisperGgml;
+        speech.segmentation = false;
+        catalog.models = vec![speech];
+        catalog.runtimes.clear();
+        catalog.recommendation.clear();
+        let (signed, _) = compile(catalog, temp.path(), &key).unwrap();
+        assert_eq!(
+            signed.payload.models[0].in_process_capabilities(),
+            [agent_provider_config::local::InProcessCapability::SpeechRecognition]
+        );
+        assert!(signed.payload.recommendation.is_empty());
+        let signature = Signature::from_slice(&signed.signature).unwrap();
+        key.verifying_key()
+            .verify(&catalog_signing_bytes(&signed.payload).unwrap(), &signature)
+            .unwrap();
+        let mut forged = signed.payload;
+        forged.models[0].artifact_format = ModelArtifactFormat::OnnxFile;
+        assert!(
+            key.verifying_key()
+                .verify(&catalog_signing_bytes(&forged).unwrap(), &signature)
+                .is_err()
+        );
     }
 
     #[test]

@@ -90,6 +90,22 @@ back through `tilo-control windows`. It then creates a note through Notes' `new-
 ]}}
 ```
 
+Machine-oriented operations can be included explicitly through the same door:
+
+```sh
+tilo-control actions list so.tilo.browser --programmatic --json
+```
+
+```json
+{"op":"actions_enumerate","query":"so.tilo.browser","include_programmatic":true}
+```
+
+This adds programmatic descriptors to bounded enumeration. It keeps the same
+workspace, membership and capability checks and does not alter the human palette.
+Use the returned provider, ID, contract and parameter schema with `actions invoke`.
+A programmatic page read may carry Write authority; the generic `read` convenience
+command is limited to declared read-only operations.
+
 The providers on a stock build are `actions` (the shell's own chrome),
 `applications`, `host-applications`, `notes`, `files`, `records` and `editor`.
 

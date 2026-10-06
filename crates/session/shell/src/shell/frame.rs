@@ -408,6 +408,7 @@ pub struct FrameBuilder {
     /// Widget-pointer map captured during `build_layout`, kept alive so the
     /// measure closure in `compute_layout_with_measure` can re-borrow each frame.
     node_map: HashMap<NodeId, *mut dyn Widget>,
+    ime_stamp_key: zeroize::Zeroizing<[u8; 32]>,
     /// Inner node — the host's own root child, target of `apply_layout` so
     /// the host's rect tree roots at the viewport origin.
     host_node: Option<NodeId>,
@@ -684,6 +685,15 @@ impl FrameBuilder {
             chrome,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
+            ime_stamp_key: {
+                let a = uuid::Uuid::new_v4();
+                let b = uuid::Uuid::new_v4();
+                let mut key = [0; 32];
+                for (slot, value) in key.iter_mut().zip(a.as_bytes().iter().chain(b.as_bytes())) {
+                    *slot = *value;
+                }
+                zeroize::Zeroizing::new(key)
+            },
             host_node: None,
             root_node: None,
             text_renderer: presentation.text_renderer,
@@ -3384,6 +3394,40 @@ impl FrameBuilder {
         ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
     }
 
+    pub(crate) fn focused_ime_edit_stamp(
+        &self,
+        focus: Option<NodeId>,
+        document: &automerge::AutoCommit,
+    ) -> Option<crate::compositor::shell_text_input::NativeEditStamp> {
+        if self.host.palette_visible() {
+            return Some(crate::compositor::shell_text_input::NativeEditStamp {
+                document: ui::bound_dispatch::DocumentEditStamp::for_document(document),
+                fingerprint: self
+                    .host
+                    .palette_ime_edit_fingerprint(&self.ime_stamp_key)?,
+            });
+        }
+        let focus = focus?;
+        let widget = *self.node_map.get(&focus)?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: the host, layout and pointer map are the same exclusively
+        // owned live build used by focused_ime_field; nothing mutates here.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+        }
+        Some(crate::compositor::shell_text_input::NativeEditStamp {
+            document: admitted.document_edit_stamp(focus, document).ok()?,
+            // SAFETY: the live map's pointer remains owned by the host during
+            // this read; no raw field value escapes the keyed fingerprint.
+            fingerprint: unsafe { &*widget }.ime_edit_fingerprint(&self.ime_stamp_key)?,
+        })
+    }
+
     /// Whether a chrome widget under `point` handles a touch contact that
     /// starts there itself, rather than through the pointer events a touch
     /// is otherwise turned into. Mirrors `ui::App` for application windows.
@@ -4118,6 +4162,8 @@ mod tests {
                 let state = chrome.borrow();
                 ActionsProvider::new()
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "bring record",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -6925,6 +6971,8 @@ mod tests {
                 let state = chrome.borrow();
                 provider
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,

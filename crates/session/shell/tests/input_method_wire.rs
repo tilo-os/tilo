@@ -706,3 +706,351 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
         winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) if text == "q"
     )));
 }
+
+#[test]
+fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
+    use shell::compositor::shell_text_input::{FieldRequest, ShellTextInput};
+    let mut h = Harness::new();
+    let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
+    let field = FieldRequest {
+        purpose: winit::window::ImePurpose::Normal,
+        x: 420,
+        y: 100,
+        width: 1,
+        height: 24,
+    };
+    let deadline = tilo_test_env::hang_deadline();
+    while !proxy.holds_focus(&h.state) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native field did not take focus"
+        );
+        proxy.sync(&mut h.state, Some(field));
+        h.pump();
+    }
+    let id = h
+        .state
+        .prepare_dictation(std::time::Instant::now())
+        .unwrap();
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native field did not activate"
+        );
+        h.pump();
+        proxy.sync(&mut h.state, Some(field));
+        if h.state
+            .advance_dictation_preparation(id, std::time::Instant::now())
+            .unwrap()
+        {
+            break;
+        }
+    }
+    h.state
+        .update_dictation(id, "rough".into(), std::time::Instant::now())
+        .unwrap();
+    h.pump();
+    assert!(
+        !proxy
+            .sync(&mut h.state, Some(field))
+            .iter()
+            .any(|event| matches!(
+                event,
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
+            ))
+    );
+    h.state
+        .update_dictation(id, "東京 👋".into(), std::time::Instant::now())
+        .unwrap();
+    h.state
+        .finish_dictation(id, std::time::Instant::now())
+        .unwrap();
+    let mut commits = Vec::new();
+    while commits.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native commit did not arrive"
+        );
+        h.pump();
+        for event in proxy.sync(&mut h.state, Some(field)) {
+            if let winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) = event {
+                commits.push(text);
+            }
+        }
+    }
+    assert_eq!(commits, ["東京 👋"]);
+    assert_native_field_selection_and_undo(commits.first().unwrap());
+    assert!(
+        h.state
+            .check_dictation(id, std::time::Instant::now())
+            .is_err()
+    );
+    proxy.sync(&mut h.state, None);
+    h.pump();
+    assert!(!proxy.holds_focus(&h.state));
+    drop(proxy);
+    drop(h);
+}
+
+/// Use the event produced by the actual Wayland bridge, then Notes' owned
+/// action dispatcher and system history, without a legacy direct-document edit.
+fn assert_native_field_selection_and_undo(transcript: &str) {
+    let mut fixture = NativeNotes::new();
+    fixture
+        .driver
+        .invoke_action(
+            &tilo_actions::ActionAddress::new("notes.notebook", "new-page"),
+            serde_json::json!({"value": "Dictation"})
+                .as_object()
+                .unwrap(),
+            false,
+            None,
+        )
+        .unwrap();
+    let page = fixture
+        .records
+        .read(&fixture.checkout.id, |doc| {
+            notes::doc::NotesDoc::list_pages(doc).first().unwrap().id
+        })
+        .unwrap();
+    fixture
+        .driver
+        .invoke_action(
+            &tilo_actions::ActionAddress::new(notes::actions::page_resource_id(page), "open"),
+            &serde_json::Map::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    fixture
+        .driver
+        .perform_named("block_editor", &ui::a11y::Action::Focus)
+        .unwrap();
+    fixture.driver.commit_text("before old after ");
+    fixture
+        .driver
+        .perform_named(
+            "block_editor",
+            &ui::a11y::Action::SetSelection {
+                anchor: 7,
+                focus: 10,
+            },
+        )
+        .unwrap();
+    let before = fixture
+        .records
+        .read_history(&fixture.checkout.id, |_, history| history.revision())
+        .unwrap();
+    fixture.driver.commit_text(transcript);
+    let expected = format!("before {transcript} after ");
+    fixture.assert_body(page, &expected);
+    fixture.driver.set_modifiers(&["ctrl".into()]);
+    fixture.driver.key("z");
+    fixture.driver.set_modifiers(&[]);
+    fixture.assert_body(page, "before old after ");
+    fixture
+        .driver
+        .set_modifiers(&["ctrl".into(), "shift".into()]);
+    fixture.driver.key("z");
+    fixture.driver.set_modifiers(&[]);
+    fixture.assert_body(page, &expected);
+    assert!(
+        fixture
+            .records
+            .read_history(&fixture.checkout.id, |_, history| { history.revision() })
+            .unwrap()
+            > before,
+        "dictation must enter owned persistent history"
+    );
+    fixture.driver.close_components();
+    let reports = fixture.driver.take_component_close_reports();
+    assert!(!reports.is_empty(), "the real Notes component must close");
+    for report in reports {
+        assert!(report.record_error.is_none());
+        assert!(report.view_error.is_none());
+        assert!(report.teardown_error.is_none());
+    }
+}
+
+struct NativeNotes {
+    driver: ui::headless::Driver,
+    records: ui::record::RecordStore,
+    checkout: ui::record::RecordCheckout,
+    _owners: ui::record::RecordOwners,
+    _temp: tempfile::TempDir,
+}
+impl NativeNotes {
+    fn new() -> Self {
+        use std::{cell::RefCell, rc::Rc};
+        use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+        use ui::permissions::{Actor, PermissionContext, Role, UserId};
+        let temp = tempfile::tempdir().unwrap();
+        let state_root = temp.path().join("state");
+        let mut owners = ui::record::RecordOwners::new(state_root.clone());
+        let records = owners.open("so.tilo.notes", "dictation-wire").unwrap();
+        let target = LaunchTarget::New;
+        let context = HostContext::prepare(
+            notes::definition(),
+            HostContextInputs {
+                records: records.clone(),
+                views: Rc::new(
+                    ui::application_view::InstanceViewStore::new(
+                        state_root,
+                        "fixture-device",
+                        "dictation-wire",
+                    )
+                    .unwrap(),
+                ),
+                device_id: "fixture-device".into(),
+                instance_id: 11,
+                permissions: Rc::new(RefCell::new(PermissionContext::from_capabilities(
+                    Actor::person(Some(Role::Owner), "dictation-wire-author"),
+                    vec![],
+                ))),
+                author: UserId("dictation-wire-author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            &target,
+        )
+        .unwrap();
+        let component = notes::definition()
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let checkout = component.record().clone();
+        let fonts = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            "en-US",
+        );
+        let mut driver = ui::headless::Driver::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs {
+                theme: ui::Theme::dark(),
+                text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
+            },
+        )
+        .unwrap();
+        driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
+        Self {
+            driver,
+            records,
+            checkout,
+            _owners: owners,
+            _temp: temp,
+        }
+    }
+    fn assert_body(&self, page: notes::PageId, expected: &str) {
+        self.records
+            .read(&self.checkout.id, |doc| {
+                notes::notebook::validate(doc).unwrap();
+                let blocks = notes::doc::NotesDoc::page_block_snapshots(doc, page);
+                assert_eq!(blocks.len(), 1);
+                assert_eq!(blocks.first().unwrap().1, expected);
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() {
+    use shell::compositor::shell_text_input::{FieldRequest, NativeFieldId, ShellTextInput};
+    let mut h = Harness::new();
+    let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
+    let field = FieldRequest {
+        purpose: winit::window::ImePurpose::Normal,
+        x: 420,
+        y: 100,
+        width: 1,
+        height: 24,
+    };
+    let first = Some(NativeFieldId::Widget(1));
+    let second = Some(NativeFieldId::Widget(2));
+    let deadline = tilo_test_env::hang_deadline();
+    while !proxy.holds_focus(&h.state) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "field did not take focus"
+        );
+        proxy.sync_for_field(&mut h.state, Some(field), first);
+        h.pump();
+    }
+    let stale = h
+        .state
+        .prepare_dictation(std::time::Instant::now())
+        .unwrap();
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "field did not activate"
+        );
+        h.pump();
+        proxy.sync_for_field(&mut h.state, Some(field), first);
+        if h.state
+            .advance_dictation_preparation(stale, std::time::Instant::now())
+            .unwrap()
+        {
+            break;
+        }
+    }
+    h.state
+        .update_dictation(stale, "must not move".into(), std::time::Instant::now())
+        .unwrap();
+    let mut events = proxy.sync_for_field(&mut h.state, Some(field), second);
+    assert!(
+        h.state
+            .finish_dictation(stale, std::time::Instant::now())
+            .is_err()
+    );
+    assert!(
+        h.state
+            .update_dictation(stale, "late".into(), std::time::Instant::now())
+            .is_err()
+    );
+    h.pump();
+    events.extend(proxy.sync_for_field(&mut h.state, Some(field), second));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
+    )));
+    let next = h
+        .state
+        .prepare_dictation(std::time::Instant::now())
+        .unwrap();
+    assert_ne!(next, stale);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "successor did not activate"
+        );
+        h.pump();
+        proxy.sync_for_field(&mut h.state, Some(field), second);
+        if h.state
+            .advance_dictation_preparation(next, std::time::Instant::now())
+            .unwrap()
+        {
+            break;
+        }
+    }
+    h.state
+        .update_dictation(next, "successor".into(), std::time::Instant::now())
+        .unwrap();
+    h.state
+        .finish_dictation(next, std::time::Instant::now())
+        .unwrap();
+    let mut commits = Vec::new();
+    while commits.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "successor commit did not arrive"
+        );
+        h.pump();
+        for event in proxy.sync_for_field(&mut h.state, Some(field), second) {
+            if let winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) = event {
+                commits.push(text);
+            }
+        }
+    }
+    assert_eq!(commits, ["successor"]);
+    drop(proxy);
+    drop(h);
+}

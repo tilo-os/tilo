@@ -552,6 +552,8 @@ mod tests {
             ("switch user", "switch-user"),
         ] {
             let mut rows = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,

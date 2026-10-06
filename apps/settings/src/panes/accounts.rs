@@ -53,6 +53,18 @@ mod signin_tests;
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
+    /// Show or hide public metadata in the browser identity picker.
+    #[effect(row, device_only, idempotent)]
+    SetBrowserIdentityEnabled { account: String, enabled: bool },
+    /// Remove browser picker metadata; this does not revoke sign-in or access.
+    #[effect(row, device_only, destructive)]
+    RemoveBrowserIdentity { account: String },
+    /// Publish the signed-in Tilo identity's public browser connection metadata.
+    #[effect(device_only, idempotent)]
+    PublishBrowserIdentity {
+        #[param("Canonical HTTPS origin of the existing Tilo host")]
+        origin: String,
+    },
     /// Add an account: mail, caldav, webdav, nextcloud, google-drive,
     /// onedrive, dropbox or icloud-drive.
     #[effect(view)]
@@ -105,9 +117,29 @@ pub(crate) fn answer(
     effect: AccountsEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    match effect {
+        AccountsEffect::PublishBrowserIdentity { origin } => {
+            app.publish_browser_identity(origin)?;
+            return Ok(Effected::done());
+        }
+        AccountsEffect::SetBrowserIdentityEnabled { account, enabled } => {
+            app.set_browser_identity_enabled(account, enabled)?;
+            return Ok(Effected::done());
+        }
+        AccountsEffect::RemoveBrowserIdentity { account } => {
+            app.remove_browser_identity(account)?;
+            return Ok(Effected::done());
+        }
+        _ => {}
+    }
     let shared = app.accounts().model();
     let mut model = shared.borrow_mut();
     match effect {
+        AccountsEffect::PublishBrowserIdentity { .. }
+        | AccountsEffect::SetBrowserIdentityEnabled { .. }
+        | AccountsEffect::RemoveBrowserIdentity { .. } => {
+            return Err("Identity publication was not handled".into());
+        }
         AccountsEffect::AddAccount { kind } => {
             let kind =
                 AccountKind::from_slug(&kind).ok_or_else(|| "unknown account kind".to_string())?;
@@ -145,6 +177,7 @@ pub(crate) fn answer(
 pub struct AccountsArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AccountsPane>>,
+    account_root: Option<AccountRoot>,
 }
 
 impl AccountsArea {
@@ -152,7 +185,13 @@ impl AccountsArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            account_root: None,
         }
+    }
+
+    pub(crate) fn with_account_root(mut self, root: AccountRoot) -> Self {
+        self.account_root = Some(root);
+        self
     }
 
     /// The model over the person's accounts; a screenshot shows the sample
@@ -162,7 +201,10 @@ impl AccountsArea {
             let scene = self.cx.scene();
             let root = scene
                 .and_then(|scene| scene.account_root.clone())
-                .map_or_else(AccountRoot::live, AccountRoot::at);
+                .map_or_else(
+                    || self.account_root.clone().unwrap_or_else(AccountRoot::live),
+                    AccountRoot::at,
+                );
             let mut model = if scene.is_some() {
                 AccountsPane::from_dir_in(root, crate::accounts::sample_directory(), false)
             } else {
@@ -189,7 +231,7 @@ impl AccountsArea {
             return Vec::new();
         }
         let offer = |effect: AccountsEffect| SettingsEffect::from(effect).bound();
-        AccountKind::ALL
+        let mut published: Vec<LiveRow> = AccountKind::ALL
             .into_iter()
             .flat_map(|kind| model.dir.views_of(kind))
             .map(|view| {
@@ -212,7 +254,27 @@ impl AccountsArea {
                 }))
                 .operation(offer(AccountsEffect::RemoveAccount { account: id }))
             })
-            .collect()
+            .collect();
+        for account in model
+            .account_root
+            .store()
+            .list(&accounts::person::TILO_IDENTITY_TYPE.into())
+        {
+            let id = account.id.as_str().to_owned();
+            published.push(
+                LiveRow::new(
+                    format!("settings.browser-identity:{id}"),
+                    "settings.browser-identity",
+                    account.display_name.clone(),
+                )
+                .operation(offer(AccountsEffect::SetBrowserIdentityEnabled {
+                    account: id.clone(),
+                    enabled: !account.enabled,
+                }))
+                .operation(offer(AccountsEffect::RemoveBrowserIdentity { account: id })),
+            );
+        }
+        published
     }
 }
 
@@ -858,6 +920,7 @@ impl AccountsPane {
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(id));
         }
+        panel.push(self.browser_identity_card());
         panel.push(self.mail_card());
         panel.push(self.kind_card(AccountKind::CalDav));
         panel.push(self.kind_card(AccountKind::WebDav));
@@ -872,6 +935,47 @@ impl AccountsPane {
         }
 
         crate::widgets::cards(panel)
+    }
+
+    fn browser_identity_card(&self) -> El {
+        let store = self.account_root.store();
+        let mut body = vec![caption(&t("accounts-browser-identity-about"))];
+        for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
+            let id = account.id.as_str().to_owned();
+            let toggle = if account.enabled {
+                "accounts-browser-identity-hide"
+            } else {
+                "accounts-browser-identity-show"
+            };
+            body.push(setting_row(
+                &account.display_name,
+                Box::new(self.bound(
+                    Button::new(
+                        &format!("settings.browser-identity.toggle:{id}"),
+                        &t(toggle),
+                    ),
+                    AccountsEffect::SetBrowserIdentityEnabled {
+                        account: id.clone(),
+                        enabled: !account.enabled,
+                    },
+                )),
+            ));
+            if let Some(origin) = account
+                .config
+                .get("origin")
+                .and_then(serde_json::Value::as_str)
+            {
+                body.push(caption(origin));
+            }
+            body.push(Box::new(self.bound(
+                Button::new(
+                    &format!("settings.browser-identity.remove:{id}"),
+                    &t("accounts-browser-identity-remove"),
+                ),
+                AccountsEffect::RemoveBrowserIdentity { account: id },
+            )));
+        }
+        card(&t("accounts-browser-identity-title"), rows(body))
     }
 
     fn mail_card(&self) -> El {

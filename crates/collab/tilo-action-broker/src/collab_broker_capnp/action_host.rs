@@ -2325,6 +2325,7 @@ fn directory_page(
 ) -> Result<CataloguePage, ActionHostError> {
     match reply.map_err(bridge_error)? {
         ActionDirectoryBridgeResponse::Page(page) => Ok(CataloguePage {
+            locator: None,
             rows: page
                 .rows
                 .iter()
