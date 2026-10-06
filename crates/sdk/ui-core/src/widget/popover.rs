@@ -135,6 +135,9 @@ pub struct Popover<C: Widget = NoContent> {
     /// Bounds the panel stays inside. `None` uses the window the top layer
     /// paints over.
     viewport: Option<Rect>,
+    /// Prefer retaining the complete panel over preserving anchor separation
+    /// when neither side has enough room. Ordinary menus keep their policy.
+    confine_to_viewport: bool,
     /// The window the top layer last painted over.
     presented: Option<Rect>,
     /// The panel, resolved by [`Self::place`] (also run by layout and paint).
@@ -173,6 +176,7 @@ impl<C: Widget> Popover<C> {
             resolved_side: PopoverSide::Below,
             align: PanelAlign::Leading,
             viewport: None,
+            confine_to_viewport: false,
             presented: None,
             rect: Rect::ZERO,
             on_dismiss: None,
@@ -191,6 +195,15 @@ impl<C: Widget> Popover<C> {
     #[must_use]
     pub fn aligned(mut self, align: PanelAlign) -> Self {
         self.align = align;
+        self
+    }
+
+    /// Keep a panel that fits the viewport entirely on screen, even when
+    /// neither side of its anchor has room. The caller must still size its
+    /// content to the viewport; this never shrinks or clips that content.
+    #[must_use]
+    pub fn confined_to_viewport(mut self) -> Self {
+        self.confine_to_viewport = true;
         self
     }
 
@@ -299,6 +312,16 @@ impl<C: Widget> Popover<C> {
         &mut self.content
     }
 
+    /// Width available to the body inside the current placement viewport.
+    /// Hosts use this before measuring responsive content, not after clipping.
+    pub fn available_content_width(&self, theme: &Theme) -> f32 {
+        crate::num::f32_of_f64(
+            (self.room(theme).width() - 2.0 * self.padding(theme))
+                .floor()
+                .max(0.0),
+        )
+    }
+
     fn padding(&self, theme: &Theme) -> f64 {
         if self.options.is_some() {
             MenuMetrics::of(theme).pad
@@ -354,7 +377,7 @@ impl<C: Widget> Popover<C> {
         };
         let (w, h) = (body_w.ceil() + pad * 2.0, body_h.ceil() + pad * 2.0);
         let gap = f64::from(theme.tokens.spacing.s1);
-        let (rect, side) = floating_surface::place_aligned(
+        let (mut rect, side) = floating_surface::place_aligned(
             self.anchor,
             (w, h),
             self.side,
@@ -362,6 +385,19 @@ impl<C: Widget> Popover<C> {
             gap,
             viewport,
         );
+        if self.confine_to_viewport {
+            let x = if w <= viewport.width() {
+                rect.x0.clamp(viewport.x0, viewport.x1 - w)
+            } else {
+                rect.x0
+            };
+            let y = if h <= viewport.height() {
+                rect.y0.clamp(viewport.y0, viewport.y1 - h)
+            } else {
+                rect.y0
+            };
+            rect = Rect::new(x, y, x + w, y + h);
+        }
         self.resolved_side = side;
         self.rect = rect;
         if self.options.is_none() && self.host_content.is_none() {

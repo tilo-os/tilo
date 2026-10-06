@@ -278,6 +278,43 @@ fn text_content_is_laid_out_on_one_line() {
 }
 
 #[test]
+fn viewport_confinement_is_opt_in_and_preserves_the_complete_body() {
+    let theme = Theme::high_contrast().with_text_scale(2.0);
+    let mut tr = TextRenderer::new();
+    let viewport = Rect::new(0.0, 0.0, 560.0, 560.0);
+    for side in [PopoverSide::Right, PopoverSide::Below] {
+        let anchor = Rect::new(264.0, 264.0, 288.0, 288.0);
+        let make = || {
+            Popover::with_content(Fixed {
+                rect: Rect::ZERO,
+                w: 480.0,
+                h: 480.0,
+            })
+            .anchored(anchor)
+            .side(side)
+            .with_viewport(viewport)
+            .open(true)
+        };
+        let mut ordinary = make();
+        ordinary.place(&mut tr, &theme);
+        assert!(
+            ordinary.rect().x1 > viewport.x1 || ordinary.rect().y1 > viewport.y1,
+            "default placement preserves separation when neither side fits"
+        );
+        let mut confined = make().confined_to_viewport();
+        confined.place(&mut tr, &theme);
+        let panel = confined.rect();
+        let body = confined.content().get_rect();
+        assert!(panel.x0 >= viewport.x0 && panel.x1 <= viewport.x1);
+        assert!(panel.y0 >= viewport.y0 && panel.y1 <= viewport.y1);
+        assert!(body.x0 >= panel.x0 && body.x1 <= panel.x1);
+        assert!(body.y0 >= panel.y0 && body.y1 <= panel.y1);
+        assert!((panel.width() - ordinary.rect().width()).abs() < f64::EPSILON);
+        assert!((panel.height() - ordinary.rect().height()).abs() < f64::EPSILON);
+    }
+}
+
+#[test]
 fn placement_flips_and_stays_in_the_window() {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();

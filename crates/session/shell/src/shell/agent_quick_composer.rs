@@ -544,6 +544,7 @@ impl Default for AgentQuickComposer {
             .with_child(Box::new(body));
         let popover = Popover::with_content(content)
             .side(PopoverSide::Right)
+            .confined_to_viewport()
             .with_label(t("agent-quick-accessible-name"));
         Self {
             popover,
@@ -1206,6 +1207,7 @@ impl Widget for AgentQuickComposer {
     ) -> taffy::NodeId {
         let width = theme.tokens.metrics.panel_width_utility
             * (0.5 + 0.5 * theme.text_scale.clamp(1.0, 2.0));
+        let width = width.min(self.popover.available_content_width(theme));
         self.popover.content_mut().set_width(width);
         self.popover.build_layout(taffy, theme, node_map)
     }
@@ -2219,5 +2221,49 @@ mod tests {
         assert!(panel.x1 < edge.x0, "right-edge marker flips the panel left");
         assert!(panel.x0 >= compact.x0 && panel.x1 <= compact.x1);
         assert!(panel.y0 >= compact.y0 && panel.y1 <= compact.y1);
+    }
+
+    #[test]
+    fn hc200_panel_and_actual_controls_fit_the_560_pixel_marker_viewport() {
+        fn assert_inside(widget: &dyn Widget, panel: Rect) {
+            let rect = widget.get_rect();
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                assert!(
+                    rect.x0 >= panel.x0
+                        && rect.x1 <= panel.x1
+                        && rect.y0 >= panel.y0
+                        && rect.y1 <= panel.y1,
+                    "{} bounds {rect:?} escape panel {panel:?}",
+                    widget.name()
+                );
+            }
+            for child in widget.children() {
+                assert_inside(child, panel);
+            }
+        }
+        let viewport = Rect::new(0.0, 0.0, 560.0, 560.0);
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        for anchor in [
+            Rect::new(264.0, 188.0, 288.0, 212.0),
+            Rect::new(510.0, 110.0, 534.0, 134.0),
+        ] {
+            let mut composer = AgentQuickComposer::default();
+            composer.open_for_shots(
+                "room-a",
+                "scribe",
+                "Release Notes Agent",
+                "Review changes and preserve decisions.",
+                anchor,
+                viewport,
+            );
+            let panel = layout_panel(&mut composer, anchor, viewport, &theme);
+            assert!(
+                panel.x0 >= viewport.x0 && panel.x1 <= viewport.x1,
+                "panel {panel:?}, viewport {viewport:?}, anchor {anchor:?}, body {:?}",
+                composer.popover.content().get_rect()
+            );
+            assert!(panel.y0 >= viewport.y0 && panel.y1 <= viewport.y1);
+            assert_inside(composer.popover.content(), panel);
+        }
     }
 }
