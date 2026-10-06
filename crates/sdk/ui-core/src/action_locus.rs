@@ -1,13 +1,20 @@
 //! Exact, read-only action geometry shared by native and retained browser hosts.
 
+pub(crate) mod publication;
+
+pub(crate) struct PresenceGeometry<'a> {
+    pub tree: &'a crate::a11y_tree::SemanticTree,
+    pub bindings: &'a [crate::widget::ControlBindingMetadata],
+    pub published: &'a [(tilo_actions::InvocationId, Option<vello::kurbo::Rect>)],
+}
+
 /// Paint semantic activity against this frame's exact action bindings. Both
 /// native and retained hosts use this projection; an unresolved action remains
 /// in the activity rail rather than guessing a control from its label.
 pub(crate) fn draw_action_presence(
     paint: &mut crate::paint::PaintCtx<'_>,
     presence: &mut crate::presence::PresenceCtx,
-    tree: &crate::a11y_tree::SemanticTree,
-    bindings: &[crate::widget::ControlBindingMetadata],
+    geometry: PresenceGeometry<'_>,
     viewport: vello::kurbo::Rect,
     surface: &str,
     now: crate::time::Instant,
@@ -15,7 +22,15 @@ pub(crate) fn draw_action_presence(
     presence.clear_agent_marker_surface(surface);
     let mut resolved = Vec::new();
     for interaction in presence.visible_interactions(now) {
-        let Some(bounds) = interaction_bounds(tree, bindings, &interaction) else {
+        let bounds = geometry
+            .published
+            .iter()
+            .find(|(invocation, _)| *invocation == interaction.invocation)
+            .map_or_else(
+                || interaction_bounds(geometry.tree, geometry.bindings, &interaction),
+                |(_, bounds)| *bounds,
+            );
+        let Some(bounds) = bounds else {
             continue;
         };
         let bounds = bounds.intersect(viewport);

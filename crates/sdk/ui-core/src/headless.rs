@@ -3144,6 +3144,17 @@ impl FrameHarness {
         if self.presence.has_visible_interactions(interaction_now)
             && let Some((tree, bindings)) = self.retained_action_geometry()
         {
+            let published = crate::action_locus::publication::PublicationGeometry {
+                root: self.root.as_ref(),
+                nodes: &self.node_map,
+                names: &self.bindings.semantic_node_names(&self.node_map),
+                focused: self.focused,
+            }
+            .interactions(
+                &self.state.doc,
+                &self.bound_publication,
+                &self.presence.visible_interactions(interaction_now),
+            );
             let viewport = Rect::new(
                 0.0,
                 0.0,
@@ -3158,8 +3169,11 @@ impl FrameHarness {
                     &self.theme,
                 ),
                 &mut self.presence,
-                &tree,
-                &bindings,
+                crate::action_locus::PresenceGeometry {
+                    tree: &tree,
+                    bindings: &bindings,
+                    published: &published,
+                },
                 viewport,
                 "retained-primary",
                 interaction_now,
