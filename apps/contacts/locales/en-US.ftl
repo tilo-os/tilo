@@ -23,3 +23,6 @@ contacts-account-update-hint = Replace the old identity reference with this revi
 contacts-account-old-reference = Previous identity reference
 contacts-account-edit = Edit association
 contacts-account-edited-unverified = Changing this address clears its old identity reference. Sending stays unavailable until the new account identity is reviewed.
+
+contacts-account-scope = Service account
+contacts-account-review-description = { $action }: Contact { $person }. Service { $service }. Account { $recipient }. Service account { $scope }. Identity reference { $revision }. Previous identity reference { $previous }.

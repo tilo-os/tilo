@@ -8,7 +8,10 @@ use ui::LocalState;
 use ui::framework::{Actions, Dispatcher, Effected, LiveRow, PersonRecord, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Id};
-use ui::widget::{Button, Column, Dropdown, Element, ModelView, Row, Scrollable, Text, TextInput};
+use ui::widget::{
+    Button, Column, Dropdown, Element, ModelView, Property, PropertyList, Row, Scrollable, Text,
+    TextInput,
+};
 use uuid::Uuid;
 
 use crate::resource::Contacts;
@@ -398,19 +401,32 @@ pub(crate) fn review_rows(editor: &Editor) -> Vec<LiveRow> {
             LiveRow::new(
                 format!("contacts.account-review:{}", p.token),
                 "contacts.account-review",
-                format!(
-                    "{} · {} · {} · {} · {} · {} · {}",
-                    CATALOG.t(if p.revoke.is_some() {
-                        "contacts-account-remove"
-                    } else {
-                        "contacts-account-review"
-                    }),
-                    p.person,
-                    p.service,
-                    p.recipient,
-                    p.scope,
-                    p.revision,
-                    p.previous.as_ref().map_or("", |old| old.revision.as_str()),
+                CATALOG.t_args(
+                    "contacts-account-review-description",
+                    &[
+                        (
+                            "action",
+                            CATALOG
+                                .t(if p.revoke.is_some() {
+                                    "contacts-account-remove"
+                                } else {
+                                    "contacts-account-review"
+                                })
+                                .into(),
+                        ),
+                        ("person", p.person.clone().into()),
+                        ("service", p.service.clone().into()),
+                        ("recipient", p.recipient.clone().into()),
+                        ("scope", p.scope.clone().into()),
+                        ("revision", p.revision.clone().into()),
+                        (
+                            "previous",
+                            p.previous
+                                .as_ref()
+                                .map_or("", |old| old.revision.as_str())
+                                .into(),
+                        ),
+                    ],
                 ),
             )
             .effect(&AccountEffect::ConfirmAccountReview { token: p.token }),
@@ -435,14 +451,10 @@ fn person_label(directory: &ContactDirectory, id: &Id, label: &str) -> String {
             .into_iter()
             .rev()
             .collect::<String>();
-        format!("{label} · {suffix}")
+        format!("{label} ({suffix})")
     } else {
         label.to_owned()
     }
-}
-
-fn text_value(value: String) -> Element {
-    Box::new(Text::dynamic(move || value.clone()))
 }
 
 fn panel(
@@ -596,10 +608,10 @@ fn endpoint_list(
             Column::new()
                 .with_intrinsic_height()
                 .with_no_padding()
-                .push(text_value(format!(
-                    "{} · {}",
-                    endpoint.service, endpoint.recipient
-                )))
+                .push(Box::new(PropertyList::new(account_properties(
+                    &endpoint.service,
+                    &endpoint.recipient,
+                ))))
                 .push(Box::new(Text::new(status)))
                 .push(Box::new(
                     Column::new()
@@ -629,34 +641,48 @@ fn endpoint_list(
     Box::new(body)
 }
 
+fn account_properties(service: &str, recipient: &str) -> Vec<Property> {
+    vec![
+        Property::new(CATALOG.t("contacts-account-service"), service),
+        Property::new(CATALOG.t("contacts-account-recipient"), recipient)
+            .with_kind(ui::text_render::TextKind::Identifier),
+    ]
+}
+
 fn review(pending: &Pending, dispatcher: &Dispatcher<Contacts>) -> Element {
     let confirm = dispatcher.clone();
     let token = pending.token.clone();
     let cancel = dispatcher.clone();
+    let mut properties = account_properties(&pending.service, &pending.recipient);
+    if !pending.scope.is_empty() {
+        properties.push(Property::new(
+            CATALOG.t("contacts-account-scope"),
+            pending.scope.clone(),
+        ));
+    }
+    if let Some(previous) = &pending.previous {
+        properties.push(Property::new(
+            CATALOG.t("contacts-account-old-reference"),
+            previous.revision.clone(),
+        ));
+    }
+    if !pending.revision.is_empty() {
+        properties.push(Property::new(
+            CATALOG.t("contacts-account-reference"),
+            pending.revision.clone(),
+        ));
+    }
     let mut body = Column::new()
         .with_intrinsic_height()
         .push(Box::new(Text::new("contacts-account-review")))
-        .push(text_value(format!(
-            "{} · {}",
-            pending.service, pending.recipient
-        )))
+        .push(Box::new(PropertyList::new(properties)))
         .push(Box::new(Text::new(if pending.revoke.is_some() {
             "contacts-account-revoke-hint"
         } else {
             "contacts-account-confirm-hint"
         })));
-    if let Some(previous) = &pending.previous {
-        body = body
-            .push(Box::new(Text::new("contacts-account-old-reference")))
-            .push(text_value(previous.revision.clone()));
-        if pending.revision.is_empty() {
-            body = body.push(Box::new(Text::new("contacts-account-edited-unverified")));
-        }
-    }
-    if !pending.revision.is_empty() {
-        body = body
-            .push(Box::new(Text::new("contacts-account-reference")))
-            .push(text_value(pending.revision.clone()));
+    if pending.previous.is_some() && pending.revision.is_empty() {
+        body = body.push(Box::new(Text::new("contacts-account-edited-unverified")));
     }
     Box::new(
         body.push(Box::new(
@@ -735,8 +761,13 @@ mod tests {
             })
             .unwrap();
         assert!(published.label.contains(&p.person));
+        assert!(published.label.contains(&p.service));
         assert!(published.label.contains(&p.recipient));
+        assert!(published.label.contains(&p.scope));
         assert!(published.label.contains(&p.revision));
+        if let Some(previous) = &p.previous {
+            assert!(published.label.contains(&previous.revision));
+        }
         let action = AccountEffect::ConfirmAccountReview {
             token: p.token.clone(),
         };
