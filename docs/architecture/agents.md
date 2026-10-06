@@ -21,6 +21,91 @@ messages: they have an assignee, linked resources, typed action trace, state,
 timestamps and resulting changes. A person can create and dispatch a task with
 parameter forms derived from action descriptors and no model at all.
 
+## Interaction contract
+
+An agent should be approachable like another collaborator without pretending
+to be a person. Keep its name, collaborator colour and localized Agent label
+visible together. Its presence describes real activity, not an animation that
+claims work happened. A semantic action can highlight its actual resource's
+UI element; it must not fabricate pointer events or suggest that an action
+operates through screen coordinates. Only genuine pointer control publishes
+pointer presence.
+
+The conversation is ordinary Chat, not a separate agent terminal. Its compact
+detachable presentation uses the same shared floating-content primitive as
+navigation and calls, rather than adding overlapping desktop windows or an
+app-owned title bar. Detach and Return change presentation, not conversation,
+authority or editor identity: the private draft, caret, selection, undo stack,
+IME composition and focus remain with the same editor. Another participant
+must never receive this private editor state.
+
+Activating the agent's resource-anchored presence opens a small composer beside
+that anchor. Freeze the anchor while editing and clamp or flip the composer
+inside the viewport. Moving activity must not chase the person's pointer or
+move the field under their caret. Expired presence or lost permission disables
+submission without discarding the draft or stealing focus.
+
+The composer has three explicit intents, with a private draft for each:
+
+- **Message** submits to the canonical conversation. A conversation receipt
+  means Chat accepted it, not that the agent read or answered it.
+- **Queue** creates separate pending work. A queue receipt is historical
+  acceptance, not evidence that work is running or remains unstarted.
+- **Steer** addresses one selected current task and its exact run epoch and
+  revision. Saving direction does not mean the agent applied it. Multiple
+  current tasks require an explicit choice, never an arbitrary first task.
+
+Keep the full conversation reachable from the composer. Current intent and
+result belong next to the submitted work, not in a transient toast alone.
+Receipts that arrive while the composer is closed survive reopening; a receipt
+for an earlier submission never clears a subsequently edited draft or claims
+to describe that new draft. Switching agents, intent or presentation must not
+drop an in-flight invocation. An unknown outcome retains the original UUID and
+disables duplicate submission; observing its receipt is not a fresh retry.
+
+The task inspector is the place for the full owner-backed instruction, linked
+resources, pending work and attributed results. Public presence carries a
+short intention and actual authenticated phase, not private chain-of-thought.
+Distinguish a starting lease from agent acceptance, planning or execution.
+Display Saved versus Applied direction and Stop requested versus Cancelled
+separately. Live status requires a fresh observation of the same task and run;
+an old receipt cannot describe a replacement run. Amending or cancelling
+pending work uses an owner revision fence against concurrent admission.
+
+### Native Message boundary
+
+Adding an agent to a room grants neither the room's Chat history nor general
+Chat write authority. Explicitly addressed messages need a durable owner-backed
+input receipt minted after the canonical message commit. It binds the admitted
+invocation, original message and author, target agent, room and canonical
+record. Delivery contains only the explicitly submitted bounded text. Reply
+authority is limited to that original parent and authenticated Agent author.
+Acceptance and reply revalidate the actual managed process and current launch
+custody; a retired or replaced process cannot inherit a prior receipt simply
+by sharing a display name. A stored custody projection is correlation, never
+authority. Whole-document replicas or a fixture reply do not prove this path.
+
+### Acceptance gates
+
+These are requirements, not a declaration that all gates already pass:
+
+- Inspect full-size before/after compositions, including actual resource
+  presence and composer together, at normal and compact sizes in light, dark
+  and high-contrast enlarged text. Reject clipped controls, missing Agent
+  labels, moving anchors and receipts that misstate the task's phase.
+- Exercise physical detach, typing, selection, undo, IME input and Return on
+  the same native editor. Check fresh primary and detached frames, not a
+  retained buffer's presence alone. Exercise keyboard and accessibility paths
+  through the same controls and public actions.
+- Prove a signed canonical submission reaches the actual managed child,
+  produces a gateway request and commits an attributed canonical reply that
+  is presented in Chat. A controlled provider proves the pipeline, not the
+  quality or availability of a configured external model.
+- Prove permission downgrade, retirement, process replacement, cross-agent
+  isolation, duplicate delivery, missing receipts and late receipts without
+  widening permissions or repeating effects. Timer-only polling must stop at
+  a bounded response window and must not force idle repaints.
+
 ## Access model
 
 Human roles are inherited base authority. Agents deliberately receive no
