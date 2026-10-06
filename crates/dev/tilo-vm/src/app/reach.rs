@@ -124,6 +124,15 @@ fn wake_line(entry: &VmEntry) -> String {
 }
 
 impl App {
+    fn probe_device(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Probe {
+        reach::probe(
+            &mut self.runner,
+            endpoint,
+            vm.entry.key.as_deref(),
+            PROBE_TIMEOUT,
+        )
+    }
+
     /// Where to reach `vm` over SSH now. A device is taken at its address
     /// as the registry has it now (an earlier step may have moved it), and
     /// found again by name when that stops answering
@@ -158,12 +167,7 @@ impl App {
             if std::env::var_os("TILO_VM_SSH").is_some() {
                 return Ok(endpoint);
             }
-            let detail = match reach::probe(
-                &mut self.runner,
-                &endpoint,
-                vm.entry.key.as_deref(),
-                PROBE_TIMEOUT,
-            ) {
+            let detail = match self.probe_device(&vm, &endpoint) {
                 Probe::There | Probe::Unknown => return Ok(endpoint),
                 Probe::Lost(detail) => detail,
             };
@@ -207,13 +211,7 @@ impl App {
             host,
             ..endpoint.clone()
         };
-        if reach::probe(
-            &mut self.runner,
-            &moved,
-            vm.entry.key.as_deref(),
-            PROBE_TIMEOUT,
-        ) != Probe::There
-        {
+        if self.probe_device(vm, &moved) != Probe::There {
             return Ok(None);
         }
         self.update_entry(&vm.name, |entry| entry.ssh = Some(moved.ssh_spec()))?;
@@ -344,12 +342,7 @@ impl App {
         }
         let recorded = hypervisor::adapter(DEVICE)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         if std::env::var_os("TILO_VM_SSH").is_none()
-            && reach::probe(
-                &mut self.runner,
-                &recorded,
-                vm.entry.key.as_deref(),
-                PROBE_TIMEOUT,
-            ) == Probe::There
+            && self.probe_device(&vm, &recorded) == Probe::There
         {
             return self.await_daemon(&vm, started, "it was awake already");
         }
