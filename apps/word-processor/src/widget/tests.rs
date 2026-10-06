@@ -722,12 +722,29 @@ fn open_hosted_toolbar_overflow(framed: &mut Framed<WordProcessorWidget>) {
 }
 
 #[test]
+fn framework_owner_publishes_retained_toolbar_native_controls() {
+    let mut app = ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new()
+        .expect("the actual framework owns Writer");
+    let surface = app.agent_surface();
+    let rows = surface.as_array().expect("published resource/action rows");
+    for id in ["bold", "toggle-ruler", "insert-table"] {
+        let resource = format!("tilo.control:word.toolbar.{id}");
+        assert!(
+            rows.iter().any(|row| {
+                row["resource"].as_str() == Some(resource.as_str())
+                    && row["action"].as_str() == Some("invoke")
+            }),
+            "the framework publication contains {resource}/invoke: {surface}"
+        );
+    }
+}
+
+#[test]
 fn toolbar_controls_publish_before_drawing_and_report_retained_replacement() {
     let (mut state, mut wp) = bound();
     assert!(
-        wp.children()
+        ui::resources::resources(&wp, &state.doc)
             .into_iter()
-            .flat_map(|child| ui::resources::resources(child, &state.doc))
             .any(|resource| resource.id.as_str() == "tilo.control:word.toolbar.bold"),
         "sync constructs the native toolbar before the host publishes or draws"
     );
@@ -744,9 +761,8 @@ fn toolbar_controls_publish_before_drawing_and_report_retained_replacement() {
     wp.model_mut().select_all(&state.doc);
     wp.sync(&state.doc, &state.root);
     assert!(
-        wp.children()
+        ui::resources::resources(&wp, &state.doc)
             .into_iter()
-            .flat_map(|child| ui::resources::resources(child, &state.doc))
             .any(|resource| resource.id.as_str() == "tilo.control:word.toolbar.hyperlink"),
         "selection-dependent controls exist before publication"
     );
