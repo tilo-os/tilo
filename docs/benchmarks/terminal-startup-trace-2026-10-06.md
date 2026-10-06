@@ -39,9 +39,11 @@ no evidence of an unsafe command sink or a rendering failure.
 Starting the image's real `/usr/libexec/tilo-ush serve` against an owner-private
 socket, restarting the private compositor, and explicitly opening a hosted tab
 changed the completed inspection to `lifecycle: open`, an environment target,
-a session identifier, and `input_available: true`. The supervisor also logged
-a broken pipe; that warning did not prevent this session from opening and is
-not treated as proof of a timeout defect. No timeout was increased.
+a session identifier, and `input_available: true`. The snapshot also shows an older restored tab reporting a resource-unavailable
+error, and the supervisor logged a broken pipe. The newly opened tab inspected
+here did open; these partial failures remain visible in the evidence and are
+not treated as proof of a timeout defect. No command roundtrip was measured
+and no timeout was increased.
 
 The candidate retains the required-service error in a live hosted terminal's
 `no_runtime` state and status, while keeping input unavailable. Capture and
@@ -104,7 +106,8 @@ and require a new nonzero foreign frame whose dimensions match its rect and
 whose presented flag is true. Keep the original 90-second observation bound.
 See [headless testing](../headless-testing.md); never screenshot the real desktop.
 
-Executed sequentially through `rcargo --no-fallback`, with `-j8`:
+Executed sequentially through a remote Cargo drop-in, with `--no-fallback`
+and `-j8`:
 
 - Negative control and fixed regression: shell library filter
   `hosted_terminal_missing_ush_reports_startup_failure_and_refuses_input`.
