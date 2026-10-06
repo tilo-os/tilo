@@ -1850,12 +1850,14 @@ impl MusicApp {
         self.ensure_worker();
         let request = if matches!(effect, MusicEffect::DisconnectSpotify) {
             crate::stream::StreamRequest::DisconnectSpotify
+        } else if matches!(effect, MusicEffect::ConnectSpotify) {
+            crate::stream::StreamRequest::ConnectSpotify
         } else if matches!(effect, MusicEffect::ConnectSpotifyPlayback) {
             crate::stream::StreamRequest::ConnectSpotifyPlayback
         } else {
             crate::stream::StreamRequest::Source {
                 spotify: !matches!(effect, MusicEffect::BrowseYouTube),
-                sign_in: matches!(effect, MusicEffect::ConnectSpotify),
+                sign_in: matches!(effect, MusicEffect::ConnectSpotifyLibrary),
             }
         };
         self.worker
@@ -1889,7 +1891,8 @@ impl MusicApp {
                 self.open_sources_menu();
                 Ok(ui::framework::Effected::done())
             }
-            MusicEffect::ConnectSpotify
+            MusicEffect::ConnectSpotifyLibrary
+            | MusicEffect::ConnectSpotify
             | MusicEffect::ConnectSpotifyPlayback
             | MusicEffect::DisconnectSpotify
             | MusicEffect::BrowseSpotify
