@@ -29,6 +29,7 @@ pub struct ActionCx {
     minted: u64,
     now_ms: i64,
     author: Option<String>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 /// Who invoked the action applying now, as its envelope pinned it.
@@ -36,6 +37,10 @@ fn invoking_author() -> Option<String> {
     tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
         .map(|invoker| invoker.actor)
+}
+
+fn invoking_invocation() -> Option<tilo_actions::InvocationId> {
+    tilo_actions::invoking_context().and_then(|context| context.source_invocation)
 }
 
 impl ActionCx {
@@ -52,6 +57,7 @@ impl ActionCx {
             minted: 0,
             now_ms,
             author: invoking_author(),
+            invocation: invoking_invocation(),
         }
     }
 
@@ -81,6 +87,7 @@ impl ActionCx {
             minted: 0,
             now_ms: 0,
             author: invoking_author(),
+            invocation: invoking_invocation(),
         }
     }
 
@@ -108,6 +115,13 @@ impl ActionCx {
     /// (an edit written straight into a document outside the host).
     pub fn author(&self) -> Option<&str> {
         self.author.as_deref()
+    }
+
+    /// The invocation admitted by the action door, pinned in the action
+    /// envelope so origin and replay observe the same correlation identity.
+    /// This is not caller authority; use [`Self::author`] for that.
+    pub const fn invocation(&self) -> Option<tilo_actions::InvocationId> {
+        self.invocation
     }
 
     /// The content store of the window applying the action, where the bytes

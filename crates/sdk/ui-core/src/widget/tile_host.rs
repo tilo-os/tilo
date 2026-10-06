@@ -1347,6 +1347,47 @@ impl Continuable for TileHost {
 }
 
 impl FloatingSurfaceProvider for TileHost {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.on_floating_surface_focus_changed(id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.on_floating_surface_event_source(id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        match &self.content {
+            TileContent::App(widget) => widget.floating_surface_accessibility(id),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(widget) => widget
+                .perform_floating_surface_accessibility_action(id, target, action, state, path),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+        }
+    }
+
+    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+        match &self.content {
+            TileContent::App(widget) => widget.floating_surface_ime(id),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {

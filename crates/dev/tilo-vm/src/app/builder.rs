@@ -14,7 +14,46 @@ use super::{App, Resolved};
 use crate::build;
 use crate::builderlayer::{self, Stream};
 use crate::error::CliError;
+use crate::hypervisor;
 use crate::remote::Remote;
+
+fn build_header<T>(
+    remote: &mut Remote,
+    device: bool,
+    build: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, CliError> {
+    let (result, renewal) = if device {
+        remote.keep_awake_while(build)?
+    } else {
+        (build(), Ok(()))
+    };
+    let header = result.map_err(CliError::io("read the remote builder's header"))?;
+    renewal?;
+    Ok(header)
+}
+
+fn start_builder(
+    line: &hypervisor::CommandLine,
+    root: &std::path::Path,
+) -> Result<std::process::Child, CliError> {
+    Command::new(&line.program)
+        .args(&line.args)
+        .envs(line.env.iter().map(|(k, v)| (k, v)))
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                CliError::ToolMissing {
+                    tool: line.program.clone(),
+                    purpose: "build on the remote builder (--builder remote)".into(),
+                }
+            } else {
+                CliError::io("start the remote builder")(e)
+            }
+        })
+}
 
 impl App {
     /// Build `component` with the remote builder whose command line is
@@ -39,33 +78,23 @@ impl App {
                 vm.name
             );
         }
-        let mut child = Command::new(&line.program)
-            .args(&line.args)
-            .envs(line.env.iter().map(|(k, v)| (k, v)))
-            .current_dir(&worktree.root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    CliError::ToolMissing {
-                        tool: line.program.clone(),
-                        purpose: "build on the remote builder (--builder remote)".into(),
-                    }
-                } else {
-                    CliError::io("start the remote builder")(e)
-                }
-            })?;
+        let mut child = start_builder(&line, &worktree.root)?;
         let stdout = child.stdout.take().ok_or_else(|| {
             CliError::io("start the remote builder")(std::io::Error::other("no stdout"))
         })?;
         let mut stream = Stream::new(BufReader::with_capacity(2 << 20, stdout));
-        let header = self
-            .receipt
-            .phase("build", || stream.header(&mut std::io::stderr()));
+        let header = self.receipt.phase("build", || {
+            build_header(remote, vm.entry.hypervisor == hypervisor::DEVICE, || {
+                stream.header(&mut std::io::stderr())
+            })
+        });
         let packed = match header {
             Ok(packed) => packed,
             Err(error) => {
+                // The owned builder may still be writing its framed layer.
+                // Close the reader and reap it before returning an error.
+                drop(stream);
+                let _ = child.kill();
                 let status = child
                     .wait()
                     .map_or_else(|e| e.to_string(), |s| s.to_string());
