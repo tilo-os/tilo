@@ -48,7 +48,7 @@ impl StatePeer {
             );
             workspace.owner.clone_from(&owner);
             workspace.capabilities.clone_from(&caps);
-            workspace.role_of_agent_at(agent, seconds)
+            workspace.role_of_agent_in_room_at(agent, &self.core.room, seconds)
         };
         if let Some(agent) = command.agent()
             && agent_role(agent).is_none_or(|role| role == Role::Denied)
@@ -179,6 +179,70 @@ mod tests {
         )
         .unwrap();
         (peer, governor, other, now)
+    }
+
+    #[test]
+    fn foreign_room_membership_cannot_authorize_an_agent_task() {
+        let (mut peer, governor, _, now) = peer();
+        let key = SigningKey::from_bytes(&[2; 32]);
+        peer.apply_workspace_membership_command(
+            &governor,
+            &crate::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                agent: "scribe".into(),
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+        peer.put_governed_capabilities(
+            &[CapOverride::membership(
+                Subject::agent("scribe"),
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                Verb::Write,
+            )
+            .with_id("other-room-agent")],
+            &key,
+            now,
+        )
+        .unwrap();
+        let command = WorkspaceTaskCommand::Queue {
+            title: "Keep room boundaries".into(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+            resource: None,
+        };
+        let authority = WorkspaceTaskAuthority::Person { caller: governor };
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::from_u128(1),
+                [1; 32],
+                &authority,
+                &command,
+                now
+            )
+            .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        peer.put_governed_capabilities(
+            &[
+                CapOverride::membership(Subject::agent("scribe"), ROOM, Verb::Read)
+                    .with_id("actual-room-agent"),
+            ],
+            &key,
+            now,
+        )
+        .unwrap();
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::from_u128(1),
+                [1; 32],
+                &authority,
+                &command,
+                now
+            )
+            .is_ok()
+        );
     }
 
     #[test]

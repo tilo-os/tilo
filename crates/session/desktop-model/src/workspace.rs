@@ -760,6 +760,14 @@ impl Workspace {
         self.role_of_agent_for_room_at(agent, None, now)
     }
 
+    /// Admission in one exact room. A membership for another room cannot
+    /// authorize a task or managed session here. Scoped action grants still
+    /// decide individual operations independently of this admission result.
+    #[must_use]
+    pub fn role_of_agent_in_room_at(&self, agent: &str, room: &str, now: u64) -> Option<CapRole> {
+        self.role_of_agent_for_room_at(agent, Some(room), now)
+    }
+
     fn role_of_agent_for_room_at(
         &self,
         agent: &str,
