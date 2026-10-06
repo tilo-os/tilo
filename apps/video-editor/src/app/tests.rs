@@ -6752,6 +6752,22 @@ fn region_diff(a: &[u8], b: &[u8], fw: u32, fh: u32, rect: Rect) -> usize {
     n
 }
 
+/// Exact pixel evidence when two production renders differ in a region.
+fn region_diff_samples(before: &[u8], after: &[u8], width: u32, rect: Rect) -> Vec<String> {
+    before
+        .chunks_exact(4)
+        .zip(after.chunks_exact(4))
+        .enumerate()
+        .filter_map(|(index, (before, after))| {
+            let x = index % width as usize;
+            let y = index / width as usize;
+            (before != after && rect.contains(Point::new(x as f64, y as f64)))
+                .then(|| format!("({x},{y}): {before:?}->{after:?}"))
+        })
+        .take(12)
+        .collect()
+}
+
 /// How many visually distinct colours a rect of a rendered frame contains,
 /// quantised to 4 bits per channel so antialiasing noise does not count as
 /// variety. A pane covered by an opaque slab returns 1.
@@ -9536,28 +9552,68 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
         // pane that is missing its cursor instead of only the first.
         let mut wrong: Vec<String> = Vec::new();
         for (what, place) in cases {
-            // Compare one retained app on one rendering context. Constructing
-            // each frame independently also changes the sample's resource IDs,
-            // font-system caches and GPU renderer, so focus is no longer the
-            // only input to this exact pixel comparison.
-            let (mut app, _doc) = app_and_doc();
-            let (on, off) = place(&mut app);
-            let mut text = TextRenderer::new();
-            let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
+            // Settle the real host pipeline before comparing focus. Direct
+            // draws can still change layout, text caches and pending media
+            // between the two frames independently of the keyboard cursor.
+            let (app, doc) = app_and_doc();
+            let mut state = ui::State::new();
+            state.doc = doc;
+            let mut driver = ui::headless::Driver::for_root(state, app, (w, h), theme.clone());
+            let (on, off) = place(driver.root_mut::<VideoEditorApp>());
+            driver.relayout();
+            let bound = ui::time::Duration::from_secs(30);
+            assert!(
+                driver.wait_until(bound, |frame| !frame
+                    .root::<VideoEditorApp>()
+                    .needs_idle_sync()),
+                "{what}: the real media work must finish before testing focus pixels"
+            );
+            // GPU atomic segment ordering can change glyph-edge coverage by
+            // one channel value even for the identical Scene. The existing
+            // CPU preprocessing mode orders those segments deterministically;
+            // Vello still performs the production fine rasterization on GPU.
+            let mut renderer =
+                ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(w, h)
+                    .expect("the exact focus oracle requires the production Vello renderer");
             let mut render = |focused: bool| {
-                app.presentation.keyboard_focus = focused;
-                let mut scene = Scene::new();
-                app.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
+                driver
+                    .root_mut::<VideoEditorApp>()
+                    .presentation
+                    .keyboard_focus = focused;
+                driver.relayout();
+                assert!(
+                    driver.settle_for_capture(bound),
+                    "{what}: the actual focus frame must settle before capture"
                 );
-                renderer.render_rgba(&scene)
+                assert_eq!(
+                    driver.root::<VideoEditorApp>().presentation.keyboard_focus,
+                    focused,
+                    "{what}: the frame must preserve the staged keyboard focus"
+                );
+                // Rasterisation itself must be stable: these two renders
+                // borrow the same immutable completed Scene, with no host
+                // pump, layout, draw, or state mutation between them.
+                let pixels = renderer.render_rgba(driver.scene());
+                let repeated = renderer.render_rgba(driver.scene());
+                (pixels, repeated)
             };
-            let dark = render(false);
-            let lit = render(true);
+            let (dark, dark_repeated) = render(false);
+            let (lit, lit_repeated) = render(true);
+            for (state, before, after) in [
+                ("unfocused", &dark, &dark_repeated),
+                ("focused", &lit, &lit_repeated),
+            ] {
+                for (region, rect) in [("target", on), ("other control", off)] {
+                    let changed = region_diff(before, after, w, h, rect);
+                    if changed != 0 {
+                        let samples = region_diff_samples(before, after, w, rect);
+                        wrong.push(format!(
+                            "{what} {state} immutable Scene changed {changed} pixels in \
+                             {region} {rect:?} between renders: {samples:?}"
+                        ));
+                    }
+                }
+            }
             let painted = region_diff(&dark, &lit, w, h, on);
             if painted <= 100 {
                 wrong.push(format!(
@@ -9569,9 +9625,10 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
 
             let spilled = region_diff(&dark, &lit, w, h, off);
             if spilled != 0 {
+                let samples = region_diff_samples(&dark, &lit, w, off);
                 wrong.push(format!(
                     "{what} also marked a control the cursor is not on ({spilled} px in {off:?}): \
-                     the ring has to name one stop, not light the whole pane"
+                     the ring has to name one stop, not light the whole pane; {samples:?}"
                 ));
             }
         }
