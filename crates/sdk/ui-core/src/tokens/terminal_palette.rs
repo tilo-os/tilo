@@ -5,7 +5,7 @@ use vello::peniko::Color;
 /// Palette used by terminal-style widgets. Exposes default fg/bg and a 16-slot
 /// ANSI base palette. Higher-index colors (256/truecolor) are out of scope —
 /// consumers still derive those from the 16 anchors or from their own mapping.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TerminalPalette {
     pub fg_default: Color,
     pub bg_default: Color,

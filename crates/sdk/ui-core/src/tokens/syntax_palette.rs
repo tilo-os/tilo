@@ -37,7 +37,7 @@ const TAG_SLOT: usize = 6;
 
 /// Theme-derived colour for every syntax role. Read it from
 /// `theme.tokens.syntax` and resolve a token with [`SyntaxPalette::color`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SyntaxPalette {
     pub keyword: Color,
     /// Type names (`String`, `u32`, a capitalised identifier).

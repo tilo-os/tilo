@@ -169,7 +169,7 @@ impl Default for TypeScale {
 
 /// A named font family, wrapped so consumers can extend with fallbacks/weights later
 /// without breaking token consumers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FontFamily {
     pub family: String,
 }
@@ -298,7 +298,7 @@ impl ReadingFace {
 }
 
 /// A theme's type: three families and the scale every role derives from.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Typography {
     pub sans_family: String,
     pub serif_family: String,
