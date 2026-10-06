@@ -27,6 +27,7 @@
 //! refused for a while rather than asked again, so a revert cannot turn
 //! into a loop of prompts.
 
+use settings_store::ConditionalUpdate;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
@@ -548,21 +549,35 @@ fn persist_admitted(
         .as_object()
         .cloned()
         .ok_or_else(|| std::io::Error::other("invalid display request"))?;
-    let saved = match source {
-        Some(source) => source.update_section("display_transaction", values),
-        None => settings_store::update_section("display_transaction", values),
-    };
-    if let Err(error) = saved {
-        let durable = source
-            .and_then(|source| source.load().get("display_transaction").cloned())
-            .and_then(|value| serde_json::from_value::<DisplayTransaction>(value).ok());
-        if durable
-            .as_ref()
-            .is_none_or(|durable| !same_admission(&transaction, durable))
-        {
-            return Err(error);
+    let stored = match source {
+        Some(source) => source.update_section_report("display_transaction", values),
+        None => settings_store::update_section("display_transaction", values)
+            .map(|()| ConditionalUpdate::Stored),
+    }?;
+    match stored {
+        ConditionalUpdate::Stored => {}
+        ConditionalUpdate::Superseded => {
+            return Err(std::io::Error::other(
+                "display request was superseded during storage",
+            ));
         }
-        tracing::warn!(%error, transaction = transaction.id, "output management: durable request accepted; settings copy repair remains pending");
+        ConditionalUpdate::StoredWithCopyRepair(error) => {
+            // The operation itself proves durable acceptance. A later
+            // replacement must still fail this original request; this read
+            // never turns a generic storage error into a receipt.
+            let current = source
+                .and_then(|source| source.load().get("display_transaction").cloned())
+                .and_then(|value| serde_json::from_value::<DisplayTransaction>(value).ok());
+            if current
+                .as_ref()
+                .is_none_or(|current| !same_admission(&transaction, current))
+            {
+                return Err(std::io::Error::other(
+                    "display request was replaced after durable storage",
+                ));
+            }
+            tracing::warn!(%error, transaction = transaction.id, "output management: durable request accepted; settings copy repair remains pending");
+        }
     }
     Ok(transaction)
 }
