@@ -2741,6 +2741,14 @@ impl ControlState for FrameBuilderControlState<'_> {
     /// Enumerate the exported action surface through the *same* provider
     /// registry that feeds the Ctrl+K palette — but renders nothing.
     fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+        self.enumerate_actions_with_programmatic(query, false)
+    }
+
+    fn enumerate_actions_with_programmatic(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+    ) -> Result<serde_json::Value, String> {
         let (doc, root) = self
             .doc
             .ok_or_else(|| "control state has no live document".to_string())?;
@@ -2748,9 +2756,19 @@ impl ControlState for FrameBuilderControlState<'_> {
         // The borrow lives only for the closure; `ActionCatalog` owns its results
         // outright, so the catalogue outlives the guards it was built through.
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb
-                .host()
-                .action_catalog(query, chrome, doc, root, gate)
+            self.fb.host().action_catalog_query(
+                &crate::shell::search::QueryArgs {
+                    needle: query,
+                    scope: crate::shell::chrome_state::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome,
+                    doc,
+                    doc_root: root,
+                },
+                gate,
+                include_programmatic,
+            )
         })?;
         let actions: Vec<serde_json::Value> = catalog
             .enumerate()

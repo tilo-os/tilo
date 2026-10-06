@@ -94,6 +94,8 @@ mod tests {
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
         let doc = automerge::AutoCommit::new();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Application],
             chrome: &chrome.borrow(),

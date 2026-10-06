@@ -1532,15 +1532,70 @@ impl BridgeState {
     }
 
     fn fail_closed(&self, direction: &'static str) {
+        self.fail_closed_with_rpc_error(direction, None);
+    }
+
+    fn fail_closed_with_rpc_error(
+        &self,
+        direction: &'static str,
+        rejected: Option<(u64, &runtime_portal::NotAvailable)>,
+    ) {
         // Latch before withdrawing health or dropping any queued receipt sender.
         self.record_publication_failure(DocumentPublicationError::Failed(direction.into()));
         if self.healthy.swap(false, Ordering::AcqRel) {
-            tracing::error!(
-                direction,
-                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
-            );
+            if let Some((invocation_id, error)) = rejected {
+                let (rpc_kind, rpc_error, rpc_error_truncated) = bounded_rpc_diagnostic(error);
+                tracing::error!(
+                    direction,
+                    invocation_id,
+                    rpc_kind,
+                    rpc_error,
+                    rpc_error_truncated,
+                    "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+                );
+            } else {
+                tracing::error!(
+                    direction,
+                    "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+                );
+            }
             self.notify_events();
         }
+    }
+}
+
+/// Keep the rejected RPC's cause, never its request/update payload. A peer's
+/// diagnostic is untrusted text: bound its allocation and remove control
+/// characters before placing it in the ordinary session log.
+fn bounded_rpc_diagnostic(error: &runtime_portal::NotAvailable) -> (&'static str, String, bool) {
+    match error {
+        runtime_portal::NotAvailable::Capnp(error) => {
+            let mut chars = error.extra.chars();
+            let detail: String = chars
+                .by_ref()
+                .take(512)
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect();
+            let kind = match error.kind {
+                capnp::ErrorKind::Failed => "capnp_failed",
+                capnp::ErrorKind::Overloaded => "capnp_overloaded",
+                capnp::ErrorKind::Disconnected => "capnp_disconnected",
+                capnp::ErrorKind::Unimplemented => "capnp_unimplemented",
+                _ => "capnp_protocol_error",
+            };
+            (kind, detail, chars.next().is_some())
+        }
+        runtime_portal::NotAvailable::ServiceFdMissing => {
+            ("service_fd_missing", String::new(), false)
+        }
+        runtime_portal::NotAvailable::ConnectionFailed(error) => {
+            ("connection_failed", format!("{:?}", error.kind()), false)
+        }
+        runtime_portal::NotAvailable::ProtocolMismatch { expected, got } => (
+            "protocol_mismatch",
+            format!("expected {expected}, got {got}"),
+            false,
+        ),
     }
 }
 
@@ -5503,9 +5558,10 @@ async fn dispatch_sdk_request(
                     // owner durability acknowledgments. A failed terminal may
                     // follow an effect and must stop subsequent outbound work.
                     if update.is_terminal() {
-                        inbound_tx
-                            .state
-                            .fail_closed("invocation update outcome unknown");
+                        inbound_tx.state.fail_closed_with_rpc_error(
+                            "invocation update outcome unknown",
+                            Some((id, &error)),
+                        );
                     }
                 }
             }
@@ -8346,6 +8402,56 @@ mod tests {
         reply.send(state.publication_result()).unwrap();
         state.record_publication_failure(DocumentPublicationError::Failed("later".into()));
         assert_eq!(receipt.wait(Some(Instant::now())), Ok(()));
+    }
+
+    #[test]
+    fn invocation_update_rpc_diagnostic_keeps_cause_and_existing_fail_closed_latch() {
+        let state = BridgeState::new();
+        let error = runtime_portal::NotAvailable::Capnp(capnp::Error::failed(
+            "unknown invocation id".into(),
+        ));
+        assert_eq!(
+            bounded_rpc_diagnostic(&error),
+            ("capnp_failed", "unknown invocation id".into(), false)
+        );
+        state.fail_closed_with_rpc_error("invocation update outcome unknown", Some((389, &error)));
+        assert!(!state.is_healthy());
+        assert_eq!(
+            state.publication_result(),
+            Err(DocumentPublicationError::Failed(
+                "invocation update outcome unknown".into()
+            ))
+        );
+        state.fail_closed("later failure");
+        assert_eq!(
+            state.publication_result(),
+            Err(DocumentPublicationError::Failed(
+                "invocation update outcome unknown".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn invocation_update_rpc_diagnostic_bounds_untrusted_text_without_logging_io_payload() {
+        let error = runtime_portal::NotAvailable::Capnp(capnp::Error::failed(format!(
+            "refused\n\0{}",
+            "🦀".repeat(1024)
+        )));
+        let (kind, detail, truncated) = bounded_rpc_diagnostic(&error);
+        assert_eq!(kind, "capnp_failed");
+        assert!(detail.starts_with("refused  "));
+        assert_eq!(detail.chars().count(), 512);
+        assert!(detail.len() <= 2048);
+        assert!(!detail.chars().any(char::is_control));
+        assert!(truncated);
+        let io = runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "private transport payload",
+        ));
+        assert_eq!(
+            bounded_rpc_diagnostic(&io),
+            ("connection_failed", "PermissionDenied".into(), false)
+        );
     }
 
     #[test]
