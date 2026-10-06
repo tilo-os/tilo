@@ -671,7 +671,13 @@ impl FrameRecorder {
             eprintln!("frame-metrics: trace write failed ({e}); disabling trace");
             self.trace = None;
         }
-        if sample.start_us >= self.next_trace_flush_us {
+        // An idle session may finish only its startup ticks, all before the
+        // periodic deadline, and then park indefinitely. Publish the first
+        // completed row while the recorder is alive rather than leaving only
+        // its header until another input or clean shutdown arrives.
+        if self.trace.is_some()
+            && (self.trace_rows == 0 || sample.start_us >= self.next_trace_flush_us)
+        {
             if let Some(trace) = self.trace.as_mut()
                 && let Err(error) = trace.flush()
             {
@@ -1252,10 +1258,11 @@ mod tests {
             recorder.begin_tick(base + Duration::from_secs(1));
             recorder.end_tick();
 
-            let bytes = std::fs::read(&path).expect("read flushed trace");
-            assert!(
-                !bytes.is_empty(),
-                "one-second trace must reach disk before Drop"
+            let text = std::fs::read_to_string(&path).expect("read flushed trace");
+            assert_eq!(
+                text.lines().count(),
+                2,
+                "one-second trace must include its sample, not only its header, before Drop"
             );
         }
         // Phase `each_tick_records_the_cpu_its_thread_spent`.
@@ -1281,5 +1288,48 @@ mod tests {
                 "5 ms of spinning counts as CPU, 30 ms asleep does not: {cpu} us"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_trace_tests {
+    use super::{CSV_HEADER, FrameRecorder};
+    use std::io::Write;
+
+    #[test]
+    fn first_completed_trace_row_is_visible_without_later_activity() {
+        let dir = tempfile::tempdir().expect("trace tempdir");
+        let path = dir.path().join("frame.csv");
+        let mut file = std::fs::File::create(&path).expect("create trace");
+        writeln!(file, "{CSV_HEADER}").expect("write trace header");
+        let mut recorder = FrameRecorder::disabled();
+        recorder.enabled = true;
+        recorder.trace = Some(std::io::BufWriter::new(file));
+        recorder.trace_path = Some(path.clone());
+
+        // Real end_tick path, before its one-second periodic flush deadline.
+        recorder.begin_tick(recorder.start);
+        recorder.mark_submit(
+            std::time::Duration::from_micros(17),
+            false,
+            recorder.start,
+            None,
+        );
+        recorder.end_tick();
+
+        let text = std::fs::read_to_string(&path).expect("read live trace");
+        let lines = text.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines.len(),
+            2,
+            "startup sample must be readable before recorder Drop"
+        );
+        assert_eq!(lines[0], CSV_HEADER);
+        let row = lines[1].split(',').collect::<Vec<_>>();
+        assert_eq!(row.len(), CSV_HEADER.split(',').count());
+        assert_eq!(row[0], "0");
+        assert_eq!(row[1], "0");
+        assert_eq!(row[7], "17");
+        assert_eq!(row[11], "1");
     }
 }
