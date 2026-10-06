@@ -9,6 +9,9 @@ use launcher::managed::{ChannelProcessFacts, ManagedRuntimeFacts, VerifiedManage
 use std::time::SystemTime;
 use tilo_user_identity::DeviceCert;
 
+mod reply;
+pub use reply::AgentMessageReplyReceipt;
+
 /// Descriptive addressed input. This is neither document access nor process
 /// authority; only the executing Agent's private admitted channel receives it.
 pub struct AgentMessageDelivery {

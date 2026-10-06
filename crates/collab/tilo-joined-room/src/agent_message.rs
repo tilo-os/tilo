@@ -397,6 +397,9 @@ pub(crate) enum MessageOutcome {
     Replied {
         invocation: uuid::Uuid,
         document: CommitBinding,
+        /// Immutable executing recipient for exact receipt observation. This
+        /// is correlation only; the host still verifies its actual process.
+        execution: Box<MessageExecutionBinding>,
     },
     /// The canonical Chat request remains accepted. This is an explicit
     /// delivery outcome, not permission to drop/retry the same UUID silently.

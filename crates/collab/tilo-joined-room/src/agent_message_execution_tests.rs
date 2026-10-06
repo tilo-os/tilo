@@ -106,11 +106,18 @@ fn started(launcher: &mut ManagedLauncher) -> VerifiedManagedSupervisor {
 }
 
 fn launch(fixture: &Fixture) -> Running {
+    launch_for(fixture, "scribe")
+}
+
+fn launch_for(fixture: &Fixture, agent: &str) -> Running {
     // The explicit qualification build must supply actual same-worktree binaries.
     // Missing binaries fail; never substitute a shell script or arbitrary PID.
     let executable = std::env::current_exe().unwrap();
     let binaries = executable.parent().unwrap().parent().unwrap();
-    let root = fixture.directory.path().join("managed");
+    let root = fixture
+        .directory
+        .path()
+        .join(format!("managed-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let (package, trust) = fixture_package(&root, &binaries.join("managed-tree-fixture")).unwrap();
@@ -130,7 +137,7 @@ fn launch(fixture: &Fixture) -> Running {
                 room: RoomId::parse(crate::testing::ROOM).unwrap(),
                 caller: fixture.certificate.clone(),
                 attestor: fixture.certificate.clone(),
-                agent: "scribe".into(),
+                agent: agent.into(),
                 launch: uuid::Uuid::new_v4().to_string(),
                 runtime_epoch: runtime.runtime_epoch.clone(),
                 runtime_digest: runtime_digest(&runtime).unwrap(),
@@ -139,7 +146,14 @@ fn launch(fixture: &Fixture) -> Running {
         )
         .unwrap();
     authority.session.set(session.clone()).unwrap();
-    connect(fixture, launcher, authority.as_ref(), session, runtime)
+    connect(
+        fixture,
+        launcher,
+        authority.as_ref(),
+        session,
+        runtime,
+        root,
+    )
 }
 
 fn connect(
@@ -148,6 +162,7 @@ fn connect(
     authority: &OwnerAuthority,
     session: AgentSessionBinding,
     runtime: ManagedRuntimeFacts,
+    root: std::path::PathBuf,
 ) -> Running {
     let binding = ManagedBinding {
         room: session.room.to_string(),
@@ -166,7 +181,7 @@ fn connect(
         .unwrap();
     let services = EnrolledServiceContext::new(
         binding,
-        fixture.directory.path().join("managed"),
+        root,
         runtime.runtime_epoch,
         pending.channel_id().to_string(),
         ManagedProviderSelection {
@@ -427,6 +442,256 @@ fn real_process_binds_accepts_and_prepares_only_explicit_input() {
     );
     running.launcher.shutdown().unwrap();
     assert!(running.process.facts().is_err());
+}
+
+#[test]
+fn actual_process_commits_one_attributed_same_parent_reply_and_exact_replay() {
+    let (fixture, invocation) = admitted();
+    let mut running = launch(&fixture);
+    let delivery = running.service.deliver(invocation, fixture.now).unwrap();
+    assert!(
+        running
+            .service
+            .commit_reply(
+                invocation,
+                delivery.source_digest,
+                &fixture.key,
+                fixture.now
+            )
+            .is_err()
+    );
+    running.service.accept(invocation, fixture.now).unwrap();
+    let reply = running
+        .service
+        .prepare_reply(
+            invocation,
+            "Fixture output; not model evidence",
+            fixture.now,
+        )
+        .unwrap();
+    let wrong_key = ed25519_dalek::SigningKey::from_bytes(&[77; 32]);
+    assert!(
+        running
+            .service
+            .commit_reply(invocation, delivery.source_digest, &wrong_key, fixture.now)
+            .is_err()
+    );
+    assert!(
+        running
+            .service
+            .commit_reply(invocation, [9; 32], &fixture.key, fixture.now)
+            .is_err()
+    );
+    // An unrelated collaborator edit must survive the receipt-scoped append.
+    change_chat(&fixture, invocation, 2);
+    let receipt = running
+        .service
+        .commit_reply(
+            invocation,
+            delivery.source_digest,
+            &fixture.key,
+            fixture.now,
+        )
+        .unwrap();
+    assert_eq!(receipt.source, invocation);
+    assert_eq!(receipt.reply, reply);
+    assert_committed_reply(&fixture, invocation, &delivery, reply);
+    assert_terminal_reply_isolation(&fixture, invocation, &delivery, &receipt, &mut running);
+}
+
+fn assert_committed_reply(
+    fixture: &Fixture,
+    invocation: uuid::Uuid,
+    delivery: &AgentMessageDelivery,
+    reply: uuid::Uuid,
+) {
+    use automerge::{AutoCommit, ROOT, ReadDoc};
+    let room = RoomId::parse(crate::testing::ROOM).unwrap();
+    fixture
+        .owner
+        .with_current(room, |view| {
+            assert!(!view.record.agent_messages.contains_key(&invocation));
+            let mut doc =
+                AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
+            assert_eq!(
+                doc.get(ROOT, "ordinary-person-note")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("Unrelated change")
+            );
+            let (_, messages) = doc.get(ROOT, "messages").unwrap().unwrap();
+            let (_, list) = doc.get(&messages, &delivery.channel).unwrap().unwrap();
+            assert_eq!(doc.length(&list), 2);
+            let (_, row) = doc.get(&list, 1).unwrap().unwrap();
+            for (key, expected) in [
+                ("id", format!("m_{}", reply.simple())),
+                ("parent", delivery.request_row.clone()),
+                ("author", "agent:scribe".into()),
+            ] {
+                assert_eq!(
+                    doc.get(&row, key).unwrap().unwrap().0.as_str(),
+                    Some(expected.as_str())
+                );
+            }
+            let (_, text) = doc.get(&row, "text").unwrap().unwrap();
+            assert_eq!(
+                doc.text(&text).unwrap(),
+                "Fixture output; not model evidence"
+            );
+            let changes = doc.get_changes(&[]);
+            let reply_change = changes.last().unwrap();
+            assert_eq!(reply_change.actor_id().to_bytes(), b"agent:scribe");
+            let context =
+                tilo_actions::ActionContext::from_change_message(reply_change.message().unwrap())
+                    .unwrap();
+            assert_eq!(context.invoker.unwrap().actor, "agent:scribe");
+            assert_eq!(
+                context.source_invocation,
+                Some(tilo_actions::InvocationId(reply))
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn assert_terminal_reply_isolation(
+    fixture: &Fixture,
+    invocation: uuid::Uuid,
+    delivery: &AgentMessageDelivery,
+    receipt: &AgentMessageReplyReceipt,
+    running: &mut Running,
+) {
+    let room = RoomId::parse(crate::testing::ROOM).unwrap();
+    let before_replay = fixture
+        .owner
+        .with_current(room, |view| Ok((view.generation(), view.peer().durable()?)))
+        .unwrap();
+    let historical = running
+        .service
+        .commit_reply(
+            invocation,
+            delivery.source_digest,
+            &fixture.key,
+            fixture.now,
+        )
+        .unwrap();
+    assert_eq!(historical.source, invocation);
+    assert_eq!(historical.generation, before_replay.0);
+    assert!(receipt == &historical);
+    fixture
+        .owner
+        .with_current(room, |view| {
+            assert_eq!((view.generation(), view.peer().durable()?), before_replay);
+            Ok(())
+        })
+        .unwrap();
+    fixture
+        .owner
+        .commit_workspace_membership_command(
+            OwnerCommitRequest {
+                room: crate::testing::ROOM.into(),
+                operation: CommitOperation::WorkspaceMembershipCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    caller: fixture.certificate.clone(),
+                    command: WorkspaceMembershipCommand::AddAgent {
+                        agent: "another-agent".into(),
+                        preset:
+                            tilo_peer_state::workspace_membership::AgentMembershipPreset::Observer,
+                    },
+                },
+            },
+            &fixture.certificate,
+            &fixture.key,
+            fixture.now,
+        )
+        .unwrap();
+    let mut other = launch_for(fixture, "another-agent");
+    assert!(
+        other
+            .service
+            .commit_reply(
+                invocation,
+                delivery.source_digest,
+                &fixture.key,
+                fixture.now
+            )
+            .is_err(),
+        "another genuinely admitted Agent cannot observe this terminal receipt"
+    );
+    other.launcher.shutdown().unwrap();
+    fixture
+        .owner
+        .close_agent_session(&running.service.session, &fixture.certificate, fixture.now)
+        .unwrap();
+    running.launcher.shutdown().unwrap();
+    let mut replacement = launch(fixture);
+    assert!(
+        replacement
+            .service
+            .commit_reply(
+                invocation,
+                delivery.source_digest,
+                &fixture.key,
+                fixture.now
+            )
+            .is_err(),
+        "a replacement process for the same Agent cannot inherit this terminal receipt"
+    );
+    replacement.launcher.shutdown().unwrap();
+}
+
+#[test]
+fn prepared_reply_cannot_publish_after_source_change_or_actual_process_exit() {
+    use automerge::ReadDoc;
+    for changed_source in [true, false] {
+        let (fixture, invocation) = admitted();
+        let mut running = launch(&fixture);
+        let delivery = running.service.deliver(invocation, fixture.now).unwrap();
+        running.service.accept(invocation, fixture.now).unwrap();
+        running
+            .service
+            .prepare_reply(invocation, "Must not publish", fixture.now)
+            .unwrap();
+        if changed_source {
+            change_chat(&fixture, invocation, 1);
+        } else {
+            running.launcher.shutdown().unwrap();
+            assert!(running.process.facts().is_err());
+        }
+        assert!(
+            running
+                .service
+                .commit_reply(
+                    invocation,
+                    delivery.source_digest,
+                    &fixture.key,
+                    fixture.now
+                )
+                .is_err()
+        );
+        fixture
+            .owner
+            .with_current(RoomId::parse(crate::testing::ROOM).unwrap(), |view| {
+                assert!(view.record.agent_messages.contains_key(&invocation));
+                let doc =
+                    automerge::AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap())
+                        .unwrap();
+                let (_, messages) = doc.get(automerge::ROOT, "messages").unwrap().unwrap();
+                let (_, list) = doc.get(&messages, &delivery.channel).unwrap().unwrap();
+                assert_eq!(
+                    doc.length(&list),
+                    1,
+                    "refusal must not append an Agent reply"
+                );
+                Ok(())
+            })
+            .unwrap();
+        if changed_source {
+            running.launcher.shutdown().unwrap();
+        }
+    }
 }
 
 #[test]
