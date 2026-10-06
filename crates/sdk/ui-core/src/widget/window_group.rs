@@ -841,6 +841,11 @@ impl WindowGroup {
         Some(self.rect.union(capture_rect))
     }
 
+    /// Cancel the tab bar's gesture while preserving every live tab host.
+    pub fn cancel_tab_drag(&mut self) -> bool {
+        self.bar.cancel_drag()
+    }
+
     /// Returns `(tab_id, release_point)` if the user released a drag
     /// outside the bar's own rect. The parent widget hit-tests the
     /// release point against sibling bars to find a target.
@@ -1908,10 +1913,16 @@ impl WindowGroup {
             return;
         };
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == visual.tab_id) else {
+            self.bar
+                .draw_drag_ghost(scene, transform, tr, theme, presence);
             return;
         };
         let source = host.get_rect();
         if source.width() <= 0.0 || source.height() <= 0.0 {
+            // Inactive hosts intentionally have no layout until selected.
+            // Keep the carried handle visible without waking/rendering them.
+            self.bar
+                .draw_drag_ghost(scene, transform, tr, theme, presence);
             return;
         }
 

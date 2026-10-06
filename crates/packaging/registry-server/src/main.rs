@@ -257,11 +257,20 @@ enum ApplicationsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show one application and the review id for an exact decision.
+    Show {
+        pubkey: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check the proofs again and allowlist the key for their namespaces.
     Approve {
         pubkey: String,
         #[arg(long)]
         reviewer: String,
+        /// Review id from applications show; refuse a changed application.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Turn an application down; the key's allowlist row is untouched.
     Reject {
@@ -270,6 +279,9 @@ enum ApplicationsCommand {
         reviewer: String,
         #[arg(long)]
         reason: String,
+        /// Review id from applications show; refuse a changed application.
+        #[arg(long)]
+        review_id: Option<String>,
     },
 }
 
@@ -297,6 +309,9 @@ enum ReviewCommand {
         reason: String,
         #[arg(long, hide = true)]
         allow_insecure_local: bool,
+        /// Review id from review show; refuse a replaced request.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Reject a request while retaining an audit record.
     Reject {
@@ -305,6 +320,9 @@ enum ReviewCommand {
         reviewer: String,
         #[arg(long)]
         reason: String,
+        /// Review id from review show; refuse a replaced request.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Immediately hide a public entry while retaining a recoverable copy.
     Quarantine {
@@ -1532,6 +1550,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
+                        "review_id": pending.review_id()?,
                         "submission": pending,
                         "verified_packages": inspection,
                     }))?
@@ -1560,8 +1579,9 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             reviewer,
             reason,
             allow_insecure_local,
+            review_id,
         } => {
-            let pending = require_pending(&moderation, &package_id)?;
+            let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
             let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
             let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
@@ -1581,8 +1601,10 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             package_id,
             reviewer,
             reason,
+            review_id,
         } => {
-            let record = moderation.reject(&package_id, reviewer, reason, unix_now())?;
+            let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
+            let record = moderation.reject_reviewed(&pending, reviewer, reason, unix_now())?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Quarantine {
@@ -1619,6 +1641,20 @@ fn require_pending(
     moderation
         .pending(package_id)?
         .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
+}
+
+fn require_reviewed_pending(
+    moderation: &ModerationService,
+    package_id: &str,
+    review_id: Option<&str>,
+) -> anyhow::Result<registry_server::PendingSubmission> {
+    let pending = require_pending(moderation, package_id)?;
+    if let Some(review_id) = review_id
+        && pending.review_id()? != review_id
+    {
+        return Err(registry_server::ModerationError::PendingChanged(package_id.into()).into());
+    }
+    Ok(pending)
 }
 
 fn fetch_for_decision(
@@ -1873,10 +1909,41 @@ fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::
                 }
             }
         }
-        ApplicationsCommand::Approve { pubkey, reviewer } => {
-            let (_, row) = applications::approve(
+        ApplicationsCommand::Show { pubkey, json } => {
+            let stored = storage
+                .load_publisher_application(&pubkey)?
+                .ok_or_else(|| applications::ApplicationFailure::Unknown(pubkey.clone()))?;
+            let review_id = stored.review_id()?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "review_id": review_id, "application": stored,
+                    }))?
+                );
+            } else {
+                println!(
+                    "{}  {:?}  {}",
+                    pubkey,
+                    stored.status,
+                    stored.namespaces().join(", ")
+                );
+                println!("review id: {review_id}");
+                println!(
+                    "contact: {}\nnote: {}",
+                    stored.application.contact, stored.application.note
+                );
+            }
+        }
+        ApplicationsCommand::Approve {
+            pubkey,
+            reviewer,
+            review_id,
+        } => {
+            let candidate = reviewed_application(storage, &pubkey, review_id.as_deref())?;
+            let (_, row) = applications::approve_reviewed(
                 storage,
-                &pubkey,
+                &candidate,
                 &reviewer,
                 unix_now(),
                 &NetworkProofs::default(),
@@ -1891,12 +1958,34 @@ fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::
             pubkey,
             reviewer,
             reason,
+            review_id,
         } => {
-            applications::reject(storage, &pubkey, &reviewer, &reason, unix_now())?;
+            let candidate = reviewed_application(storage, &pubkey, review_id.as_deref())?;
+            applications::reject_reviewed(storage, &candidate, &reviewer, &reason, unix_now())?;
             info!("rejected the application from {pubkey}");
         }
     }
     Ok(())
+}
+
+fn reviewed_application(
+    storage: &Storage,
+    pubkey: &str,
+    review_id: Option<&str>,
+) -> anyhow::Result<registry_server::applications::StoredApplication> {
+    use registry_server::applications::{ApplicationFailure, ApplicationStatus};
+    let stored = storage
+        .load_publisher_application(pubkey)?
+        .ok_or_else(|| ApplicationFailure::Unknown(pubkey.to_owned()))?;
+    if stored.status != ApplicationStatus::Pending {
+        return Err(ApplicationFailure::NotPending(pubkey.to_owned()).into());
+    }
+    if let Some(expected) = review_id
+        && expected != stored.review_id()?
+    {
+        return Err(ApplicationFailure::Changed(pubkey.to_owned()).into());
+    }
+    Ok(stored)
 }
 
 fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {

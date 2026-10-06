@@ -680,6 +680,12 @@ impl Widget for PageJumpPalette {
         self.query_composition.ime_cursor_rect()
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.query_composition
+            .ime_edit_fingerprint(&self.query, &self.query_selection, key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }
