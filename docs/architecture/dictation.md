@@ -538,6 +538,65 @@ is 66.03%/53.45%, Mandarin CER 45.49%, with fixed-language final times of
 1.75/3.14/4.20 seconds. Keep these Tiny results separate from the larger Small
 candidate and from model release staging.
 
+That Tiny object is SHA-256
+`be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21`,
+77,691,713 bytes. The 21 probes contain 18 short clips (three each in English,
+German, French, Spanish, Arabic and Mandarin), plus three artificial long
+splices. Exact short fixed-language medians span 584–739 ms. Tiny and Small use
+the same receipt-checked audio and bounded decoder configuration, but the
+current paired Small run is incomplete: only 13 corresponding probes completed
+before `ar_eg-1` aborted. The earlier complete Small receipt is a separate run;
+do not present it as a completed contemporaneous paired comparison.
+
+External 20 ms process-memory sampling subsequently observed five completed
+Small `ar_eg-1` probes with peak virtual size 1,043,140 KiB (about 1,019 MiB)
+and resident high-water at most 512,452 KiB (about 500 MiB). The unchanged
+address-space cap is 1,048,576 KiB, leaving only about 5 MiB at the observed
+peak. [RLIMIT_AS limits virtual address space, including allocation mappings](https://man7.org/linux/man-pages/man2/getrlimit.2.html),
+so low resident use does not establish allocation headroom. Address-space
+pressure is a supported diagnosis, not proof of the original failing allocation;
+the prior abort and the untested typed exception path remain in the receipt.
+
+Controlled diagnostic allocator settings did not provide robust headroom.
+Five single-arena probes peaked at 1,030,336 KiB; three fixed-128-KiB mmap
+threshold probes peaked at 1,042,296 KiB. [Allocator arena and mmap thresholds
+trade allocation reuse against memory consumption](https://man7.org/linux/man-pages/man3/mallopt.3.html).
+The pinned upstream CPU Flash Attention path reduced resident use, but three
+fully recorded probes decoded more slowly (fixed final median 5,698 ms versus
+4,785 ms for the five default probes). Its requested five-probe batch was
+interrupted by SSH transport after three complete receipts; the partial output
+is preserved and is not a completed five-probe or accuracy qualification.
+All experimental settings were reverted. The worker cap, decoder settings and
+model selection remain unchanged. One same-clip Tiny observation peaked at
+858,484 KiB virtual and 239,912 KiB resident (about 838/234 MiB); this single
+resource observation does not establish Tiny memory stability or older-device
+performance. `current_followup.allocation_diagnosis`
+records every completed counter set and the interrupted log hash. Reproduce
+inside the owned public-fixture review environment with:
+
+```bash
+python3 tools/release/probe_speech_memory.py \
+  --manifest target/speech-benchmark/manifest.json \
+  --benchmark target/debug/examples/speech_benchmark \
+  --model small-q5_1 --case ar_eg-1 --repeats 3 --allocator default
+```
+
+Synthetic PCM can qualify an assembled browser journey without a physical
+microphone or a new persistent permission. The existing private PipeWire
+fixture disables hardware discovery and already exercises the real pinned
+recorder. A non-root, network-isolated bubblewrap namespace probe passed on the
+review builder. However, that builder lacks the immutable speech executable,
+catalogue and trust inputs at the compositor's production paths; the current
+core qualification's temporary witness is scoped to its child. An assembled
+fixture must mount those disposable qualification inputs in its own namespace,
+launch current compositor/browser builds against an owned profile, drive the
+existing consent action, and assert original-field ACK, insertion, undo,
+focus-change recovery and cancellation through `tilo-control`. It must not
+introduce a production executable override, install a development key or alter
+the user's grants. This fixture has not been assembled or run; namespace and
+recorder feasibility are not end-to-end capture evidence. Real microphone,
+device selection and physical-device acceptance remain separate gates.
+
 Small's median cold load is 2.748 seconds. Short final medians are 4.37–4.79
 seconds, with automatic language approximately another four seconds; long
 English/French/Mandarin finals are 14.93/20.57/20.74 seconds, automatic finals
