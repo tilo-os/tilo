@@ -316,7 +316,7 @@ fn id_dropdown(
         &ui::LocalState::new(selected.to_string()),
     )
     .with_id(test_id)
-    .with_accessible_name(accessible_name);
+    .with_resolved_accessible_name(accessible_name);
     dropdown.set_value_options(choices);
     dropdown
 }
@@ -1260,12 +1260,23 @@ impl InputArea {
 
 /// The input sources a capture offers.
 fn sample_catalog() -> Vec<CatalogEntry> {
-    [("us", "English (US)"), ("de", "German"), ("fr", "French")]
-        .map(|(id, label)| CatalogEntry {
-            id: id.into(),
-            label: label.into(),
-        })
-        .to_vec()
+    [
+        ("us", "English (US)"),
+        ("gb", "English (UK)"),
+        ("de", "German"),
+        ("fr", "French"),
+        ("es", "Spanish"),
+        ("it", "Italian"),
+        ("nl", "Dutch"),
+        ("pt", "Portuguese"),
+        ("se", "Swedish"),
+        ("jp", "Japanese"),
+    ]
+    .map(|(id, label)| CatalogEntry {
+        id: id.into(),
+        label: label.into(),
+    })
+    .to_vec()
 }
 
 pub struct MouseKeyboardPane {
@@ -1285,6 +1296,8 @@ pub struct MouseKeyboardPane {
     pads: Vec<InputDeviceSnapshot>,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
+    composed_text_growth_bits: u32,
+    composed_locale_revision: u64,
     rect: Rect,
 }
 
@@ -1307,6 +1320,8 @@ impl MouseKeyboardPane {
             pads: Vec::new(),
             structure_dirty: false,
             composed: None,
+            composed_text_growth_bits: 1.0_f32.to_bits(),
+            composed_locale_revision: ui::i18n::I18nManager::revision(),
             rect: Rect::ZERO,
         };
         pane.observe_devices(area.devices().as_ref());
@@ -1362,6 +1377,7 @@ impl MouseKeyboardPane {
             self.tablets = tablets;
             self.pads = pads;
             self.structure_dirty = true;
+            self.composed = None;
         }
     }
 
@@ -1502,7 +1518,8 @@ impl MouseKeyboardPane {
                             last.touchpad_pointer_speed.unwrap_or(last.pointer_speed),
                         ))
                         .bound(&self.cx, effect(InputEffect::SET_TOUCHPAD_SPEED))
-                        .with_id("input.touchpad_pointer_speed"),
+                        .with_id("input.touchpad_pointer_speed")
+                        .with_accessible_name("input-touchpad-speed"),
                     ),
                 ),
                 self.bool_row(
@@ -1600,7 +1617,8 @@ impl MouseKeyboardPane {
                             last.mouse_pointer_speed.unwrap_or(last.pointer_speed),
                         ))
                         .bound(&self.cx, effect(InputEffect::SET_MOUSE_SPEED))
-                        .with_id("input.mouse_pointer_speed"),
+                        .with_id("input.mouse_pointer_speed")
+                        .with_accessible_name("input-mouse-speed"),
                     ),
                 ),
                 self.bool_row(
@@ -1663,7 +1681,8 @@ impl MouseKeyboardPane {
                             ),
                         ))
                         .bound(&self.cx, effect(InputEffect::SET_SCROLL_SPEED))
-                        .with_id("input.scroll_speed"),
+                        .with_id("input.scroll_speed")
+                        .with_accessible_name("input-scroll-speed"),
                     ),
                 ),
             ]),
@@ -1709,7 +1728,8 @@ impl MouseKeyboardPane {
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(repeat_value))
                             .bound(&self.cx, effect(InputEffect::SET_KEY_REPEAT))
-                            .with_id("input.key_repeat"),
+                            .with_id("input.key_repeat")
+                            .with_accessible_name("input-key-repeat"),
                     ),
                 ),
                 caption(&t("input-keyboard-caption")),
@@ -1887,32 +1907,22 @@ impl MouseKeyboardPane {
                 &[("error", error.as_str().into())],
             )));
         }
-        let available: Vec<String> = self
+        let available: Vec<(String, String)> = self
             .catalog
             .iter()
             .filter(|entry| {
                 !self.last.keyboard_layouts.contains(&entry.id)
                     && crate::input_sources::has_room_for(&self.last.keyboard_layouts, &entry.id)
             })
-            .map(|entry| entry.label.clone())
+            .map(|entry| (entry.id.clone(), entry.label.clone()))
             .collect();
         if !available.is_empty() {
             source_rows.push(choice_row(
                 &add_label,
                 Box::new(
-                    Dropdown::from_state(
-                        available.clone(),
-                        &ui::LocalState::new(available.first().cloned().unwrap_or_default()),
-                    )
-                    .bound(
-                        &self.cx,
-                        effect(InputEffect::ADD_SOURCE).map({
-                            let catalog = self.catalog.clone();
-                            move |shown: String| source_id(&catalog, &shown)
-                        }),
-                    )
-                    .with_id("input.source.add_picker")
-                    .with_placeholder(&choose),
+                    id_dropdown(available, "", "input.source.add_picker", &add_label)
+                        .bound(&self.cx, effect(InputEffect::ADD_SOURCE))
+                        .with_placeholder(&choose),
                 ),
             ));
         }
@@ -2121,9 +2131,11 @@ impl Widget for MouseKeyboardPane {
             last.normalise_keyboard_sources();
             self.last = last;
             self.structure_dirty = true;
+            self.composed = None;
         }
         if self.text.refresh() {
             self.structure_dirty = true;
+            self.composed = None;
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -2136,7 +2148,21 @@ impl Widget for MouseKeyboardPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
+        let growth_bits = theme.text_growth().to_bits();
+        let locale_revision = ui::i18n::I18nManager::revision();
+        if self.composed_text_growth_bits != growth_bits
+            || self.composed_locale_revision != locale_revision
+        {
+            self.composed = None;
+            self.composed_text_growth_bits = growth_bits;
+            self.composed_locale_revision = locale_revision;
+        }
+        // Layout is not a model change. Retain open/search/focus caches until
+        // observed settings or device changes require new controls.
+        let mut composed = self
+            .composed
+            .take()
+            .unwrap_or_else(|| self.build_composition());
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
         let style = taffy::Style {
@@ -2233,6 +2259,131 @@ mod tests {
     use super::*;
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
+
+    fn picker_node(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+        if node.test_id.as_deref() == Some("input.source.add_picker") {
+            return Some(node);
+        }
+        node.children.iter().find_map(picker_node)
+    }
+
+    fn spelling_language_value(node: &ui::headless::InspectionNode) -> Option<&str> {
+        if let Some(semantics) = &node.semantics
+            && semantics.role == ui::a11y::Role::ComboBox
+            && semantics.name.as_deref() == Some(t("input-spell-language").as_str())
+        {
+            return semantics.value.as_deref();
+        }
+        node.children.iter().find_map(spelling_language_value)
+    }
+
+    fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
+        let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
+        app.call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap();
+        for _ in 0..30 {
+            app.settle();
+            let rect = app
+                .harness()
+                .targets()
+                .get("input.source.add_picker")
+                .copied()
+                .unwrap();
+            if rect.y0 >= 0.0 && rect.y1 <= f64::from(viewport.1) {
+                return;
+            }
+            app.harness().send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(
+                    f64::from(viewport.0) - 60.0,
+                    f64::from(viewport.1) / 2.0,
+                ),
+            });
+            app.harness().scroll(0.0, -3.0);
+        }
+        panic!(
+            "the actual Settings input-source chooser must become visible by ordinary scrolling"
+        );
+    }
+
+    #[test]
+    fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
+        let mut failures = Vec::new();
+        for (name, viewport, theme) in [
+            ("light-wide", (1472, 920), Theme::light()),
+            ("dark-narrow", (420, 640), Theme::dark().with_ui_scale(1.5)),
+            (
+                "contrast-narrow",
+                (420, 640),
+                Theme::high_contrast().with_ui_scale(1.5),
+            ),
+        ] {
+            let mut app = TestApp::<SettingsShell>::new().unwrap();
+            app.harness().resize(viewport).unwrap();
+            app.harness().set_theme(theme);
+            show_add_source(&mut app, viewport);
+            let snapshot = app.harness().inspection();
+            assert_eq!(
+                spelling_language_value(&snapshot.root),
+                Some(t("input-spell-language-session").as_str()),
+                "the valid empty stable value must show its human language label",
+            );
+            let control = picker_node(&snapshot.root)
+                .unwrap()
+                .semantics
+                .as_ref()
+                .unwrap();
+            if control.value.is_some() {
+                failures.push(format!(
+                    "{name}: uninstalled source looks selected: {:?}",
+                    control.value
+                ));
+            }
+            let out = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("dropdown-review")
+                .join(name);
+            app.harness().render_png(&out.join("closed.png"));
+            app.harness()
+                .click_named("input.source.add_picker")
+                .unwrap();
+            app.harness().render_png(&out.join("open.png"));
+            app.harness().type_text("zzzz");
+            app.harness().render_png(&out.join("no-matches.png"));
+            app.harness().key("Escape");
+            app.harness()
+                .click_named("input.source.add_picker")
+                .unwrap();
+            app.harness().type_text("French");
+            app.harness().render_png(&out.join("filtered.png"));
+            app.harness().key("Return");
+            tilo_test_env::wait_until("normal typed AddSource completes", || {
+                app.settle();
+                app.settings::<InputPrefs>()
+                    .get()
+                    .keyboard_layouts
+                    .contains(&"fr".into())
+            });
+            let prefs = app.settings::<InputPrefs>().get();
+            assert_eq!(prefs.keyboard_layout, "fr");
+            app.harness().render_png(&out.join("selected.png"));
+            assert!(app.harness().component_contract_violations().is_empty());
+            let audit = app.harness().native_app_audit();
+            std::fs::write(
+                out.join("native-audit.json"),
+                serde_json::to_vec_pretty(&audit).unwrap(),
+            )
+            .unwrap();
+            assert!(audit.is_certified(), "{name}: {audit:?}");
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 
     fn pane_with(input: &InputPrefs, catalog: Vec<CatalogEntry>) -> MouseKeyboardPane {
         let profile = tempfile::tempdir().unwrap();

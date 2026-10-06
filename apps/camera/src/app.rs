@@ -295,6 +295,7 @@ struct TouchTarget {
     rect: Rect,
     action: Action,
     cancelled: bool,
+    swipe_start: Option<Point>,
 }
 
 #[allow(
@@ -3079,6 +3080,16 @@ impl Widget for CameraApp {
                                 rect,
                                 action,
                                 cancelled: false,
+                                swipe_start: Some(point),
+                            });
+                            *ctx.handled = true;
+                        } else if self.screen != Screen::Settings && self.rect.contains(point) {
+                            self.active_touch = Some(TouchTarget {
+                                id: touch.id,
+                                rect: self.rect,
+                                action: Action::Nav(self.base_screen()),
+                                cancelled: false,
+                                swipe_start: Some(point),
                             });
                             *ctx.handled = true;
                         }
@@ -3100,11 +3111,41 @@ impl Widget for CameraApp {
                             .is_some_and(|target| target.id == touch.id)
                         {
                             let target = self.active_touch.take();
-                            if let Some(target) = target
-                                && !target.cancelled
-                                && target.rect.contains(point)
-                            {
-                                self.apply(target.action, &mut ctx.state, ctx.path);
+                            if let Some(target) = target {
+                                let mode_target = matches!(
+                                    target.action,
+                                    Action::SetMode(_)
+                                        | Action::Nav(
+                                            Screen::Camera | Screen::Scanner | Screen::Document
+                                        )
+                                );
+                                let swipe = (mode_target
+                                    && !self.is_recording()
+                                    && !self.is_counting_down())
+                                .then(|| {
+                                    target.swipe_start.and_then(|start| {
+                                        ui::widget::ToggleGroup::swipe_selection(
+                                            point - start,
+                                            f64::from(
+                                                self.layout_theme.tokens.metrics.min_pointer_target,
+                                            ),
+                                            self.selected_capture_mode(),
+                                            4,
+                                        )
+                                    })
+                                })
+                                .flatten();
+                                if let Some(mode) = swipe {
+                                    let action = match mode {
+                                        0 => Action::SetMode(CaptureMode::Photo),
+                                        1 => Action::SetMode(CaptureMode::Video),
+                                        2 => Action::Nav(Screen::Scanner),
+                                        _ => Action::Nav(Screen::Document),
+                                    };
+                                    self.apply(action, &mut ctx.state, ctx.path);
+                                } else if !target.cancelled && target.rect.contains(point) {
+                                    self.apply(target.action, &mut ctx.state, ctx.path);
+                                }
                             }
                             *ctx.handled = true;
                         }
@@ -3118,7 +3159,13 @@ impl Widget for CameraApp {
                         self.active_touch = None;
                         *ctx.handled = true;
                     }
-                    TouchPhase::Cancelled | TouchPhase::Started => {}
+                    TouchPhase::Started => {
+                        if let Some(target) = self.active_touch.as_mut() {
+                            target.swipe_start = None;
+                            target.cancelled = true;
+                        }
+                    }
+                    TouchPhase::Cancelled => {}
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3223,6 +3270,29 @@ impl Widget for CameraApp {
     fn test_id(&self) -> Option<&str> {
         Some("camera_app")
     }
+    fn wants_pointer_capture(&self) -> bool {
+        self.active_touch.is_some()
+    }
+
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        if self.screen == Screen::Settings || self.chooser.is_open() || !self.rect.contains(point) {
+            return false;
+        }
+        // Shared fields and the crop editor retain their ordinary host input
+        // path; only the manually painted camera surfaces own mode swipes.
+        if self.screen == Screen::Document
+            && (self.document_crop_editor.is_some()
+                || self
+                    .document_controls
+                    .fields
+                    .iter()
+                    .any(|field| field.is_open() || field.get_rect().contains(point)))
+        {
+            return false;
+        }
+        true
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -3417,6 +3487,101 @@ mod tests {
     use super::*;
     use crate::model::classify;
     use ui::headless::{Framed, viewport};
+
+    #[test]
+    fn switch_camera_is_an_accessible_symbol_beside_the_shutter() {
+        for width in [390.0, 1280.0] {
+            let (app, doc, _) = sample_app();
+            let frame = render_at(app, doc, width, 844.0);
+            let rect = |find: fn(&Action) -> bool| {
+                frame
+                    .regions
+                    .iter()
+                    .find(|(_, action)| find(action))
+                    .map(|(rect, _)| *rect)
+                    .unwrap()
+            };
+            let shutter = rect(|action| matches!(action, Action::Shutter));
+            let switch = rect(|action| matches!(action, Action::CycleFacing));
+            assert!(switch.x0 > shutter.x1 && switch.x1 <= f64::from(width));
+            assert_eq!(
+                switch.center().y.total_cmp(&shutter.center().y),
+                std::cmp::Ordering::Equal
+            );
+            assert!(switch.x0 - shutter.x1 <= f64::from(Theme::dark().tokens.spacing.s4));
+            let tree = frame.accessibility().unwrap();
+            let node = tree
+                .children
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some("camera.facing"))
+                .unwrap();
+            assert_eq!(node.role, Role::Button);
+            assert!(node.name.as_deref().unwrap().starts_with("Switch camera"));
+            assert!(node.state.focusable);
+        }
+    }
+
+    #[test]
+    fn document_dropdowns_keep_real_hosted_touch_activation() {
+        use winit::event::TouchPhase::{Ended, Started};
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(
+            Action::Nav(Screen::Document),
+            &mut Edits::lend(&mut doc),
+            &root,
+        );
+        let mut frame = render_at(app, doc, 390.0, 844.0);
+        let rect = frame.document_controls.fields[0].get_rect();
+        assert!(rect.width() > 0.0 && rect.height() > 0.0);
+        assert!(
+            !frame.claims_raw_touch(rect.center()),
+            "shared dropdown owns host pointer emulation"
+        );
+        let harness = Framed::harness_mut(&mut frame);
+        harness.touch(1, Started, rect.center().x, rect.center().y);
+        harness.touch(1, Ended, rect.center().x, rect.center().y);
+        assert!(
+            frame.document_controls.fields[0].is_open(),
+            "a real touch opens the retained dropdown"
+        );
+    }
+
+    #[test]
+    fn mode_swipes_use_real_camera_actions_and_cancel_without_capturing() {
+        use winit::event::TouchPhase::{Cancelled, Ended, Started};
+        let (app, doc, _) = sample_app();
+        let mut frame = render_at(app, doc, 390.0, 844.0);
+        let captures = frame.captures.len();
+        // The viewfinder supports the same gesture as the mode strip.
+        let start = Point::new(195.0, 300.0);
+        let harness = Framed::harness_mut(&mut frame);
+        harness.touch(1, Started, start.x, start.y);
+        harness.touch(1, Ended, start.x - 90.0, start.y);
+        assert_eq!(frame.mode, CaptureMode::Video);
+        assert!(!frame.is_recording(), "changing modes never starts capture");
+        let harness = Framed::harness_mut(&mut frame);
+        harness.touch(2, Started, start.x, start.y);
+        harness.touch(2, Cancelled, start.x - 90.0, start.y);
+        harness.touch(2, Ended, start.x - 90.0, start.y);
+        assert_eq!(frame.mode, CaptureMode::Video);
+        let harness = Framed::harness_mut(&mut frame);
+        harness.touch(3, Started, start.x, start.y);
+        harness.touch(3, Ended, start.x - 10.0, start.y + 90.0);
+        assert_eq!(
+            frame.screen,
+            Screen::Camera,
+            "vertical gestures do not navigate"
+        );
+        let harness = Framed::harness_mut(&mut frame);
+        harness.touch(4, Started, start.x, start.y);
+        harness.touch(4, Ended, start.x - 90.0, start.y);
+        assert_eq!(frame.screen, Screen::Scanner);
+        assert_eq!(frame.selected_capture_mode(), 2);
+        assert!(
+            frame.captures.len() == captures,
+            "mode gestures leave the capture resource unchanged"
+        );
+    }
 
     #[test]
     fn sample_recording_advances_once_per_update_and_never_during_sync() {

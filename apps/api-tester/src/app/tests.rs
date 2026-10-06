@@ -553,6 +553,11 @@ fn auth_fields_edit_the_request() {
 /// tree with no findings.
 #[test]
 fn every_scenario_stages_and_renders_an_accessible_frame() {
+    let mut default = TestApp::<ApiTesterShell>::capture(None).unwrap();
+    assert!(
+        !default.harness().frame_schedule().needs_animation_frame,
+        "the default gallery capture has settled its populated navigation"
+    );
     for scenario in ApiTesterApp::SCENARIOS {
         let size = if scenario.contains("drawer") {
             (520, 800)
@@ -561,6 +566,10 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
         };
         let mut app = TestApp::<ApiTesterShell>::capture_at(Some(scenario), size).unwrap();
         let d = app.harness();
+        assert!(
+            !d.frame_schedule().needs_animation_frame,
+            "{scenario}: the actual capture waits for navigation headings and rows to settle"
+        );
         assert!(
             d.render_rgba().iter().any(|byte| *byte != 0),
             "{scenario} renders"
