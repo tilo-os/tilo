@@ -937,3 +937,57 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
         );
     }
 }
+
+#[test]
+fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
+    use crate::effects::ChatEffect;
+    let identity = LocalIdentity::demo();
+    let mut doc = AutoCommit::new();
+    ChatDoc::seed_demo(&mut doc, &identity.id);
+    doc.commit();
+    let message = ChatDoc::list_messages(&doc, "c_general")
+        .first()
+        .expect("seeded message")
+        .clone();
+    ChatDoc::edit_message(
+        &mut doc,
+        &message.channel,
+        &message.id,
+        "café notes",
+        &[],
+        1,
+    );
+    doc.commit();
+    let mut app = projection(&doc, identity);
+    for (start, end, unit) in [(3, 4, "Chars"), (3, 5, "Bytes")] {
+        app.answer_effect(ChatEffect::RevealMessageRange {
+            message: message.id.clone(),
+            start,
+            end,
+            unit: unit.into(),
+        })
+        .unwrap();
+        assert_eq!(
+            app.revealed_range.as_ref().map(|r| (&r.0, r.2, r.3)),
+            Some((&message.id, 3, 5))
+        );
+    }
+    let before = app.revealed_range.clone();
+    for (start, end, unit) in [(3, 4, "Bytes"), (0, 99, "Chars"), (4, 3, "Chars")] {
+        assert!(
+            app.answer_effect(ChatEffect::RevealMessageRange {
+                message: message.id.clone(),
+                start,
+                end,
+                unit: unit.into()
+            })
+            .is_err()
+        );
+        assert_eq!(app.revealed_range, before);
+    }
+    app.answer_effect(ChatEffect::RevealMessage {
+        message: message.id,
+    })
+    .unwrap();
+    assert!(app.revealed_range.is_none());
+}

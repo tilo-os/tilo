@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>Open a Tilo resource</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  html, body { margin: 0; min-height: 100%; }
+  body { display: flex; flex-direction: column; min-height: 100dvh; }
+  main, #status, #leave { margin: 1rem; }
+  #surface { flex: 1; min-height: 60dvh; }
+</style>
+<body>
+  <main id="entry">
+    <h1>Open a shared resource</h1>
+    <p id="destination"></p>
+    <p>Use the public identity key of your existing browser account. This link does not grant access. Sign in and obtain workspace admission through the usual identity flow first.</p>
+    <form id="open">
+      <label>Your public identity key <input name="account" required pattern="[a-fA-F0-9]{64}" autocomplete="off"></label>
+      <button>Open resource</button>
+    </form>
+  </main>
+  <p id="status" role="status"></p>
+  <button id="leave" hidden>Leave</button>
+  <div id="surface"></div>
+  <script type="module" src="./resource-page.mjs"></script>
+</body>
+</html>

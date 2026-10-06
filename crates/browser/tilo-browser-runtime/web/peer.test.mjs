@@ -894,3 +894,31 @@ test('resource hydration can be cancelled and leaving the peer refuses pending o
   await refused;
   await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing'), /connection closed/);
 });
+
+test('resource-link connection never certifies or renews a device implicitly', async () => {
+  const runtime = fakeRuntime(), store = memoryStore();
+  await assert.rejects(connect(options(runtime, store, {requireExistingCertificate: true})), /obtain admission/);
+  assert.equal(runtime.calls.certify.length, 0);
+  const prior = JSON.stringify({cert: {device: 'previous'}, hostCert: {host: true}});
+  await store.put('certificate', prior);
+  const peer = await connect(options(runtime, store, {requireExistingCertificate: true}));
+  assert.equal(runtime.calls.certify.length, 0);
+  assert.equal(runtime.peer.config.cert.device, 'previous');
+  await assert.rejects(peer.recover({kind: 'reauthenticate'}), /identity flow/);
+  assert.equal(await store.get('certificate'), prior, 'the saved certificate is preserved');
+  assert.equal(runtime.calls.certify.length, 0);
+  await peer.dispose();
+});
+
+test('leaving, cancelling and timing out pending room admission settle browser navigation', async () => {
+  const runtime = fakeRuntime({phase: 'authenticating'});
+  const peer = await connect(options(runtime, memoryStore()));
+  const controller = new AbortController();
+  const pending = peer.whenReady({signal: controller.signal});
+  controller.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  await assert.rejects(peer.whenReady({timeoutMs: 1}), /timed out/);
+  const leaving = peer.whenReady();
+  await peer.dispose();
+  await assert.rejects(leaving, /closed/);
+});

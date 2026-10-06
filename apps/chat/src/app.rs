@@ -579,6 +579,7 @@ pub struct ChatApp {
     pub(crate) scroll_viewport: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
+    pub(crate) revealed_range: Option<(Id, String, usize, usize)>,
     /// A search result needs one initial scroll into view. Keeping this
     /// separate from `revealed_message` lets its visual accent remain while
     /// the reader subsequently scrolls through nearby context.
@@ -876,6 +877,7 @@ impl ChatApp {
             scroll_viewport: 0.0,
             thread_open: Some("m_concept".into()),
             revealed_message: None,
+            revealed_range: None,
             reveal_scroll_pending: false,
             revealed_person: None,
             emoji_open: false,

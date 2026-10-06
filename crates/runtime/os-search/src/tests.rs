@@ -156,6 +156,7 @@ fn with_view(mut row: CatalogueRow, primary: bool) -> CatalogueRow {
         description: None,
         open_action: action.address.action.clone(),
         primary,
+        range: None,
         mount: None,
     });
     row
