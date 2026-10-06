@@ -2,8 +2,6 @@
 //! never reaches for the network. Its icons and previews are bundled artwork
 //! served to the app's image store by a local fetcher.
 
-use std::sync::Arc;
-
 use crate::app::StoreApp;
 use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
@@ -47,18 +45,20 @@ const ARTWORK: &[(&str, &[u8])] = artwork![
     "VLC-preview-3.png",
 ];
 
-/// The image store of a capture: it serves the bundled artwork for the
-/// fixture catalogue's URLs and nothing else, so no capture touches the
-/// network.
+/// The image store of a capture: every bundled icon and preview is decoded
+/// before the first frame. Preview widgets may request their image only
+/// while drawing, too late for a one-frame capture to wait for that load.
+/// The toolkit's host loader completes these local bytes without a network
+/// fetcher or a background race.
 pub fn artwork_store() -> ui::ImageStore {
-    let fetch: ui::Fetcher = Arc::new(|url: &str| {
-        let name = url.strip_prefix(ARTWORK_HOST)?;
-        ARTWORK
-            .iter()
-            .find(|(file, _)| *file == name)
-            .map(|(_, bytes)| bytes.to_vec())
-    });
-    ui::ImageStore::with_workers(&fetch, 2)
+    let (store, mut loader) = ui::ImageStore::host_driven();
+    for (name, bytes) in ARTWORK {
+        let url = format!("{ARTWORK_HOST}{name}");
+        store.get(&url);
+        loader.take_requests();
+        loader.complete(&url, Some(bytes));
+    }
+    store
 }
 
 /// The preview URLs the fixture lists for the app called `name`.
@@ -91,8 +91,16 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         id: format!("so.tilo.{}", name.to_ascii_lowercase()),
         name: name.into(),
         description: description.into(),
-        tagline: String::new(),
-        supported_languages: Vec::new(),
+        tagline: if name == "Notes" {
+            "Ideas worth keeping, together.".into()
+        } else {
+            String::new()
+        },
+        supported_languages: if name == "Notes" {
+            vec!["en".into(), "es".into()]
+        } else {
+            Vec::new()
+        },
         categories: vec![category.into()],
         icon_url: Some(format!("{ARTWORK_HOST}{name}.png")),
         screenshot_urls: previews(name),
@@ -245,6 +253,20 @@ pub fn seeded_app() -> StoreApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Captures exercise actual artwork, not a successful placeholder frame.
+    #[test]
+    fn every_bundled_image_is_ready_before_the_first_frame() {
+        let store = artwork_store();
+        for (name, _) in ARTWORK {
+            let url = format!("{ARTWORK_HOST}{name}");
+            assert!(
+                store.get(&url).is_some(),
+                "{name} is decoded before capture"
+            );
+        }
+        assert!(store.is_idle(), "no fixture work remains in flight");
+    }
 
     /// The fixture catalogue covers every action and every state, with realistic provenance.
     #[test]
