@@ -1762,3 +1762,9 @@ settings-printers-scanners-read-error = Scanner können nicht aufgelistet werden
 agent-key-read-error = Ob ein Schlüssel gespeichert ist, kann nicht festgestellt werden: { $error }
 
 shortcut-name-tab-menu = Tab-Menü öffnen
+
+accounts-browser-identity-title = Tilo-Identitäten im Browser
+accounts-browser-identity-about = Öffentliche Kontoauswahl für bestehende Browser-Anmeldungen. Das Ausblenden oder Entfernen einer Auswahl widerruft weder die Anmeldung noch Ressourcenberechtigungen.
+accounts-browser-identity-hide = Aus Browser-Kontoauswahl ausblenden
+accounts-browser-identity-show = In Browser-Kontoauswahl anzeigen
+accounts-browser-identity-remove = Aus Browser-Kontoauswahl entfernen
