@@ -140,6 +140,7 @@ pub struct KeyboardMap {
     extra_levels: bool,
     preview_level: usize,
     live_layout: bool,
+    inspected_key: Option<String>,
     rect: Rect,
     focused: bool,
     input: KeyboardMapInput,
@@ -157,6 +158,7 @@ impl KeyboardMap {
             extra_levels: false,
             preview_level: 0,
             live_layout: false,
+            inspected_key: None,
             rect: Rect::ZERO,
             focused: false,
             input: KeyboardMapInput::default(),
@@ -194,6 +196,69 @@ impl KeyboardMap {
     pub fn with_preview_level(mut self, level: usize) -> Self {
         self.preview_level = level.min(31);
         self
+    }
+
+    /// Select a physical position for a readable inspector without recording
+    /// whichever key the person happens to press. Unknown positions are rejected.
+    #[must_use]
+    pub fn with_inspected_key(mut self, name: &str) -> Self {
+        self.inspected_key = self
+            .keys
+            .iter()
+            .find(|key| key.name == name)
+            .map(|key| key.name.clone());
+        self
+    }
+
+    /// Add pointer/touch selection through the same resource action as an
+    /// inspector's shared selector. The visual map remains independently cloneable.
+    pub fn selectable(self) -> KeyboardMapSelection {
+        KeyboardMapSelection {
+            map: self,
+            action: None,
+            enabled: true,
+            pointer: None,
+            pressed: None,
+        }
+    }
+
+    fn key_at(&self, point: Point) -> Option<&KeyboardMapKey> {
+        let scale = self.rect.width() / self.model_size.width.max(1.0);
+        let local = Point::new(
+            (point.x - self.rect.x0) / scale,
+            (point.y - self.rect.y0) / scale,
+        );
+        self.keys
+            .iter()
+            .find(|key| key.legend_rect().contains(local))
+    }
+
+    /// Stable physical positions and their compiled first-level legends, for a
+    /// shared searchable selector. These are configuration, never entered text.
+    pub fn inspection_keys(&self) -> Vec<(String, String)> {
+        self.keys
+            .iter()
+            .map(|key| {
+                (
+                    key.name.clone(),
+                    format!(
+                        "{}: {}",
+                        key.name,
+                        key.levels.first().map_or("", String::as_str)
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// Full-size inspection values for an explicitly chosen physical position.
+    /// Live mode reads the same immutable native snapshot as paint; unavailable
+    /// native state never falls back to preview or preference symbols.
+    pub fn inspection_values(&self, name: &str) -> Option<Vec<String>> {
+        self.keys
+            .iter()
+            .find(|key| key.name == name)
+            .map(|key| self.legend_values(key))
     }
 
     /// Number of native XKB levels present in the selected map.
@@ -342,9 +407,19 @@ impl KeyboardMap {
         // A screen-pixel outline remains visible independently of surface fill
         // contrast, including high contrast themes and narrow previews.
         scene.stroke(
-            &Stroke::new(1.0 / scale),
+            &Stroke::new(
+                if self.inspected_key.as_deref() == Some(key.name.as_str()) {
+                    2.0 / scale
+                } else {
+                    1.0 / scale
+                },
+            ),
             transform,
-            colours.border_standard,
+            if self.inspected_key.as_deref() == Some(key.name.as_str()) {
+                colours.border_focus
+            } else {
+                colours.border_standard
+            },
             None,
             &path,
         );
@@ -583,5 +658,262 @@ impl Widget for KeyboardMap {
                         .join("; "),
                 ),
         )
+    }
+}
+
+/// Action-bound inspection over the shared physical map. Keyboard presses
+/// never select an inspector or publish entered text.
+pub struct KeyboardMapSelection {
+    map: KeyboardMap,
+    action: Option<crate::widget::ActionEmitter<String>>,
+    enabled: bool,
+    pointer: Option<Point>,
+    pressed: Option<String>,
+}
+
+impl KeyboardMapSelection {
+    /// Bind inspection to the host-admitted Settings resource effect.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    /// Disable local inspection without disabling private key feedback.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    fn press(&mut self, point: Point) {
+        self.pressed = self.map.key_at(point).map(|key| key.name.clone());
+    }
+
+    fn release(&mut self, point: Point) -> bool {
+        let Some(name) = self.pressed.take() else {
+            return false;
+        };
+        if self.map.key_at(point).is_none_or(|key| key.name != name) {
+            return false;
+        }
+        self.action
+            .as_mut()
+            .is_some_and(|action| action.emit(name).is_ok())
+    }
+}
+
+impl crate::widget::Decorator for KeyboardMapSelection {
+    type Inner = KeyboardMap;
+    fn inner(&self) -> &KeyboardMap {
+        &self.map
+    }
+    fn inner_mut(&mut self) -> &mut KeyboardMap {
+        &mut self.map
+    }
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(&self.map)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(&mut self.map)
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.map.handle_event(event, ctx);
+        if !self.enabled
+            || self
+                .action
+                .as_ref()
+                .is_none_or(|action| !action.is_available())
+        {
+            self.pressed = None;
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                if let Some(point) = self.pointer {
+                    if *state == ElementState::Pressed {
+                        self.press(point);
+                    } else if self.release(point) {
+                        *ctx.handled = true;
+                    }
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                let point = Point::new(
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
+                );
+                match touch.phase {
+                    winit::event::TouchPhase::Started => self.press(point),
+                    winit::event::TouchPhase::Ended => {
+                        if self.release(point) {
+                            *ctx.handled = true;
+                        }
+                    }
+                    winit::event::TouchPhase::Cancelled => self.pressed = None,
+                    winit::event::TouchPhase::Moved => {}
+                }
+            }
+            WindowEvent::Focused(false) => self.pressed = None,
+            _ => {}
+        }
+    }
+}
+
+impl crate::widget::controls::ActionControls for KeyboardMapSelection {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        self.action
+            .as_ref()
+            .map(|action| vec![action.metadata("input.keyboard_map")])
+            .unwrap_or_default()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use crate::widget::controls::ActionControls as _;
+
+    #[test]
+    fn touch_and_pointer_inspection_emit_the_same_admitted_physical_key_action() {
+        let key = KeyboardMapKey {
+            name: "AD06".into(),
+            physical: PhysicalKey::Code(winit::keyboard::KeyCode::KeyY),
+            outline: vec![
+                Point::new(0.0, 0.0),
+                Point::new(20.0, 0.0),
+                Point::new(20.0, 20.0),
+                Point::new(0.0, 20.0),
+            ],
+            levels: vec!["y".into(), "Y".into()],
+        };
+        let mut map = KeyboardMap::new(
+            vec![key],
+            Size {
+                width: 400.0,
+                height: 100.0,
+            },
+            String::new(),
+        )
+        .selectable()
+        .on_action(crate::widget::test_string_action_binding());
+        map.map.rect = Rect::new(0.0, 0.0, 600.0, 150.0);
+        let mut doc = automerge::AutoCommit::new();
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.leaf_node(Style::default());
+        let modifiers = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let mut ctx = EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: crate::widget::Edits::lend(&mut doc),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        };
+        for phase in [
+            winit::event::TouchPhase::Started,
+            winit::event::TouchPhase::Ended,
+        ] {
+            map.handle_event(
+                &WindowEvent::Touch(winit::event::Touch {
+                    device_id: winit::event::DeviceId::dummy(),
+                    phase,
+                    location: winit::dpi::PhysicalPosition::new(15.0, 15.0),
+                    force: None,
+                    id: 1,
+                }),
+                &mut ctx,
+            );
+        }
+        let touch = map.take_control_invocation();
+        assert!(
+            touch.is_some(),
+            "the actual shared touch handler must emit inspection"
+        );
+        map.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(15.0, 15.0),
+            },
+            &mut ctx,
+        );
+        for state in [ElementState::Pressed, ElementState::Released] {
+            map.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state,
+                    button: winit::event::MouseButton::Left,
+                },
+                &mut ctx,
+            );
+        }
+        let pointer = map.take_control_invocation();
+        assert_eq!(touch, pointer);
+        assert_eq!(
+            pointer
+                .as_ref()
+                .and_then(|intent| intent.arguments.get("value"))
+                .and_then(serde_json::Value::as_str),
+            Some("AD06")
+        );
+        map.refresh_control_action_availability(&HashSet::new());
+        for phase in [
+            winit::event::TouchPhase::Started,
+            winit::event::TouchPhase::Ended,
+        ] {
+            map.handle_event(
+                &WindowEvent::Touch(winit::event::Touch {
+                    device_id: winit::event::DeviceId::dummy(),
+                    phase,
+                    location: winit::dpi::PhysicalPosition::new(15.0, 15.0),
+                    force: None,
+                    id: 1,
+                }),
+                &mut ctx,
+            );
+        }
+        assert!(
+            map.take_control_invocation().is_none(),
+            "revoked action cannot inspect"
+        );
     }
 }

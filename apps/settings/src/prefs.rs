@@ -206,6 +206,8 @@ pub struct InputPrefs {
     pub keyboard_preview_extra_levels: bool,
     /// Ordered native level inspected without changing the live seat.
     pub keyboard_preview_level: usize,
+    /// Explicit physical position inspected; never follows or records key presses.
+    pub keyboard_inspected_key: String,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
@@ -246,6 +248,7 @@ impl Default for InputPrefs {
             keyboard_preview: None,
             keyboard_preview_extra_levels: false,
             keyboard_preview_level: 0,
+            keyboard_inspected_key: "AD01".into(),
             tablets: std::collections::BTreeMap::new(),
         }
     }

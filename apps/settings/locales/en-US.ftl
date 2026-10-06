@@ -1792,3 +1792,7 @@ input-map-level = Modifier level
 
 input-map-live-description = While Settings is focused, this map follows the keyboard’s current layout and modifiers.
 input-map-preview-description = Previewing the selected layout. Choose a level or inspect a key to see its other symbols.
+
+input-map-inspect-key = Inspect a physical key
+input-map-inspection-unavailable = This physical key’s current symbols are unavailable. Focus Settings or choose a layout preview.
+input-map-current-symbols = Current symbols

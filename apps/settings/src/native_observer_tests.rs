@@ -731,3 +731,70 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
         "configuration and press feedback stay out of CRDT state"
     );
 }
+
+#[test]
+fn narrow_keyboard_inspection_has_touch_sized_selector_and_live_readable_details() {
+    fn find(widget: &dyn Widget, id: &str) -> Option<(vello::kurbo::Rect, String)> {
+        if widget.test_id() == Some(id) {
+            return Some((
+                widget.get_rect(),
+                widget.accessibility().unwrap().name.unwrap_or_default(),
+            ));
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find(child, id))
+    }
+    let mut h = Harness::at_size(600.0, 1800.0);
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    let (selector, _) = find(&*h.app, "input.map.inspect-key").unwrap();
+    let minimum = f64::from(ui::Theme::dark().tokens.metrics.min_pointer_target);
+    assert!(selector.width() >= minimum && selector.height() >= minimum);
+    let (map, _) = find(&*h.app, "input.keyboard_map").unwrap();
+    assert!(map.width() > 300.0, "the visual map remains prominent");
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
+    for text in ["λ", "Λ"] {
+        h.app
+            .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+                std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                    depressed: 1,
+                    latched: 0,
+                    locked: 0,
+                    group: 1,
+                    keys: vec![winit::keyboard::KeyboardLayoutKey {
+                        physical: key,
+                        symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                            name: text.into(),
+                            text: text.into(),
+                        }],
+                    }],
+                }),
+            )));
+        h.layout();
+        let (rect, content) = find(&*h.app, "input.keyboard-map.details").unwrap();
+        assert!(
+            content.contains(text),
+            "native modifier symbols update the actual Text: {content}"
+        );
+        assert!(!content.contains(": q"), "no preview fallback in live mode");
+        assert!(
+            rect.height()
+                >= f64::from(
+                    ui::Theme::dark()
+                        .text(ui::tokens::TextRole::Body)
+                        .line_height_px()
+                )
+        );
+    }
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    h.layout();
+    assert!(
+        !find(&*h.app, "input.keyboard-map.details")
+            .unwrap()
+            .1
+            .contains("Λ")
+    );
+}

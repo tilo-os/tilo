@@ -3434,4 +3434,4 @@ pub(crate) mod control_result_probe {
 }
 
 pub mod keyboard_map;
-pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey};
+pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
