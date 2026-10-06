@@ -35,7 +35,7 @@ mod pending;
 
 pub use catalogue::{
     CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
-    CatalogueRow, MAX_CATALOGUE_PAGE, RowVisibility,
+    CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility, ViewResourceQuery,
 };
 pub use pending::{Completer, Pending, PendingPoll, pending};
 

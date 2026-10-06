@@ -30,6 +30,8 @@ mod support;
 
 mod common;
 
+tilo_automerge_isolate::test_worker!();
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -53,6 +55,353 @@ use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 
 const SHEETS: &str = "so.tilo.sheets";
 const SLIDES: &str = "so.tilo.slides";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host() {
+    use chat::doc::{ChatDoc, NewMessage};
+    use tilo_actions::remote::ViewResourceQuery;
+    let (identity_key, _) = tilo_user_identity::UserIdentity::generate("Resource fixture", 1);
+    let host = enrol(
+        &identity_key,
+        "temporary-node",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let browser_device = enrol(
+        &identity_key,
+        "temporary-browser",
+        DeviceCapabilities::member(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&identity_key, &host, state.path()).await;
+    let room = hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .create("Native resource fixture")
+        .await
+        .unwrap();
+    let mut browser = Browser::open_room(&hosted, &browser_device, &host, &room.room).await;
+    let mut source = Replica::open(
+        &common::catalogue(),
+        "so.tilo.chat",
+        &room.room,
+        "ada",
+        false,
+        Seed::New,
+    )
+    .unwrap();
+    let mut doc = source.read(Clone::clone).unwrap();
+    ChatDoc::create_workspace(&mut doc, "Native shared space");
+    let channel = ChatDoc::list_channels(&doc)
+        .into_iter()
+        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
+        .unwrap();
+    let message = ChatDoc::push_message(
+        &mut doc,
+        &channel.id,
+        NewMessage {
+            author: "ada".into(),
+            text: "Hello é, shared natively".into(),
+            ..NewMessage::default()
+        },
+    );
+    source
+        .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
+        .unwrap();
+    let id = format!("chat.message:{message}");
+    let reference = serde_json::json!({"id": id, "kind": "chat.message", "label": "Native selection",
+        "span": {"start": 6, "end": 7, "unit": "Chars"}});
+    source
+        .invoke(
+            &ActionAddress::new(format!("chat.channel:{}", channel.id), "share-resource"),
+            &serde_json::json!({"reference": reference, "text": "Discuss this resource"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            false,
+        )
+        .unwrap();
+    let shared = source
+        .read(|doc| ChatDoc::list_messages(doc, &channel.id))
+        .unwrap()
+        .into_iter()
+        .find(|message| message.text == "Discuss this resource")
+        .unwrap();
+    assert_eq!(serde_json::to_value(shared.reference).unwrap(), reference);
+    let route = DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: room.room.clone(),
+        record: source.record().into(),
+    };
+    browser
+        .peer
+        .publish(route.clone(), &source.take_mutation().unwrap())
+        .unwrap();
+    let provider = record_provider(&route);
+    let policy = ui::permissions::PermissionContext::from_capabilities(
+        ui::permissions::Actor::person(Some(collab_types::Role::Owner), "ada").in_room(&room.room),
+        Vec::new(),
+    );
+    let source_views = source
+        .read(|doc| {
+            common::catalogue().resource_views(
+                "so.tilo.chat",
+                doc,
+                &ViewResourceQuery {
+                    id: id.clone(),
+                    kind: "chat.message".into(),
+                },
+                &policy,
+            )
+        })
+        .unwrap();
+    assert!(
+        !source_views.is_empty(),
+        "the native source publishes its exact local view"
+    );
+    let query = CatalogueQuery {
+        provider: Some(provider.clone()),
+        view_resource: Some(ViewResourceQuery {
+            id: id.clone(),
+            kind: "chat.message".into(),
+        }),
+        max_results: 256,
+        ..CatalogueQuery::default()
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let page = loop {
+        let result = browser.catalogue(query.clone()).await;
+        if let Ok(page) = &result
+            && !page.rows.is_empty()
+        {
+            break page.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the governed host never discovered the existing native reference: {result:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(page.rows.iter().all(|row| {
+        row.resource.id == id
+            && row.resource.kind == "chat.message"
+            && row
+                .action
+                .as_ref()
+                .is_some_and(|action| action.kind == tilo_actions::OperationKind::View)
+    }));
+    let locator = page.locator.unwrap();
+    assert_eq!(locator.origin, hosted.web.origin);
+    assert_eq!(locator.room, room.room);
+    assert_eq!(
+        locator.host_device,
+        hex::encode(host.cert.device_public_key)
+    );
+    assert_eq!(locator.provider, provider);
+    for wanted in [
+        ViewResourceQuery {
+            id: "chat.message:missing".into(),
+            kind: "chat.message".into(),
+        },
+        ViewResourceQuery {
+            id: id.clone(),
+            kind: "notes.block".into(),
+        },
+    ] {
+        let empty = browser
+            .catalogue(CatalogueQuery {
+                view_resource: Some(wanted),
+                ..query.clone()
+            })
+            .await
+            .unwrap();
+        assert!(empty.rows.is_empty());
+        assert!(empty.locator.is_none());
+    }
+    assert!(
+        browser
+            .catalogue(CatalogueQuery {
+                provider: Some("record:so.tilo.chat:missing-source".into()),
+                ..query.clone()
+            })
+            .await
+            .is_err(),
+        "a missing exact source must not create a record, keys or a locator"
+    );
+    let other_room = hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .create("Isolated resource fixture")
+        .await
+        .unwrap();
+    let mut other = Browser::open_room(&hosted, &browser_device, &host, &other_room.room).await;
+    assert!(
+        other.catalogue(query.clone()).await.is_err(),
+        "an exact reference from another room must not produce views or a locator"
+    );
+    other.peer.close();
+    let ordinary = browser
+        .catalogue(CatalogueQuery {
+            provider: Some(provider),
+            ..CatalogueQuery::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        ordinary
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .all(|action| action.kind == tilo_actions::OperationKind::Document)
+    );
+    // The production catalogue worker must discard already-read metadata when
+    // the authority changes before delivery, even though the source was valid.
+    let bytes = source.read(|doc| doc.clone().save()).unwrap();
+    let caller = tilo_actions::remote::Caller::authenticated(
+        browser_device.cert.user_public_key,
+        browser_device.cert.device_public_key,
+    );
+    for revoke_on_read in [false, true] {
+        let link = Arc::new(DeliveryReadFixture {
+            member: tilo_agent_participant::room_actions::RoomMember {
+                endpoint: tilo_agent_participant::HostEndpoint {
+                    host: Host::Https(support::https::DevHttps::new(
+                        hosted.web.addr,
+                        hosted.web.certificate_sha256.as_ref().unwrap(),
+                    )),
+                    host_cert: host.cert.clone(),
+                },
+                key: host.key.clone(),
+                runtime: tokio::runtime::Handle::current(),
+            },
+            caller: caller.clone(),
+            route: route.clone(),
+            bytes: bytes.clone(),
+            revoke_on_read,
+            revoked: std::sync::atomic::AtomicBool::new(false),
+            locator_reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let actions = tilo_agent_participant::RoomActions::new(Arc::new(common::catalogue));
+        actions.attach(link.clone()).unwrap();
+        let answer = actions
+            .serve(
+                room.workspace_id,
+                &caller,
+                RemoteActionMessage::CatalogueRequest {
+                    correlation: 1,
+                    query: query.clone(),
+                },
+            )
+            .unwrap();
+        let response = answer
+            .wait_timeout(Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .unwrap();
+        let RemoteActionMessage::CatalogueResponse { result, .. } = response else {
+            panic!("expected catalogue response")
+        };
+        if revoke_on_read {
+            assert_eq!(result, Err(ActionHostError::UnknownAction));
+            assert_eq!(
+                link.locator_reads.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "revoked metadata must never reach locator issuance"
+            );
+        } else {
+            let page = result.unwrap();
+            assert!(
+                !page.rows.is_empty(),
+                "the same production worker accepts current Read"
+            );
+            assert!(page.locator.is_some());
+        }
+        assert_eq!(link.bytes, bytes, "view discovery cannot mutate its source");
+        actions.shutdown();
+    }
+    browser.peer.close();
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
+}
+
+/// Deterministically changes authority after a real Chat snapshot is read.
+struct DeliveryReadFixture {
+    member: tilo_agent_participant::room_actions::RoomMember,
+    caller: tilo_actions::remote::Caller,
+    route: DocumentRoute,
+    bytes: Vec<u8>,
+    revoke_on_read: bool,
+    revoked: std::sync::atomic::AtomicBool,
+    locator_reads: std::sync::atomic::AtomicUsize,
+}
+
+impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixture {
+    fn user_public_key(&self) -> [u8; 32] {
+        self.member.endpoint.host_cert.user_public_key
+    }
+    fn member(&self) -> tilo_agent_participant::room_actions::RoomMember {
+        self.member.clone()
+    }
+    fn view_read_policy(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        app: &str,
+        record: &str,
+    ) -> Option<tilo_agent_participant::room_actions::ViewReadPolicy> {
+        if self.revoked.load(std::sync::atomic::Ordering::SeqCst)
+            || caller != &self.caller
+            || self.route.workspace_id().ok() != Some(workspace)
+            || app != self.route.app_id
+            || record != self.route.record
+        {
+            return None;
+        }
+        Some(tilo_agent_participant::room_actions::ViewReadPolicy {
+            room: self.route.cluster_id.clone(),
+            role: collab_types::Role::Owner,
+            caps: Vec::new(),
+            person: hex::encode(self.user_public_key()),
+            unix_time: 1,
+        })
+    }
+    fn view_document(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        source: &DocumentRoute,
+    ) -> Result<tilo_agent_participant::room_actions::ViewDocument, String> {
+        if source != &self.route
+            || self
+                .view_read_policy(workspace, caller, &source.app_id, &source.record)
+                .is_none()
+        {
+            return Err("read refused".into());
+        }
+        self.revoked
+            .store(self.revoke_on_read, std::sync::atomic::Ordering::SeqCst);
+        Ok(tilo_agent_participant::room_actions::ViewDocument {
+            bytes: self.bytes.clone(),
+            revision: "fixture-source".into(),
+        })
+    }
+    fn view_locator(
+        &self,
+        room: &str,
+        provider: &str,
+    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
+        self.locator_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(tilo_actions::remote::ResourceViewLocator {
+            origin: "https://fixture.tilo.invalid".into(),
+            browser_page: Some("https://fixture.tilo.invalid/qos-runtime/resource.html".into()),
+            room: room.into(),
+            host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
+            provider: provider.into(),
+        })
+    }
+}
 
 struct Hosted {
     relay: Relay,
@@ -116,10 +465,17 @@ struct Browser {
     documents: BTreeMap<DocumentRoute, Vec<Checkpoint>>,
     answers: Vec<RemoteActionMessage>,
     correlation: u64,
+    workspace: u64,
+    room: String,
 }
 
 impl Browser {
     async fn open(hosted: &Hosted, device: &Device, host: &Device) -> Self {
+        Self::open_room(hosted, device, host, ROOM).await
+    }
+
+    async fn open_room(hosted: &Hosted, device: &Device, host: &Device, room: &str) -> Self {
+        let workspace = tilo_relay_protocol::room_workspace_id(room).unwrap();
         let https = support::https::DevHttps::new(
             hosted.web.addr,
             hosted.web.certificate_sha256.as_ref().unwrap(),
@@ -131,7 +487,25 @@ impl Browser {
             device.key.clone(),
         );
         let events = peer.events();
-        peer.join(workspace()).unwrap();
+        if room != ROOM {
+            ready(&[&peer]).await;
+            let (reply, answer) = tokio::sync::oneshot::channel();
+            peer.rooms_then(
+                tilo_relay_protocol::rooms::RoomsRequest::Enter { room: room.into() },
+                Box::new(move |result| {
+                    let _ = reply.send(result);
+                }),
+            )
+            .unwrap();
+            assert!(matches!(
+                tilo_test_env::within("the node enters the governed fixture", answer)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                tilo_relay_protocol::rooms::RoomsReply::Room(_)
+            ));
+        }
+        peer.join(workspace).unwrap();
         ready(&[&peer]).await;
         Self {
             peer,
@@ -140,6 +514,8 @@ impl Browser {
             documents: BTreeMap::new(),
             answers: Vec::new(),
             correlation: 0,
+            workspace,
+            room: room.to_owned(),
         }
     }
 
@@ -173,7 +549,7 @@ impl Browser {
     fn send(&self, message: RemoteActionMessage) {
         let frame = RemoteActionFrame::new(message).encode().unwrap();
         self.peer
-            .send_remote_action(workspace(), self.host_key, frame)
+            .send_remote_action(self.workspace, self.host_key, frame)
             .unwrap();
     }
 
@@ -232,11 +608,18 @@ impl Browser {
     /// Create `app`'s record the way a page does, then close it: nobody has
     /// it open afterwards.
     fn create(&mut self, app: &str) -> DocumentRoute {
-        let mut page =
-            Replica::open(&common::catalogue(), app, ROOM, "ada", false, Seed::New).unwrap();
+        let mut page = Replica::open(
+            &common::catalogue(),
+            app,
+            &self.room,
+            "ada",
+            false,
+            Seed::New,
+        )
+        .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
-            cluster_id: ROOM.into(),
+            cluster_id: self.room.clone(),
             record: page.record().to_owned(),
         };
         let mutation = page.take_mutation().unwrap();
@@ -260,7 +643,7 @@ impl Browser {
         Replica::open(
             &common::catalogue(),
             &route.app_id,
-            ROOM,
+            &self.room,
             "ada",
             false,
             Seed::Existing {

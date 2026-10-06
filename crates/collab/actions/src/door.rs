@@ -24,6 +24,7 @@ use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
 use crate::resource::{
     ActionInput, ActionSpec, Collects, KEY_SEP, Resource, ResourceViewMountSpec,
+    ResourceViewRangeSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -159,6 +160,8 @@ pub struct ResourceViewDescriptor {
     pub open_action: String,
     pub primary: bool,
     pub mount: Option<ResourceViewMountSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<ResourceViewRangeSpec>,
 }
 
 impl ResourceViewDescriptor {
@@ -177,6 +180,7 @@ impl ResourceViewDescriptor {
                 open_action: view.open_action.clone(),
                 primary: view.primary,
                 mount: view.mount.clone(),
+                range: view.range.clone(),
             })
     }
 }
@@ -861,6 +865,7 @@ mod tests {
                 description: Some("Edit the note".into()),
                 open_action: "open".into(),
                 primary: true,
+                range: None,
                 mount: None,
             })
         );

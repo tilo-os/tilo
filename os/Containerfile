@@ -1212,6 +1212,8 @@ COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-exten
 COPY os/usr/lib/tmpfiles.d/tilo-extension.conf /usr/lib/tmpfiles.d/tilo-extension.conf
 COPY os/etc/polkit-1/rules.d/49-tilo-extension.rules /etc/polkit-1/rules.d/49-tilo-extension.rules
 COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
+# License information only; Cisco binaries remain separate end-user downloads.
+COPY os/usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt
 
 
 # ---- Stage 2: rootfs (the OS filesystem) ------------------------------------

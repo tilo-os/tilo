@@ -17,6 +17,173 @@ fn governor() -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
+#[cfg(feature = "agents")]
+async fn view_read_relay(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+) -> crate::daemon::Relay {
+    crate::daemon::Relay::start_with_relay_mode(
+        crate::RelayConfig {
+            state_root: state_root.to_owned(),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap()
+}
+
+#[cfg(feature = "agents")]
+async fn assert_view_reader_refused(
+    rooms: &Rooms,
+    workspace: u64,
+    caller: &tilo_actions::remote::Caller,
+    source: &tilo_browser_peer::DocumentRoute,
+) {
+    assert!(
+        rooms
+            .resource_view_policy(workspace, caller, &source.app_id, &source.record)
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        rooms
+            .resource_view_document(workspace, caller, source)
+            .await
+            .err()
+            .unwrap(),
+        "resource read not permitted",
+        "a currently unauthorized caller must be refused before existing-key access"
+    );
+}
+
+#[cfg(feature = "agents")]
+async fn admit_view_reader(rooms: &Rooms, room: &str, key: &SigningKey, member: &DeviceCert) {
+    let state = rooms.room(room).await.unwrap();
+    let mut room = state.lock().await;
+    let now = SystemTime::now();
+    let mut candidate = room.peer().clone();
+    candidate
+        .admit_certificate(member.clone(), key, now)
+        .unwrap();
+    let collaboration = room.collaboration().clone();
+    room.commit(candidate, key, now, |_, _| Ok(collaboration))
+        .unwrap();
+}
+
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Relay::shutdown consumes the relay after the policy assertions; the suggested subsequent drop would use a moved value"
+)]
+async fn view_read_policy_requires_current_certified_person_and_observes_revocation() {
+    use tilo_actions::remote::Caller;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Read-only resource discovery").await.unwrap();
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(&rooms, &created.room, &key, &member).await;
+    let caller = Caller::authenticated(member.user_public_key, member.device_public_key);
+    let policy = rooms
+        .resource_view_policy(created.workspace_id, &caller, "so.tilo.chat", "")
+        .await
+        .unwrap();
+    assert_eq!(policy.room, created.room);
+    assert_eq!(policy.role, collab_types::Role::Owner);
+    let source = tilo_browser_peer::DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: created.room.clone(),
+        record: "@tilo:package-primary".into(),
+    };
+    assert_eq!(
+        rooms
+            .resource_view_document(created.workspace_id, &caller, &source)
+            .await
+            .err()
+            .unwrap(),
+        "source stewardship unavailable",
+        "the authorized reader reaches the existing-key boundary without creating stewardship"
+    );
+    assert_eq!(
+        rooms
+            .resource_view_document(0, &caller, &source)
+            .await
+            .err()
+            .unwrap(),
+        "source room mismatch"
+    );
+    for denied in [
+        Caller::authenticated([9; 32], cert.device_public_key),
+        Caller::authenticated(cert.user_public_key, [9; 32]),
+        Caller::local_person(hex::encode(cert.user_public_key)),
+        Caller::local_agent("agent-with-no-delegation"),
+        Caller::local_app("so.tilo.chat"),
+    ] {
+        assert_view_reader_refused(&rooms, created.workspace_id, &denied, &source).await;
+    }
+    assert!(
+        rooms
+            .resource_view_policy(0, &caller, "so.tilo.chat", "")
+            .await
+            .is_none()
+    );
+    let identity_key = SigningKey::from_bytes(&[1; 32]);
+    let mut revoked = tilo_user_identity::RevocationEntry {
+        user_public_key: cert.user_public_key,
+        revoked_device_public_key: member.device_public_key,
+        revoked_at_ns: now_ns(),
+        reason: tilo_user_identity::RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &identity_key).unwrap();
+    {
+        let queued_read = rooms.resource_view_document(created.workspace_id, &caller, &source);
+        tokio::pin!(queued_read);
+        let state = rooms.room(&created.room).await.unwrap();
+        let mut room = state.lock().await;
+        // Poll the actual reader to Pending while the governed room lock is held.
+        // It must recheck admission after acquiring this same lock.
+        assert!(
+            std::future::poll_fn(|cx| {
+                use std::future::Future;
+                std::task::Poll::Ready(queued_read.as_mut().poll(cx).is_pending())
+            })
+            .await
+        );
+        let now = SystemTime::now();
+        let mut candidate = room.peer().clone();
+        candidate
+            .publish_governed_revocations(&[revoked], &key, now)
+            .unwrap();
+        let collaboration = room.collaboration().clone();
+        room.commit(candidate, &key, now, |_, _| Ok(collaboration))
+            .unwrap();
+        drop(room);
+        drop(state);
+        assert_eq!(
+            queued_read.await.err().unwrap(),
+            "resource read not permitted"
+        );
+    }
+    assert_view_reader_refused(&rooms, created.workspace_id, &caller, &source).await;
+    drop(rooms);
+    relay.shutdown().await;
+}
+
 #[test]
 fn a_created_room_restores_with_its_governance_and_publication() {
     let dir = tempfile::tempdir().unwrap();
