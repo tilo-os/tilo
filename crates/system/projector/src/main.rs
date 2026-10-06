@@ -2045,6 +2045,22 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(34));
             }
+            // This fixture is a finite producer. Encoding is asynchronous: the
+            // final submitted frames can still be in flight after the last
+            // encode call, including the keyframe that closes an HLS segment.
+            // Drain those real units before waiting for the muxer's output.
+            for unit in encoder.finish().expect("drain projection encoder") {
+                pipeline
+                    .push(&VideoPacket {
+                        width: size,
+                        height: size,
+                        presentation_time_us: u64::try_from(unit.pts.as_micros())
+                            .expect("a short test stream"),
+                        keyframe: unit.keyframe,
+                        annex_b: unit.data,
+                    })
+                    .expect("push final projection frame");
+            }
             let deadline = tilo_test_env::hang_deadline();
             while !paths.playlist.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));

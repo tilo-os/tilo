@@ -286,6 +286,23 @@ impl ContactsDoc {
         }
         out
     }
+
+    /// Stable identities deleted in this book, retained for shared directory
+    /// projection even if Contacts was closed when a peer deleted them.
+    pub fn removed_contacts(doc: &AutoCommit) -> Vec<ContactId> {
+        let Ok(Some((Value::Object(ObjType::Map), contacts))) = doc.get(&ROOT, "contacts") else {
+            return Vec::new();
+        };
+        doc.keys(&contacts)
+            .filter_map(|key| {
+                let id = key.parse::<ContactId>().ok()?;
+                let (value, object) = doc.get(&contacts, key.as_str()).ok().flatten()?;
+                (matches!(value, Value::Object(ObjType::Map))
+                    && read_bool(doc, &object, "deleted").unwrap_or(false))
+                .then_some(id)
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------

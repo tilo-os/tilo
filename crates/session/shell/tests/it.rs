@@ -199,6 +199,8 @@ mod shell_chrome_test;
 mod shell_narration;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
+#[path = "shm_readback.rs"]
+mod shm_readback;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
 #[path = "speaker_calibration_fabric.rs"]
