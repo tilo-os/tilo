@@ -187,6 +187,7 @@ pub struct CodeEditorShell;
 
 /// Every screenshot scenario, over the sample project the fixture writes.
 const SCENARIOS: &[&str] = &[
+    "hardware",
     "terminal",
     "selection",
     "completion",
@@ -609,11 +610,38 @@ mod tests {
             let (name, staging) = editor(&mut app, |app| {
                 (app.active_buffer_name(), app.is_staging_for_test())
             });
-            assert_eq!(name.as_deref(), Some("main.rs"), "{scenario:?}");
+            let expected = if scenario == Some("hardware") {
+                "signed_mac.sv"
+            } else {
+                "main.rs"
+            };
+            assert_eq!(name.as_deref(), Some(expected), "{scenario:?}");
             assert!(!staging, "{scenario:?} staged");
             let audit = app.harness().native_app_audit();
             assert!(audit.is_certified(), "{scenario:?}: {audit:#?}");
         }
+    }
+
+    #[test]
+    fn hardware_scenario_opens_real_rtl_with_the_detected_dialect() {
+        let mut app = TestApp::<CodeEditorShell>::capture(Some("hardware")).unwrap();
+        let state = app.state();
+        let file = state
+            .files
+            .iter()
+            .find(|file| file.name == "signed_mac.sv")
+            .expect("fixture RTL is a published file");
+        assert_eq!(file.language, "SystemVerilog");
+        let file_id = file.id.clone();
+        assert_eq!(
+            editor(&mut app, |app| app.active_buffer_name()).as_deref(),
+            Some("signed_mac.sv")
+        );
+        let body = app
+            .read_document(|doc| crate::doc::EditorDoc::read_buffer_key(doc, &file_id))
+            .expect("RTL source lives in the shared document");
+        assert!(body.contains("always_ff @(posedge clk)"));
+        assert!(body.contains("{{16{product[15]}}, product}"));
     }
 
     #[test]
