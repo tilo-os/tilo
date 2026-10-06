@@ -118,6 +118,8 @@ fn notification_unix_ms() -> u64 {
 /// without answering drops the `reply` sender, which the portal side
 /// reads as deny — refusal, not a hang.
 pub struct PendingPrompt {
+    /// Session-local identity; a stale answer must never consume another request.
+    pub id: uuid::Uuid,
     pub app_id: AppId,
     pub capability: Capability,
     /// Reply channel to a blocked portal request; `None` for
@@ -129,6 +131,7 @@ impl PendingPrompt {
     /// The shell asking on its own behalf; nobody is blocked on this.
     pub fn new(app_id: AppId, capability: Capability) -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
             app_id,
             capability,
             reply: None,
@@ -141,6 +144,7 @@ impl PendingPrompt {
         reply: tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>,
     ) -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
             app_id,
             capability,
             reply: Some(reply),
@@ -157,6 +161,7 @@ impl PendingPrompt {
 impl std::fmt::Debug for PendingPrompt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingPrompt")
+            .field("id", &self.id)
             .field("app_id", &self.app_id)
             .field("capability", &self.capability)
             .field("awaiting_portal_reply", &self.reply.is_some())

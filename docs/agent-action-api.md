@@ -51,6 +51,19 @@ by a token:
 - **Every invocation passes the same capability gate** as the palette, as the
   person at this session.
 
+Permission requests use that same authenticated session surface. When a portal
+or Terminal is waiting for consent, query `actions list permission-prompts` and
+use the returned exact UUID-scoped decision: `allow-once@<id>`,
+`allow-session@<id>`, `allow-always@<id>` or `deny@<id>` from provider
+`permission-prompts`, with `{"confirm": true}`. Only the current queue head is
+offered; listing and invoking require the current workspace owner. The action
+rechecks ownership and request identity before releasing the waiting request.
+It cannot create a grant without a prompt, answer a replaced request or reopen a
+Host session as a person on an agent's behalf. The portal/ush supervisor still
+owns private persistence and Host's existing person/device-owner checks.
+A successful decision receipt confirms the answer, not a running PTY: inspect
+Terminal's local session afterward to observe its actual startup outcome.
+
 Reading is an action too. A framework resource that sets
 `Resource::READABLE` and answers `Resource::read_content` is published with
 the framework's `read` view: no arguments answers the resource itself, `item`
