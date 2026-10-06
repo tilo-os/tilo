@@ -9,7 +9,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 struct Session {
     network: ShellNetwork,
     endpoint: iroh::Endpoint,
-    actor: tokio::task::JoinHandle<()>,
+    actor: Option<tokio::task::JoinHandle<()>>,
     cert: DeviceCert,
     deferred: Mutex<VecDeque<NetEvent>>,
 }
@@ -37,8 +37,8 @@ impl Session {
         let identity = || HostIdentity {
             device_cert: cert.clone(),
             device_signing_key: ed25519_dalek::SigningKey::from_bytes(&device.to_bytes()),
-            workspace_device_certs: Default::default(),
-            workspace_revocations: Default::default(),
+            workspace_device_certs: std::collections::HashMap::new(),
+            workspace_revocations: std::collections::HashMap::new(),
             identity_paths: None,
         };
         let (commands, actor) = Actor::spawn_reporting_addrs(
@@ -63,7 +63,7 @@ impl Session {
         Self {
             network,
             endpoint,
-            actor,
+            actor: Some(actor),
             cert,
             deferred: Mutex::default(),
         }
@@ -115,10 +115,12 @@ impl Session {
         }
     }
 
-    async fn close(self) {
+    async fn close(&mut self) {
         self.endpoint.close().await;
-        self.actor.abort();
-        let _ = self.actor.await;
+        if let Some(actor) = self.actor.take() {
+            actor.abort();
+            let _ = actor.await;
+        }
     }
 }
 
@@ -223,10 +225,6 @@ impl Drop for SettingsReset {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one paired journey keeps transport, policy and end-state assertions together"
-)]
 async fn paired_continuity_clipboard_requires_activation_and_filters_private_selections() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     home.env().set(
@@ -252,8 +250,8 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
     )
     .unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[0x91; 32]);
-    let left = Session::new(&root, 0x92, WorkspaceTree::default()).await;
-    let right = Session::new(&root, 0x93, WorkspaceTree::default()).await;
+    let mut left = Box::pin(Session::new(&root, 0x92, WorkspaceTree::default())).await;
+    let mut right = Box::pin(Session::new(&root, 0x93, WorkspaceTree::default())).await;
     pair(&left, &right).await;
     let copied = selection();
     let pasted = selection();
@@ -340,7 +338,7 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
     // An independently certified person can connect to the transport, but
     // cannot turn that connection into this person's clipboard authority.
     let other_root = ed25519_dalek::SigningKey::from_bytes(&[0x97; 32]);
-    let stranger = Session::new(&other_root, 0x98, WorkspaceTree::default()).await;
+    let mut stranger = Box::pin(Session::new(&other_root, 0x98, WorkspaceTree::default())).await;
     let topic = personal_continuity_topic_id(&left.cert.user_public_key);
     stranger.join(topic).await;
     stranger
@@ -445,16 +443,15 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
             .any(|item| item.text_preview.as_deref() == Some("other person's copy"))
     );
     stranger.close().await;
+    drop(stranger);
     left.close().await;
+    drop(left);
     right.close().await;
+    drop(right);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one paired journey keeps transport, policy and end-state assertions together"
-)]
 async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_identity() {
     use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
     use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
@@ -537,8 +534,8 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         }),
     )
     .unwrap();
-    let left = Session::new(&root, 0x95, tree).await;
-    let right = Session::new(&root, 0x96, local_tree).await;
+    let mut left = Box::pin(Session::new(&root, 0x95, tree)).await;
+    let mut right = Box::pin(Session::new(&root, 0x96, local_tree)).await;
     let peers_path = home.config().join("home-peers.json");
     home.env().set("TILO_HOME_PEERS_PATH", &peers_path);
     std::fs::write(
@@ -565,6 +562,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
                 )
                 .unwrap()
         );
+        drop(reports);
     }
     let prepared = left.network.local_continuity_snapshot_bytes().unwrap();
     let prepared = crate::shell::personal_continuity::decode_checkpoint(&prepared).unwrap();
@@ -673,18 +671,20 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         &mut ui::widget::Edits::lend(&mut document),
         &automerge::ROOT
     ));
-    let accepted = tree_handle.read();
-    let active_workspace = accepted.desktop.active_workspace().unwrap();
-    let active_strip = accepted.desktop.active_strip[&active_workspace.id];
-    let active_group = accepted.desktop.active_group[&active_strip];
-    assert!(
-        active_workspace
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .any(|group| group.id == active_group && group.active_tab == tab)
-    );
-    drop(accepted);
+    {
+        let accepted = tree_handle.read();
+        let active_workspace = accepted.desktop.active_workspace().unwrap();
+        let active_strip = accepted.desktop.active_strip[&active_workspace.id];
+        let active_group = accepted.desktop.active_group[&active_strip];
+        assert!(
+            active_workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .any(|group| group.id == active_group && group.active_tab == tab)
+        );
+        drop(accepted);
+    }
     let offered = registry
         .lock()
         .unwrap()
@@ -718,5 +718,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         .unwrap()
         .forget_local_tab(AppInstanceId(tab));
     left.close().await;
+    drop(left);
     right.close().await;
+    drop(right);
 }
