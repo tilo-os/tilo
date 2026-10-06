@@ -65,24 +65,12 @@ pub const CHAT_ACTION_TYPE: &str = "chat.action";
 
 /// The authored payload of one direct-agent request. Its author always comes
 /// from the authenticated action envelope, never this payload.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentMessagePayload {
-    /// Local dispatch may supply an id; broker admission replaces it with the
-    /// exact invocation-derived identity.
-    #[serde(default)]
-    pub id: String,
-    pub ts: i64,
-    pub text: String,
-    pub intent: crate::model::AgentIntent,
-    #[serde(default)]
-    pub attachment: Option<Attachment>,
-    #[serde(default)]
-    pub mentions: Vec<crate::mention::Mention>,
-    #[serde(default)]
-    pub reference: Option<tilo_reference::ResourceRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub body: Vec<tilo_document::ClipBlock>,
-}
+pub type AgentMessagePayload = tilo_actions::agent_message::AgentMessagePayload<
+    Attachment,
+    crate::mention::Mention,
+    tilo_reference::ResourceRef,
+    tilo_document::ClipBlock,
+>;
 
 /// Every collaborative operation Chat exports on the shared workspace.
 ///
@@ -2082,6 +2070,74 @@ mod tests {
     /// A fixed authoring timestamp for tests — actions carry it in the payload,
     /// so nothing here reads the wall-clock.
     const TS: i64 = 1_782_000_000;
+
+    #[test]
+    fn shared_agent_channel_identity_matches_original_fnv_wire_identity() {
+        use std::hash::Hasher as _;
+        for (workspace, agent) in [("", ""), ("workspace", "scribe"), ("ab", "c"), ("a", "bc")] {
+            let part = |suffix| {
+                let mut hash = fnv::FnvHasher::default();
+                hash.write(b"tilo.chat.agent-conversation.v1\0");
+                hash.write(workspace.as_bytes());
+                hash.write_u8(0);
+                hash.write(agent.as_bytes());
+                hash.write_u8(suffix);
+                hash.finish()
+            };
+            let id = uuid::Uuid::from_u128(u128::from(part(0)) << 64 | u128::from(part(1)));
+            assert_eq!(
+                ChatDoc::agent_conversation_channel_id(workspace, agent),
+                format!("c_agent_{}", id.simple())
+            );
+        }
+    }
+
+    #[test]
+    fn shared_agent_payload_preserves_exact_plain_wire_and_serde_defaults() {
+        let action = post_agent_message_action(
+            "workspace",
+            "scribe",
+            "hello",
+            model::AgentIntent::Message,
+            7,
+        );
+        let bytes = serde_json::to_vec(&action).unwrap();
+        assert_eq!(bytes, br#"{"PostAgentMessage":{"workspace":"workspace","agent":"scribe","message":{"id":"","ts":7,"text":"hello","intent":"message","attachment":null,"mentions":[],"reference":null}}}"#);
+        let shared: tilo_actions::agent_message::AgentMessageMutation<
+            tilo_actions::agent_message::SerializedAgentMessagePayload,
+        > = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            serde_json::to_value(&shared).unwrap(),
+            serde_json::to_value(&action).unwrap()
+        );
+        let omitted = br#"{"PostAgentMessage":{"workspace":"workspace","agent":"scribe","message":{"ts":7,"text":"hello","intent":"message"}}}"#;
+        let decoded: ChatAction = serde_json::from_slice(omitted).unwrap();
+        assert_eq!(decoded, action);
+    }
+
+    #[test]
+    fn shared_agent_payload_retains_rich_body_and_attachment_as_inert_owner_data() {
+        let input = serde_json::json!({"PostAgentMessage": {
+            "workspace": "workspace", "agent": "scribe", "message": {
+                "ts": 7, "text": "hello", "intent": "message",
+                "attachment": {"Image": {"name": "image", "blob": "opaque-content-address", "w": 2, "h": 3}},
+                "body": [{"kind": "paragraph", "text": "hello", "marks": [], "level": null, "ordered": null, "align": null, "attrs": {}}]
+            }
+        }});
+        let action: ChatAction = serde_json::from_value(input.clone()).unwrap();
+        let shared: tilo_actions::agent_message::AgentMessageMutation<
+            tilo_actions::agent_message::SerializedAgentMessagePayload,
+        > = serde_json::from_value(input).unwrap();
+        let app_wire = serde_json::to_value(&action).unwrap();
+        assert_eq!(app_wire, serde_json::to_value(&shared).unwrap());
+        let body = &app_wire["PostAgentMessage"]["message"]["body"];
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["text"], "hello");
+        assert_eq!(
+            app_wire["PostAgentMessage"]["message"]["attachment"]["Image"]["blob"],
+            "opaque-content-address"
+        );
+    }
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();

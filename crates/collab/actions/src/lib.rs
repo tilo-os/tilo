@@ -87,6 +87,7 @@
 )]
 
 pub mod action;
+pub mod agent_message;
 pub mod context;
 pub mod contract;
 pub mod door;

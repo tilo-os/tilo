@@ -284,19 +284,7 @@ impl ChatDoc {
     /// Stable channel identity for one agent conversation in one workspace.
     /// Stored metadata is checked before this identity is reused.
     pub fn agent_conversation_channel_id(workspace: &str, agent: &str) -> String {
-        use std::hash::Hasher as _;
-
-        let part = |suffix: u8| {
-            let mut hash = fnv::FnvHasher::default();
-            hash.write(b"tilo.chat.agent-conversation.v1\0");
-            hash.write(workspace.as_bytes());
-            hash.write_u8(0);
-            hash.write(agent.as_bytes());
-            hash.write_u8(suffix);
-            hash.finish()
-        };
-        let identity = u128::from(part(0)) << 64 | u128::from(part(1));
-        format!("c_agent_{}", uuid::Uuid::from_u128(identity).simple())
+        tilo_actions::agent_message::agent_conversation_channel_id(workspace, agent)
     }
     /// Store and verify bytes in `content`. This is deliberately
     /// document-free: callers do it on a bounded worker before `sync` authors

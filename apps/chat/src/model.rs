@@ -60,36 +60,7 @@ impl ChannelKind {
 ///
 /// This is authored structure, never inferred from prose. `Queue` and
 /// `Steer` remain closed until their Task owner providers are installed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentIntent {
-    Message,
-    Queue,
-    Steer,
-}
-
-impl std::str::FromStr for AgentIntent {
-    type Err = ();
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "message" => Ok(Self::Message),
-            "queue" => Ok(Self::Queue),
-            "steer" => Ok(Self::Steer),
-            _ => Err(()),
-        }
-    }
-}
-
-impl AgentIntent {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Message => "message",
-            Self::Queue => "queue",
-            Self::Steer => "steer",
-        }
-    }
-}
+pub use tilo_actions::agent_message::AgentIntent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presence {
