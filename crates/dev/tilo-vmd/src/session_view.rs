@@ -145,6 +145,10 @@ fn base(root: &Path, source: &Path) -> Result<PathBuf, DaemonError> {
 
 fn hierarchy(base: &Path, view: &Path, layers: &[PathBuf], name: &str) -> Result<(), DaemonError> {
     let target = view.join(name);
+    // The mounted root presents imported permissions, not the protected
+    // backing directory. Release that old view before validating the backing
+    // mountpoint; running session bind mounts retain their old view.
+    unmount(&target)?;
     directory(&target)?;
     let mut lowers = Vec::new();
     for layer in layers.iter().rev() {
@@ -180,7 +184,6 @@ fn hierarchy(base: &Path, view: &Path, layers: &[PathBuf], name: &str) -> Result
         ));
     }
     lowers.push(base);
-    unmount(&target)?;
     if let [only] = lowers.as_slice() {
         mount(Some(only), &target, None, libc::MS_BIND, None)?;
         return mount(
