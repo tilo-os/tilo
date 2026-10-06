@@ -215,13 +215,43 @@ fn draw_agent_action_presence(
         .unwrap_or_default()
     };
     let marker_surface = app.presence_ctx.agent_marker_surface_key("primary");
+    let published = if visible_interactions.is_empty()
+        || app.close_admission.dialog.is_some()
+        || app
+            .history
+            .as_ref()
+            .is_some_and(|history| !history.live_visible())
+        || app.history_layout.is_some_and(|layout| !layout.app_visible)
+        || app
+            .actions
+            .action_palette
+            .as_ref()
+            .is_some_and(|palette| palette.is_presented())
+    {
+        Vec::new()
+    } else {
+        crate::action_locus::publication::PublicationGeometry {
+            root: app.root_widget.as_ref(),
+            nodes: &app.layout.node_map,
+            names: &app.bindings.semantic_node_names(&app.layout.node_map),
+            focused: app.focused_node,
+        }
+        .interactions(
+            &app.state.doc,
+            &app.actions.bound_publication,
+            &visible_interactions,
+        )
+    };
     app.window.agent_marker_surface = Some(marker_surface.clone());
     app.window.agent_marker_viewport = Some(window_rect);
     crate::action_locus::draw_action_presence(
         &mut crate::paint::PaintCtx::new(scene, transform, &mut app.text_renderer, &app.theme),
         &mut app.presence_ctx,
-        &app.accessibility.semantic_tree,
-        &bindings,
+        crate::action_locus::PresenceGeometry {
+            tree: &app.accessibility.semantic_tree,
+            bindings: &bindings,
+            published: &published,
+        },
         window_rect,
         &marker_surface,
         interaction_now,

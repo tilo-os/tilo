@@ -5688,6 +5688,12 @@ impl CapnpBrokerState {
             runtime_collab::TaskRunUpdate::Accepted => {
                 ("Agent accepted run".to_string(), None, false)
             }
+            runtime_collab::TaskRunUpdate::Planning {} => {
+                ("Agent entered planning".to_string(), None, false)
+            }
+            runtime_collab::TaskRunUpdate::Executing {} => {
+                ("Agent entered execution".to_string(), None, false)
+            }
             runtime_collab::TaskRunUpdate::Progress { message } => (
                 format!("Agent progress · {}", bounded_task_message(&message)?),
                 None,
@@ -8829,13 +8835,16 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         tracing::info!("managed Agent task acceptance received");
-        match self.state.accept_enrolled_task(self.peer_id, &acceptance) {
-            Ok(()) => {
-                tracing::info!("managed Agent task acceptance retained");
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error)),
-        }
+        let state = self.state.clone();
+        let peer = self.peer_id;
+        Promise::from_future(async move {
+            state
+                .accept_enrolled_task(peer, &acceptance)
+                .await
+                .map_err(capnp::Error::failed)?;
+            tracing::info!("managed Agent task acceptance retained");
+            Ok(())
+        })
     }
 
     fn report_enrolled_task(

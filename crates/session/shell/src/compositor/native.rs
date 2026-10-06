@@ -8506,6 +8506,9 @@ pub fn run() {
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
     }
+    frame_builder
+        .host_mut()
+        .set_quick_settings_wake(Arc::clone(&session_wake));
     let chooser_attended = Arc::new(AtomicBool::new(false));
     let mut published_room = PublishedRoom::new();
     let chooser_service = start_chooser_service(

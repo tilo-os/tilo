@@ -238,6 +238,45 @@ mod tests {
         harness
     }
 
+    #[test]
+    fn hosted_terminal_missing_ush_reports_startup_failure_and_refuses_input() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut harness = mount_terminal(&mut apps);
+        let address = |operation| ui::bound_dispatch::BoundActionAddress {
+            instance_id: TAB,
+            address: tilo_actions::ActionAddress::new(terminal::Terminal::KIND, operation),
+        };
+        let inspection = harness
+            .invoke_bound_action(&address("inspect-session"), &serde_json::Map::new())
+            .expect("the mounted Terminal exports read-only process inspection")
+            .completed()
+            .expect("inspection completes without starting a process")
+            .value
+            .expect("inspection returns its process state");
+        assert_eq!(inspection["lifecycle"], "no_runtime");
+        assert_eq!(inspection["input_available"], false);
+        assert!(
+            inspection["startup_reason"]
+                .as_str()
+                .unwrap()
+                .contains("ush"),
+            "the missing required service is visible through the public resource"
+        );
+        assert!(
+            harness
+                .invoke_bound_action_confirmed(
+                    &address("run"),
+                    serde_json::json!({ "command": "printf startup-check" })
+                        .as_object()
+                        .unwrap(),
+                )
+                .is_err(),
+            "even reviewed input must not complete against a capture-only sink"
+        );
+        harness.close_components();
+    }
+
     /// A terminal tab the shell hosts is the terminal's own component: it
     /// offers the terminal's actions through the shell's door, and what it
     /// keeps is in the tab's record, there again when the tab is mounted

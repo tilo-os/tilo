@@ -49,6 +49,27 @@ fn is_terminal_update(update: &runtime_collab::TaskRunUpdate) -> bool {
     )
 }
 
+fn reported_execution_phase(
+    update: &runtime_collab::TaskRunUpdate,
+) -> Option<tilo_desktop_model::WorkspaceTaskExecutionPhase> {
+    match update {
+        runtime_collab::TaskRunUpdate::Accepted => {
+            Some(tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted)
+        }
+        runtime_collab::TaskRunUpdate::Planning {} => {
+            Some(tilo_desktop_model::WorkspaceTaskExecutionPhase::Planning)
+        }
+        runtime_collab::TaskRunUpdate::Executing {} => {
+            Some(tilo_desktop_model::WorkspaceTaskExecutionPhase::Executing)
+        }
+        runtime_collab::TaskRunUpdate::Progress { .. }
+        | runtime_collab::TaskRunUpdate::Succeeded { .. }
+        | runtime_collab::TaskRunUpdate::Failed { .. }
+        | runtime_collab::TaskRunUpdate::Cancelled { .. }
+        | runtime_collab::TaskRunUpdate::DirectionApplied { .. } => None,
+    }
+}
+
 impl CapnpBrokerState {
     pub(crate) fn managed_agent_session_is_ready(
         &self,
@@ -332,7 +353,7 @@ impl CapnpBrokerState {
         // The Agent executor is serial. Do not label its next instruction as
         // working while another owner-backed run is still active.
         if agent_has_active_run(&snapshot, agent)
-            || next_queued_task(&snapshot.tasks, agent) != Some(task_id)
+            || next_queued_task(&snapshot, agent) != Some(task_id)
         {
             return Ok(None);
         }
@@ -527,7 +548,7 @@ impl CapnpBrokerState {
             return Ok(None);
         };
         let snapshot = checked_snapshot(service.as_ref(), room)?;
-        let Some(task_id) = next_queued_task(&snapshot.tasks, agent) else {
+        let Some(task_id) = next_queued_task(&snapshot, agent) else {
             return Ok(None);
         };
         self.dispatch_live_workspace_task(room, task_id, service.as_ref())
@@ -647,12 +668,58 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    pub(super) fn accept_enrolled_task(
-        &self,
+    pub(super) async fn accept_enrolled_task(
+        self: &std::sync::Arc<Self>,
         peer: u64,
         acceptance: &runtime_collab::EnrolledTaskAcceptance,
     ) -> Result<(), String> {
+        let _turn = self.enrolled_report_order.lock().await;
         self.revalidate_enrolled_peer(peer)?;
+        let (run_id, pending) = self.checked_enrolled_pending(peer, acceptance)?;
+        {
+            let pending_runs = self
+                .pending_task_runs
+                .lock()
+                .map_err(|_| "task run registry unavailable")?;
+            if let Some(prior) = pending_runs.get(&run_id)
+                && (prior.peer_id != peer
+                    || prior.task_id != pending.task_id
+                    || prior.task_epoch != pending.task_epoch)
+            {
+                return Err("enrolled task run identity collided".into());
+            }
+        }
+        self.record_owner_task_acceptance(&pending).await?;
+        self.revalidate_enrolled_peer(peer)?;
+        self.pending_task_runs
+            .lock()
+            .map_err(|_| "task run registry unavailable")?
+            .entry(run_id)
+            .or_insert(pending);
+        let mut subscribers = self
+            .enrolled_task_subscribers
+            .lock()
+            .map_err(|_| "enrolled task subscription registry unavailable")?;
+        let run = subscribers
+            .get_mut(&peer)
+            .and_then(|subscriber| subscriber.runs.get_mut(&acceptance.message_id))
+            .ok_or("enrolled acceptance lost its retained delivery")?;
+        if run.acceptance.as_ref() == Some(acceptance) {
+            return Ok(());
+        }
+        if run.acceptance.is_some() {
+            return Err("enrolled acceptance raced another call".into());
+        }
+        run.acceptance = Some(acceptance.clone());
+        drop(subscribers);
+        Ok(())
+    }
+
+    fn checked_enrolled_pending(
+        &self,
+        peer: u64,
+        acceptance: &runtime_collab::EnrolledTaskAcceptance,
+    ) -> Result<(u64, super::PendingTaskRun), String> {
         let (room, agent, envelope, epoch) = {
             let subscribers = self
                 .enrolled_task_subscribers
@@ -713,37 +780,67 @@ impl CapnpBrokerState {
             task_epoch: Some(active.epoch),
             terminal: false,
         };
-        let mut pending_runs = self
-            .pending_task_runs
-            .lock()
-            .map_err(|_| "task run registry unavailable")?;
-        if let Some(prior) = pending_runs.get(&envelope.task.run_id) {
-            if prior.peer_id != peer
-                || prior.task_id != envelope.task_id
-                || prior.task_epoch != Some(epoch)
-            {
-                return Err("enrolled task run identity collided".into());
-            }
-        } else {
-            pending_runs.insert(envelope.task.run_id, pending);
+        Ok((envelope.task.run_id, pending))
+    }
+
+    async fn record_owner_task_acceptance(
+        &self,
+        run: &super::PendingTaskRun,
+    ) -> Result<(), String> {
+        self.record_owner_task_execution_phase(
+            run,
+            0,
+            tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
+        )
+        .await
+    }
+
+    async fn record_owner_task_execution_phase(
+        &self,
+        run: &super::PendingTaskRun,
+        sequence: u64,
+        phase: tilo_desktop_model::WorkspaceTaskExecutionPhase,
+    ) -> Result<(), String> {
+        let epoch = run
+            .task_epoch
+            .ok_or("canonical task acceptance has no owner epoch")?;
+        let service = self
+            .services
+            .workspace_tasks
+            .as_ref()
+            .ok_or("canonical task owner unavailable")?;
+        let encoded = serde_json::to_vec(&(sequence, &phase)).map_err(|error| error.to_string())?;
+        let invocation = update_invocation(&run.cluster_id, &run.task_id, epoch, &encoded);
+        let request = OwnerCommitRequest {
+            room: run.cluster_id.clone(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation,
+                authority: WorkspaceTaskAuthority::Agent {
+                    attestor: service.host_certificate(&run.cluster_id)?,
+                    agent_id: run.agent_id.clone(),
+                },
+                command: WorkspaceTaskCommand::ExecutionPhase {
+                    task_id: run.task_id.clone(),
+                    run_epoch: epoch,
+                    sequence,
+                    phase,
+                },
+            },
+        };
+        let receipt = service.execute(request.clone()).await?;
+        receipt.validate_for(&request)?;
+        let snapshot = checked_snapshot(service.as_ref(), &run.cluster_id)?;
+        let execution = snapshot
+            .controls
+            .get(&run.task_id)
+            .and_then(|control| control.execution.as_ref())
+            .ok_or("owner did not retain the Agent acceptance phase")?;
+        if execution.run_epoch != epoch
+            || execution.sequence != sequence
+            || execution.phase != phase
+        {
+            return Err("owner retained a different Agent execution phase".into());
         }
-        drop(pending_runs);
-        let mut subscribers = self
-            .enrolled_task_subscribers
-            .lock()
-            .map_err(|_| "enrolled task subscription registry unavailable")?;
-        let run = subscribers
-            .get_mut(&peer)
-            .and_then(|subscriber| subscriber.runs.get_mut(&acceptance.message_id))
-            .ok_or("enrolled acceptance lost its retained delivery")?;
-        if run.acceptance.as_ref() == Some(acceptance) {
-            return Ok(());
-        }
-        if run.acceptance.is_some() {
-            return Err("enrolled acceptance raced another call".into());
-        }
-        run.acceptance = Some(acceptance.clone());
-        drop(subscribers);
         Ok(())
     }
 
@@ -802,8 +899,13 @@ impl CapnpBrokerState {
             .cloned()
             .filter(|run| run.peer_id == peer && run.task_epoch == Some(epoch))
             .ok_or("accepted enrolled task run disappeared")?;
+        if let Some(phase) = reported_execution_phase(&update) {
+            self.record_owner_task_execution_phase(&pending, sequence, phase)
+                .await?;
+        }
         self.record_owner_task_run_update(envelope.task.run_id, &pending, update.clone())
             .await?;
+        self.revalidate_enrolled_peer(peer)?;
         let terminal_target = {
             let mut subscribers = self
                 .enrolled_task_subscribers
@@ -1207,17 +1309,18 @@ fn agent_has_active_run(snapshot: &crate::services::WorkspaceTaskSnapshot, agent
 }
 
 fn next_queued_task<'a>(
-    tasks: &'a [tilo_desktop_model::WorkspaceTask],
+    snapshot: &'a crate::services::WorkspaceTaskSnapshot,
     agent: &str,
 ) -> Option<&'a str> {
-    tasks
+    snapshot
+        .tasks
         .iter()
         .filter(|task| {
             task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
                 && task.assigned_agent.as_deref() == Some(agent)
                 && task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual
         })
-        .min_by_key(|task| (task.created_at, task.id.as_str()))
+        .min_by_key(|task| task.queue_order_key(snapshot.controls.get(&task.id)))
         .map(|task| task.id.as_str())
 }
 
@@ -1236,6 +1339,8 @@ fn owner_update_command(
     };
     match update {
         runtime_collab::TaskRunUpdate::Accepted
+        | runtime_collab::TaskRunUpdate::Planning {}
+        | runtime_collab::TaskRunUpdate::Executing {}
         | runtime_collab::TaskRunUpdate::Progress { .. } => Ok(None),
         runtime_collab::TaskRunUpdate::DirectionApplied { revision } => {
             Ok(Some(WorkspaceTaskCommand::AppliedAck {
@@ -1420,6 +1525,16 @@ fn valid_task_target(envelope: &InvocationEnvelope) -> Option<&str> {
         .filter(|task| !task.is_empty() && task.len() <= 256)
 }
 
+fn active_execution<'a>(
+    control: &'a tilo_desktop_model::WorkspaceTaskControl,
+    active: &tilo_desktop_model::WorkspaceTaskActiveRun,
+) -> Option<&'a tilo_desktop_model::WorkspaceTaskExecution> {
+    control
+        .execution
+        .as_ref()
+        .filter(|execution| execution.run_epoch == active.epoch)
+}
+
 fn read_task(
     room: &str,
     envelope: &InvocationEnvelope,
@@ -1437,6 +1552,8 @@ fn read_task(
         .ok_or("task is absent from the current owner projection")?;
     let control = snapshot.controls.get(task_id);
     let active = control.and_then(|control| control.active_run.as_ref());
+    let execution =
+        control.and_then(|control| active.and_then(|active| active_execution(control, active)));
     let after_revision = control
         .and_then(|control| control.directions.last())
         .map_or(0, |direction| direction.revision);
@@ -1451,6 +1568,7 @@ fn read_task(
         "active_agent": active.map(|run| &run.agent_id),
         "after_revision": after_revision,
         "applied_revision": active.map(|run| run.applied_direction_revision),
+        "execution": execution,
         "cancellation_requested": control
             .and_then(|control| control.cancellation.as_ref())
             .is_some_and(|request| active.is_some_and(|run| run.epoch == request.run_epoch)),
@@ -1488,7 +1606,7 @@ fn read_current_tasks(
                 )
         })
         .collect::<Vec<_>>();
-    pending.sort_by_key(|task| (task.created_at, task.id.as_str()));
+    pending.sort_by_key(|task| task.queue_order_key(snapshot.controls.get(&task.id)));
     let mut pending = pending
         .into_iter()
         .map(|task| {
@@ -1525,6 +1643,7 @@ fn read_current_tasks(
                         "active_agent": active.agent_id,
                         "after_revision": control.directions.last().map_or(0, |value| value.revision),
                         "applied_revision": active.applied_direction_revision,
+                        "execution": active_execution(control, active),
                         "cancellation_requested": control.cancellation.as_ref().is_some_and(|value| value.run_epoch == active.epoch),
                     })
                 })
@@ -2089,11 +2208,15 @@ mod tests {
         scribe.status = tilo_desktop_model::WorkspaceTaskStatus::InProgress;
         let mut builder = task("task:builder", "builder");
         builder.status = tilo_desktop_model::WorkspaceTaskStatus::InProgress;
+        let mut scribe_control = control("scribe", 4, 2, "never publish this instruction");
+        scribe_control.execution = Some(tilo_desktop_model::WorkspaceTaskExecution {
+            run_epoch: 4,
+            sequence: 0,
+            phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
+            updated_at: 7,
+        });
         let controls = std::collections::BTreeMap::from([
-            (
-                scribe.id.clone(),
-                control("scribe", 4, 2, "never publish this instruction"),
-            ),
+            (scribe.id.clone(), scribe_control),
             (
                 builder.id.clone(),
                 control("builder", 1, 0, "other agent private instruction"),
@@ -2122,6 +2245,9 @@ mod tests {
         assert_eq!(result["tasks"][0]["task_id"], "task:scribe");
         assert_eq!(result["tasks"][0]["run_epoch"], 4);
         assert_eq!(result["tasks"][0]["applied_revision"], 2);
+        assert_eq!(result["tasks"][0]["execution"]["run_epoch"], 4);
+        assert_eq!(result["tasks"][0]["execution"]["sequence"], 0);
+        assert_eq!(result["tasks"][0]["execution"]["phase"], "accepted");
         assert_eq!(result["pending_complete"], true);
         assert_eq!(result["pending_total"], 1);
         assert_eq!(result["pending"][0]["task_id"], "task:queued");
@@ -2164,9 +2290,72 @@ mod tests {
         assert_eq!(pending[1]["task_id"], "task:m-waiting");
         assert_eq!(pending[1]["status"], "waiting");
         assert_eq!(pending[2]["task_id"], "task:a-later");
+        assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:z-first"));
+    }
+
+    #[test]
+    fn runnable_head_and_pending_projection_use_owner_ordinals_not_time_or_identity() {
+        let mut first = task("task:z-first", "scribe");
+        let mut second = task("task:a-second", "scribe");
+        first.created_at = 42;
+        second.created_at = 42;
+        let mut waiting = task("task:m-waiting", "scribe");
+        waiting.created_at = -100;
+        waiting.status = tilo_desktop_model::WorkspaceTaskStatus::Waiting;
+        let legacy = task("task:legacy", "scribe");
+        let mut service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
+            room: "room-a".into(),
+            generation: 8,
+            tasks: vec![second, waiting, first, legacy],
+            controls: [
+                ("task:z-first", 1),
+                ("task:a-second", 2),
+                ("task:m-waiting", 3),
+            ]
+            .into_iter()
+            .map(|(id, ordinal)| {
+                (
+                    id.into(),
+                    tilo_desktop_model::WorkspaceTaskControl {
+                        queue_ordinal: Some(ordinal),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
+        });
+        assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:legacy"));
+        service.0.tasks.retain(|task| task.id != "task:legacy");
+        assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:z-first"));
+        let result = read_current_tasks(
+            "room-a",
+            &envelope(
+                COLLECTION,
+                "read-current-tasks",
+                Some(serde_json::json!({"agent": "scribe"})),
+            ),
+            &service,
+        )
+        .unwrap();
+        let pending = result["pending"].as_array().unwrap();
         assert_eq!(
-            next_queued_task(&service.0.tasks, "scribe"),
-            Some("task:z-first")
+            pending
+                .iter()
+                .map(|row| row["task_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["task:z-first", "task:a-second", "task:m-waiting"]
+        );
+        assert_eq!(pending[2]["status"], "waiting");
+        service
+            .0
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == "task:z-first")
+            .unwrap()
+            .status = tilo_desktop_model::WorkspaceTaskStatus::Done;
+        assert_eq!(
+            next_queued_task(&service.0, "scribe"),
+            Some("task:a-second")
         );
     }
 
@@ -2514,17 +2703,108 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_agent_acceptance_publishes_phase_zero_before_reports() {
+        let NativeRunFixture {
+            _directory,
+            service,
+            state,
+            mut receiver,
+            caller,
+        } = native_run_fixture();
+        let room = tilo_joined_room::testing::ROOM;
+        let task_id = queue_native_task(service.as_ref(), room, caller).await;
+        let run_id = state
+            .dispatch_live_workspace_task(room, &task_id, service.as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap().run_id, run_id);
+        let run = state.pending_task_runs.lock().unwrap()[&run_id].clone();
+        assert!(
+            service.snapshot(room).unwrap().controls[&task_id]
+                .execution
+                .is_none()
+        );
+
+        state.record_owner_task_acceptance(&run).await.unwrap();
+        // A lost RPC acknowledgement retries the same owner invocation.
+        state.record_owner_task_acceptance(&run).await.unwrap();
+        let accepted = service.snapshot(room).unwrap().controls[&task_id]
+            .execution
+            .clone()
+            .unwrap();
+        assert_eq!(accepted.run_epoch, 1);
+        assert_eq!(accepted.sequence, 0);
+        assert_eq!(
+            accepted.phase,
+            tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted
+        );
+        state
+            .record_owner_task_execution_phase(
+                &run,
+                1,
+                tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
+            )
+            .await
+            .unwrap();
+        let reported = service.snapshot(room).unwrap().controls[&task_id]
+            .execution
+            .clone()
+            .unwrap();
+        assert_eq!(reported.sequence, 1);
+        assert_eq!(
+            reported.phase,
+            tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted
+        );
+        state
+            .record_owner_task_execution_phase(
+                &run,
+                2,
+                reported_execution_phase(&runtime_collab::TaskRunUpdate::Planning {}).unwrap(),
+            )
+            .await
+            .unwrap();
+        state
+            .record_owner_task_execution_phase(
+                &run,
+                3,
+                reported_execution_phase(&runtime_collab::TaskRunUpdate::Executing {}).unwrap(),
+            )
+            .await
+            .unwrap();
+        let executing = service.snapshot(room).unwrap().controls[&task_id]
+            .execution
+            .clone()
+            .unwrap();
+        assert_eq!(executing.sequence, 3);
+        assert_eq!(
+            executing.phase,
+            tilo_desktop_model::WorkspaceTaskExecutionPhase::Executing
+        );
+        assert!(
+            reported_execution_phase(&runtime_collab::TaskRunUpdate::Progress {
+                message: "untyped progress".into()
+            })
+            .is_none()
+        );
+    }
+
     #[test]
     fn task_read_refuses_arguments_and_returns_owner_frontier() {
         let mut task = task("task:1", "scribe");
         task.status = tilo_desktop_model::WorkspaceTaskStatus::InProgress;
+        let mut owner_control = control("scribe", 3, 1, "private instruction");
+        owner_control.execution = Some(tilo_desktop_model::WorkspaceTaskExecution {
+            run_epoch: 3,
+            sequence: 2,
+            phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Planning,
+            updated_at: 4,
+        });
         let service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
             room: "room-a".into(),
             generation: 9,
-            controls: std::collections::BTreeMap::from([(
-                task.id.clone(),
-                control("scribe", 3, 1, "private instruction"),
-            )]),
+            controls: std::collections::BTreeMap::from([(task.id.clone(), owner_control)]),
             tasks: vec![task],
         });
         let mut request = envelope("desktop:task:task:1", "read-task", None);
@@ -2532,6 +2812,9 @@ mod tests {
         assert_eq!(result["run_epoch"], 3);
         assert_eq!(result["active_agent"], "scribe");
         assert_eq!(result["applied_revision"], 1);
+        assert_eq!(result["execution"]["run_epoch"], 3);
+        assert_eq!(result["execution"]["sequence"], 2);
+        assert_eq!(result["execution"]["phase"], "planning");
         assert!(result.get("instruction").is_none());
         request.argument = Some("{}".into());
         assert!(read_task("room-a", &request, &service).is_err());

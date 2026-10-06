@@ -80,6 +80,8 @@ include!("app/host.rs");
 mod android_text_input;
 #[cfg(feature = "native")]
 mod native_runner;
+#[cfg(all(test, feature = "native"))]
+mod publication_presence_tests;
 /// How an app's error begins when its window stopped without being closed.
 /// The shell recognises it in a failed launch's output.
 pub const WINDOW_LOST: &str = "the window stopped without being closed";

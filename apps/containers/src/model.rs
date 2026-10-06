@@ -95,6 +95,10 @@ pub struct Mount {
 /// stopped containers report zeros.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
+    /// True only when a telemetry sample was actually read. Missing telemetry
+    /// is not a measured zero (for example after an engine connection drops).
+    #[serde(default)]
+    pub available: bool,
     /// CPU usage as a fraction of one core, 0.0..=N (N = cores).
     pub cpu_percent: f32,
     /// Resident memory in bytes.
@@ -116,6 +120,7 @@ pub struct Stats {
 impl Default for Stats {
     fn default() -> Self {
         Self {
+            available: false,
             cpu_percent: 0.0,
             mem_bytes: 0,
             mem_limit_bytes: 0,
@@ -159,6 +164,9 @@ pub struct Container {
     /// Recent log lines (most recent last). Populated lazily for the
     /// selected container.
     pub logs: Vec<String>,
+    /// A failed log read is separate from a successful empty log.
+    #[serde(default)]
+    pub logs_error: Option<String>,
 }
 
 impl Container {
@@ -463,6 +471,7 @@ fn sample_container_web_frontend() -> Container {
             ("maintainer".into(), "NGINX Docker Maintainers".into()),
         ],
         stats: Stats {
+            available: true,
             cpu_percent: 0.07,
             mem_bytes: 18 * 1024 * 1024,
             mem_limit_bytes: 256 * 1024 * 1024,
@@ -472,6 +481,7 @@ fn sample_container_web_frontend() -> Container {
             block_write_bytes: 90_112,
             pids: 5,
         },
+        logs_error: None,
         logs: sample_nginx_logs(),
     }
 }
@@ -509,6 +519,7 @@ fn sample_container_api_server() -> Container {
         ],
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
+            available: true,
             cpu_percent: 0.23,
             mem_bytes: 142 * 1024 * 1024,
             mem_limit_bytes: 512 * 1024 * 1024,
@@ -518,6 +529,7 @@ fn sample_container_api_server() -> Container {
             block_write_bytes: 2_097_152,
             pids: 14,
         },
+        logs_error: None,
         logs: sample_api_logs(),
     }
 }
@@ -548,6 +560,7 @@ fn sample_container_postgres() -> Container {
         ],
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
+            available: true,
             cpu_percent: 0.04,
             mem_bytes: 96 * 1024 * 1024,
             mem_limit_bytes: 1024 * 1024 * 1024,
@@ -557,6 +570,7 @@ fn sample_container_postgres() -> Container {
             block_write_bytes: 134_217_728,
             pids: 9,
         },
+        logs_error: None,
         logs: sample_postgres_logs(),
     }
 }
@@ -579,6 +593,7 @@ fn sample_container_redis_cache() -> Container {
         env: vec![("TZ".into(), "UTC".into())],
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
+            available: true,
             cpu_percent: 0.01,
             mem_bytes: 6 * 1024 * 1024,
             mem_limit_bytes: 128 * 1024 * 1024,
@@ -588,6 +603,7 @@ fn sample_container_redis_cache() -> Container {
             block_write_bytes: 524_288,
             pids: 4,
         },
+        logs_error: None,
         logs: vec![
             "1:C 30 Jun 2026 06:42:02.114 * Redis version=7.2.5, bits=64, pid=1, just started"
                 .into(),
@@ -617,6 +633,7 @@ fn sample_container_build_runner() -> Container {
         ],
         labels: vec![("io.tilo.cluster".into(), "ci".into())],
         stats: Stats::default(),
+        logs_error: None,
         logs: vec![
             "[runner] job tilo-build#4821 picked up".into(),
             "[runner] cargo build -p shell ... ok (184.2s)".into(),
@@ -657,6 +674,7 @@ fn sample_container_minio() -> Container {
         ],
         labels: vec![],
         stats: Stats::default(),
+        logs_error: None,
         logs: vec![
             "API: http://0.0.0.0:9000".into(),
             "WARNING: Console endpoint is listening on a dynamic port".into(),
@@ -687,6 +705,7 @@ fn sample_container_grafana() -> Container {
         env: vec![("GF_SECURITY_ADMIN_USER".into(), "admin".into())],
         labels: vec![("io.tilo.cluster".into(), "observability".into())],
         stats: Stats {
+            available: true,
             cpu_percent: 0.0,
             mem_bytes: 54 * 1024 * 1024,
             mem_limit_bytes: 256 * 1024 * 1024,
@@ -696,6 +715,7 @@ fn sample_container_grafana() -> Container {
             block_write_bytes: 0,
             pids: 11,
         },
+        logs_error: None,
         logs: vec![
             "logger=settings t=2026-06-28 level=info msg=\"Starting Grafana\" version=11.1.0"
                 .into(),

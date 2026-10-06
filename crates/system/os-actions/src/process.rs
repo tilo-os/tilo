@@ -77,7 +77,7 @@ pub(crate) fn run_capture(binary: &str, args: &[&str]) -> Result<String, String>
 }
 
 /// [`run_capture`] with an explicit deadline.
-fn run_capture_within(
+pub(crate) fn run_capture_within(
     binary: &str,
     args: &[&str],
     timeout: std::time::Duration,

@@ -222,6 +222,10 @@ pub struct WorkspaceTaskMutationReceipt {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceTaskControl {
     pub run_epoch: u64,
+    /// Owner admission order of the last enqueue, independent of wall-clock
+    /// time and random task identity. Missing marks a legacy queue entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ordinal: Option<u64>,
     /// Full person-authored instruction, independent of the short display
     /// title and any application-specific source resource.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,6 +280,20 @@ pub struct WorkspaceTask {
 }
 
 impl WorkspaceTask {
+    /// Legacy entries precede subsequently admitted entries. Within the new
+    /// queue, only the owner's ordinal determines order; timestamps and IDs
+    /// remain deterministic fallbacks for legacy documents.
+    pub fn queue_order_key(
+        &self,
+        control: Option<&WorkspaceTaskControl>,
+    ) -> (Option<u64>, i64, &str) {
+        (
+            control.and_then(|control| control.queue_ordinal),
+            self.created_at,
+            self.id.as_str(),
+        )
+    }
+
     pub fn action_context(&self) -> tilo_actions::ActionContext {
         let mut context = tilo_actions::ActionContext::default()
             .with_purpose(self.title.clone())

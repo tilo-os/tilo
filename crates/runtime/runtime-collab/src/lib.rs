@@ -2865,6 +2865,10 @@ pub enum TaskRunPlanning {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskRunUpdate {
     Accepted,
+    /// The Agent has entered a real model request for this run.
+    Planning {},
+    /// The Agent has entered a broker-approved action step for this run.
+    Executing {},
     Progress {
         message: String,
     },
@@ -2969,6 +2973,20 @@ mod task_run_tests {
             TaskRunUpdate::Progress {
                 message: "checking".into()
             }
+        );
+        assert_eq!(
+            serde_json::from_str::<TaskRunUpdate>(r#"{"kind":"planning"}"#).unwrap(),
+            TaskRunUpdate::Planning {}
+        );
+        assert_eq!(
+            serde_json::from_str::<TaskRunUpdate>(r#"{"kind":"executing"}"#).unwrap(),
+            TaskRunUpdate::Executing {}
+        );
+        assert!(
+            serde_json::from_str::<TaskRunUpdate>(
+                r#"{"kind":"planning","message":"not typed phase data"}"#
+            )
+            .is_err()
         );
 
         let control = TaskRunControl {

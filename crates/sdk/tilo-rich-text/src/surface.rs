@@ -900,6 +900,14 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         &mut self.editor
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,

@@ -442,7 +442,7 @@ fn dispatch_agent_report(
 
 fn dispatch_retry(
     tasks: &mut [WorkspaceTask],
-    controls: &std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
     context: &CommandContext<'_>,
     task_id: &str,
     run_epoch: u64,
@@ -517,6 +517,7 @@ fn queue(
     if tasks.iter().any(|task| task.id == task_id) || controls.contains_key(&task_id) {
         return Err("deterministic task id is already occupied".into());
     }
+    let queue_ordinal = next_queue_ordinal(controls)?;
     tasks.push(WorkspaceTask {
         id: task_id.clone(),
         title: title.to_owned(),
@@ -536,6 +537,7 @@ fn queue(
     controls.insert(
         task_id.clone(),
         WorkspaceTaskControl {
+            queue_ordinal: Some(queue_ordinal),
             instruction: instruction.map(str::to_owned),
             instruction_required: instruction.is_some(),
             ..WorkspaceTaskControl::default()
@@ -1013,7 +1015,7 @@ fn abandon(
 
 fn retry(
     tasks: &mut [WorkspaceTask],
-    controls: &std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
     actor: &AdmittedTaskActor,
     task_id: &str,
     run_epoch: u64,
@@ -1030,6 +1032,11 @@ fn retry(
     {
         return Err("only a waiting task without an active run may be retried".into());
     }
+    let queue_ordinal = next_queue_ordinal(controls)?;
+    controls
+        .get_mut(task_id)
+        .ok_or("retried task has no execution control")?
+        .queue_ordinal = Some(queue_ordinal);
     task.status = WorkspaceTaskStatus::Queued;
     task.updated_at = now;
     task.audit.push(WorkspaceTaskAuditEvent {
@@ -1043,6 +1050,18 @@ fn retry(
             task_id: task_id.to_owned(),
         },
     ))
+}
+
+fn next_queue_ordinal(
+    controls: &std::collections::BTreeMap<String, WorkspaceTaskControl>,
+) -> Result<u64, String> {
+    controls
+        .values()
+        .filter_map(|control| control.queue_ordinal)
+        .max()
+        .unwrap_or_default()
+        .checked_add(1)
+        .ok_or_else(|| "task queue admission order exhausted".into())
 }
 
 fn task_mut<'a>(tasks: &'a mut [WorkspaceTask], id: &str) -> Result<&'a mut WorkspaceTask, String> {
@@ -1083,6 +1102,7 @@ pub fn controls_of(
         return Ok(std::collections::BTreeMap::new());
     };
     let mut controls = std::collections::BTreeMap::new();
+    let mut queue_ordinals = std::collections::BTreeSet::new();
     for key in doc.keys(&map) {
         let Some((Value::Scalar(value), _)) = doc
             .get(&map, key.as_str())
@@ -1095,6 +1115,11 @@ pub fn controls_of(
         };
         let control: WorkspaceTaskControl =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        if let Some(ordinal) = control.queue_ordinal
+            && (ordinal == 0 || !queue_ordinals.insert(ordinal))
+        {
+            return Err("task queue admission order is zero or duplicated".into());
+        }
         if let Some(execution) = &control.execution
             && (control
                 .active_run
@@ -1161,6 +1186,130 @@ mod tests {
             route: WorkspaceTaskRoute::Model,
             resource: None,
         }
+    }
+
+    #[test]
+    fn queue_order_survives_equal_timestamps_clock_rollback_reopen_and_replay() {
+        let mut invocations = [1, 2, 3];
+        invocations
+            .sort_by_cached_key(|id| deterministic_task_id([1; 32], uuid::Uuid::from_u128(*id)));
+        invocations.reverse();
+        let mut doc = AutoCommit::new();
+        let mut admitted = Vec::new();
+        for (index, invocation) in invocations.iter().enumerate() {
+            let result = apply(
+                &mut doc,
+                uuid::Uuid::from_u128(*invocation),
+                [7; 32],
+                &person(),
+                &queue_command(),
+                if index == 2 { -100 } else { 42 },
+            )
+            .unwrap();
+            let WorkspaceTaskMutationResult::Queued { task_id } = result.result else {
+                panic!("queue result")
+            };
+            admitted.push(task_id);
+        }
+        assert!(
+            admitted[0] > admitted[1],
+            "opaque identity order must oppose admission order"
+        );
+        let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+        let state = snapshot(&reopened).unwrap();
+        let mut ordered = state.tasks.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|task| task.queue_order_key(state.controls.get(&task.id)));
+        assert_eq!(
+            ordered.iter().map(|task| &task.id).collect::<Vec<_>>(),
+            admitted.iter().collect::<Vec<_>>()
+        );
+        for (index, id) in admitted.iter().enumerate() {
+            assert_eq!(
+                state.controls[id].queue_ordinal,
+                Some(u64::try_from(index).unwrap() + 1)
+            );
+        }
+        let before = reopened.save();
+        assert!(
+            !apply(
+                &mut reopened,
+                uuid::Uuid::from_u128(invocations[0]),
+                [7; 32],
+                &person(),
+                &queue_command(),
+                999
+            )
+            .unwrap()
+            .changed
+        );
+        assert_eq!(reopened.save(), before);
+    }
+
+    #[test]
+    fn explicit_retry_rejoins_the_queue_tail_without_reordering_exact_replays() {
+        let (mut doc, task_id) = task_with_applied_direction();
+        run(
+            &mut doc,
+            5,
+            5,
+            &host(),
+            &WorkspaceTaskCommand::Abandon {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                reason: "Agent session stopped".into(),
+            },
+        )
+        .unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id: later } =
+            run(&mut doc, 6, 6, &person(), &queue_command())
+                .unwrap()
+                .result
+        else {
+            panic!("queue result")
+        };
+        let retry = WorkspaceTaskCommand::Retry {
+            task_id: task_id.clone(),
+            run_epoch: 1,
+        };
+        run(&mut doc, 7, 7, &person(), &retry).unwrap();
+        let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+        let state = snapshot(&reopened).unwrap();
+        assert_eq!(state.controls[&later].queue_ordinal, Some(2));
+        assert_eq!(state.controls[&task_id].queue_ordinal, Some(3));
+        let mut ordered = state.tasks.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|task| task.queue_order_key(state.controls.get(&task.id)));
+        assert_eq!(ordered[0].id, later);
+        assert_eq!(ordered[1].id, task_id);
+        let before = reopened.save();
+        assert!(!run(&mut reopened, 7, 7, &person(), &retry).unwrap().changed);
+        assert_eq!(reopened.save(), before);
+    }
+
+    #[test]
+    fn invalid_or_exhausted_queue_ordinals_fail_without_partial_admission() {
+        let mut doc = AutoCommit::new();
+        run(&mut doc, 1, 1, &person(), &queue_command()).unwrap();
+        run(&mut doc, 2, 2, &person(), &queue_command()).unwrap();
+        let original = snapshot(&doc).unwrap().controls;
+        for invalid in [0, 1] {
+            let mut controls = original.clone();
+            for control in controls.values_mut() {
+                control.queue_ordinal = Some(invalid);
+            }
+            project_controls(&mut doc, &controls).unwrap();
+            doc.commit();
+            let before = doc.save();
+            assert!(snapshot(&doc).is_err());
+            assert!(run(&mut doc, 3, 3, &person(), &queue_command()).is_err());
+            assert_eq!(doc.save(), before);
+        }
+        let mut controls = original;
+        controls.values_mut().next().unwrap().queue_ordinal = Some(u64::MAX);
+        project_controls(&mut doc, &controls).unwrap();
+        doc.commit();
+        let before = doc.save();
+        assert!(run(&mut doc, 3, 3, &person(), &queue_command()).is_err());
+        assert_eq!(doc.save(), before);
     }
 
     fn run(

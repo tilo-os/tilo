@@ -523,6 +523,11 @@ impl CapnpBrokerState {
     ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
         let surfaces = self.published_surfaces();
         let roots = self.action_directory_roots();
+        let task_peers = self
+            .workspace_task_peers
+            .lock()
+            .map(|peers| peers.clone())
+            .unwrap_or_default();
         let mut rows = Vec::new();
         let mut providers = Vec::new();
         // Keyboard shortcuts are this device's own settings: offered to
@@ -540,9 +545,14 @@ impl CapnpBrokerState {
                 .iter()
                 .filter(|surface| surface.live && surface.route.cluster_id == room)
             {
+                let provider = if task_peers.get(&room) == Some(&surface.peer_id) {
+                    workspace_provider(&room)
+                } else {
+                    surface.peer_id.to_string()
+                };
                 live_apps.insert(surface.app_id.clone());
                 providers.push(CatalogueProvider {
-                    provider: surface.peer_id.to_string(),
+                    provider: provider.clone(),
                     app_id: surface.app_id.clone(),
                     room: room.clone(),
                     record_id: surface.route.record_id.clone(),
@@ -566,11 +576,7 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|action| {
-                            action_row(
-                                surface.peer_id.to_string(),
-                                &surface.app_id,
-                                descriptor(action),
-                            )
+                            action_row(provider.clone(), &surface.app_id, descriptor(action))
                         }),
                 );
             }
@@ -1619,17 +1625,35 @@ impl CapnpBrokerState {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
-        if let Some(room) = workspace_provider_room(provider) {
-            return self.start_workspace_action(
-                caller,
-                &self.caller_actor(caller, room),
-                room,
-                launch,
-                request,
-                argument.as_deref(),
-            );
-        }
-        let peer_id = if provider == OWN_PROVIDER {
+        let peer_id = if let Some(room) = workspace_provider_room(provider) {
+            let task_peer = self
+                .workspace_task_peers
+                .lock()
+                .ok()
+                .and_then(|peers| peers.get(room).copied())
+                .filter(|peer| {
+                    self.published_surfaces().into_iter().any(|surface| {
+                        surface.peer_id == *peer
+                            && surface.live
+                            && surface.route.cluster_id == room
+                            && surface.actions.iter().any(|action| {
+                                action.resource == address.resource
+                                    && action.action == address.action
+                            })
+                    })
+                });
+            let Some(peer) = task_peer else {
+                return self.start_workspace_action(
+                    caller,
+                    &self.caller_actor(caller, room),
+                    room,
+                    launch,
+                    request,
+                    argument.as_deref(),
+                );
+            };
+            peer
+        } else if provider == OWN_PROVIDER {
             own_peer.ok_or(ActionHostError::UnknownAction)?
         } else {
             provider
@@ -2520,6 +2544,132 @@ fn bridge_error(error: ActionDirectoryBridgeError) -> ActionHostError {
         other => ActionHostError::Unavailable {
             reason: format!("the action directory is {other:?}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod workspace_task_provider_tests {
+    use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+    use crate::services::{HostServices, WorkspaceTaskSnapshot, WorkspaceTasks};
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use std::sync::{Arc, Mutex};
+
+    struct ReadOnlyTasks(WorkspaceTaskSnapshot);
+
+    impl WorkspaceTasks for ReadOnlyTasks {
+        fn requires_room(&self, room: &str) -> bool {
+            room == self.0.room
+        }
+
+        fn snapshot(&self, room: &str) -> Result<WorkspaceTaskSnapshot, String> {
+            (room == self.0.room)
+                .then(|| self.0.clone())
+                .ok_or_else(|| "wrong test room".into())
+        }
+
+        fn host_certificate(&self, _room: &str) -> Result<tilo_user_identity::DeviceCert, String> {
+            Err("read-only fixture has no host authority".into())
+        }
+
+        fn execute(
+            &self,
+            _request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
+            Box::pin(async { Err("read-only fixture cannot mutate".into()) })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_provider_routes_the_sdk_task_target_to_the_exact_owner_service() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let user = [73; 32];
+                let mut workspace = Workspace::new(WorkspaceId(73), "Task provider");
+                workspace.owner = Some(hex::encode(user));
+                let room = workspace.room.to_string();
+                let mut tree = WorkspaceTree::default();
+                tree.workspaces.push(workspace);
+                let service: Arc<dyn WorkspaceTasks> =
+                    Arc::new(ReadOnlyTasks(WorkspaceTaskSnapshot {
+                        room: room.clone(),
+                        generation: 7,
+                        tasks: Vec::new(),
+                        controls: std::collections::BTreeMap::new(),
+                    }));
+                let fanout = Arc::new(FanoutState::new());
+                let (state, _bridge) = CapnpBrokerState::new_configured(
+                    &fanout,
+                    Arc::new(Mutex::new(BrokerChannels::default())),
+                    PeerPublisher::disabled(),
+                    Some(tree.shared().authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_tasks: Some(service),
+                        ..Default::default()
+                    },
+                );
+                state.refresh_workspace_task_services().unwrap();
+                let provider = tilo_actions::remote::workspace_provider(&room);
+                let caller = tilo_actions::remote::Caller::authenticated(user, [74; 32])
+                    .in_room(room.clone())
+                    .in_new_execution();
+                let row = state
+                    .eager_catalogue(&caller, true)
+                    .0
+                    .into_iter()
+                    .find(|row| {
+                        row.provider == provider
+                            && row.action.as_ref().is_some_and(|action| {
+                                action.address.resource == "desktop:tasks"
+                                    && action.address.action == "read-current-tasks"
+                            })
+                    })
+                    .expect("the Task Center row uses the SDK's stable workspace provider");
+                assert_eq!(row.app_id, "so.tilo.desktop");
+                let request = tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider,
+                        address: tilo_actions::ActionAddress::new(
+                            "desktop:tasks",
+                            "read-current-tasks",
+                        ),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::Json(
+                        serde_json::Map::from_iter([("agent".into(), serde_json::json!("scribe"))]),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                };
+                let mut pending = state.action_invoke(&caller, None, None, &request);
+                let receipt = loop {
+                    if let tilo_actions::remote::PendingPoll::Ready(result) = pending.poll_ready() {
+                        break result.unwrap();
+                    }
+                    tokio::task::yield_now().await;
+                };
+                assert_eq!(receipt.invocation, request.invocation);
+                let update = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    loop {
+                        if let Some(state) = state.action_observe(&caller, &request.invocation)
+                            && state.update.is_terminal()
+                        {
+                            break state.update;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("the stable provider reaches the real owner service");
+                let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+                    panic!("owner-backed read-current-tasks must succeed")
+                };
+                assert_eq!(output.value.unwrap()["generation"], 7);
+            })
+            .await;
     }
 }
 
