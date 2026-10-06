@@ -2358,6 +2358,21 @@ nearby-error-folder-too-large = folder exceeds the size limit
 nearby-error-source-changed = nearby transfer source changed while staging
 nearby-error-name-not-portable = source name is not portable
 
+# AirDrop lab receiver verification
+airdrop-verify-title = Verify AirDrop receiver
+airdrop-verify-send-once = Send once
+airdrop-verify-detail = File: { $name }
+    Size: { $bytes } bytes
+    Receiver: { $endpoint }
+    Enter the receiver's SHA-256 certificate fingerprint as 64 hexadecimal digits from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
+airdrop-error-unavailable = AirDrop lab requires an unlocked local session, file-transfer permission and current Files access.
+airdrop-error-source = AirDrop lab accepts one readable regular file up to 16 MiB.
+airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
+airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
+airdrop-error-declined = AirDrop transfer was cancelled before sending.
+airdrop-error-verification = Fingerprint differs. Check the receiver; nothing sent.
+airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
+
 # A document a tab could not restore
 hosted-document-unavailable = { $path } is unavailable: { $error }
 
