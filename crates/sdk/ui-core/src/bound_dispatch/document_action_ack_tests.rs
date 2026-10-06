@@ -124,6 +124,7 @@ fn execute(
     registry.register::<Write>("ack.write");
     let resource = tilo_actions::Resource::new("ack.owner", "ack.owner", "Owner");
     let spec = tilo_actions::ActionSpec::immediate("write", "Write", "ack.write", action).unwrap();
+    let invocation = tilo_actions::InvocationId::new();
     execute_resource_operation(
         owner,
         doc,
@@ -138,7 +139,8 @@ fn execute(
             actor: "local",
             local_author: "local",
             broker_admitted: broker,
-            invocation: tilo_actions::InvocationId::new(),
+            invocation,
+            source_invocation: broker.then_some(invocation),
             ambient: None,
             scope: None,
         },
@@ -227,6 +229,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                     local_author: "local",
                     broker_admitted: false,
                     invocation: tilo_actions::InvocationId::new(),
+                    source_invocation: None,
                     ambient: None,
                     scope: None,
                 },
