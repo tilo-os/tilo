@@ -1,0 +1,6 @@
+[app so.tilo.android.qualify.h83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a stderr] tilo-sandbox-exec: Landlock restriction status: RestrictionStatus { ruleset: FullyEnforced, no_new_privs: true, landlock: Available { effective_abi: V7, kernel_abi: Some(10) }, log_same_exec: true, log_new_exec: false, log_subdomains: true }
+[app so.tilo.android.qualify.h83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a stderr] tilo-sandbox-exec: landlock: fully enforced (32 ro, 12 rw, net_restricted=true, gate_port=None)
+[app so.tilo.android.qualify.h83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a stderr] I/TiloChooser(    2): reply from authenticated chooser: failed
+[app so.tilo.android.qualify.h83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a stderr] I/Activity(    2): - onPause - yay!
+[app so.tilo.android.qualify.h83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a stderr] I/Activity(    2): - onStop - yay!
+[app so.tilo.android.qualify.h83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a stderr] I/Activity(    2): - onDestroy - yay!

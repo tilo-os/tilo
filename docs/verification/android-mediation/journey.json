@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "completed_at_utc": "2026-10-06T01:56:01.284409+00:00",
+  "execution": "headless production Tilo, actual Android ART, x86_64 software graphics",
+  "production_binaries": {
+    "shell": "af68f633d9c37e61a2a0fd59a5406e26612b3078db990d671bb000c994c0ac85",
+    "tilo-launcher": "226bb1606bc0e56f971739ef39d9d84556904edd7cc25f0a8b39531bb3ab6e90"
+  },
+  "apk_sha256": "83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a",
+  "runtime_receipt_sha256": "839ed7e5428eb315f1e48b00b8e89435294290ba7b275f009a71efe502704a56",
+  "room": "a1e01260-a03d-497d-b1c1-94ebca858548",
+  "android_results": [
+    "notification-capability=unavailable;backend=portal",
+    "permissions=denied;callback=19",
+    "picker=cancelled;callback=23;uri=none",
+    "complete=true"
+  ],
+  "lifecycle": [
+    "pause",
+    "stop",
+    "destroy"
+  ],
+  "presented_frame": {
+    "surface_id": 4294967333,
+    "app_id": "so.tilo.android.qualify.h83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a",
+    "sheets": [],
+    "frame_seq": 2,
+    "last_error": null,
+    "rect": {
+      "x": 265.99998474121094,
+      "y": 128.0,
+      "w": 868.0,
+      "h": 772.0
+    },
+    "buffer": {
+      "w": 868,
+      "h": 772
+    },
+    "presented": true,
+    "opening": false
+  },
+  "png_sha256": "db85c3bae6a186860661c71e11b91baabe5de684144f7407dc937c8644711737",
+  "additional_grants": false,
+  "real_device": false,
+  "approved_file_access": false,
+  "notification_delivery": false,
+  "owned_compositor_stopped": true
+}
