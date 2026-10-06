@@ -9,10 +9,12 @@
 //!   * **Legacy Flatpak apps** fetched from Flathub's public JSON API.
 //!     Actions cross the capability-scoped app-host service.
 //!
-//! Filter chips (`All | Tilo | Flatpak | Installed`), category chips and a
-//! search box sit above a scrolling list of cards. A detail sheet slides
-//! in from the right when a card is clicked. Browsing is this window's own;
-//! the document holds the collaborative report drafts.
+//! The catalogue groups apps by the decision they invite (an update, already
+//! on the device, new) in a scrolling grid of cards, and a details page opens
+//! from a card. People search through the platform search, which the Store
+//! feeds with its catalogue and with source, category and status facets.
+//! Browsing is this window's own; the document holds the collaborative
+//! report drafts.
 //!
 //! Module map:
 //!
@@ -31,9 +33,8 @@
 //!   * [`worker`]          — the serialized catalogue and package worker.
 //!   * [`app`]             — the `StoreApp` surface.
 //!   * [`bindings`]        — the surface's controls, bound to the resource.
-//!   * [`fixture`]         — the catalogue screenshots show.
-//!   * [`widgets`]         — small ui-toolkit compositions shared across
-//!     the surface (cards, filter chips, etc).
+//!   * [`fixture`]         — the catalogue screenshots show, and its artwork.
+//!   * [`widgets`]         — the catalogue card and the app icon.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot

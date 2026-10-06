@@ -72,6 +72,11 @@ pub trait ResourceApp: 'static {
     /// How many arguments (paths, URLs) a launch may name;
     /// [`Self::launch_record`] and [`Self::launch`] receive them.
     const ARGUMENTS: usize = 0;
+    /// Whether the resource keeps document state whose versions History
+    /// shows. An app whose state lives outside its document (a measurement,
+    /// a device) sets `false`: it publishes no History actions and its
+    /// window offers no History.
+    const DOCUMENT_HISTORY: bool = true;
     /// The app keeps one record per room, the room's own, rather than one
     /// per window: every window of the app in the room opens that record,
     /// and the first one creates it (and applies [`Self::seed`]). A room's
@@ -402,6 +407,11 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = Live::new(reader);
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
+    let dispatch = if permissions.is_none() {
+        dispatch.past()
+    } else {
+        dispatch
+    };
     let storage = super::settings::ViewStorage::new(storage, hosted.attach(A::ID, A::TITLE));
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
@@ -416,7 +426,9 @@ pub(crate) fn build_root<A: ResourceApp>(
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation(A::local_operations());
-    if live {
+    if !A::DOCUMENT_HISTORY {
+        root.without_history()
+    } else if live {
         root.drawing_past(super::preview::draw_past::<A>)
     } else {
         root
@@ -603,12 +615,14 @@ fn create<A: ResourceApp>(
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
-    let history = super::preview::history_definition::<A>();
-    match file_history {
-        Some(files) => component.register_document_and_file_history(history, files),
-        None => component.register_document_history(history),
+    if A::DOCUMENT_HISTORY {
+        let history = super::preview::history_definition::<A>();
+        match file_history {
+            Some(files) => component.register_document_and_file_history(history, files),
+            None => component.register_document_history(history),
+        }
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
-    .map_err(|error| LaunchError::Operation(error.to_string()))?;
     Ok(component)
 }
 

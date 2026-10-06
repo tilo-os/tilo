@@ -109,7 +109,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) updaters: Updaters<R>,
     pub(crate) alive: Weak<()>,
     pub(crate) dispatch: Dispatcher<R>,
-    pub(crate) published: Rc<tilo_actions::Resource>,
+    pub(crate) action_bindings: Actions<R>,
     pub(crate) item: Option<Id>,
     pub(crate) controls: Rc<RefCell<HashMap<String, u32>>>,
     pub(crate) saved: LocalState<RecordSaveStatus>,
@@ -145,7 +145,7 @@ impl<R: Resource> ViewCx<R> {
             updaters: Updaters::new(),
             alive: Rc::downgrade(alive),
             dispatch,
-            published: Rc::new(published),
+            action_bindings: Actions::new(Rc::new(published)),
             item: None,
             controls: Rc::default(),
             saved: LocalState::new(RecordSaveStatus::Saved),
@@ -231,6 +231,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// runs.
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()
+    }
+
+    /// Whether this view shows a past version in History mode, drawn from a
+    /// frozen document. It must start no work there: a surface that fetches,
+    /// watches or spawns a worker is built without it and presents what the
+    /// document holds.
+    pub fn is_past(&self) -> bool {
+        self.dispatch.is_past()
     }
 
     /// Whether this participant may only view, as state that follows role
@@ -373,6 +381,28 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// Typed process-local view state: never persisted, shared or undone.
     pub fn local<V: Send + Sync + 'static>(&self, initial: V) -> LocalState<V> {
         LocalState::new(initial)
+    }
+
+    /// Show the item a search hit opens: `open` runs with the hit's anchor
+    /// (a [`SearchEntry`](tilo_resource::SearchEntry)'s `anchor`) when the
+    /// person picks the hit, or when an agent invokes the resource's `open`
+    /// action. Select the item, switch to its page, scroll it into view:
+    /// set the [`LocalState`]s that show it, as the person's own input would.
+    pub fn on_open(&self, open: impl FnMut(&str) + 'static) {
+        self.stages.push_opener(self.alive.clone(), Box::new(open));
+    }
+
+    /// Open the platform search with `request`, narrowed to this app or one
+    /// part of it. Usually a control does this ([`Self::search_button`]); a
+    /// custom handler calls [`Dispatcher::open_search`] on its dispatcher.
+    pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
+        self.dispatch.open_search(request);
+    }
+
+    /// The search launcher for this view's chrome: an icon button that opens
+    /// the platform search with `request`. Apps never draw a search field.
+    pub fn search_button(&self, request: ui_core::search::SearchRequest) -> Button {
+        ui_core::search::search_button(request)
     }
 
     /// Stage view state for a screenshot scenario: `stage` runs with the
@@ -526,21 +556,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     pub fn button(&self, label: &str, invoke: Invoke<R>) -> Button {
         let id = self.control_id(invoke.id);
         let button = Button::new(&id, label);
-        let Some(spec) = self
-            .published
-            .actions
-            .iter()
-            .find(|spec| spec.id == invoke.id)
-            .cloned()
-        else {
-            return disabled(button);
-        };
-        match ActionBinding::static_json(&self.published, &spec, invoke.arguments) {
-            Ok(binding) => button.on_action(binding),
-            Err(error) => {
-                tracing::warn!(%error, action = invoke.id, "button not bound");
-                disabled(button)
-            }
+        match self.actions().invocation(invoke) {
+            Some(binding) => button.on_action(binding),
+            None => disabled(button),
         }
     }
 
@@ -562,7 +580,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let live = self.live.clone();
         let updaters = self.updaters.clone();
         let dispatch = self.dispatch.clone();
-        let published = Rc::clone(&self.published);
+        let action_bindings = self.action_bindings.clone();
         let controls = Rc::clone(&self.controls);
         let saved = self.saved.clone();
         let stages = self.stages.clone();
@@ -586,7 +604,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     updaters: updaters.clone(),
                     alive: Rc::downgrade(alive),
                     dispatch: dispatch.clone(),
-                    published: Rc::clone(&published),
+                    action_bindings: action_bindings.clone(),
                     item: Some(id.clone()),
                     controls: Rc::clone(&controls),
                     saved: saved.clone(),
@@ -621,7 +639,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// The resource's published actions, for binding controls built outside
     /// the view function: the rows a table, list or tree creates on demand.
     pub fn actions(&self) -> Actions<R> {
-        Actions::new(Rc::clone(&self.published))
+        self.action_bindings.clone()
     }
 
     /// A value that follows `read` of the resource, for any toolkit control
@@ -670,7 +688,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let focus = Rc::clone(&self.focus);
         let updaters = self.updaters.clone();
         let dispatch = self.dispatch.clone();
-        let published = Rc::clone(&self.published);
+        let action_bindings = self.action_bindings.clone();
         let item = self.item.clone();
         let saved = self.saved.clone();
         let stages = self.stages.clone();
@@ -688,7 +706,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     updaters: updaters.clone(),
                     alive: Rc::downgrade(alive),
                     dispatch: dispatch.clone(),
-                    published: Rc::clone(&published),
+                    action_bindings: action_bindings.clone(),
                     item: item.clone(),
                     // Each build of the part names its controls afresh.
                     controls: Rc::default(),

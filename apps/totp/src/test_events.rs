@@ -14,7 +14,7 @@ use winit::event::{
     DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase,
     WindowEvent,
 };
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
+use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
 fn device() -> DeviceId {
     unsafe { std::mem::zeroed() }
@@ -47,22 +47,6 @@ pub fn wheel(lines_y: f32) -> WindowEvent {
     }
 }
 
-/// A character keypress (logical key + text), e.g. `char_press("n")`.
-pub fn char_press(c: &str) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(c.into());
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(c.into());
-    WindowEvent::KeyboardInput {
-        device_id: device(),
-        event: ev,
-        is_synthetic: false,
-    }
-}
-
 /// A named keypress (Enter, Escape, Tab, …).
 pub fn named_press(named: NamedKey) -> WindowEvent {
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
@@ -77,11 +61,6 @@ pub fn named_press(named: NamedKey) -> WindowEvent {
         event: ev,
         is_synthetic: false,
     }
-}
-
-/// Modifiers with the Control key held (for Ctrl+N / Ctrl+F).
-pub fn ctrl() -> Modifiers {
-    Modifiers::from(ModifiersState::CONTROL)
 }
 
 /// No modifiers held.

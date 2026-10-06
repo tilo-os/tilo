@@ -260,6 +260,10 @@ fn accessibility_tree_exposes_transport_clips_and_tracks() {
         );
         for (_, t) in &toggles {
             let l = t.label().unwrap_or_default().to_string();
+            if l == "Toggle media bin" || l == "Toggle inspector" {
+                // The window's two panel toggles, in the header row.
+                continue;
+            }
             assert!(
                 l.starts_with("Mute ") || l.starts_with("Solo ") || l.starts_with("Lock "),
                 "a toggle names what it does and to which track: {l}"
@@ -498,7 +502,7 @@ fn folded_sections_hide_controls_but_report_their_state() {
             "an open Transform section lists its controls"
         );
         let header = d
-            .a11y_node_named("TRANSFORM")
+            .a11y_node_named("Transform")
             .expect("the section header is addressable");
         d.perform_a11y_action(header, &ui::a11y::Action::Activate)
             .unwrap();
@@ -510,7 +514,7 @@ fn folded_sections_hide_controls_but_report_their_state() {
         let folded = d
             .a11y_nodes()
             .into_iter()
-            .find(|(_, n)| n.label() == Some("TRANSFORM"))
+            .find(|(_, n)| n.label() == Some("Transform"))
             .map(|(_, n)| n)
             .unwrap();
         assert_eq!(
@@ -971,6 +975,11 @@ fn ch(c: &str) -> Key {
     Key::Character(c.into())
 }
 
+/// What the go-to field holds, when it is open.
+fn goto_text(app: &VideoEditorApp) -> Option<String> {
+    app.goto_entry.as_ref().map(|f| f.value().to_string())
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1191,7 +1200,7 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
             "Ctrl+D",
             "Ctrl+A",
             "Ctrl+Z",
-            "Tab",
+            "Tab / Shift+Tab",
             "G",
             "?",
         ] {
@@ -1210,21 +1219,19 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
             .iter()
             .flat_map(|(_, rows)| rows.iter().copied())
             .collect();
-        for key in ["Shift+I / O", "Shift+X", "Ctrl+Shift+Z"] {
+        for key in ["Shift+I / O", "Shift+X", "Ctrl+Shift+Z", "Ctrl+Y"] {
             assert!(
                 rows.iter().any(|(k, _)| *k == key),
                 "the sheet lists {key}: {rows:?}",
             );
         }
-        let redo = rows
-            .iter()
-            .find(|(k, _)| *k == "Ctrl+Shift+Z")
-            .expect("redo is listed");
-        assert!(
-            redo.1.contains("Ctrl+Y"),
-            "and says the other spelling that works: {}",
-            redo.1,
-        );
+        // Both spellings of redo say what they do.
+        for key in ["Ctrl+Shift+Z", "Ctrl+Y"] {
+            assert!(
+                rows.iter().any(|(k, what)| *k == key && *what == "Redo"),
+                "{key} is listed as redo: {rows:?}",
+            );
+        }
     }
     // Case `the_shortcut_sheet_has_room_for_every_shortcut_it_lists`.
     {
@@ -1236,8 +1243,8 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
         // place a user goes to find out what exists.
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
-        let ty = dialog_type(&tr, &theme);
-        let m = HelpMetrics::measure(&mut tr, &theme, ty);
+        let ty = dialog_type(&theme);
+        let m = HelpMetrics::measure(&mut tr, &theme, &ty);
         let (split, _) = help_columns(true, m);
         assert!(
             split > 0 && split < SHORTCUTS.len(),
@@ -1345,10 +1352,10 @@ fn timecode_entry_jumps_or_explains_and_owns_the_keyboard() {
         nav_key(&mut app, &mut doc, ch("g"), false);
         assert!(app.goto_entry.is_some(), "G opens the field");
         for c in ["1", ":", "3", "0"] {
-            nav_key(&mut app, &mut doc, ch(c), false);
+            dispatch(&mut app, &mut doc, char_ev(c));
         }
-        assert_eq!(app.goto_entry.as_deref(), Some("1:30"));
-        nav_key(&mut app, &mut doc, Key::Named(NamedKey::Enter), false);
+        assert_eq!(goto_text(&app).as_deref(), Some("1:30"));
+        dispatch(&mut app, &mut doc, named_ev(NamedKey::Enter));
         assert!(
             (app.playhead - 90.0).abs() < 1e-6,
             "landed at {}",
@@ -1366,8 +1373,8 @@ fn timecode_entry_jumps_or_explains_and_owns_the_keyboard() {
         let mut app = app_with_sample();
         let before = app.playhead;
         nav_key(&mut app, &mut doc, ch("g"), false);
-        nav_key(&mut app, &mut doc, ch(":"), false);
-        nav_key(&mut app, &mut doc, Key::Named(NamedKey::Enter), false);
+        dispatch(&mut app, &mut doc, char_ev(":"));
+        dispatch(&mut app, &mut doc, named_ev(NamedKey::Enter));
         assert!(app.goto_entry.is_some(), "the field stays open");
         assert!(
             app.navigation.goto_notice,
@@ -1386,12 +1393,13 @@ fn timecode_entry_jumps_or_explains_and_owns_the_keyboard() {
         let markers = app.project.markers.len();
         nav_key(&mut app, &mut doc, ch("g"), false);
         for c in ["s", "m", "t"] {
+            dispatch(&mut app, &mut doc, char_ev(c));
             nav_key(&mut app, &mut doc, ch(c), false);
         }
         assert_eq!(app.project.clips.len(), clips, "no clip was split");
         assert_eq!(app.project.markers.len(), markers, "no marker was dropped");
         assert_eq!(
-            app.goto_entry.as_deref(),
+            goto_text(&app).as_deref(),
             Some(""),
             "and no letters entered the field"
         );
@@ -1449,7 +1457,7 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         );
         // Empty lane space is where a marquee starts.
         assert_eq!(
-            app.cursor_shape(Point::new(r.lanes.x1 - 4.0, cr.center().y)),
+            app.cursor_shape(Point::new(r.lanes.x1 - 24.0, cr.center().y)),
             Some(CursorIcon::Crosshair),
         );
         // The ruler scrubs.
@@ -1490,9 +1498,7 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
             !app.export_is_offered(),
             "a render in flight disables Export"
         );
-        let l = app
-            .with_dialog_layout(super::VideoEditorApp::export_layout)
-            .expect("rendered dialog layout");
+        let l = app.with_dialog_layout(super::VideoEditorApp::export_layout);
         assert_eq!(
             app.cursor_shape(l.confirm.center()),
             Some(CursorIcon::Default),
@@ -1648,13 +1654,17 @@ fn bin_discloses_missing_unknown_and_refused_media() {
             "a source with no duration and no dimensions is not usable media",
         );
 
-        let sub = VideoEditorApp::bin_subtitle(&m);
+        let sub = format!(
+            "{} {}",
+            VideoEditorApp::bin_kind_words(&m),
+            VideoEditorApp::bin_length(&m)
+        );
         assert!(
             !sub.contains("0p") && !sub.contains("0:00"),
             "unknown metadata must not be printed as a fact; got {sub:?}",
         );
         assert!(
-            sub.contains("unknown"),
+            sub.to_lowercase().contains("unknown"),
             "the row must say what it does not know; got {sub:?}",
         );
 
@@ -1810,7 +1820,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         // The real wording `ui::portal` hands back on a box with no portal.
         const REFUSAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
         let theme = Theme::dark();
-        let danger = theme.tokens.colors.semantic.danger;
+        let danger = ui::widget::BannerKind::Error;
 
         // Import side.
         let (mut app, mut doc) = app_and_doc();
@@ -1822,7 +1832,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         let notice = app.import_notice.clone().expect("the refusal is on screen");
         assert_eq!(notice.text, REFUSAL, "in the picker's own words");
         assert_eq!(
-            notice.level.tint(&theme),
+            notice.level.banner_kind(),
             danger,
             "and tinted as the refusal it is",
         );
@@ -1835,8 +1845,9 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         };
         app.import_notice = Some(Notice::ok(REFUSAL));
         let ok_px = render_pixels(&mut app, 1280, 800, &theme);
+        // The severity is the banner's icon, in its status colour.
         assert!(
-            region_diff(&failed_px, &ok_px, 1280, 800, strip) > 400,
+            region_diff(&failed_px, &ok_px, 1280, 800, strip) > 20,
             "the same sentence at two severities must not paint the same",
         );
 
@@ -1850,7 +1861,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
             .clone()
             .expect("a project chooser that refused says so");
         assert_eq!(notice.text, REFUSAL);
-        assert_eq!(notice.level.tint(&theme), danger);
+        assert_eq!(notice.level.banner_kind(), danger);
     }
 }
 
@@ -2071,7 +2082,10 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             r.preview.x0 >= r.bin.x1 - 0.5,
             "docked preview begins at the bin's right edge"
         );
-        assert!(r.menu_btn.width() == 0.0, "no hamburger while docked");
+        assert!(
+            r.menu_btn.width() > 0.0,
+            "the media toggle is offered while docked too"
+        );
         assert!(r.scrim.width() == 0.0, "no scrim while docked");
     }
     // Case `narrow_window_collapses_bin_to_overlay_with_hamburger`.
@@ -2113,10 +2127,10 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             r.scrim.width() > 0.0,
             "open overlay bin dims the editor with a scrim"
         );
-        // Fully revealed: the bin sits flush at the left edge.
+        // Fully revealed: the drawer floats a step inside the left edge.
         assert!(
-            (r.bin.x0 - app.rect.x0).abs() < 0.5,
-            "revealed bin is flush left"
+            (r.bin.x0 - (app.rect.x0 + S2)).abs() < 0.5,
+            "revealed bin floats a step inside the left edge"
         );
     }
     // Case `narrow_bin_overlay_traps_input_and_returns_to_the_opening_pane`.
@@ -2201,7 +2215,9 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
         type Open = fn(&mut VideoEditorApp);
         let cases: [(&str, Open); 2] = [
             ("shortcut sheet", |a| a.navigation.help_open = true),
-            ("go-to field", |a| a.goto_entry = Some(String::new())),
+            ("go-to field", |a| {
+                a.goto_entry = Some(interaction::goto_field(""));
+            }),
         ];
         for (name, open) in cases {
             let (mut app, doc) = app_and_doc();
@@ -2542,7 +2558,7 @@ fn project_format_follows_the_first_clip_unless_chosen() {
         // PROJECT starts folded, so the first thing a reader has to be able to
         // do is unfold it — through the header's own node, with no pointer.
         let header = d
-            .a11y_node_named("PROJECT")
+            .a11y_node_named("Project")
             .expect("the project section reaches the tree");
         d.perform_a11y_action(header, &ui::a11y::Action::Expand)
             .unwrap();
@@ -3529,9 +3545,9 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         );
         // Save names what it will do: a project with a file saves, one without
         // asks — and the label says which before it is pressed.
-        assert_eq!(rows[1].1, "Save  (Ctrl+S)");
+        assert_eq!(rows[1].1, "Save");
         app.project_path = None;
-        assert_eq!(app.project_menu_rows()[1].1, "Save…  (Ctrl+S)");
+        assert_eq!(app.project_menu_rows()[1].1, "Save…");
     }
     // Case `a_menu_click_resolves_past_the_separator_to_the_row_it_landed_on`.
     {
@@ -3574,7 +3590,19 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         let wide = app.regions().project_btn;
         assert!(wide.width() >= PROJECT_BTN_MIN_W, "there is room at 1280");
 
-        app.rect = Rect::new(0.0, 0.0, 500.0, 640.0);
+        // A compact header row keeps the button as its icon alone — a whole
+        // control, never a clipped name — and a row with no room for even
+        // that drops it.
+        app.rect = Rect::new(0.0, 0.0, 460.0, 640.0);
+        assert!(app.topbar_is_compact(), "460 is a compact header row");
+        let compact = app.regions();
+        assert!(
+            compact.project_btn.width() == 0.0
+                || (compact.project_btn.width() - compact.project_btn.height()).abs() < 1e-6,
+            "a compact row shows the icon or nothing: {:?}",
+            compact.project_btn
+        );
+        app.rect = Rect::new(0.0, 0.0, 220.0, 640.0);
         let narrow = app.regions();
         assert_eq!(narrow.project_btn.width(), 0.0, "no room, so no button");
         assert!(
@@ -3652,11 +3680,11 @@ fn export_failures_are_accessible_and_wrap() {
         // sits clear of the size line above it and the action row below it.
         let mut tr = TextRenderer::new();
         let layout = app.export_layout(&mut tr, &Theme::dark());
-        let ty = layout.type_sizes;
-        let lines = tr.clamp_to_lines(reason, ty.xs, layout.modal.body.width() as f32, 2);
+        let ty = &layout.type_sizes;
+        let lines = tr.clamp_to_lines(reason, &ty.xs, layout.modal.body.width() as f32, 2);
         assert_eq!(lines.len(), 2, "the long reason occupies the two-line slot");
-        let line_h = f64::from(tr.measure("Hg", ty.xs, None).1);
-        let info_bottom = layout.info_top + f64::from(tr.measure("Hg", ty.sm, None).1);
+        let line_h = f64::from(tr.measure_style("Hg", None, &ty.xs).1);
+        let info_bottom = layout.info_top + f64::from(tr.measure_style("Hg", None, &ty.sm).1);
         let error_top = layout.status.y0;
         let error_bottom = layout.status.y0 + 2.0 * line_h;
         assert!(
@@ -4247,7 +4275,8 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
             .brightness
             .expect("a selected video clip is offered a brightness slider");
         let want = 0.9;
-        let x = track.x0 + track.width() * want;
+        let rail = slider_rail(track);
+        let x = rail.x0 + rail.width() * want;
 
         click(&mut app, &mut doc, x, track.center().y);
         let previewed = app.project.clip(id).expect("clip").filters.brightness;
@@ -4304,7 +4333,8 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         );
         // Drag Scale X to a quarter along its 0.05..4 span.
         let track = reveal(&mut app, |l| l.num(NumField::ScaleX));
-        let x = track.x0 + track.width() * 0.25;
+        let rail = slider_rail(track);
+        let x = rail.x0 + rail.width() * 0.25;
         click(&mut app, &mut doc, x, track.center().y);
         release(&mut app, &mut doc);
         settle(&mut app, &mut doc);
@@ -5010,7 +5040,7 @@ fn timeline_scrolls_pans_and_follows_playback() {
         move_to(&mut app, &mut doc, r.lanes.x0 + 10.0, r.lanes.center().y);
         // Zoom right in, so the tail is far off-screen.
         for _ in 0..12 {
-            wheel(&mut app, &mut doc, 0.0, 3.0, ModifiersState::empty());
+            wheel(&mut app, &mut doc, 0.0, 3.0, ModifiersState::CONTROL);
         }
         assert!(
             app.time_to_x(last_end, &r.lanes) > r.lanes.x1,
@@ -5786,11 +5816,11 @@ fn export_dialog_layout_availability_and_shortcuts() {
             let (mut app, _doc) = app_sized(w, h);
             app.presentation.export_open = true;
             let l = app.export_layout(&mut tr, &theme);
-            let ty = l.type_sizes;
+            let ty = &l.type_sizes;
             let header_bottom = if let Some(top) = l.mix_top {
-                top + f64::from(tr.measure("Hg", ty.xs, None).1)
+                top + f64::from(tr.measure_style("Hg", None, &ty.xs).1)
             } else {
-                l.filename_top + f64::from(tr.measure("Hg", ty.sm, None).1)
+                l.filename_top + f64::from(tr.measure_style("Hg", None, &ty.sm).1)
             };
             let first_label_top = l.captions[0];
             assert!(
@@ -5798,7 +5828,7 @@ fn export_dialog_layout_availability_and_shortcuts() {
                 "{w}x{h}: RESOLUTION starts at {first_label_top} but the header \
                  runs to {header_bottom} — they overlap",
             );
-            let caption_h = f64::from(tr.measure("Hg", ty.xs, None).1);
+            let caption_h = f64::from(tr.measure_style("Hg", None, &ty.xs).1);
             for (caption, rects) in l.captions.iter().zip([
                 l.resolution.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
                 l.container.iter().map(|(_, r)| *r).collect(),
@@ -6192,10 +6222,6 @@ fn unexportable_project() -> Project {
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-#[expect(
-    clippy::float_cmp,
-    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
-)]
 fn topbar_and_transport_degrade_gracefully_when_narrow() {
     // Case `the_topbar_buttons_never_collide_with_other_topbar_content`.
     {
@@ -6377,6 +6403,8 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             (500.0, 640.0),
             (620.0, 700.0),
             (720.0, 820.0),
+            (800.0, 600.0),
+            (900.0, 700.0),
         ] {
             let (mut app, _doc) = app_sized(w, h);
             app.navigation.flap_settled = true;
@@ -6400,7 +6428,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             }
         }
         // Wide windows are unchanged: the inspector keeps its column.
-        for (w, h) in [(900.0_f64, 700.0_f64), (1280.0, 800.0), (1920.0, 1080.0)] {
+        for (w, h) in [(1000.0_f64, 700.0_f64), (1280.0, 800.0), (1920.0, 1080.0)] {
             let (mut app, _doc) = app_sized(w, h);
             app.navigation.flap_settled = true;
             let r = app.regions();
@@ -6443,10 +6471,10 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         );
         app.inspector_flap.snap(false);
         assert!(!app.inspector_is_visible(&app.regions()));
-        // The docked layout has no toggle to offer.
+        // The docked layout offers the same toggle, at the same corner.
         let (mut wide, _d) = app_sized(1280.0, 800.0);
         wide.navigation.flap_settled = true;
-        assert_eq!(wide.regions().inspector_btn.width(), 0.0);
+        assert!(wide.regions().inspector_btn.width() > 0.0);
     }
     // Case `compact_topbar_keeps_independent_touch_targets_and_semantics`.
     {
@@ -6463,9 +6491,10 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             ("import", r.import_btn),
             ("export", r.export_btn),
         ];
+        let target = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
         for (name, rect) in controls {
             assert!(
-                rect.width() >= TOPBAR_TOUCH_TARGET && rect.height() >= TOPBAR_TOUCH_TARGET,
+                rect.width() >= target && rect.height() >= target,
                 "{name} target is too small for touch: {rect:?}",
             );
         }
@@ -6721,6 +6750,22 @@ fn region_diff(a: &[u8], b: &[u8], fw: u32, fh: u32, rect: Rect) -> usize {
         }
     }
     n
+}
+
+/// Exact pixel evidence when two production renders differ in a region.
+fn region_diff_samples(before: &[u8], after: &[u8], width: u32, rect: Rect) -> Vec<String> {
+    before
+        .chunks_exact(4)
+        .zip(after.chunks_exact(4))
+        .enumerate()
+        .filter_map(|(index, (before, after))| {
+            let x = index % width as usize;
+            let y = index / width as usize;
+            (before != after && rect.contains(Point::new(x as f64, y as f64)))
+                .then(|| format!("({x},{y}): {before:?}->{after:?}"))
+        })
+        .take(12)
+        .collect()
 }
 
 /// How many visually distinct colours a rect of a rendered frame contains,
@@ -7391,9 +7436,13 @@ where
         .take_while(|&offset| offset <= max + 1.0);
     for offset in offsets {
         app.inspector_scroll = offset.min(max);
-        if let Some(rect) = find(&app.inspector_layout(&r))
-            && rect.y0 > r.inspector.y0 + 8.0
-            && rect.y1 < r.inspector.y1 - 8.0
+        let layout = app.inspector_layout(&r);
+        // Visible means drawn: inside the part of the body the panel shows,
+        // which leaves out a row only part-way in view.
+        let shown = app.inspector_shown_body(&r, &layout);
+        if let Some(rect) = find(&layout)
+            && rect.y0 >= shown.y0
+            && rect.y1 <= shown.y1
         {
             best = Some(rect);
             break;
@@ -8371,7 +8420,9 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
             matches!(moved, crate::actions::VideoEditorAction::MoveEffect { .. }),
             "an inspector reorder must not publish a whole-clip snapshot",
         );
-        // Remove the head via its ✕.
+        // Remove the head via its ✕, scrolled into the panel's body first.
+        let head = app.inspector_layout(&r).effect_rows[0];
+        reveal_inspector_rect_for_test(&mut app, &r, head);
         let l = app.inspector_layout(&r);
         let (_k, _u, _dn, _sl, remove) = VideoEditorApp::effect_row_parts(l.effect_rows[0]);
         click(&mut app, &mut doc, remove.center().x, remove.center().y);
@@ -8403,6 +8454,12 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
         app.selection.select_only(id);
         let r = app.regions();
         app.inspector_scroll = app.inspector_max_scroll(&r);
+        let head = *app
+            .inspector_layout(&r)
+            .effect_rows
+            .first()
+            .expect("the fixture has an effect row");
+        reveal_inspector_rect_for_test(&mut app, &r, head);
         let row = *app
             .inspector_layout(&r)
             .effect_rows
@@ -9495,14 +9552,68 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
         // pane that is missing its cursor instead of only the first.
         let mut wrong: Vec<String> = Vec::new();
         for (what, place) in cases {
-            let render = |focused: bool| -> (Vec<u8>, Rect, Rect) {
-                let (mut app, _doc) = app_and_doc();
-                let (on, off) = place(&mut app);
-                app.presentation.keyboard_focus = focused;
-                (render_pixels(&mut app, w, h, &theme), on, off)
+            // Settle the real host pipeline before comparing focus. Direct
+            // draws can still change layout, text caches and pending media
+            // between the two frames independently of the keyboard cursor.
+            let (app, doc) = app_and_doc();
+            let mut state = ui::State::new();
+            state.doc = doc;
+            let mut driver = ui::headless::Driver::for_root(state, app, (w, h), theme.clone());
+            let (on, off) = place(driver.root_mut::<VideoEditorApp>());
+            driver.relayout();
+            let bound = ui::time::Duration::from_secs(30);
+            assert!(
+                driver.wait_until(bound, |frame| !frame
+                    .root::<VideoEditorApp>()
+                    .needs_idle_sync()),
+                "{what}: the real media work must finish before testing focus pixels"
+            );
+            // GPU atomic segment ordering can change glyph-edge coverage by
+            // one channel value even for the identical Scene. The existing
+            // CPU preprocessing mode orders those segments deterministically;
+            // Vello still performs the production fine rasterization on GPU.
+            let mut renderer =
+                ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(w, h)
+                    .expect("the exact focus oracle requires the production Vello renderer");
+            let mut render = |focused: bool| {
+                driver
+                    .root_mut::<VideoEditorApp>()
+                    .presentation
+                    .keyboard_focus = focused;
+                driver.relayout();
+                assert!(
+                    driver.settle_for_capture(bound),
+                    "{what}: the actual focus frame must settle before capture"
+                );
+                assert_eq!(
+                    driver.root::<VideoEditorApp>().presentation.keyboard_focus,
+                    focused,
+                    "{what}: the frame must preserve the staged keyboard focus"
+                );
+                // Rasterisation itself must be stable: these two renders
+                // borrow the same immutable completed Scene, with no host
+                // pump, layout, draw, or state mutation between them.
+                let pixels = renderer.render_rgba(driver.scene());
+                let repeated = renderer.render_rgba(driver.scene());
+                (pixels, repeated)
             };
-            let (dark, on, off) = render(false);
-            let (lit, _, _) = render(true);
+            let (dark, dark_repeated) = render(false);
+            let (lit, lit_repeated) = render(true);
+            for (state, before, after) in [
+                ("unfocused", &dark, &dark_repeated),
+                ("focused", &lit, &lit_repeated),
+            ] {
+                for (region, rect) in [("target", on), ("other control", off)] {
+                    let changed = region_diff(before, after, w, h, rect);
+                    if changed != 0 {
+                        let samples = region_diff_samples(before, after, w, rect);
+                        wrong.push(format!(
+                            "{what} {state} immutable Scene changed {changed} pixels in \
+                             {region} {rect:?} between renders: {samples:?}"
+                        ));
+                    }
+                }
+            }
             let painted = region_diff(&dark, &lit, w, h, on);
             if painted <= 100 {
                 wrong.push(format!(
@@ -9514,9 +9625,10 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
 
             let spilled = region_diff(&dark, &lit, w, h, off);
             if spilled != 0 {
+                let samples = region_diff_samples(&dark, &lit, w, off);
                 wrong.push(format!(
-                    "{what} also marked a control the cursor is not on ({spilled} px): \
-                     the ring has to name one stop, not light the whole pane"
+                    "{what} also marked a control the cursor is not on ({spilled} px in {off:?}): \
+                     the ring has to name one stop, not light the whole pane; {samples:?}"
                 ));
             }
         }
@@ -9678,7 +9790,7 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
         app.text_scale = 2.0;
         let r = app.regions();
         assert!(app.topbar_is_compact());
-        assert!(r.topbar.height() > TOPBAR_H);
+        assert!(r.topbar.height() > f64::from(Theme::dark().tokens.metrics.header_height));
         assert!(r.transport.height() > TRANSPORT_H);
         assert!(r.ruler.height() > RULER_H);
 
@@ -9822,12 +9934,18 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
         );
         let mut bin_text = TextRenderer::new();
         bin_text.set_text_scale(2.0);
+        let bin_theme = Theme::dark().with_text_scale(2.0);
         for (media, row) in rows {
             let item = narrow.project.media(media).expect("row media exists");
-            let tx = row.x0 + 8.0 * narrow.bin_ui_scale() + 64.0 + 12.0 * narrow.bin_ui_scale();
+            let tx = row.x0 + 8.0 * narrow.bin_ui_scale() + 64.0 + 8.0 * narrow.bin_ui_scale();
             let available = (row.x1 - 8.0 * narrow.bin_ui_scale() - tx) as f32;
-            let (name_w, name_h) = bin_text.measure(&item.name, 13.0, None);
-            let (_, subtitle_h) = bin_text.measure(&VideoEditorApp::bin_subtitle(item), 11.0, None);
+            let (name_w, name_h) =
+                bin_text.measure_style(&item.name, None, &bin_theme.text(TextRole::Label));
+            let (_, subtitle_h) = bin_text.measure_style(
+                &VideoEditorApp::bin_kind_words(item),
+                None,
+                &bin_theme.text(TextRole::Caption),
+            );
             assert!(
                 name_w <= available,
                 "{} has a full readable name column at 2× ({name_w} > {available})",
@@ -9914,7 +10032,7 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
             rows[app.focus.inspector],
         )
         .expect("focus band");
-        assert!(focused.y0 >= view.y0 && focused.y1 <= view.y1);
+        assert!(focused.y0 >= view.y0 - 1e-6 && focused.y1 <= view.y1 + 1e-6);
     }
 }
 
@@ -9941,7 +10059,7 @@ fn shuttle_direction_and_rate_are_named_and_painted() {
         assert_eq!(app.motion_words(), None, "a still playhead says nothing");
 
         app.playback.playing = true;
-        assert_eq!(app.motion_words().as_deref(), Some("PLAYING"));
+        assert_eq!(app.motion_words().as_deref(), Some("Playing"));
         app.playback.playing = false;
 
         // Through the production key path: L, L, L is the standard 1× → 2× → 4×.
@@ -9956,7 +10074,7 @@ fn shuttle_direction_and_rate_are_named_and_painted() {
             "the rate has to be named, not just the fact of moving: {fwd:?}",
         );
         assert!(
-            fwd.contains('\u{25B6}'),
+            fwd.contains("forward"),
             "and which way it is running: {fwd:?}",
         );
 
@@ -9967,7 +10085,7 @@ fn shuttle_direction_and_rate_are_named_and_painted() {
             .motion_words()
             .expect("a reversed shuttle reports itself");
         assert!(
-            back.contains('\u{25C0}') && !back.contains('\u{25B6}'),
+            back.contains("backward") && !back.contains("forward"),
             "reverse reads as reverse: {back:?}",
         );
 
@@ -9994,21 +10112,28 @@ fn shuttle_direction_and_rate_are_named_and_painted() {
 
         // Where the strip puts it, through the production placement.
         let mut tr = TextRenderer::new();
+        let readout_theme = Theme::dark();
+        let mut width = |s: &str, role: TextRole| {
+            f64::from(
+                tr.measure_style(s, None, &readout_theme.text(role).numeric())
+                    .0,
+            )
+        };
         let r = app.regions();
         let big = timecode(app.playhead, app.project.fps);
-        let total = format!("/  {}", timecode(app.project.duration(), app.project.fps));
+        let total = format!("/ {}", timecode(app.project.duration(), app.project.fps));
         let meta = format!(
-            "{}×{} · {:.0} fps",
+            "{}×{}, {:.0} fps",
             app.project.width, app.project.height, app.project.fps
         );
-        let motion_w = f64::from(tr.measure(&words, 10.0, None).0);
+        let motion_w = width(&words, TextRole::Caption);
         let fit = readout_fit(
             r.transport,
             app.transport_content_x(&r),
-            f64::from(tr.measure_weighted(&big, 18.0, None, TextWeight::Bold).0),
-            f64::from(tr.measure(&total, 13.0, None).0),
+            width(&big, TextRole::Title),
+            width(&total, TextRole::Body),
             motion_w,
-            f64::from(tr.measure(&meta, 11.5, None).0),
+            width(&meta, TextRole::Caption),
         );
         let x = fit.motion_x.expect("a 1280px strip has room for the rate");
         let band = Rect::new(
@@ -10985,4 +11110,49 @@ fn crop(rgba: &[u8], fw: u32, rect: Rect) -> Vec<u8> {
         }
     }
     out
+}
+
+#[test]
+fn the_timeline_resizes_against_the_preview_and_its_lanes_scroll() {
+    // Case `a_small_window_gives_the_preview_room_and_scrolls_the_lanes`.
+    let (mut app, mut doc) = app_sized(800.0, 600.0);
+    let r = app.regions();
+    assert!(
+        r.preview.height() > r.timeline.height(),
+        "the preview keeps the larger share: {} vs {}",
+        r.preview.height(),
+        r.timeline.height()
+    );
+    assert!(app.lanes_metrics(&r).overflows(), "four lanes overflow it");
+    move_to(&mut app, &mut doc, r.lanes.x0 + 40.0, r.lanes.center().y);
+    let zoom = app.zoom;
+    wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::empty());
+    assert!(app.lane_scroll > 0.0, "the wheel scrolls the lanes");
+    assert!((app.zoom - zoom).abs() < f64::EPSILON, "and does not zoom");
+    let first = app.lane_rects(&app.regions())[0].2;
+    assert!(
+        first.y0 < r.lanes.y0,
+        "the first lane went up under the ruler"
+    );
+
+    // Case `dragging_the_divider_gives_the_timeline_more_room`.
+    let r = app.regions();
+    let top = r.timeline.y0;
+    move_to(&mut app, &mut doc, r.timeline.center().x, top);
+    press(&mut app, &mut doc);
+    move_to(&mut app, &mut doc, r.timeline.center().x, top - 120.0);
+    release(&mut app, &mut doc);
+    let after = app.regions();
+    assert!(
+        after.timeline.y0 < top - 100.0,
+        "the timeline grew: {} from {top}",
+        after.timeline.y0
+    );
+    let node = app.accessibility().unwrap();
+    assert!(
+        node.children
+            .iter()
+            .any(|child| child.action_target.as_deref() == Some(TIMELINE_SPLIT_TARGET)),
+        "the divider is a separator assistive technology can move"
+    );
 }

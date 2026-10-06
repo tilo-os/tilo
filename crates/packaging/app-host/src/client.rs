@@ -356,6 +356,27 @@ impl BlockingClient {
         })
     }
 
+    /// Enable or disable an existing repository in this account's scope.
+    ///
+    /// # Errors
+    /// Returns why the repository change was refused or failed.
+    pub fn set_remote_enabled(&self, name: &str, enabled: bool) -> Result<String, String> {
+        let mut request = self.client.remote_request();
+        request.get().set_action(if enabled {
+            WireRemoteAction::Enable
+        } else {
+            WireRemoteAction::Disable
+        });
+        request.get().set_name(name);
+        request.get().set_url("");
+        text_result(
+            self.wait(request.send().promise)?
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_status(),
+        )
+    }
+
     /// Add or remove a user Flatpak remote through the host service.
     ///
     /// # Errors

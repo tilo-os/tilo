@@ -602,14 +602,14 @@ mod tests {
     fn a_clash_names_the_shortcut_holding_the_chord_and_changes_nothing() {
         let mut config = ShortcutConfig::default();
         let before = config.clone();
-        let operation = rebind(&config, "quick-settings", "Super+K");
-        let error = apply(&mut config, &operation).expect_err("Super+K opens search");
+        let operation = rebind(&config, "quick-settings", "Super+Space");
+        let error = apply(&mut config, &operation).expect_err("Super+Space opens search");
         assert_eq!(error.code, "shortcut_conflict");
         let details = error.details.expect("the holder is named");
         assert_eq!(details["conflict"]["kind"], "shortcut");
         assert_eq!(details["conflict"]["id"], "search");
-        assert_eq!(details["conflict"]["label"], "Global search");
-        assert_eq!(details["chord"], "Super+K");
+        assert_eq!(details["conflict"]["label"], "Search everywhere");
+        assert_eq!(details["chord"], "Super+Space");
         assert_eq!(config, before);
     }
 
@@ -671,7 +671,7 @@ mod tests {
         assert!(
             descriptor_at(&config, &address(&entry_resource("search"), REBIND_ACTION)).is_some()
         );
-        assert!(descriptor_at(&config, &address(&entry_resource("lock"), REBIND_ACTION)).is_none());
+        assert!(descriptor_at(&config, &address(&entry_resource("lock"), REBIND_ACTION)).is_some());
         assert!(
             descriptor_at(
                 &config,

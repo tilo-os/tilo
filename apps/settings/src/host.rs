@@ -195,6 +195,17 @@ impl PaneCx {
         }
     }
 
+    /// The binding of one fully specified effect, for a shared navigation row.
+    #[must_use]
+    pub fn invocation_binding(
+        &self,
+        effect: impl Into<SettingsEffect>,
+    ) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        self.door
+            .as_ref()
+            .and_then(|door| door.actions.effect(&effect.into()))
+    }
+
     /// Invoke `effect` through the same door as a bound control.
     pub fn invoke(&self, effect: impl Into<SettingsEffect>) {
         if let Some(door) = &self.door {

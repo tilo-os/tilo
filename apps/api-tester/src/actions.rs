@@ -73,6 +73,19 @@ pub enum ApiTesterEffect {
         #[param("The token, password or key, kept on this device")]
         secret: String,
     },
+    /// Edit authentication metadata
+    EditAuthField {
+        #[param("Authentication field", choices = ["username", "header"])]
+        field: String,
+        #[param("The shared field value; credentials use Set credential")]
+        value: String,
+    },
+    /// Choose an environment or open its management form
+    #[effect(view, idempotent)]
+    PickEnvironment {
+        #[param("Environment name, No environment, or an environment management command")]
+        choice: String,
+    },
     /// Set a secret variable's value
     SetSecretValue {
         #[param("Id of the variable")]
@@ -199,6 +212,13 @@ pub enum ApiTesterAction {
     SetBodyMode { mode: BodyMode },
     /// Add or replace a param, header or form row, keyed by its id.
     SetRow { section: RowSection, row: KeyValue },
+    /// Edit one public row field without replacing the other fields.
+    EditRowField {
+        section: RowSection,
+        row_id: String,
+        field: String,
+        value: String,
+    },
     /// Remove a param, header or form row by id.
     RemoveRow { section: RowSection, row_id: String },
 
@@ -360,6 +380,53 @@ impl Action for ApiTesterAction {
                     match rows.iter_mut().find(|existing| existing.id == row.id) {
                         Some(existing) => *existing = row.clone(),
                         None => rows.push(row.clone()),
+                    }
+                });
+            }
+            ApiTesterAction::EditRowField {
+                section,
+                row_id,
+                field,
+                value,
+            } => {
+                if !matches!(field.as_str(), "key" | "value" | "enabled")
+                    || Uuid::parse_str(row_id).is_err()
+                {
+                    return Err(ActionError::Refused("invalid request row field".into()));
+                }
+                let enabled =
+                    if field == "enabled" {
+                        Some(value.parse::<bool>().map_err(|_| {
+                            ActionError::Refused("invalid row inclusion value".into())
+                        })?)
+                    } else {
+                        None
+                    };
+                ApiDoc::update_request(doc, &root, |request| {
+                    let rows = section.rows(request);
+                    let index = if let Some(index) = rows.iter().position(|row| row.id == *row_id) {
+                        index
+                    } else {
+                        if value.is_empty() || enabled.is_some() {
+                            return;
+                        }
+                        rows.push(KeyValue {
+                            id: row_id.clone(),
+                            key: String::new(),
+                            value: String::new(),
+                            enabled: true,
+                            secret: false,
+                        });
+                        rows.len().saturating_sub(1)
+                    };
+                    if let Some(row) = rows.get_mut(index) {
+                        if let Some(enabled) = enabled {
+                            row.enabled = enabled;
+                        } else if field == "key" {
+                            row.key.clone_from(value);
+                        } else {
+                            row.value.clone_from(value);
+                        }
                     }
                 });
             }
@@ -775,36 +842,75 @@ pub(crate) fn document_children(state: &Workspace) -> Vec<Resource> {
 }
 
 /// The record `id`, published or not.
+/// Position in one immutable authoritative projection.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RecordLocation {
+    Collection(usize),
+    Request(usize, usize),
+    Environment(usize),
+    Variable(usize, usize),
+    History(usize),
+}
+
+pub(crate) fn resource_index(
+    state: &Workspace,
+) -> std::collections::HashMap<String, RecordLocation> {
+    let mut index = std::collections::HashMap::new();
+    for (ci, collection) in state.collections.iter().enumerate() {
+        index.insert(
+            collection_resource_id(collection.id),
+            RecordLocation::Collection(ci),
+        );
+        for (ri, request) in collection.requests.iter().enumerate() {
+            index.insert(
+                request_resource_id(request.id),
+                RecordLocation::Request(ci, ri),
+            );
+        }
+    }
+    for (ei, environment) in state.environments.iter().enumerate() {
+        index.insert(
+            environment_resource_id(environment.id),
+            RecordLocation::Environment(ei),
+        );
+        for (vi, variable) in environment.variables.iter().enumerate() {
+            index.insert(
+                variable_resource_id(environment.id, &variable.id),
+                RecordLocation::Variable(ei, vi),
+            );
+        }
+    }
+    for (hi, entry) in state.history.iter().enumerate() {
+        index.insert(history_resource_id(entry.id), RecordLocation::History(hi));
+    }
+    index
+}
+
 pub(crate) fn resolve_child(state: &Workspace, id: &str) -> Option<Resource> {
-    for collection in &state.collections {
-        if collection_resource_id(collection.id) == id {
-            return Some(collection_resource(collection));
+    #[cfg(test)]
+    state.exact_inspected.set(0);
+    let location = state.index.get(id)?;
+    #[cfg(test)]
+    state.exact_inspected.set(state.exact_inspected.get() + 1);
+    match *location {
+        RecordLocation::Collection(ci) => state.collections.get(ci).map(collection_resource),
+        RecordLocation::Request(ci, ri) => {
+            let collection = state.collections.get(ci)?;
+            collection
+                .requests
+                .get(ri)
+                .map(|request| request_resource(collection.id, request))
         }
-        if let Some(request) = collection
-            .requests
-            .iter()
-            .find(|request| request_resource_id(request.id) == id)
-        {
-            return Some(request_resource(collection.id, request));
+        RecordLocation::Environment(ei) => state.environments.get(ei).map(environment_resource),
+        RecordLocation::Variable(ei, vi) => {
+            let environment = state.environments.get(ei)?;
+            environment
+                .variables
+                .get(vi)
+                .map(|variable| variable_resource(environment.id, variable))
         }
+        RecordLocation::History(hi) => state.history.get(hi).map(history_resource),
     }
-    for environment in &state.environments {
-        if environment_resource_id(environment.id) == id {
-            return Some(environment_resource(environment));
-        }
-        if let Some(variable) = environment
-            .variables
-            .iter()
-            .find(|variable| variable_resource_id(environment.id, &variable.id) == id)
-        {
-            return Some(variable_resource(environment.id, variable));
-        }
-    }
-    state
-        .history
-        .iter()
-        .find(|entry| history_resource_id(entry.id) == id)
-        .map(history_resource)
 }
 
 /// What system search finds in the workspace: records by their names and
@@ -1051,7 +1157,7 @@ fn history_resource(entry: &HistoryEntry) -> Resource {
 fn history_label(entry: &HistoryEntry) -> String {
     let Some((scheme, remainder)) = entry.url.split_once("://") else {
         return format!(
-            "{} request history · {}",
+            "{} request returned status {}",
             entry.method.as_str(),
             entry.status
         );
@@ -1060,14 +1166,14 @@ fn history_label(entry: &HistoryEntry) -> String {
     let Some((authority, path)) = safe.split_once('/') else {
         let authority = safe.rsplit('@').next().unwrap_or_default();
         return format!(
-            "{} {scheme}://{authority} · {}",
+            "{} {scheme}://{authority} returned status {}",
             entry.method.as_str(),
             entry.status
         );
     };
     let authority = authority.rsplit('@').next().unwrap_or_default();
     format!(
-        "{} {scheme}://{authority}/{path} · {}",
+        "{} {scheme}://{authority}/{path} returned status {}",
         entry.method.as_str(),
         entry.status
     )
@@ -1254,6 +1360,7 @@ mod tests {
         large.collections[0].requests = (0..PUBLISHED_RECORDS + 10)
             .map(|index| Request::new(format!("Request {index}")))
             .collect();
+        large.index = resource_index(&large);
         let late = large.collections[0].requests.last().unwrap().id;
         let published = ui::tilo_resource::publish::<ApiTester>(ApiTester::KIND, "", &large);
         let collection = published
@@ -1379,6 +1486,34 @@ mod tests {
         assert_eq!(request.body_mode, BodyMode::Json);
         apply(
             &mut doc,
+            &ApiTesterAction::EditRowField {
+                section: RowSection::Params,
+                row_id: row.id.clone(),
+                field: "key".into(),
+                value: "limit".into(),
+            },
+        );
+        assert_eq!(
+            state(&doc).request.params[0].value,
+            "1",
+            "editing the key preserves the current value"
+        );
+        apply(
+            &mut doc,
+            &ApiTesterAction::EditRowField {
+                section: RowSection::Params,
+                row_id: row.id.clone(),
+                field: "value".into(),
+                value: "50".into(),
+            },
+        );
+        assert_eq!(
+            state(&doc).request.params[0].key,
+            "limit",
+            "editing the value preserves the prior field edit"
+        );
+        apply(
+            &mut doc,
             &ApiTesterAction::RemoveRow {
                 section: RowSection::Params,
                 row_id: row.id,
@@ -1386,6 +1521,10 @@ mod tests {
         );
         assert!(state(&doc).request.params.is_empty());
 
+        check_history_variables_and_saved_request_updates(&mut doc);
+    }
+
+    fn check_history_variables_and_saved_request_updates(doc: &mut AutoCommit) {
         let entry = HistoryEntry {
             id: Uuid::from_u128(7),
             method: HttpMethod::Patch,
@@ -1395,50 +1534,50 @@ mod tests {
             when: "just now".into(),
         };
         apply(
-            &mut doc,
+            doc,
             &ApiTesterAction::RecordHistory {
                 entry: entry.clone(),
             },
         );
         apply(
-            &mut doc,
+            doc,
             &ApiTesterAction::OpenHistory {
                 history_id: entry.id.to_string(),
             },
         );
-        let request = state(&doc).request;
+        let request = state(doc).request;
         assert_eq!(
             (request.method, request.url.as_str()),
             (HttpMethod::Patch, entry.url.as_str())
         );
 
         // A variable rename keeps its value in its own field.
-        let environment = environment_id(&doc);
-        let variable = variable_id(&doc);
+        let environment = environment_id(doc);
+        let variable = variable_id(doc);
         apply(
-            &mut doc,
+            doc,
             &rename_variable_action(environment, variable, "api_url"),
         );
-        let renamed = &state(&doc).environments[0].variables[0];
+        let renamed = &state(doc).environments[0].variables[0];
         assert_eq!(renamed.key, "api_url");
         assert_eq!(renamed.value, "https://api.example.com");
 
         // Saving a request whose id exists edits it in place.
-        let mut edited = request_of(&doc);
+        let mut edited = request_of(doc);
         edited.method = HttpMethod::Put;
-        let collection = collection_id(&doc);
-        apply(&mut doc, &save_request_action(collection, edited));
-        let requests = &state(&doc).collections[0].requests;
+        let collection = collection_id(doc);
+        apply(doc, &save_request_action(collection, edited));
+        let requests = &state(doc).collections[0].requests;
         assert_eq!(requests.len(), 1, "same id replaces, not appends");
         assert_eq!(requests[0].method, HttpMethod::Put);
 
         // The current request is saved under a new id and the given name.
         let id = Uuid::from_u128(9);
         apply(
-            &mut doc,
+            doc,
             &save_current_request_action(collection, id, "Saved copy"),
         );
-        let saved = state(&doc).collections[0]
+        let saved = state(doc).collections[0]
             .requests
             .iter()
             .find(|request| request.id == id)
