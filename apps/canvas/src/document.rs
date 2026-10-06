@@ -49,7 +49,7 @@ pub struct Size {
 }
 
 /// The sizes offered, in units (a unit is a pixel at 1x export).
-pub const SIZES: [Size; 6] = [
+pub const SIZES: [Size; 9] = [
     Size {
         id: "screen",
         label: "canvas-size-screen",
@@ -92,6 +92,27 @@ pub const SIZES: [Size; 6] = [
         height: 1024.0,
         icon: Icon::Star,
     },
+    Size {
+        id: "pixel-32",
+        label: "canvas-size-pixel-32",
+        width: 32.0,
+        height: 32.0,
+        icon: Icon::Square,
+    },
+    Size {
+        id: "pixel-64",
+        label: "canvas-size-pixel-64",
+        width: 64.0,
+        height: 64.0,
+        icon: Icon::Square,
+    },
+    Size {
+        id: "pixel-128",
+        label: "canvas-size-pixel-128",
+        width: 128.0,
+        height: 128.0,
+        icon: Icon::Square,
+    },
 ];
 
 /// The size named `id`.
@@ -115,7 +136,7 @@ pub struct Start {
 }
 
 /// The grounds and media offered.
-pub const STARTS: [Start; 6] = [
+pub const STARTS: [Start; 7] = [
     Start {
         id: "paper",
         label: "canvas-start-paper",
@@ -158,6 +179,13 @@ pub const STARTS: [Start; 6] = [
         colour: "#1e2024", // document colour: a dark sheet for light work
         medium: "",
     },
+    Start {
+        id: "transparent",
+        label: "canvas-start-transparent",
+        texture: "smooth",
+        colour: "#ffffff00",
+        medium: "",
+    },
 ];
 
 /// The start named `id`.
@@ -174,6 +202,8 @@ pub fn start(id: &str) -> Option<Start> {
 pub struct FileLayer {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub medium: String,
     #[serde(default = "one")]
@@ -273,6 +303,7 @@ impl ArtworkFile {
                 .map(|layer| FileLayer {
                     id: layer.id.clone(),
                     name: layer.name.clone(),
+                    group: layer.group.clone(),
                     medium: layer.medium.clone(),
                     opacity: layer.opacity,
                     visible: layer.visible,

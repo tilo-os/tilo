@@ -122,6 +122,9 @@ impl<T> std::ops::Deref for Taught<T> {
 pub struct EditLayer {
     pub id: String,
     pub name: Option<String>,
+    /// Organisational folder name; empty removes the layer from its folder.
+    /// Consecutive members are presented together without changing stacking.
+    pub group: Option<String>,
     /// A medium id, or empty for plain vector art.
     pub medium: Option<String>,
     pub opacity: Option<f64>,
@@ -1865,6 +1868,7 @@ impl NewArtwork {
             ground: crate::model::Ground { texture, colour },
             layers: vec![FileLayer {
                 id: "layer-1".into(),
+                group: String::new(),
                 name,
                 medium,
                 opacity: 1.0,
@@ -1961,6 +1965,7 @@ fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), Act
             &Layer {
                 id: layer.id.clone(),
                 name: layer.name.clone(),
+                group: layer.group.clone(),
                 order: order.clone(),
                 medium: layer.medium.clone(),
                 opacity: layer.opacity.clamp(0.0, 1.0),
@@ -2179,6 +2184,16 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     })?;
     if let Some(name) = &edit.name {
         layer.name.clone_from(name);
+    }
+    if let Some(group) = &edit.group {
+        if layer.is_mask() {
+            return Err(refuse("a mask belongs to its layer’s folder"));
+        }
+        let group = group.trim();
+        if group.chars().count() > 80 {
+            return Err(refuse("a layer folder name must be at most 80 characters"));
+        }
+        layer.group = group.into();
     }
     if let Some(medium) = &edit.medium {
         check_medium(art, medium)?;
