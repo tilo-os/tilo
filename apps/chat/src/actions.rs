@@ -857,7 +857,17 @@ pub(crate) fn author() -> Option<String> {
     tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
         .map(|invoker| invoker.actor)
-        .filter(|author| !author.is_empty() && author.len() <= 128)
+        .filter(|author| {
+            // The broker's canonical Agent actor includes a namespace prefix;
+            // that prefix is not part of the bounded Agent identifier. This
+            // does not change ordinary authors or private ParticipantId keys.
+            author.strip_prefix("agent:").map_or_else(
+                || !author.is_empty() && author.len() <= 128,
+                |agent| {
+                    !agent.is_empty() && agent.len() <= 128 && !agent.chars().any(char::is_control)
+                },
+            )
+        })
 }
 
 /// [`author`], for a change that records who made it: refused without one.
@@ -2190,6 +2200,59 @@ mod tests {
             .is_err()
         );
         assert_eq!(doc.save(), saved, "a retry cannot append a second row");
+    }
+
+    #[test]
+    fn agent_reply_preserves_the_full_bounded_agent_identifier() {
+        let mut doc = seeded();
+        let agent = "a".repeat(128);
+        let mut request = agent_message(crate::model::AgentIntent::Message);
+        let ChatAction::PostAgentMessage {
+            agent: addressee, ..
+        } = &mut request
+        else {
+            panic!("fixture must be a direct message request");
+        };
+        *addressee = agent.clone();
+        let source = tilo_actions::InvocationId(uuid::Uuid::from_u128(28));
+        apply_as_with_source(&mut doc, model::ME, source, &request).unwrap();
+        let channel = ChatDoc::agent_conversation_channel_id("ws_acme", &agent);
+        let actor = format!("agent:{agent}");
+        let reply = reply_agent_message_action(
+            &channel,
+            &agent_request_message_id(source),
+            "agent-boundary-reply",
+            TS + 1,
+            "Reply from the exact addressed Agent.",
+        );
+        apply_as(&mut doc, &actor, &reply).unwrap();
+        let messages = ChatDoc::list_messages(&doc, &channel);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].author, actor);
+        assert_eq!(
+            messages[1].parent.as_deref(),
+            Some(agent_request_message_id(source).as_str())
+        );
+    }
+
+    #[test]
+    fn agent_reply_boundary_does_not_expand_person_or_agent_id_limits() {
+        let (mut doc, channel, parent) = direct_message_doc();
+        let reply = reply_agent_message_action(&channel, &parent, "boundary-denied", TS, "no");
+        let saved = doc.save();
+        // A bounded but differently addressed author is accepted as an actor,
+        // not as authority to reply to this conversation.
+        apply_as(&mut doc, &"p".repeat(128), &reply).unwrap();
+        assert_eq!(doc.save(), saved);
+        for actor in [
+            "p".repeat(129),
+            format!("agent:{}", "a".repeat(129)),
+            "agent:".into(),
+            "agent:bad\nidentity".into(),
+        ] {
+            assert!(apply_as(&mut doc, &actor, &reply).is_err());
+            assert_eq!(doc.save(), saved);
+        }
     }
 
     #[test]
