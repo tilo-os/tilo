@@ -569,6 +569,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
     else if(op=="credential_action") {CredentialCommand(d);}
+    else if(op=="text_input") {
+      if(!visible_ && d->GetString("action")!="cancel_text_input") {
+        auto fields=CefDictionaryValue::Create();fields->SetInt("request_id",d->GetInt("request_id"));
+        fields->SetBool("ok",false);fields->SetString("code","unavailable");
+        fields->SetString("message","The browser view is hidden");Event("text_input_result",fields);
+      } else page_automation_->Request(d);
+    }
     else if(op=="page") {
       // Whatever an agent reads or does next, its logs start here.
       const auto action=d->GetString("action").ToString();
@@ -1192,6 +1199,19 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("origin",VTYPE_STRING) || d->GetString("origin").length()>8192)return false;
     if(op=="site_status")return true;
     const auto action=d->GetString("action");return number("generation") && tilo::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
+  }
+  if(op=="text_input") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
+    const auto action=d->GetString("action").ToString();
+    if(action!="prepare_text_input" && action!="commit_text_input" && action!="cancel_text_input")return false;
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="action" && key!="lease" && key!="text")return false;
+    if(action!="prepare_text_input") {
+      if(!type("lease",VTYPE_STRING))return false;
+      const auto lease=d->GetString("lease").ToString();
+      if(lease.size()!=32 || !std::all_of(lease.begin(),lease.end(),[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');}))return false;
+    }
+    return action!="commit_text_input" || (type("text",VTYPE_STRING) && !d->GetString("text").empty() && d->GetString("text").ToString().size()<=4096);
   }
   if(op=="page") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
