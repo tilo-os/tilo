@@ -429,7 +429,10 @@ The mounted run exposed two real gaps: the CLI omitted `resource.html` and
 `resource.css` from its browser release closure, and standalone Chat mounting
 rejected the canonical package-primary existing record. Both are corrected.
 Native catalogue requests now use the page's existing certified actions peer,
-with late replies fenced by mount lifetime and connection identity. Native Copy
+with late replies fenced by mount lifetime and connection identity. Catalogue
+and media polling share the retained component request collector: neither can
+steal the other's queued command, and closed owners lose their queued commands.
+Native tests exercise both poll orders and owner retirement. Native Copy
 reports the browser's actual synchronous clipboard result; no clipboard fallback
 pretends a denied write succeeded.
 

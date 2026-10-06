@@ -1675,28 +1675,13 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
 }
 
 /// Native catalogue requests, answered by the page's existing certified peer.
-/// Other native collaboration commands remain their host's responsibility.
+/// Shares the retained request collector with the local media lane.
 /// # Errors
 /// Refuses closed mounts or unencodable requests.
 #[wasm_bindgen]
 pub fn component_catalogue_requests(id: u64) -> Result<String, JsValue> {
     with_mount(id, |m| {
-        let requests: Vec<_> = m
-            .frame
-            .take_collaboration_requests()
-            .into_iter()
-            .filter_map(|request| match request {
-                ui::collaboration::CollabRequest::RemoteAction { message }
-                    if matches!(
-                        message,
-                        tilo_actions::remote::RemoteActionMessage::CatalogueRequest { .. }
-                    ) =>
-                {
-                    Some(message)
-                }
-                _ => None,
-            })
-            .collect();
+        let requests = m.media.take_catalogue_requests(&mut m.frame);
         serde_json::to_string(&requests).map_err(error)
     })
 }
