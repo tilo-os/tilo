@@ -75,6 +75,34 @@ pub struct AgentActionMarker {
     pub pulse: f64,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct PaintedAgentMarker {
+    invocation: InvocationId,
+    viewport: Rect,
+    bounds: Rect,
+}
+
+/// A navigation hint from drawn presence, not a caller or execution lease.
+/// Hosts must resolve the current Agent's Chat through their ordinary
+/// authenticated user-navigation door before opening it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentMarkerTarget {
+    pub actor: UserId,
+    pub agent_id: String,
+    pub invocation: InvocationId,
+    pub bounds: Rect,
+}
+
+/// Pointer hit against drawn Agent cursors only, never the action's control.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentMarkerHit {
+    Miss,
+    /// Consume the gesture: stale presence must not activate content beneath.
+    Stale,
+    /// Multiple targets require a choice rather than arbitrary attribution.
+    Targets(Vec<AgentMarkerTarget>),
+}
+
 /// Geometry of one generic fallback card. Public so app hosts and tests can
 /// reserve the same non-overlapping activity rail without copying constants.
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +114,67 @@ pub struct InteractionCardPlacement {
 }
 
 impl PresenceCtx {
+    /// Retire a surface's previous hit regions before drawing its next frame,
+    /// including empty frames. Also call this when that surface is destroyed.
+    /// Pointer/caret presence and motion continuity remain untouched.
+    pub fn clear_agent_marker_surface(&mut self, surface: &str) {
+        self.painted_agent_markers.remove(surface);
+    }
+
+    /// Hit-test the last drawn marker in the caller's logical coordinate space.
+    /// No geometry is inferred from an action or a pointer presence update.
+    /// The current complete broker roster must still authenticate each target.
+    pub fn hit_agent_marker(
+        &self,
+        surface: &str,
+        viewport: Rect,
+        point: Point,
+        now: Instant,
+    ) -> AgentMarkerHit {
+        if !valid_marker_rect(viewport)
+            || !point.x.is_finite()
+            || !point.y.is_finite()
+            || !point_in_rect(viewport, point)
+        {
+            return AgentMarkerHit::Miss;
+        }
+        let Some(markers) = self.painted_agent_markers.get(surface) else {
+            return AgentMarkerHit::Miss;
+        };
+        let mut touched = false;
+        let mut targets = Vec::new();
+        for (actor, marker) in markers {
+            if !point_in_rect(marker.bounds, point) {
+                continue;
+            }
+            touched = true;
+            let Some(agent) = self.authenticated_agent_id(actor) else {
+                continue;
+            };
+            if marker.viewport != viewport
+                || self
+                    .newest_agent_entry(&actor.0, now)
+                    .is_none_or(|entry| entry.interaction.invocation != marker.invocation)
+            {
+                continue;
+            }
+            targets.push(AgentMarkerTarget {
+                actor: actor.clone(),
+                agent_id: agent.into(),
+                invocation: marker.invocation,
+                bounds: marker.bounds,
+            });
+        }
+        targets.sort_by(|left, right| left.actor.0.cmp(&right.actor.0));
+        if !targets.is_empty() {
+            AgentMarkerHit::Targets(targets)
+        } else if touched {
+            AgentMarkerHit::Stale
+        } else {
+            AgentMarkerHit::Miss
+        }
+    }
+
     pub(super) fn remove_interactions_for_actor(&mut self, actor_id: &str) {
         self.interactions
             .retain(|_, entry| entry.interaction.actor.id != actor_id);
@@ -384,6 +473,17 @@ impl PresenceCtx {
         };
         let actor_color = super::render::color_for(self, &user, paint.theme);
         draw_agent_marker_geometry(paint, &marker, actor_color, viewport);
+        self.painted_agent_markers
+            .entry(surface.to_owned())
+            .or_default()
+            .insert(
+                user.clone(),
+                PaintedAgentMarker {
+                    invocation: interaction.invocation,
+                    viewport,
+                    bounds: agent_marker_bounds(marker.tip, viewport),
+                },
+            );
         self.interaction_markers.insert(
             user,
             AgentMarkerContinuity {
@@ -824,20 +924,7 @@ fn draw_agent_marker_geometry(
 
     // A conventional pointer silhouette communicates approach, while the
     // attached shared agent tile makes it unmistakably semantic presence.
-    let tip = marker.tip;
-    let direction_x = if tip.x + 22.0 > viewport.x1 {
-        -1.0
-    } else {
-        1.0
-    };
-    let direction_y = if tip.y + 20.0 > viewport.y1 {
-        -1.0
-    } else {
-        1.0
-    };
-    let transform = paint.transform
-        * Affine::translate((tip.x, tip.y))
-        * Affine::scale_non_uniform(direction_x, direction_y);
+    let transform = paint.transform * agent_marker_transform(marker.tip, viewport);
     let mut cursor = BezPath::new();
     cursor.move_to((0.0, 0.0));
     cursor.line_to((2.2, 17.0));
@@ -865,6 +952,28 @@ fn draw_agent_marker_geometry(
         paint.theme,
         crate::agent_identity::AgentIdentityStyle::Solid,
     );
+}
+
+fn agent_marker_transform(tip: Point, viewport: Rect) -> Affine {
+    let direction_x = if tip.x + 22.0 > viewport.x1 {
+        -1.0
+    } else {
+        1.0
+    };
+    let direction_y = if tip.y + 20.0 > viewport.y1 {
+        -1.0
+    } else {
+        1.0
+    };
+    Affine::translate((tip.x, tip.y)) * Affine::scale_non_uniform(direction_x, direction_y)
+}
+
+fn agent_marker_bounds(tip: Point, viewport: Rect) -> Rect {
+    // Cursor stroke is 1.25 px; the identity tile ends at x=21. The phase
+    // pulse is intentionally not a click target over neighbouring content.
+    agent_marker_transform(tip, viewport)
+        .transform_rect_bbox(Rect::new(-0.625, -0.625, 21.625, 19.625))
+        .intersect(viewport)
 }
 
 fn sort_entries(entries: &mut [&InteractionPresenceEntry]) {
@@ -1002,6 +1111,245 @@ mod tests {
             surface,
             now,
         )
+    }
+
+    fn admit_agents(presence: &mut PresenceCtx, agents: &[&str]) {
+        let mut roster = vec![crate::collaboration::Collaborator {
+            id: "person:viewer".into(),
+            name: "Viewer".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }];
+        roster.extend(
+            agents
+                .iter()
+                .map(|agent| crate::collaboration::Collaborator {
+                    id: format!("agent:{agent}"),
+                    name: (*agent).into(),
+                    colour: None,
+                    is_agent: true,
+                    is_self: false,
+                }),
+        );
+        presence.apply_collaboration_snapshot(&roster);
+    }
+
+    fn canonical_interaction(id: u128, agent: &str) -> SemanticInteraction {
+        let mut value = interaction(id, 1, InteractionPhase::Applying);
+        value.actor.id = format!("agent:{agent}");
+        value
+    }
+
+    #[test]
+    fn marker_hit_uses_only_drawn_geometry_and_current_authenticated_actor() {
+        let now = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        admit_agents(&mut presence, &["quill"]);
+        let action = canonical_interaction(31, "quill");
+        presence.apply_interaction_at(action.clone(), now).unwrap();
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let locus = Rect::new(200.0, 100.0, 320.0, 140.0);
+        assert_eq!(
+            presence.hit_agent_marker("canvas", viewport, locus.center(), now),
+            AgentMarkerHit::Miss
+        );
+        let mut theme = Theme::light();
+        theme.reduce_motion = true;
+        let marker = paint_marker(
+            &mut presence,
+            &action,
+            locus,
+            viewport,
+            "canvas",
+            now,
+            &theme,
+        )
+        .unwrap();
+        let bounds = agent_marker_bounds(marker.tip, viewport);
+        let hit = presence.hit_agent_marker("canvas", viewport, bounds.center(), now);
+        assert_eq!(
+            hit,
+            AgentMarkerHit::Targets(vec![AgentMarkerTarget {
+                actor: UserId("agent:quill".into()),
+                agent_id: "quill".into(),
+                invocation: action.invocation,
+                bounds,
+            }])
+        );
+        assert!(bounds.width() < 24.0 && bounds.height() < 24.0);
+        assert_eq!(
+            presence.hit_agent_marker("canvas", viewport, locus.center(), now),
+            AgentMarkerHit::Miss
+        );
+        assert_eq!(
+            presence.hit_agent_marker("other-canvas", viewport, bounds.center(), now),
+            AgentMarkerHit::Miss
+        );
+        assert_eq!(
+            presence.hit_agent_marker("canvas", viewport, Point::new(f64::NAN, 1.0), now),
+            AgentMarkerHit::Miss
+        );
+        assert_eq!(
+            presence.hit_agent_marker(
+                "canvas",
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+                bounds.center(),
+                now
+            ),
+            AgentMarkerHit::Stale
+        );
+    }
+
+    #[test]
+    fn marker_hit_refuses_fixture_kind_or_prefix_without_complete_room_context() {
+        let now = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        let action = canonical_interaction(32, "quill");
+        presence.apply_interaction_at(action.clone(), now).unwrap();
+        presence.apply_collaboration_snapshot(&[crate::collaboration::Collaborator {
+            id: "agent:quill".into(),
+            name: "Quill".into(),
+            colour: None,
+            is_agent: true,
+            is_self: false,
+        }]);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let marker = paint_marker(
+            &mut presence,
+            &action,
+            Rect::new(100.0, 100.0, 180.0, 130.0),
+            viewport,
+            "canvas",
+            now,
+            &Theme::light(),
+        )
+        .unwrap();
+        let point = agent_marker_bounds(marker.tip, viewport).center();
+        assert_eq!(
+            presence.hit_agent_marker("canvas", viewport, point, now),
+            AgentMarkerHit::Stale
+        );
+        admit_agents(&mut presence, &["quill"]);
+        assert!(matches!(
+            presence.hit_agent_marker("canvas", viewport, point, now),
+            AgentMarkerHit::Targets(_)
+        ));
+        admit_agents(&mut presence, &[]);
+        assert_eq!(
+            presence.hit_agent_marker("canvas", viewport, point, now),
+            AgentMarkerHit::Stale
+        );
+    }
+
+    #[test]
+    fn marker_hit_keeps_expired_pixels_inert_until_the_surface_repaints() {
+        let now = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        admit_agents(&mut presence, &["quill"]);
+        let action = canonical_interaction(33, "quill");
+        presence.apply_interaction_at(action.clone(), now).unwrap();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let marker = paint_marker(
+            &mut presence,
+            &action,
+            Rect::new(100.0, 100.0, 180.0, 130.0),
+            viewport,
+            "canvas",
+            now,
+            &Theme::light(),
+        )
+        .unwrap();
+        let point = agent_marker_bounds(marker.tip, viewport).center();
+        let expired = now + ACTIVE_INTERACTION_EXPIRY + Duration::from_secs(1);
+        assert!(presence.prune_interactions(expired));
+        assert_eq!(
+            presence.hit_agent_marker("canvas", viewport, point, expired),
+            AgentMarkerHit::Stale
+        );
+        presence.clear_agent_marker_surface("canvas");
+        assert_eq!(
+            presence.hit_agent_marker("canvas", viewport, point, expired),
+            AgentMarkerHit::Miss
+        );
+    }
+
+    #[test]
+    fn marker_hit_does_not_choose_arbitrarily_between_overlapping_agents() {
+        let now = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        admit_agents(&mut presence, &["reed", "quill"]);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let locus = Rect::new(100.0, 100.0, 180.0, 130.0);
+        let mut theme = Theme::light();
+        theme.reduce_motion = true;
+        for (id, agent) in [(34, "reed"), (35, "quill")] {
+            let action = canonical_interaction(id, agent);
+            presence.apply_interaction_at(action.clone(), now).unwrap();
+            paint_marker(
+                &mut presence,
+                &action,
+                locus,
+                viewport,
+                "canvas",
+                now,
+                &theme,
+            )
+            .unwrap();
+        }
+        let bounds = presence.painted_agent_markers["canvas"][&UserId("agent:quill".into())].bounds;
+        let AgentMarkerHit::Targets(targets) =
+            presence.hit_agent_marker("canvas", viewport, bounds.center(), now)
+        else {
+            panic!("both painted Agents must be offered")
+        };
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            ["quill", "reed"]
+        );
+    }
+
+    #[test]
+    fn marker_hit_rechecks_latest_invocation_without_mutating_pointer_or_caret() {
+        let now = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        admit_agents(&mut presence, &["quill"]);
+        let user = UserId("agent:quill".into());
+        let scope = super::super::PresenceKey::Workspace { id: "room".into() };
+        presence.set_pointer(&scope, user.clone(), (20.0, 30.0));
+        presence.set_remote_caret(user.0.clone(), scope.clone(), 42);
+        presence.set_remote_selection(user.0, scope, 3, 9);
+        let pointers = presence.pointers.clone();
+        let carets = presence.carets.clone();
+        let selections = presence.selections.clone();
+        let action = canonical_interaction(36, "quill");
+        presence.apply_interaction_at(action.clone(), now).unwrap();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let marker = paint_marker(
+            &mut presence,
+            &action,
+            Rect::new(100.0, 100.0, 180.0, 130.0),
+            viewport,
+            "canvas",
+            now,
+            &Theme::light(),
+        )
+        .unwrap();
+        let point = agent_marker_bounds(marker.tip, viewport).center();
+        let later = now + Duration::from_millis(1);
+        presence
+            .apply_interaction_at(canonical_interaction(37, "quill"), later)
+            .unwrap();
+        assert_eq!(
+            presence.hit_agent_marker("canvas", viewport, point, later),
+            AgentMarkerHit::Stale
+        );
+        assert_eq!(presence.pointers, pointers);
+        assert_eq!(presence.carets, carets);
+        assert_eq!(presence.selections, selections);
     }
 
     #[test]

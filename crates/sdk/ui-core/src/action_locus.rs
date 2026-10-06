@@ -12,6 +12,7 @@ pub(crate) fn draw_action_presence(
     surface: &str,
     now: crate::time::Instant,
 ) {
+    presence.clear_agent_marker_surface(surface);
     let mut resolved = Vec::new();
     for interaction in presence.visible_interactions(now) {
         let Some(bounds) = interaction_bounds(tree, bindings, &interaction) else {

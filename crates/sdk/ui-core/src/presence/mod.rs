@@ -9,8 +9,8 @@ mod key;
 mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
-    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement,
-    TERMINAL_INTERACTION_DWELL,
+    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, AgentMarkerHit, AgentMarkerTarget,
+    InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 /// Shared with the other widgets that frame a label in fixed-pixel insets
@@ -492,6 +492,10 @@ pub struct PresenceCtx {
     /// Last marker tip actually painted for each agent. This is local visual
     /// continuity only: it never enters pointer presence or action state.
     interaction_markers: HashMap<UserId, interaction::AgentMarkerContinuity>,
+    /// Last draw's cursor hit regions per rendering surface. A removed or
+    /// expired actor remains inert until that surface is repainted, preventing
+    /// a click on still-visible presence from falling into the document.
+    painted_agent_markers: HashMap<String, HashMap<UserId, interaction::PaintedAgentMarker>>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
     /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
     /// Not serialised — purely a local render effect.

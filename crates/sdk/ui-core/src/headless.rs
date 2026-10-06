@@ -3139,6 +3139,7 @@ impl FrameHarness {
         }
         let interaction_now = crate::time::now();
         self.presence.prune_interactions(interaction_now);
+        self.presence.clear_agent_marker_surface("retained-primary");
         if self.presence.has_visible_interactions(interaction_now)
             && let Some((tree, bindings)) = self.retained_action_geometry()
         {
