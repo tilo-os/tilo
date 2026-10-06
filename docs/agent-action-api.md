@@ -172,6 +172,23 @@ revision returned by the owner. A saved direction is not yet applied, and a
 durable cancellation request is not a stopped Agent. Ordinary messages belong
 in the Agent's Chat conversation and do not create tasks.
 
+Pending tasks expose `read-pending-task`, `amend-pending` and `cancel-pending`
+on their existing `desktop:task:<task-id>` resource. The read returns the full
+instruction and an owner frontier `{status, run_epoch, revision}`. Supply that
+exact status and epoch, and `pending_revision: revision`, when changing it.
+Amendment additionally requires `title` and the complete replacement
+`instruction`; it retains the task's place in the queue. Cancellation accepts
+no replacement content. These verbs exist only for queued or waiting work with
+no active run, and the owner checks the frontier atomically with run admission.
+
+A stale edit must be reviewed against the new frontier; do not silently turn it
+into steering or repeat an uncertain invocation with a new UUID. A successful
+amendment is a historical saved receipt, not evidence that the task remains
+pending. Pending cancellation prevents future execution but does not undo
+effects from an earlier attempt. Replacing a waiting instruction supersedes its
+old effective guidance; prior command receipts and CRDT history remain intact.
+The original `read-task` and `read-current-tasks` response shapes are unchanged.
+
 ## Reading a terminal session
 
 For Terminal, `tilo-control read so.tilo.terminal --json` returns the shared

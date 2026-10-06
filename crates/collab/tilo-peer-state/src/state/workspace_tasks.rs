@@ -444,6 +444,66 @@ mod tests {
     }
 
     #[test]
+    fn pending_changes_recheck_current_person_write_authority() {
+        let (mut peer, governor, _, now) = peer();
+        let authority = WorkspaceTaskAuthority::Person { caller: governor };
+        let (_, result) = peer
+            .apply_workspace_task_command(
+                uuid::Uuid::from_u128(1),
+                [1; 32],
+                &authority,
+                &WorkspaceTaskCommand::Queue {
+                    title: "Original".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = result else {
+            panic!("queue result")
+        };
+        let frontier = tilo_desktop_model::WorkspaceTaskPendingFrontier {
+            status: WorkspaceTaskStatus::Queued,
+            run_epoch: 0,
+            revision: 0,
+        };
+        let restriction = CapOverride::new(
+            Subject::Role(Role::Owner),
+            Scope::Workspace,
+            collab_types::caps::Effect::Restrict,
+            Verb::Read,
+        )
+        .with_id("read-only-pending-owner");
+        peer.put_governed_capabilities(&[restriction], &SigningKey::from_bytes(&[2; 32]), now)
+            .unwrap();
+        let before = peer.durable().unwrap();
+        for command in [
+            WorkspaceTaskCommand::AmendPending {
+                task_id: task_id.clone(),
+                frontier,
+                title: "Denied replacement".into(),
+                instruction: "Must not change".into(),
+            },
+            WorkspaceTaskCommand::CancelPending { task_id, frontier },
+        ] {
+            assert_eq!(
+                peer.apply_workspace_task_command(
+                    uuid::Uuid::from_u128(2),
+                    [2; 32],
+                    &authority,
+                    &command,
+                    now
+                )
+                .unwrap_err(),
+                "workspace task person lacks write authority"
+            );
+            assert_eq!(peer.durable().unwrap(), before);
+        }
+    }
+
+    #[test]
     fn exact_primary_governor_may_supervise_but_another_primary_may_not() {
         let (mut peer, governor, other, now) = peer();
         assert!(!governor.capabilities.can_act_as_host);

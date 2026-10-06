@@ -14,7 +14,7 @@ use tilo_desktop_model::{
     WorkspaceTaskAuditEvent, WorkspaceTaskCancellationRequest, WorkspaceTaskControl,
     WorkspaceTaskDirection, WorkspaceTaskDirectionApplied, WorkspaceTaskExecution,
     WorkspaceTaskExecutionPhase, WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult,
-    WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTaskPendingFrontier, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 
 pub const TASK_CONTROL_KEY: &str = "task_control_v1";
@@ -163,6 +163,19 @@ pub enum WorkspaceTaskCommand {
         task_id: String,
         run_epoch: u64,
         after_revision: u64,
+    },
+    /// Replace a pending instruction without retargeting an admitted run.
+    /// Appended to preserve prior encoded command variant indices.
+    AmendPending {
+        task_id: String,
+        frontier: WorkspaceTaskPendingFrontier,
+        title: String,
+        instruction: String,
+    },
+    /// Cancel pending execution, not an active-run stop or undo of prior effects.
+    CancelPending {
+        task_id: String,
+        frontier: WorkspaceTaskPendingFrontier,
     },
 }
 
@@ -351,7 +364,102 @@ fn dispatch(
             (*run_epoch, *after_revision),
             context.now,
         ),
+        WorkspaceTaskCommand::AmendPending { .. } | WorkspaceTaskCommand::CancelPending { .. } => {
+            change_pending(tasks, controls, context, command)
+        }
     }
+}
+
+fn change_pending(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: author, .. } = context.actor else {
+        return Err("only a person may change pending work".into());
+    };
+    let (task_id, frontier, amendment) = match command {
+        WorkspaceTaskCommand::AmendPending {
+            task_id,
+            frontier,
+            title,
+            instruction,
+        } => {
+            let title = title.trim();
+            if title.is_empty() || title.chars().count() > MAX_TASK_TITLE_CHARS {
+                return Err("task title is empty or too long".into());
+            }
+            bounded(
+                instruction,
+                MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
+                "task instruction",
+            )?;
+            if instruction.chars().count() > MAX_TASK_INSTRUCTION_CHARS {
+                return Err("task instruction exceeds 8000 characters".into());
+            }
+            (task_id, frontier, Some((title, instruction)))
+        }
+        WorkspaceTaskCommand::CancelPending { task_id, frontier } => (task_id, frontier, None),
+        _ => return Err("command is not a pending task change".into()),
+    };
+    let task = task_mut(tasks, task_id)?;
+    let control = controls
+        .get_mut(task_id)
+        .ok_or("pending task has no execution control")?;
+    let current = WorkspaceTaskPendingFrontier {
+        status: task.status,
+        run_epoch: control.run_epoch,
+        revision: control.pending_revision,
+    };
+    if !matches!(
+        frontier.status,
+        WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
+    ) || control.active_run.is_some()
+        || *frontier != current
+    {
+        return Err(
+            "pending task changed; read its current frontier before submitting again".into(),
+        );
+    }
+    let revision = control
+        .pending_revision
+        .checked_add(1)
+        .ok_or("pending task revision exhausted")?;
+    let (summary, result) = if let Some((title, instruction)) = amendment {
+        title.clone_into(&mut task.title);
+        control.instruction = Some(instruction.clone());
+        control.instruction_required = true;
+        // These are effective guidance for the old instruction, not the
+        // historical ledger. A complete replacement must not reapply them
+        // after the person's newer instruction on the next run. Exact
+        // receipts, audit entries and prior CRDT versions remain intact.
+        control.directions.clear();
+        (
+            "Updated pending task",
+            WorkspaceTaskMutationResult::PendingAmended {
+                task_id: task_id.clone(),
+                revision,
+            },
+        )
+    } else {
+        task.status = WorkspaceTaskStatus::Cancelled;
+        (
+            "Cancelled pending task",
+            WorkspaceTaskMutationResult::PendingCancelled {
+                task_id: task_id.clone(),
+                revision,
+            },
+        )
+    };
+    control.pending_revision = revision;
+    task.updated_at = context.now;
+    task.audit.push(WorkspaceTaskAuditEvent {
+        at: context.now,
+        actor: author.clone(),
+        summary: summary.into(),
+    });
+    Ok((task_id.clone(), result))
 }
 
 fn dispatch_queue(
@@ -1327,6 +1435,373 @@ mod tests {
             command,
             i64::try_from(invocation).unwrap(),
         )
+    }
+
+    fn pending_task() -> (AutoCommit, String, WorkspaceTaskPendingFrontier) {
+        let mut doc = AutoCommit::new();
+        let queued = run(&mut doc, 1, 1, &person(), &queue_command()).unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
+            panic!("queue result")
+        };
+        (
+            doc,
+            task_id,
+            WorkspaceTaskPendingFrontier {
+                status: WorkspaceTaskStatus::Queued,
+                run_epoch: 0,
+                revision: 0,
+            },
+        )
+    }
+
+    #[test]
+    fn pending_amendment_preserves_queue_order_instruction_and_exact_replay() {
+        let (mut doc, task_id, frontier) = pending_task();
+        let ordinal = snapshot(&doc).unwrap().controls[&task_id].queue_ordinal;
+        let command = WorkspaceTaskCommand::AmendPending {
+            task_id: task_id.clone(),
+            frontier,
+            title: " Updated title ".into(),
+            instruction: "Full replacement\n  Preserve indentation and final newline.\n".into(),
+        };
+        let saved = run(&mut doc, 2, 2, &person(), &command).unwrap();
+        assert!(saved.changed);
+        assert_eq!(
+            saved.result,
+            WorkspaceTaskMutationResult::PendingAmended {
+                task_id: task_id.clone(),
+                revision: 1,
+            }
+        );
+        let state = snapshot(&doc).unwrap();
+        assert_eq!(state.tasks[0].title, "Updated title");
+        assert_eq!(state.tasks[0].status, WorkspaceTaskStatus::Queued);
+        assert_eq!(state.controls[&task_id].queue_ordinal, ordinal);
+        assert_eq!(
+            state.controls[&task_id].instruction.as_deref(),
+            Some("Full replacement\n  Preserve indentation and final newline.\n")
+        );
+        assert!(state.controls[&task_id].instruction_required);
+        run(
+            &mut doc,
+            3,
+            3,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id,
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+        let before = reopened.save();
+        let replay = run(&mut reopened, 2, 2, &person(), &command).unwrap();
+        assert!(!replay.changed);
+        assert_eq!(replay.result, saved.result);
+        assert_eq!(
+            reopened.save(),
+            before,
+            "historical Saved must not amend an active run"
+        );
+        assert!(run(&mut reopened, 2, 9, &person(), &command).is_err());
+        assert_eq!(reopened.save(), before);
+    }
+
+    #[test]
+    fn pending_cancel_is_definitive_and_loses_to_newer_instruction() {
+        let (mut doc, task_id, frontier) = pending_task();
+        run(
+            &mut doc,
+            2,
+            2,
+            &person(),
+            &WorkspaceTaskCommand::AmendPending {
+                task_id: task_id.clone(),
+                frontier,
+                title: "Updated".into(),
+                instruction: "Do this instead".into(),
+            },
+        )
+        .unwrap();
+        let before = doc.save();
+        assert!(
+            run(
+                &mut doc,
+                3,
+                3,
+                &person(),
+                &WorkspaceTaskCommand::CancelPending {
+                    task_id: task_id.clone(),
+                    frontier,
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(doc.save(), before);
+        let cancel = WorkspaceTaskCommand::CancelPending {
+            task_id: task_id.clone(),
+            frontier: WorkspaceTaskPendingFrontier {
+                revision: 1,
+                ..frontier
+            },
+        };
+        let saved = run(&mut doc, 4, 4, &person(), &cancel).unwrap();
+        assert_eq!(
+            saved.result,
+            WorkspaceTaskMutationResult::PendingCancelled {
+                task_id: task_id.clone(),
+                revision: 2,
+            }
+        );
+        let state = snapshot(&doc).unwrap();
+        assert_eq!(state.tasks[0].status, WorkspaceTaskStatus::Cancelled);
+        assert!(state.controls[&task_id].active_run.is_none());
+        assert!(
+            state.controls[&task_id].cancellation.is_none(),
+            "not an active-run stop request"
+        );
+        let before = doc.save();
+        assert!(
+            run(
+                &mut doc,
+                5,
+                5,
+                &host(),
+                &WorkspaceTaskCommand::StartRun {
+                    task_id,
+                    agent_id: "scribe".into(),
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(doc.save(), before);
+        let mut reopened = AutoCommit::load(&before).unwrap();
+        let replay = run(&mut reopened, 4, 4, &person(), &cancel).unwrap();
+        assert!(!replay.changed);
+        assert_eq!(replay.result, saved.result);
+    }
+
+    #[test]
+    fn pending_changes_lose_to_run_admission_waiting_and_retry() {
+        let (mut doc, task_id, frontier) = pending_task();
+        let amend = |frontier| WorkspaceTaskCommand::AmendPending {
+            task_id: task_id.clone(),
+            frontier,
+            title: "Replacement".into(),
+            instruction: "New instruction".into(),
+        };
+        run(
+            &mut doc,
+            2,
+            2,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        let before = doc.save();
+        for command in [
+            amend(frontier),
+            WorkspaceTaskCommand::CancelPending {
+                task_id: task_id.clone(),
+                frontier,
+            },
+        ] {
+            assert!(run(&mut doc, 3, 3, &person(), &command).is_err());
+            assert_eq!(doc.save(), before);
+        }
+        run(
+            &mut doc,
+            4,
+            4,
+            &agent(),
+            &WorkspaceTaskCommand::Finish {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                outcome: WorkspaceTaskFinish::Waiting,
+                summary: "Needs direction".into(),
+            },
+        )
+        .unwrap();
+        let before = doc.save();
+        assert!(run(&mut doc, 5, 5, &person(), &amend(frontier)).is_err());
+        assert_eq!(doc.save(), before);
+        let waiting = WorkspaceTaskPendingFrontier {
+            status: WorkspaceTaskStatus::Waiting,
+            run_epoch: 1,
+            revision: 0,
+        };
+        run(&mut doc, 6, 6, &person(), &amend(waiting)).unwrap();
+        run(
+            &mut doc,
+            7,
+            7,
+            &person(),
+            &WorkspaceTaskCommand::Retry {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+            },
+        )
+        .unwrap();
+        let before = doc.save();
+        assert!(
+            run(
+                &mut doc,
+                8,
+                8,
+                &person(),
+                &WorkspaceTaskCommand::CancelPending {
+                    task_id,
+                    frontier: WorkspaceTaskPendingFrontier {
+                        revision: 1,
+                        ..waiting
+                    },
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            doc.save(),
+            before,
+            "retry changes the exact observed pending state"
+        );
+    }
+
+    #[test]
+    fn pending_changes_reject_nonpeople_bounds_and_revision_overflow() {
+        let (mut doc, task_id, frontier) = pending_task();
+        let cancel = WorkspaceTaskCommand::CancelPending {
+            task_id: task_id.clone(),
+            frontier,
+        };
+        let before = doc.save();
+        for actor in [host(), agent()] {
+            assert!(run(&mut doc, 2, 2, &actor, &cancel).is_err());
+            assert_eq!(doc.save(), before);
+        }
+        for (title, instruction) in [
+            (" ".into(), "Instruction".into()),
+            ("x".repeat(241), "Instruction".into()),
+            ("Title".into(), " ".into()),
+            ("Title".into(), "x".repeat(8_001)),
+            ("Title".into(), "😀".repeat(8_193)),
+        ] {
+            assert!(
+                run(
+                    &mut doc,
+                    2,
+                    2,
+                    &person(),
+                    &WorkspaceTaskCommand::AmendPending {
+                        task_id: task_id.clone(),
+                        frontier,
+                        title,
+                        instruction,
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(doc.save(), before);
+        }
+        let mut controls = controls_of(&doc).unwrap();
+        controls.get_mut(&task_id).unwrap().pending_revision = u64::MAX;
+        project_controls(&mut doc, &controls).unwrap();
+        doc.commit();
+        let before = doc.save();
+        assert!(
+            run(
+                &mut doc,
+                2,
+                2,
+                &person(),
+                &WorkspaceTaskCommand::CancelPending {
+                    task_id,
+                    frontier: WorkspaceTaskPendingFrontier {
+                        revision: u64::MAX,
+                        ..frontier
+                    },
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(doc.save(), before);
+    }
+
+    #[test]
+    fn pending_replacement_supersedes_old_guidance_without_rewriting_history() {
+        let (mut doc, task_id) = task_with_applied_direction();
+        run(
+            &mut doc,
+            5,
+            5,
+            &agent(),
+            &WorkspaceTaskCommand::Finish {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                outcome: WorkspaceTaskFinish::Waiting,
+                summary: "Needs new instructions".into(),
+            },
+        )
+        .unwrap();
+        let history = doc.get_heads();
+        let old_control = controls_of(&doc).unwrap()[&task_id].clone();
+        assert_eq!(old_control.directions.len(), 1);
+        run(
+            &mut doc,
+            6,
+            6,
+            &person(),
+            &WorkspaceTaskCommand::AmendPending {
+                task_id: task_id.clone(),
+                frontier: WorkspaceTaskPendingFrontier {
+                    status: WorkspaceTaskStatus::Waiting,
+                    run_epoch: 1,
+                    revision: 0,
+                },
+                title: "New plan".into(),
+                instruction: "Replace the old instruction and guidance".into(),
+            },
+        )
+        .unwrap();
+        let current = snapshot(&doc).unwrap();
+        assert!(current.controls[&task_id].directions.is_empty());
+        assert!(
+            current.controls[&task_id]
+                .receipts
+                .starts_with(&old_control.receipts)
+        );
+        let old_version = doc.fork_at(&history).unwrap();
+        assert_eq!(controls_of(&old_version).unwrap()[&task_id], old_control);
+        run(
+            &mut doc,
+            7,
+            7,
+            &person(),
+            &WorkspaceTaskCommand::Retry {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+            },
+        )
+        .unwrap();
+        run(
+            &mut doc,
+            8,
+            8,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        let next = snapshot(&doc).unwrap();
+        assert_eq!(
+            next.controls[&task_id].active_run.as_ref().unwrap().epoch,
+            2
+        );
+        assert!(next.controls[&task_id].directions.is_empty());
     }
 
     fn task_with_applied_direction() -> (AutoCommit, String) {

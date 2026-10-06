@@ -69,6 +69,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(control.run_epoch, 3);
+        assert_eq!(control.pending_revision, 0);
         assert!(control.instruction.is_none());
         assert!(!control.instruction_required);
     }
@@ -203,6 +204,18 @@ pub enum WorkspaceTaskMutationResult {
     Abandoned { task_id: String },
     ExecutionReported { task_id: String, sequence: u64 },
     CancellationRequested { task_id: String, epoch: u64 },
+    PendingAmended { task_id: String, revision: u64 },
+    PendingCancelled { task_id: String, revision: u64 },
+}
+
+/// The pending frontier a person actually observed. This is correlation, not
+/// authority; the owner checks it again under the same lock as run admission.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskPendingFrontier {
+    pub status: WorkspaceTaskStatus,
+    pub run_epoch: u64,
+    pub revision: u64,
 }
 
 /// Exact replay record for one owner-admitted task mutation.
@@ -222,6 +235,10 @@ pub struct WorkspaceTaskMutationReceipt {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceTaskControl {
     pub run_epoch: u64,
+    /// Revision of pending instruction edits, separate from active-run
+    /// directions. Legacy controls start at zero.
+    #[serde(default, skip_serializing_if = "pending_revision_is_zero")]
+    pub pending_revision: u64,
     /// Owner admission order of the last enqueue, independent of wall-clock
     /// time and random task identity. Missing marks a legacy queue entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -245,6 +262,14 @@ pub struct WorkspaceTaskControl {
     pub directions: Vec<WorkspaceTaskDirection>,
     #[serde(default)]
     pub receipts: Vec<WorkspaceTaskMutationReceipt>,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "Serde skip_serializing_if requires a callback borrowing the field"
+)]
+fn pending_revision_is_zero(revision: &u64) -> bool {
+    *revision == 0
 }
 
 /// Append-only, broker-authenticated record of an external side effect.

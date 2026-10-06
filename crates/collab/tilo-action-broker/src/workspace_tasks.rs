@@ -238,6 +238,9 @@ impl CapnpBrokerState {
         if envelope.action == "read-task" {
             return read_task(room, envelope, service);
         }
+        if envelope.action == "read-pending-task" {
+            return read_pending_task(room, envelope, service);
+        }
         let pending = self
             .pending_invocations
             .lock()
@@ -1491,6 +1494,45 @@ fn person_command(envelope: &InvocationEnvelope) -> Result<WorkspaceTaskCommand,
             after_revision: input.after_revision,
         });
     }
+    if let Some(task_id) = valid_task_target(envelope)
+        && matches!(envelope.action.as_str(), "amend-pending" | "cancel-pending")
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct PendingChange {
+            status: tilo_desktop_model::WorkspaceTaskStatus,
+            run_epoch: u64,
+            pending_revision: u64,
+            #[serde(default)]
+            title: Option<String>,
+            #[serde(default)]
+            instruction: Option<String>,
+        }
+        let input: PendingChange =
+            serde_json::from_str(encoded).map_err(|_| "invalid pending task change arguments")?;
+        let frontier = tilo_desktop_model::WorkspaceTaskPendingFrontier {
+            status: input.status,
+            run_epoch: input.run_epoch,
+            revision: input.pending_revision,
+        };
+        return if envelope.action == "amend-pending" {
+            Ok(WorkspaceTaskCommand::AmendPending {
+                task_id: task_id.into(),
+                frontier,
+                title: input.title.ok_or("pending amendment title missing")?,
+                instruction: input
+                    .instruction
+                    .ok_or("pending amendment instruction missing")?,
+            })
+        } else if input.title.is_some() || input.instruction.is_some() {
+            Err("pending cancellation accepts no replacement content".into())
+        } else {
+            Ok(WorkspaceTaskCommand::CancelPending {
+                task_id: task_id.into(),
+                frontier,
+            })
+        };
+    }
     Err("unknown person task command".into())
 }
 
@@ -1572,6 +1614,64 @@ fn read_task(
         "cancellation_requested": control
             .and_then(|control| control.cancellation.as_ref())
             .is_some_and(|request| active.is_some_and(|run| run.epoch == request.run_epoch)),
+    }))
+}
+
+fn read_pending_task(
+    room: &str,
+    envelope: &InvocationEnvelope,
+    service: &dyn crate::services::WorkspaceTasks,
+) -> Result<serde_json::Value, String> {
+    let task_id = valid_task_target(envelope).ok_or("pending task read target is invalid")?;
+    if envelope.argument.is_some() {
+        return Err("pending task read accepts no arguments".into());
+    }
+    let snapshot = checked_snapshot(service, room)?;
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or("task is absent from the current owner projection")?;
+    let control = snapshot
+        .controls
+        .get(task_id)
+        .ok_or("pending task has no owner control")?;
+    if !matches!(
+        task.status,
+        tilo_desktop_model::WorkspaceTaskStatus::Queued
+            | tilo_desktop_model::WorkspaceTaskStatus::Waiting
+    ) || control.active_run.is_some()
+    {
+        return Err("task is no longer pending".into());
+    }
+    if control.instruction_required && control.instruction.is_none() {
+        return Err("pending task instruction is unavailable".into());
+    }
+    let instruction = control
+        .instruction
+        .as_deref()
+        .or_else(|| {
+            task.resource
+                .as_ref()
+                .and_then(|resource| resource.agent_request.as_ref())
+                .map(|request| request.instruction.as_str())
+        })
+        .unwrap_or(&task.title);
+    if instruction.trim().is_empty()
+        || instruction.len() > tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES
+        || instruction.chars().count() > 8_000
+    {
+        return Err("pending task instruction is invalid or exceeds its bound".into());
+    }
+    Ok(serde_json::json!({
+        "generation": snapshot.generation,
+        "task_id": task.id,
+        "title": task.title,
+        "instruction": instruction,
+        "frontier": tilo_desktop_model::WorkspaceTaskPendingFrontier {
+            status: task.status, run_epoch: control.run_epoch, revision: control.pending_revision,
+        },
+        "queue_ordinal": control.queue_ordinal,
     }))
 }
 
@@ -1671,6 +1771,22 @@ fn task_actions(
     let mut actions = vec![current_tasks_action(), queue_action(), start_agent_action()];
     for task in tasks {
         actions.push(task_read_action(task));
+        if matches!(
+            task.status,
+            tilo_desktop_model::WorkspaceTaskStatus::Queued
+                | tilo_desktop_model::WorkspaceTaskStatus::Waiting
+        ) && controls
+            .get(&task.id)
+            .is_some_and(|control| control.active_run.is_none())
+        {
+            let mut read = task_read_action(task);
+            read.action = "read-pending-task".into();
+            read.action_label = "Read pending task".into();
+            read.description =
+                Some("Read the exact pending instruction and edit/cancel frontier".into());
+            actions.push(read);
+            actions.extend(pending_change_actions(task));
+        }
         let active = controls
             .get(&task.id)
             .filter(|control| control.active_run.is_some() && control.cancellation.is_none());
@@ -1721,6 +1837,56 @@ fn task_actions(
         }
     }
     actions
+}
+
+fn pending_change_actions(task: &tilo_desktop_model::WorkspaceTask) -> [PublishedAction; 2] {
+    let frontier = vec![
+        tilo_actions::ActionParam::required(
+            "status",
+            tilo_actions::ParamType::Text,
+            "Exact queued or waiting status returned by read-task",
+        ),
+        tilo_actions::ActionParam::required(
+            "run_epoch",
+            tilo_actions::ParamType::Integer,
+            "Run epoch returned by read-task",
+        ),
+        tilo_actions::ActionParam::required(
+            "pending_revision",
+            tilo_actions::ParamType::Integer,
+            "Pending instruction revision returned by read-task",
+        ),
+    ];
+    let mut amendment = frontier.clone();
+    amendment.extend([
+        tilo_actions::ActionParam::required(
+            "title",
+            tilo_actions::ParamType::Text,
+            "Replacement short task title",
+        ),
+        tilo_actions::ActionParam::required(
+            "instruction",
+            tilo_actions::ParamType::Text,
+            "Complete replacement pending instruction (up to 32 KiB and 8000 characters)",
+        ),
+    ]);
+    let resource = format!("{TASK_PREFIX}{}", task.id);
+    [
+        effect_action(
+            &resource,
+            "amend-pending",
+            &task.title,
+            "Edit pending task",
+            amendment,
+        ),
+        effect_action(
+            &resource,
+            "cancel-pending",
+            &task.title,
+            "Cancel pending task",
+            frontier,
+        ),
+    ]
 }
 
 fn startup_agent(envelope: &InvocationEnvelope) -> Result<String, String> {
@@ -2168,6 +2334,286 @@ mod tests {
             arguments[field] = serde_json::json!("forged");
             assert!(person_command(&envelope(COLLECTION, "queue", Some(arguments))).is_err());
         }
+    }
+
+    #[test]
+    fn pending_commands_require_exact_frontier_and_reject_authority_or_extra_content() {
+        let resource = format!("{TASK_PREFIX}task:pending");
+        let arguments = serde_json::json!({
+            "status": "queued", "run_epoch": 0, "pending_revision": 3,
+            "title": "New title", "instruction": "Complete\n  replacement\n",
+        });
+        let command = person_command(&envelope(
+            &resource,
+            "amend-pending",
+            Some(arguments.clone()),
+        ))
+        .unwrap();
+        let WorkspaceTaskCommand::AmendPending {
+            task_id,
+            frontier,
+            instruction,
+            ..
+        } = command
+        else {
+            panic!("pending amendment")
+        };
+        assert_eq!(task_id, "task:pending");
+        assert_eq!(frontier.revision, 3);
+        assert_eq!(frontier.run_epoch, 0);
+        assert_eq!(
+            frontier.status,
+            tilo_desktop_model::WorkspaceTaskStatus::Queued
+        );
+        assert_eq!(instruction, "Complete\n  replacement\n");
+        for field in [
+            "status",
+            "run_epoch",
+            "pending_revision",
+            "title",
+            "instruction",
+        ] {
+            let mut incomplete = arguments.clone();
+            incomplete.as_object_mut().unwrap().remove(field);
+            assert!(
+                person_command(&envelope(&resource, "amend-pending", Some(incomplete))).is_err()
+            );
+        }
+        for field in [
+            "caller",
+            "authority",
+            "certificate",
+            "room",
+            "invocation",
+            "assigned_agent",
+        ] {
+            let mut extra = arguments.clone();
+            extra[field] = serde_json::json!("must not confer authority");
+            assert!(person_command(&envelope(&resource, "amend-pending", Some(extra))).is_err());
+        }
+        assert!(person_command(&envelope(&resource, "cancel-pending", Some(arguments))).is_err());
+        assert!(matches!(
+            person_command(&envelope(
+                &resource,
+                "cancel-pending",
+                Some(serde_json::json!({
+                    "status": "waiting", "run_epoch": 7, "pending_revision": 3,
+                }))
+            ))
+            .unwrap(),
+            WorkspaceTaskCommand::CancelPending { .. }
+        ));
+    }
+
+    #[test]
+    fn pending_reader_fails_closed_for_missing_or_unbounded_instructions() {
+        let room = "room-pending";
+        let task = task("task:pending", "scribe");
+        let read = envelope(
+            &format!("{TASK_PREFIX}{}", task.id),
+            "read-pending-task",
+            None,
+        );
+        for instruction in [
+            None,
+            Some(" ".into()),
+            Some("x".repeat(8_001)),
+            Some("x".repeat(tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES + 1)),
+        ] {
+            let service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
+                room: room.into(),
+                generation: 1,
+                tasks: vec![task.clone()],
+                controls: std::collections::BTreeMap::from([(
+                    task.id.clone(),
+                    tilo_desktop_model::WorkspaceTaskControl {
+                        instruction_required: true,
+                        instruction,
+                        ..Default::default()
+                    },
+                )]),
+            });
+            assert!(read_pending_task(room, &read, &service).is_err());
+        }
+        let service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
+            room: room.into(),
+            generation: 1,
+            tasks: vec![task.clone()],
+            controls: std::collections::BTreeMap::from([(
+                task.id.clone(),
+                tilo_desktop_model::WorkspaceTaskControl::default(),
+            )]),
+        });
+        assert_eq!(
+            read_pending_task(room, &read, &service).unwrap()["instruction"],
+            task.title,
+            "only explicitly legacy title-only work may use its title as instruction"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_pending_amendment_delivers_replacement_and_loses_to_admission() {
+        let NativeRunFixture {
+            _directory,
+            service,
+            state,
+            mut receiver,
+            caller,
+        } = native_run_fixture();
+        let room = tilo_joined_room::testing::ROOM;
+        let task_id = queue_native_task(service.as_ref(), room, caller.clone()).await;
+        let resource = format!("{TASK_PREFIX}{task_id}");
+        let read = read_pending_task(
+            room,
+            &envelope(&resource, "read-pending-task", None),
+            service.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(read["instruction"], "Line one.\n\nKeep all details.");
+        assert_eq!(read["frontier"]["revision"], 0);
+        let command = person_command(&envelope(
+            &resource,
+            "amend-pending",
+            Some(serde_json::json!({
+                "status": read["frontier"]["status"], "run_epoch": read["frontier"]["run_epoch"],
+                "pending_revision": read["frontier"]["revision"],
+                "title": "Replacement", "instruction": "Exact replacement\n  with every detail.\n",
+            })),
+        ))
+        .unwrap();
+        commit_person_command(service.as_ref(), room, command, 401, caller.clone()).await;
+        let amended = read_pending_task(
+            room,
+            &envelope(&resource, "read-pending-task", None),
+            service.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(amended["frontier"]["revision"], 1);
+        assert_eq!(amended["queue_ordinal"], read["queue_ordinal"]);
+        assert_eq!(amended["title"], "Replacement");
+        let snapshot = service.snapshot(room).unwrap();
+        assert!(
+            task_actions(&snapshot.tasks, &snapshot.controls)
+                .iter()
+                .any(|action| action.resource == resource && action.action == "amend-pending")
+        );
+        state
+            .dispatch_queued_workspace_task(room, "scribe")
+            .await
+            .unwrap()
+            .unwrap();
+        let delivered = receiver.try_recv().unwrap();
+        assert_eq!(
+            delivered.instruction.as_deref(),
+            Some("Exact replacement\n  with every detail.\n")
+        );
+        let cancel = person_command(&envelope(
+            &resource,
+            "cancel-pending",
+            Some(serde_json::json!({
+                "status": "queued", "run_epoch": 0, "pending_revision": 1,
+            })),
+        ))
+        .unwrap();
+        let request = OwnerCommitRequest {
+            room: room.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation: uuid::Uuid::from_u128(402),
+                authority: WorkspaceTaskAuthority::Person { caller },
+                command: cancel,
+            },
+        };
+        assert!(service.execute(request).await.is_err());
+        let current = service.snapshot(room).unwrap();
+        assert_eq!(
+            current.tasks[0].status,
+            tilo_desktop_model::WorkspaceTaskStatus::InProgress
+        );
+        assert!(!task_actions(&current.tasks, &current.controls).iter().any(
+            |action| action.resource == resource
+                && matches!(
+                    action.action.as_str(),
+                    "amend-pending" | "cancel-pending" | "read-pending-task"
+                )
+        ));
+        assert!(
+            read_pending_task(
+                room,
+                &envelope(&resource, "read-pending-task", None),
+                service.as_ref()
+            )
+            .is_err()
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "refused cancellation cannot dispatch another run"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_pending_cancellation_prevents_dispatch_and_replays_exact_receipt() {
+        let NativeRunFixture {
+            _directory,
+            service,
+            state,
+            mut receiver,
+            caller,
+        } = native_run_fixture();
+        let room = tilo_joined_room::testing::ROOM;
+        let task_id = queue_native_task(service.as_ref(), room, caller.clone()).await;
+        let resource = format!("{TASK_PREFIX}{task_id}");
+        let command = person_command(&envelope(
+            &resource,
+            "cancel-pending",
+            Some(serde_json::json!({
+                "status": "queued", "run_epoch": 0, "pending_revision": 0,
+            })),
+        ))
+        .unwrap();
+        let request = OwnerCommitRequest {
+            room: room.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation: uuid::Uuid::from_u128(501),
+                authority: WorkspaceTaskAuthority::Person { caller },
+                command,
+            },
+        };
+        service
+            .execute(request.clone())
+            .await
+            .unwrap()
+            .validate_for(&request)
+            .unwrap();
+        service
+            .execute(request.clone())
+            .await
+            .unwrap()
+            .validate_for(&request)
+            .unwrap();
+        let snapshot = service.snapshot(room).unwrap();
+        assert_eq!(
+            snapshot.tasks[0].status,
+            tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+        );
+        let control = &snapshot.controls[&task_id];
+        assert!(control.cancellation.is_none());
+        assert_eq!(control.pending_revision, 1);
+        assert_eq!(
+            control
+                .receipts
+                .iter()
+                .filter(|receipt| receipt.invocation == uuid::Uuid::from_u128(501))
+                .count(),
+            1
+        );
+        assert!(
+            state
+                .dispatch_queued_workspace_task(room, "scribe")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
