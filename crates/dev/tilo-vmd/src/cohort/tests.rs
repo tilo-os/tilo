@@ -105,7 +105,7 @@ fn package(layer: &Path, work: &Path, version: &str, foreign: bool) -> Installed
     let isa = if std::env::consts::ARCH == "aarch64" {
         "aarch64 = \"aarch64\""
     } else {
-        "x86_64 = \"v1\""
+        "x86_64 = \"baseline\""
     };
     let source = format!(
         r#"
