@@ -718,7 +718,8 @@ impl AgentTaskFrontiers {
                 route: task.route,
             });
         }
-        pending_tasks.sort_by(|left, right| left.task_id.cmp(&right.task_id));
+        // The owner supplies execution order. Opaque task IDs are identities,
+        // not queue positions, so preserve the authoritative projection.
         let mut frontiers = Vec::with_capacity(read.tasks.len());
         for task in read.tasks {
             if task.task_id.is_empty()
@@ -1139,7 +1140,7 @@ fn task_read(
     if read.generation == 0
         || read.task_id.is_empty()
         || read.title.trim().is_empty()
-        || read.route.is_empty()
+        || !valid_route(&read.route)
         || read.status != "in_progress"
         || read.assigned_agent.as_deref() != Some(agent)
         || read.active_agent.as_deref() != Some(agent)
@@ -1654,7 +1655,9 @@ mod tests {
         let mut zero_epoch = exact_task_at(2, "one", "Current task", "agent-a", 5, 5);
         zero_epoch["run_epoch"] = serde_json::json!(0);
         let applied_ahead = exact_task_at(2, "one", "Current task", "agent-a", 5, 6);
-        for malformed in [zero_epoch, applied_ahead] {
+        let mut unknown_route = exact_task_at(2, "one", "Current task", "agent-a", 5, 5);
+        unknown_route["route"] = serde_json::json!("unknown-owner-route");
+        for malformed in [zero_epoch, applied_ahead, unknown_route] {
             let host = Arc::new(FrontierHost::new(
                 vec![current_task("one", "Current task", "agent-a", 4, 4)],
                 [("one", vec![malformed])],
@@ -2066,6 +2069,31 @@ mod tests {
         assert!(!model.pending_tasks_complete());
         assert!(model.pending_tasks().is_empty());
         assert_eq!(model.discovery(), &AgentTaskDiscovery::Ready);
+    }
+
+    #[test]
+    fn pending_tasks_preserve_owner_execution_order_not_opaque_id_order() {
+        let host = Arc::new(FrontierHost::with_snapshots(vec![
+            current_snapshot_with_pending(
+                1,
+                Vec::new(),
+                true,
+                vec![
+                    pending_task("z-first", "First admitted", "agent-a", "queued"),
+                    pending_task("a-second", "Second admitted", "agent-a", "queued"),
+                ],
+            ),
+        ]));
+        let model = model(host, "room", "agent-a");
+        assert!(model.pending_tasks_complete());
+        assert_eq!(
+            model
+                .pending_tasks()
+                .iter()
+                .map(|task| task.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["z-first", "a-second"]
+        );
     }
 
     #[test]
