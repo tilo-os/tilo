@@ -359,7 +359,14 @@ fn install_session_settings() {
                     "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
                 ),
             }
-            settings_store::install_source(Some(session));
+            let source = match session.host_view() {
+                Ok(source) => source,
+                Err(error) => {
+                    tracing::warn!(%error, "settings read view unavailable; using synchronous records");
+                    session
+                }
+            };
+            settings_store::install_source(Some(source));
         }
         Err(error) => tracing::error!(
             %error,
