@@ -10996,6 +10996,7 @@ impl Widget for PhotosApp {
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        Widget::sync(&mut self.chrome.toolbar, doc, path);
         let (doc, _) = ui::doc::document_ref(doc, path);
         self.follow_cancellations();
         self.open_launched();

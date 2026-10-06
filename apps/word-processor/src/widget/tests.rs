@@ -702,6 +702,25 @@ fn toolbar_names(wp: &WordProcessorWidget) -> Vec<String> {
     names
 }
 
+/// Open the retained More control through its published native View door.
+/// Admission and the host's settlement precede all menu/isolation assertions.
+fn open_hosted_toolbar_overflow(framed: &mut Framed<WordProcessorWidget>) {
+    let driver = Framed::harness_mut(framed);
+    let resource = driver
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == "tilo.control" && resource.label == "More")
+        .expect("the retained More control publishes its actual native View");
+    let address = tilo_actions::ActionAddress::new(resource.id, "invoke");
+    driver
+        .invoke_action(&address, &serde_json::Map::new(), false, None)
+        .expect("the actual More View is admitted and settled by its host");
+    assert!(
+        framed.tool_bar.is_overflow_open(),
+        "the admitted More View opens its menu"
+    );
+}
+
 /// The commands the toolbar offers this frame, in order.
 fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
     wp.toolbar_entries()
@@ -910,7 +929,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             wp.tool_bar.has_overflow(),
             "narrow toolbar moves commands into More"
         );
-        wp.open_toolbar_overflow();
+        open_hosted_toolbar_overflow(&mut narrow);
+        let (wp, _) = Framed::split(&mut narrow);
         assert!(
             wp.tool_bar.is_overflow_open(),
             "the real More control opens its menu"
@@ -1490,7 +1510,8 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         assert!(wp.compact_swatch_palette.is_open());
         wp.compact_swatch_palette.close();
 
-        wp.open_toolbar_overflow();
+        open_hosted_toolbar_overflow(&mut framed);
+        let (wp, state) = Framed::split(&mut framed);
         assert!(wp.tool_bar.is_overflow_open());
         let names = toolbar_names(wp);
         for (action, key) in [
@@ -4065,9 +4086,15 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
             let style_count = wp.sheet.order().len();
             if style_menu {
                 wp.style_menu.open("body", Point::new(300.0, 300.0));
-            } else {
-                wp.open_toolbar_overflow();
             }
+            if !style_menu {
+                open_hosted_toolbar_overflow(&mut framed);
+            }
+            let (wp, state) = Framed::split(&mut framed);
+            assert!(
+                wp.style_menu.is_open() || wp.tool_bar.is_overflow_open(),
+                "the editing-key isolation subject is an actually open menu"
+            );
             press_named(wp, state, NamedKey::Backspace);
             assert_eq!(
                 first_block(wp, state).map(|b| b.text),
@@ -4136,7 +4163,7 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
             let mut framed = mount(state, wp, 520, 700);
             match menu_kind {
                 0 => framed.open_template_picker(),
-                1 => framed.open_toolbar_overflow(),
+                1 => open_hosted_toolbar_overflow(&mut framed),
                 _ => framed.style_menu.open("body", Point::new(300.0, 300.0)),
             }
             let driver = Framed::harness_mut(&mut framed);
