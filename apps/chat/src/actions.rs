@@ -410,7 +410,7 @@ fn apply_seed_workspace(
     let creator = signed_by()?;
     if uuid::Uuid::parse_str(workspace).is_err()
         || workspace_name.trim().is_empty()
-        || workspace_name.len() > 128
+        || workspace_name.len() > 256
         || creator_name.trim().is_empty()
         || creator_name.len() > 128
         || creator_initials.len() > 8
@@ -1824,6 +1824,27 @@ mod tests {
         assert_eq!(ChatDoc::list_users(&restored)[0].id, "person:ada");
         assert_eq!(ChatDoc::list_workspaces(&restored).len(), 1);
         assert!(ChatDoc::list_channels(&restored).is_empty());
+    }
+
+    #[test]
+    fn workspace_receipt_seed_accepts_the_hosts_full_name_limit() {
+        let mut action = ChatAction::SeedWorkspace {
+            workspace: "7585df07-168d-4eff-a975-8c86fca6acaf".into(),
+            workspace_name: "x".repeat(257),
+            creator_name: "Ada".into(),
+            creator_initials: "A".into(),
+            color_idx: 2,
+        };
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        apply_as(&mut doc, "person:ada", &action).expect_err("host rejects 257 bytes");
+        assert_eq!(doc.get_heads(), before);
+        if let ChatAction::SeedWorkspace { workspace_name, .. } = &mut action {
+            *workspace_name = "x".repeat(256);
+        }
+        apply_as(&mut doc, "person:ada", &action).unwrap();
+        assert_eq!(ChatDoc::list_workspaces(&doc)[0].name.len(), 256);
+        assert!(ChatDoc::list_channels(&doc).is_empty());
     }
 
     fn state(doc: &AutoCommit) -> ChatState {
