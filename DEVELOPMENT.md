@@ -289,6 +289,55 @@ For an actual installer VM cycle with an already prepared medium, continue using
 `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); for the disposable Fedora desktop
 development session use `dist/dev/fedora44-vm-iterate.sh`.
 
+For measured Rust edit feedback on the remote builder, run one scoped command:
+
+```sh
+python3 tools/rust_feedback.py check -p tilo-ui --lib
+python3 tools/rust_feedback.py test -p shell --test it --filter interaction_test::
+```
+
+This uses `$CARGO` (or `cargo`) and the committed lockfile. Choose a Cargo
+drop-in with `--cargo-command`; remote-only policy belongs to that command. The receipt under
+`target/rust-feedback/` records client elapsed time, first observed diagnostic
+and artifact, rebuilt/fresh Cargo units, source identity and actual test results.
+Checks use Cargo JSON; tests retain the project's runner (including nextest) and
+record its summary. A test filter matching no executed tests fails the feedback
+command. Missing Cargo messages fail a check. Raw output remains live and is not
+saved in receipts; ambient environment values and diagnostic contents are not collected.
+An existing receipt cannot be overwritten; use `--out <new-file>` to name one.
+
+Keep the same worktree, target, package/feature scope and compiler configuration
+for baseline/edit/repeat measurements. Source hashes include tracked edits and
+untracked files; a source change during the command invalidates its result.
+The timestamps include remote transport/buffering; the requested-package artifact
+is distinguished from earlier dependency artifacts. First artifact availability
+is not linking time or a passed test. Queue, link and per-run cache timings remain
+unknown when not observable. A remote builder's metrics supply shared contention and cache counters, not an
+isolated invocation's hit rate. Use Cargo's
+[`--timings`](https://doc.rust-lang.org/cargo/reference/timings.html) report for
+unit/concurrency inspection; its HTML is a human report, not a stable JSON API.
+
+Batch related small targets in one invocation instead of admitting each
+separately. Repeat `-p` or `--test`, and combine `--lib` with named integration
+targets to retain their union. For example:
+
+```sh
+python3 tools/rust_feedback.py test -p tilo-clock -p tilo-advisory-lock --lib --test lock
+```
+
+This keeps the same Cargo/test runner and selected tests while avoiding a second
+admission and client setup. It does not bypass admission or replace final
+integration checks. A larger feature/dependency union can cost more compilation,
+so batch related checks rather than the workspace.
+
+Start one heavy validation per task at a time. The builder owns admission; do
+not reserve slots or poll queued jobs. A fresh worktree's seed/sync cost can
+exceed a small leaf compile, so compare warm runs separately. A focused result
+is only feedback: retain affected-package integration checks and CI, and for
+shell changes finish with `$CARGO check --locked -p shell --tests`.
+[`cargo check`](https://doc.rust-lang.org/cargo/commands/cargo-check.html) omits
+code generation and can miss errors that appear in a test/build.
+
 For CI timing, use the repository run number from the Forgejo URL or `fgj actions
 run list`, not the Forgejo API's internal database ID:
 

@@ -2384,3 +2384,15 @@ search-action-axis-disable-subtitle = Die normale Fensternavigation für diese S
 search-action-axis-gather = Fokussiertes Fenster sichtbar machen
 search-action-axis-gather-subtitle = Experimentelle Achsennavigation: Fokus ohne Animation anzeigen
 axis-navigation-disabled = Die experimentelle Achsennavigation ist deaktiviert
+
+search-provider-device-shell = Shell dieses Geräts
+terminal-request-device-shell = Eigene Shell dieses Geräts anfordern
+terminal-device-shell-owner-required = Nur der Gerätebesitzer darf die eigene Shell dieses Geräts anfordern
+
+terminal-inspect-device-shell = Shell-Sitzung dieses Geräts prüfen
+terminal-run-device-shell = Befehl in der Shell dieses Geräts ausführen
+terminal-read-device-shell = Ausgabe der Shell dieses Geräts lesen
+
+terminal-device-shell-session-param = Genaue lokale Sitzungs-UUID aus der Sitzungsprüfung
+terminal-device-shell-command-param = Ein geprüfter Befehl in der Shell dieses Geräts
+terminal-device-shell-confirm-param = Diesen geprüften Vorgang in der Geräte-Shell bestätigen

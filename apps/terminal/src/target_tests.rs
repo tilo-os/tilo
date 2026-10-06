@@ -779,3 +779,199 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
         "refusal never retries the host session"
     );
 }
+
+#[test]
+fn trusted_shell_selection_enters_normal_permission_without_agent_identity_relabeling() {
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), |target| {
+        if target.is_host() {
+            Err(OpenError::NeedsAllow("not allowed".into()))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(app.harness().request_device_shell());
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::AwaitingAllow
+    );
+    let intent = app
+        .harness()
+        .take_host_intent()
+        .expect("ordinary host permission flow");
+    let ui::widget::AppHostIntent::AllowHostShell { reply } = intent else {
+        panic!("expected permission request");
+    };
+    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+    app.settle();
+    assert!(
+        !opened
+            .borrow()
+            .iter()
+            .any(|(target, by)| target.is_host() && *by == Requester::Agent)
+    );
+}
+
+#[test]
+fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused() {
+    use ui::floating_surface::DeviceShellOperation as O;
+    let allowed = Rc::new(std::cell::Cell::new(false));
+    let gate = allowed.clone();
+    let sessions = owner_fixture_sessions(gate);
+    let mut app = App::new().unwrap();
+    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+        .unwrap();
+    app.settle();
+    let mounted = mounted_device_shell_operation(&mut app, &O::Inspect);
+    assert_eq!(mounted["target"]["kind"], "environment");
+    let selected = app.harness().device_shell_operation(&O::Select).unwrap();
+    assert_eq!(selected["lifecycle"], "awaiting_allow");
+    let ui::widget::AppHostIntent::AllowHostShell { reply } =
+        app.harness().take_host_intent().unwrap()
+    else {
+        panic!("normal permission request");
+    };
+    allowed.set(true);
+    reply.upgrade().unwrap().borrow_mut().answer = Some(true);
+    app.settle();
+    let state = app.harness().device_shell_operation(&O::Inspect).unwrap();
+    assert_eq!(state["lifecycle"], "open");
+    let session = state["session"].as_str().unwrap().to_owned();
+    assert!(
+        app.harness()
+            .device_shell_operation(&O::Run {
+                session: uuid::Uuid::new_v4().to_string(),
+                command: "printf stale".into()
+            })
+            .is_err()
+    );
+    {
+        let _scope = ui::invocation_scope::InvokerScope::enter(
+            ui::tilo_actions::ActionInvoker::actor("agent:helper"),
+        );
+        let result = app
+            .with_surface(|terminal: &mut TerminalWidget| {
+                terminal.perform(crate::resource::TerminalEffect::Run {
+                    command: "printf forbidden".into(),
+                })
+            })
+            .unwrap();
+        assert!(result.is_err());
+    }
+    let submitted = app
+        .harness()
+        .device_shell_operation(&O::Run {
+            session: session.clone(),
+            command: "printf 'owner-pty-ok\\n'".into(),
+        })
+        .unwrap();
+    assert_eq!(submitted["status"], "submitted");
+    wait_for_owner_shell(&mut app, &session, false);
+    app.harness()
+        .device_shell_operation(&O::Run {
+            session: session.clone(),
+            command: "exit".into(),
+        })
+        .unwrap();
+    wait_for_owner_shell(&mut app, &session, true);
+    assert!(
+        app.harness()
+            .device_shell_operation(&O::Run {
+                session: session.clone(),
+                command: "printf ended".into()
+            })
+            .is_err()
+    );
+    let retained = app
+        .harness()
+        .device_shell_operation(&O::Read {
+            session: session.clone(),
+        })
+        .unwrap();
+    let mounted_retained = mounted_device_shell_operation(
+        &mut app,
+        &O::Read {
+            session: session.clone(),
+        },
+    );
+    assert_eq!(
+        mounted_retained, retained,
+        "mounted view reads the same actual ended PTY"
+    );
+    assert!(
+        retained["text"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .any(|line| line.trim() == "owner-pty-ok"),
+        "ended output must remain readable"
+    );
+    assert!(
+        app.harness()
+            .device_shell_operation(&O::Read {
+                session: uuid::Uuid::new_v4().to_string()
+            })
+            .is_err()
+    );
+}
+
+fn mounted_device_shell_operation(
+    app: &mut App,
+    operation: &ui::floating_surface::DeviceShellOperation,
+) -> serde_json::Value {
+    app.with_surface(|view: &mut crate::TerminalView| {
+        ui::AppWidget::device_shell_operation(view, operation)
+    })
+    .unwrap()
+    .unwrap()
+}
+
+fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {
+    use ui::floating_surface::DeviceShellOperation as O;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        app.settle();
+        let observed = if ended {
+            app.harness().device_shell_operation(&O::Inspect).unwrap()["transport_disconnected"]
+                == true
+        } else {
+            let output = app
+                .harness()
+                .device_shell_operation(&O::Read {
+                    session: session.into(),
+                })
+                .unwrap();
+            output["text"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .any(|line| line.trim() == "owner-pty-ok")
+        };
+        if observed {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual owner PTY output/exit did not arrive"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
+    Sessions::scripted(RecentTarget::none(), move |target, by, _| {
+        assert_eq!(by, Requester::Person);
+        if !target.is_host() {
+            return Err(OpenError::NoRuntime("fixture runtime absent".into()));
+        }
+        if !gate.get() {
+            return Err(OpenError::NeedsAllow(
+                "fixture owner consent required".into(),
+            ));
+        }
+        let mut command = portable_pty::CommandBuilder::new("/usr/bin/bash");
+        command.args(["--noprofile", "--norc", "-i"]);
+        crate::inner::TerminalBackend::with_command(command)
+            .map_err(|error| OpenError::Failed(error.to_string()))
+    })
+}
