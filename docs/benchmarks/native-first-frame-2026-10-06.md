@@ -78,6 +78,9 @@ compositor. Its existing host-applications action registers wrapper ancestry;
 the wrapper's child enters the normal native launcher sandbox. The wrapper
 itself is a host launch and is accurately logged as unconfined. The measured
 payload's launcher logs confirm Landlock FullyEnforced and restricted networking.
+The compositor uses its normal services in the private profile; its peer-sync
+broker was enabled. No peer connection or invite actions were issued. The
+net-off statement applies to the confined payload, not the host compositor.
 This is not a signed package installation benchmark. A raw sandbox client
 launched outside registered ancestry was rejected by the compositor; that
 security check remains intact. There are no enrollment or capability-grant

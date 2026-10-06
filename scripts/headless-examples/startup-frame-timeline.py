@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure a native SDK test payload through the production sandbox launcher.
 
-No app installation, identity enrollment, file grants or network access. The
+No app installation, identity enrollment, file grants or app networking. The
 headless developer fixture is separate from an ordinary first-login OS session.
 Foreign-frame observation is not physical display or device-to-photon latency.
 """
