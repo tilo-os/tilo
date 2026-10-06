@@ -73,6 +73,7 @@ fn subject(root: &Path) {
     // presentation without making the protected backing mountpoint mutable.
     fs::set_permissions(app.join("opt"), fs::Permissions::from_mode(0o775)).unwrap();
     overlay(&image, &boot); // Bootc-like base: filesystem depth one.
+    mount(None, &boot, None, libc::MS_SHARED, None).unwrap();
     let global = format!(
         "lowerdir={}:{}",
         vm.join("usr").display(),
@@ -120,6 +121,7 @@ fn subject(root: &Path) {
     protected(&view.join("usr"));
     protected(&view.join("opt"));
     assert!(fs::write(view.join("usr/forbidden"), b"write").is_err());
+    refresh_shared_base(root, &boot, &views, &layers, &global);
     // A new generation replaces the fixed mount points without accumulating
     // overlays; removing the slot releases its active mounted views.
     prepare_from(&views, "proof", std::slice::from_ref(&vm), &boot).unwrap();
@@ -142,6 +144,57 @@ fn subject(root: &Path) {
     assert!(prepare_from(&views, "../outside", &layers, &boot).is_err());
 
     actual_apply(root, &boot, &vm);
+}
+
+fn refresh_shared_base(root: &Path, boot: &Path, views: &Path, layers: &[PathBuf], global: &str) {
+    // Reproduce an already-installed older daemon's shared base. Its
+    // migration must disconnect peers before removing propagated children.
+    let old_views = root.join("old-views");
+    directory(&old_views).unwrap();
+    let old_base = old_views.join("base");
+    directory(&old_base).unwrap();
+    mount(Some(boot), &old_base, None, libc::MS_BIND, None).unwrap();
+    mount(
+        None,
+        &old_base,
+        None,
+        libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NODEV,
+        None,
+    )
+    .unwrap();
+    // A normal global sysext refresh must not propagate into the retained
+    // boot root, even when the original boot mount belongs to a shared group.
+    unmount(&boot.join("usr")).unwrap();
+    mount(
+        Some(Path::new("overlay")),
+        &boot.join("usr"),
+        Some("overlay"),
+        libc::MS_RDONLY,
+        Some(global),
+    )
+    .unwrap();
+    assert!(
+        !mounted(&views.join("base/usr")).unwrap(),
+        "global sysext refresh must never overmount the retained base"
+    );
+    assert!(mounted(&old_base.join("usr")).unwrap());
+    let repaired = prepare_from(&old_views, "migrated", layers, boot).unwrap();
+    assert!(!mounted(&old_base.join("usr")).unwrap());
+    assert!(mounted(&boot.join("usr")).unwrap());
+    assert_eq!(
+        fs::read_to_string(boot.join("usr/winner")).unwrap(),
+        "vm-only"
+    );
+    assert_eq!(
+        fs::read_to_string(old_base.join("usr/winner")).unwrap(),
+        "base-only"
+    );
+    assert_eq!(
+        fs::read_to_string(repaired.join("usr/winner")).unwrap(),
+        "app-only"
+    );
+    protected(&repaired.join("usr"));
+    remove(&old_views, "migrated").unwrap();
 }
 
 fn actual_apply(root: &Path, boot: &Path, vm: &Path) {

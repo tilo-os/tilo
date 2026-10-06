@@ -13829,6 +13829,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-fs",
+ "tilo-keyboard-map",
  "tilo-media",
  "tilo-model-gateway",
  "tilo-net",
@@ -16783,6 +16784,15 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-keyboard-map"
+version = "0.1.0"
+dependencies = [
+ "tilo-winit",
+ "workspace-hack",
+ "xkbcommon",
 ]
 
 [[package]]

@@ -71,6 +71,8 @@ impl LayoutRuntime {
 )]
 pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
+    /// Focused native configuration only; no logical key, compose or press history.
+    pub(super) keyboard_layout: Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>,
     pub(super) interaction: crate::interaction::InteractionEnvironment,
     pub(super) platform: crate::platform::PlatformConventions,
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
@@ -87,6 +89,7 @@ impl InputRuntime {
     pub(super) fn new() -> Self {
         Self {
             modifiers: winit::event::Modifiers::default(),
+            keyboard_layout: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),

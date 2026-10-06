@@ -129,6 +129,8 @@ mod input_method_wire;
 mod interaction_test;
 #[path = "keyboard_focus_wire.rs"]
 mod keyboard_focus_wire;
+#[path = "keyboard_layout_wire.rs"]
+mod keyboard_layout_wire;
 #[path = "leak_probe.rs"]
 mod leak_probe;
 #[path = "legacy_window_between_devices.rs"]
