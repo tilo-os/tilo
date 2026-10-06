@@ -824,6 +824,22 @@ impl StoreApp {
     pub fn stage_scene(&mut self, scenario: Option<&str>) {
         match scenario {
             Some("detail") => self.focus_detail("so.tilo.notes"),
+            Some("flatpak-detail") => self.focus_detail("org.example.Chess"),
+            Some("flatpak-installed") => self.focus_detail("org.example.VLC"),
+            Some("search") => self.set_query("Notes".into()),
+            Some("paging") => self.catalog_page = 1,
+            Some("account-setup" | "account-remotes") => {
+                self.set_remotes(vec![crate::flathub_client::Remote {
+                    name: "flathub".into(),
+                    url: "https://dl.flathub.org/repo/".into(),
+                    title: "Flathub".into(),
+                    disabled: false,
+                    user_managed: false,
+                }]);
+                if scenario == Some("account-remotes") {
+                    self.show_remotes();
+                }
+            }
             Some("remotes") => {
                 self.show_remotes();
                 self.set_remotes(vec![crate::flathub_client::Remote {
@@ -4885,13 +4901,72 @@ mod tests {
         std::fs::write(directory.path().join("registries.toml"),
             "[[registry]]\nname = \"off\"\nbase_url = \"https://registry.invalid\"\nowner_pubkey_hex = \"ab\"\nenabled = false\n").unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
+        let runtime = directory.path().join("runtime");
+        std::fs::create_dir(&runtime).unwrap();
         environment
+            .set("XDG_RUNTIME_DIR", runtime)
             .set("TILO_STORE_CONFIG_DIR", directory.path())
             .set("TILO_STORE_CACHE_DIR", directory.path().join("cache"))
             .set("FLATHUB_API_BASE", "http://127.0.0.1:9")
             .set("TILO_STORE_HTTP_TIMEOUT", "1");
         let app = ui::framework::testing::TestApp::<crate::resource::StoreShell>::new().unwrap();
         (environment, directory, app)
+    }
+
+    #[test]
+    fn ordinary_owner_store_controls_and_optional_offscreen_review() {
+        let output = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
+        for (scenario, action) in [
+            ("wide", "Refresh"),
+            ("account-setup", "Use Flathub for my apps"),
+            ("account-remotes", "Use Flathub for my apps"),
+            ("remotes", "Browse apps"),
+            ("search", "Details"),
+            ("paging", "Previous"),
+            ("detail", "Open"),
+            ("flatpak-detail", "Install"),
+            ("flatpak-installed", "Open"),
+            ("error", "Refresh"),
+            ("offline", "Refresh"),
+        ] {
+            let (_environment, _directory, mut app) = inspected_store();
+            app.with_surface(|store: &mut StoreApp| {
+                store.worker = None;
+                store.images = None;
+                store.set_operation_error(None);
+                store.set_worker_busy(false);
+                store.show_capture_catalogue(crate::fixture::capture_catalog(Some(scenario)));
+                store.stage_scene(Some(scenario));
+            })
+            .unwrap();
+            for theme in ["light", "dark", "high-contrast"] {
+                app.harness().set_theme(Theme::named(theme).unwrap());
+                for (width, height) in [(1472, 920), (420, 860)] {
+                    app.harness().resize((width, height)).unwrap();
+                    let control = app
+                        .harness()
+                        .controls()
+                        .into_iter()
+                        .find(|control| control.name.as_deref() == Some(action))
+                        .unwrap_or_else(|| panic!("{scenario}: missing {action}"));
+                    assert!(
+                        !control.disabled,
+                        "{scenario}: the ordinary owner can use {action} at {width} in {theme}"
+                    );
+                    if let Some(directory) = &output {
+                        std::fs::create_dir_all(directory).unwrap();
+                        let name = format!("{theme}-{width}-{scenario}");
+                        app.harness()
+                            .render_window_png(&directory.join(format!("{name}.png")));
+                        std::fs::write(
+                            directory.join(format!("{name}.json")),
+                            app.harness().inspection_json().unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
     }
 
     #[test]
