@@ -31,6 +31,7 @@ pub(crate) mod broker_services;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
+mod certified_action_session;
 pub mod channel_encryption;
 pub mod channel_policy;
 pub mod chrome_state;
