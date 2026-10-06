@@ -3510,6 +3510,72 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() {
+        use ui::Widget;
+        use ui::a11y::Action;
+        use ui::headless::FrameHarness;
+        let (app, doc) = app_with_doc();
+        let mut state = ui::State::new();
+        assert!(state.adopt_doc(doc));
+        let mut driver = FrameHarness::for_root(state, app, (1800, 900), ui::Theme::dark());
+        let people = driver
+            .a11y_node_named("Show people or thread")
+            .expect("the actual Chat People control");
+        driver
+            .perform_a11y_action(people, &Action::Activate)
+            .unwrap();
+        assert!(
+            driver.wait_until(ui::time::Duration::from_secs(1), |driver| {
+                driver
+                    .root::<ChatApp>()
+                    .right_flap
+                    .resize_accessibility()
+                    .is_some()
+            })
+        );
+        let people = driver.a11y_node_named("Show people or thread").unwrap();
+        driver.perform_a11y_action(people, &Action::Focus).unwrap();
+        assert!(driver.root::<ChatApp>().keyboard_target.is_some());
+        let sidebar = driver.a11y_node_named("Resize sidebar").unwrap();
+        driver.perform_a11y_action(sidebar, &Action::Focus).unwrap();
+        assert!(driver.root::<ChatApp>().keyboard_target.is_none());
+        let inspector = driver.a11y_node_named("Resize inspector").unwrap();
+        driver
+            .perform_a11y_action(inspector, &Action::Focus)
+            .unwrap();
+        let root = driver.root::<ChatApp>();
+        assert!(!root.left_flap.resize_accessibility().unwrap().state.focused);
+        assert!(
+            root.right_flap
+                .resize_accessibility()
+                .unwrap()
+                .state
+                .focused
+        );
+
+        let children = root.accessibility().unwrap().children;
+        let left = children
+            .iter()
+            .position(|node| node.action_target.as_deref() == Some("sidebar-resize"))
+            .unwrap();
+        let right = children
+            .iter()
+            .position(|node| node.action_target.as_deref() == Some("inspector-resize"))
+            .unwrap();
+        let root = driver.root_mut::<ChatApp>();
+        assert!(root.focus_synthetic_accessibility(&[left]));
+        assert!(root.focus_synthetic_accessibility(&[right]));
+        assert!(!root.left_flap.resize_accessibility().unwrap().state.focused);
+        assert!(
+            root.right_flap
+                .resize_accessibility()
+                .unwrap()
+                .state
+                .focused
+        );
+    }
+
+    #[test]
     fn sidebar_resize_uses_the_live_host_pointer_and_semantic_routes() {
         use ui::Widget;
         use ui::headless::FrameHarness;
