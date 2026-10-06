@@ -71,6 +71,7 @@ fn envelope_for(
     // What history calls this step: what the value did, in its own words
     // ("Recolour 2 marks"), read before it applies, over the label of the
     // action it came through.
+    let id = ActionId::new();
     let context = context.map(|mut context| {
         if let Some(label) = action
             .history_label(doc)
@@ -84,9 +85,16 @@ fn envelope_for(
         Some(context) if change.is_content() => Some(context),
         Some(context) => Some(context.with_change(change)),
         None => (!change.is_content()).then(|| ActionContext::default().with_change(change)),
-    };
+    }
+    .map(|mut context| {
+        // This identity belongs to the actual fresh executor envelope, not
+        // an ambient/caller context. Include synthesized non-content context;
+        // leave truly absent content context absent. Replay never enters here.
+        context.executed_action = Some(id);
+        context
+    });
     ActionEnvelope {
-        id: ActionId::new(),
+        id,
         action: encoded,
         base_heads: base.iter().map(|h| h.0).collect(),
         timestamp: tilo_clock::unix_now_i64(),
