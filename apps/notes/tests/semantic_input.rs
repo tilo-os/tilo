@@ -38,6 +38,71 @@ fn perform(driver: &mut Driver, route: &(String, Option<String>), action: &Actio
 }
 
 #[test]
+fn native_accessibility_new_note_creates_an_editable_document() {
+    struct Surface(u32);
+    impl ui::app::AppSurface for Surface {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(self.0, 672)
+        }
+        fn request_redraw(&self) {}
+        fn set_cursor(&self, _: winit::window::CursorIcon) {}
+    }
+    for (width, index, count) in [(664, 0, 1), (1000, 0, 2), (1000, 1, 2)] {
+        let f = NotebookFixture::rich();
+        let component = component(&f, 21, ui::application::LaunchTarget::New);
+        let checkout = component.record().clone();
+        let mut app = ui::App::from_component(component, runner_inputs()).unwrap();
+        let mut scene = vello::Scene::new();
+        app.surface_frame(&Surface(width), &mut scene);
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+                .unwrap(),
+            0,
+            "the native notebook starts empty"
+        );
+        let controls: Vec<_> = app
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .into_iter()
+            .filter(|(_, node)| node.label() == Some("New note"))
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            controls.len(),
+            count,
+            "native window exposes the controls reachable at this width"
+        );
+        assert_eq!(
+            app.dispatch_a11y_action(controls[index], &Action::Activate),
+            None
+        );
+        for _ in 0..3 {
+            app.surface_frame(&Surface(width), &mut scene);
+        }
+        assert_eq!(
+            f.records
+                .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+                .unwrap(),
+            1
+        );
+        let tree = app.build_a11y_tree_update(1.0);
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Block text")
+                    && node.supports_action(ui::accesskit::Action::SetValue)),
+            "native activation must expose the editable body: {:?}",
+            tree.nodes
+        );
+        app.close_components();
+    }
+}
+
+#[test]
 fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     let f = NotebookFixture::rich();
     let component = component(&f, 11, ui::application::LaunchTarget::New);
