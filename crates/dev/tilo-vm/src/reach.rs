@@ -614,6 +614,7 @@ mod tests {
     struct SshProbe {
         stderr: &'static str,
         commands: Vec<CommandLine>,
+        interactive_called: bool,
     }
 
     impl Runner for SshProbe {
@@ -627,8 +628,12 @@ mod tests {
             })
         }
 
-        fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
-            panic!("reachability must never request interactive authentication")
+        fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+            self.interactive_called = true;
+            Err(CliError::ToolMissing {
+                tool: command.program.clone(),
+                purpose: "reachability must never request interactive authentication".into(),
+            })
         }
     }
 
@@ -644,6 +649,7 @@ mod tests {
         let mut runner = SshProbe {
             stderr: "",
             commands: Vec::new(),
+            interactive_called: false,
         };
         for _ in 0..10 {
             assert_eq!(
@@ -657,6 +663,7 @@ mod tests {
             );
         }
         assert_eq!(runner.commands.len(), 10);
+        assert!(!runner.interactive_called);
         for command in &runner.commands {
             let mut expected = crate::remote::ssh_transport(&endpoint, Some("/private/key"), false);
             for argument in &mut expected.args {
@@ -691,6 +698,7 @@ mod tests {
         let mut runner = SshProbe {
             stderr: "",
             commands: Vec::new(),
+            interactive_called: false,
         };
         for detail in [
             "Permission denied (publickey).",
