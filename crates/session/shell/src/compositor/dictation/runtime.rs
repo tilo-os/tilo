@@ -18,9 +18,13 @@ use super::super::audio_capture::AudioCapture;
 
 const START_WINDOW: Duration = Duration::from_secs(15);
 const RECORD_WINDOW: Duration = Duration::from_secs(105);
-const FINISH_WINDOW: Duration = Duration::from_secs(15);
+// Public CPU qualification takes about nineteen seconds for a seventy-second
+// automatic-language final. Keep capture off while a bounded slower pass finishes.
+const FINISH_WINDOW: Duration = Duration::from_secs(60);
 const DRAFT_INTERVAL: Duration = Duration::from_secs(1);
-const QUEUE_BYTES: usize = 256 * 1024;
+// A slow draft must not discard live speech. This covers the entire bounded
+// PCM16 session plus framing; it grows only as the owned worker backpressures.
+const QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REPLY: usize = 64 * 1024 + 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,8 +188,9 @@ impl Pipe {
     fn enqueue(&mut self, kind: RequestKind, payload: &[u8]) -> Result<(), RuntimeError> {
         let sequence = self.sequence.checked_add(1).ok_or(RuntimeError::Protocol)?;
         let mut frame = Zeroizing::new(Vec::new());
+        let encoded = Zeroizing::new(request(kind, sequence, payload));
         FRAME
-            .write(&mut *frame, &request(kind, sequence, payload))
+            .write(&mut *frame, &encoded)
             .map_err(|_| RuntimeError::Protocol)?;
         if self.queued.saturating_add(frame.len()) > QUEUE_BYTES {
             return Err(RuntimeError::AudioDiscontinuity);
@@ -230,9 +235,9 @@ impl Pipe {
         &mut self,
         input: &mut impl std::io::Read,
     ) -> Result<Option<SpeechReply>, RuntimeError> {
-        let mut chunk = [0_u8; 4096];
+        let mut chunk = Zeroizing::new([0_u8; 4096]);
         loop {
-            match input.read(&mut chunk) {
+            match input.read(&mut *chunk) {
                 Ok(0) => return Err(RuntimeError::Worker(SpeechError::WorkerStopped)),
                 Ok(n) => self
                     .incoming
@@ -385,7 +390,11 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
     let mut ready = false;
     let mut finishing = false;
     let mut deadline = later(START_WINDOW);
-    let session_end = later(RECORD_WINDOW.saturating_add(FINISH_WINDOW));
+    let session_end = later(
+        START_WINDOW
+            .saturating_add(RECORD_WINDOW)
+            .saturating_add(FINISH_WINDOW),
+    );
     let mut next_draft = later(DRAFT_INTERVAL);
     loop {
         if io.cancel.load(Ordering::Acquire) {
@@ -412,9 +421,11 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 if io.cancel.load(Ordering::Acquire) {
                     return Err(RuntimeError::Canceled);
                 }
-                deadline = session_end
-                    .checked_sub(FINISH_WINDOW)
-                    .unwrap_or_else(Instant::now);
+                deadline = later(RECORD_WINDOW).min(
+                    session_end
+                        .checked_sub(FINISH_WINDOW)
+                        .unwrap_or_else(Instant::now),
+                );
                 event(io.events, RuntimeEvent::Listening)?;
             }
             Ok(Control::Finish) if ready && !finishing => {
@@ -475,6 +486,13 @@ fn audio(pipe: &mut Pipe, capture: &mut AudioCapture) -> Result<(), RuntimeError
 }
 
 #[cfg(test)]
+pub(super) fn finishing_test_peer(pid: &std::path::Path) -> Runtime {
+    let peer = tests::peer("repeated", pid);
+    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    peer
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -498,20 +516,43 @@ def reply(value):
 k, s, b = read()
 assert k == 0 and s == 1 and json.loads(b)['language'] == 'en'
 reply(dict(kind='ready', sequence=2 if sys.argv[1] == 'replay' else s, model='fixture', revision='1'))
+if sys.argv[1] == 'backpressure':
+    total = 0
+    for index in range(60):
+        k, s, b = read()
+        assert k == 1 and s == index + 2
+        assert len(b) == 64000 and b == struct.pack('<h', index) * 32000
+        total += len(b)
+    k, s, b = read()
+    assert k == 3 and s == 62 and b == b''
+    reply(dict(kind='done', sequence=s, text=str(total)))
+    raise SystemExit(0)
 k, s, b = read()
 assert k == 3 and b == b''
 if sys.argv[1] == 'slow': time.sleep(60)
+if sys.argv[1] == 'delayed': time.sleep(18)
+if sys.argv[1] == 'repeated':
+    deadline = time.monotonic() + 10
+    while not os.path.exists(sys.argv[2] + '.release'):
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
 reply(dict(kind='done', sequence=s, text='unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
 ";
 
-    fn peer(mode: &str, pid: &std::path::Path) -> Runtime {
+    fn peer_command(mode: &str, pid: &std::path::Path) -> Command {
         let mut command = Command::new("python3");
         command.args(["-c", PEER, mode]);
         command.arg(pid);
-        Runtime::spawn(command, "en").unwrap()
+        command
     }
-    fn next(runtime: &Runtime) -> RuntimeEvent {
-        let deadline = later(Duration::from_secs(5));
+    pub(super) fn peer(mode: &str, pid: &std::path::Path) -> Runtime {
+        Runtime::spawn(peer_command(mode, pid), "en").unwrap()
+    }
+    pub(super) fn next(runtime: &Runtime) -> RuntimeEvent {
+        next_within(runtime, Duration::from_secs(5))
+    }
+    fn next_within(runtime: &Runtime, wait: Duration) -> RuntimeEvent {
+        let deadline = later(wait);
         loop {
             if let Some(event) = runtime.poll() {
                 return event;
@@ -519,6 +560,66 @@ reply(dict(kind='done', sequence=s, text='unsafe\n' if sys.argv[1] == 'control' 
             assert!(Instant::now() < deadline, "actor must report a result");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn actual_pipe_actor_keeps_a_slow_final_without_opening_a_microphone() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid = directory.path().join("delayed");
+        let mut runtime = peer("delayed", &pid);
+        assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+        runtime.finish().unwrap();
+        assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+        assert!(matches!(
+            next_within(&runtime, Duration::from_secs(30)),
+            RuntimeEvent::Done(text) if text == "Corrected 👋"
+        ));
+        reaped(&mut runtime, &pid);
+    }
+
+    #[test]
+    fn actual_private_pipe_preserves_bounded_audio_under_worker_backpressure() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid = directory.path().join("backpressure");
+        let mut command = peer_command("backpressure", &pid);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
+        bounded_command::own_process_tree(&mut command);
+        let mut child = Process(command.spawn().unwrap());
+        let mut output = child.0.stdin.take().unwrap();
+        let mut input = child.0.stdout.take().unwrap();
+        nonblocking(input.as_raw_fd()).unwrap();
+        nonblocking(output.as_raw_fd()).unwrap();
+        let mut pipe = Pipe::new();
+        pipe.enqueue(RequestKind::Configure, br#"{"language":"en"}"#)
+            .unwrap();
+        let deadline = later(Duration::from_secs(10));
+        loop {
+            pipe.flush(&mut output).unwrap();
+            if let Some(reply) = pipe.read(&mut input).unwrap() {
+                pipe.accept(&reply).unwrap();
+                assert!(matches!(reply, SpeechReply::Ready { .. }));
+                break;
+            }
+            assert!(Instant::now() < deadline, "private peer must become ready");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Queue before flushing so the actual OS pipe must backpressure it.
+        for index in 0_i16..60 {
+            let samples = index.to_le_bytes().repeat(32000);
+            pipe.enqueue(RequestKind::Audio, &samples).unwrap();
+        }
+        pipe.enqueue(RequestKind::Finish, &[]).unwrap();
+        loop {
+            pipe.flush(&mut output).unwrap();
+            if let Some(reply) = pipe.read(&mut input).unwrap() {
+                pipe.accept(&reply).unwrap();
+                assert!(matches!(reply, SpeechReply::Done { text, .. } if text == "3840000"));
+                break;
+            }
+            assert!(Instant::now() < deadline, "all bounded audio must arrive");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(child.0.wait().unwrap().success());
     }
     fn reaped(runtime: &mut Runtime, pid: &std::path::Path) {
         let deadline = later(Duration::from_secs(5));

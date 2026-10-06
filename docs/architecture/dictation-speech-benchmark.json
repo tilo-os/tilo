@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "date": "2026-10-06",
-  "production_decoder": "whisper.cpp 1.8.3, CPU greedy, two threads, unchanged parameters",
+  "production_decoder": "whisper.cpp 1.8.3 CPU greedy, two threads, best_of=1; weights loaded without state, input released before readiness; fresh decoder state per transcription",
   "limits": {
     "address_space_bytes": 1073741824,
     "audio_seconds": 120,
@@ -323,7 +323,7 @@
     "Public assets only; no microphone, installed model, production signing or account permissions.",
     "Bare decoder probes run after worker preparation and full confinement; signed-store/process/session journeys are separately tested.",
     "Final latency excludes cold loading and the end of capture; automatic language adds its detection pass.",
-    "Both tested models make significant errors and omit long English passages. Neither is approved as a Flow-quality default."
+    "All tested models still make significant errors. Small improves these public probes but is not evidence of Flow parity; long French omits its initial sentence and some drafts hallucinate words."
   ],
   "models": [
     {
@@ -526,7 +526,8 @@
           },
           "audio_seconds": 89.76
         }
-      }
+      },
+      "decoder": "Prior baseline: upstream best_of=5, same decoder state reused; not current post-fix qualification"
     },
     {
       "load": {
@@ -728,7 +729,218 @@
           },
           "audio_seconds": 89.76
         }
-      }
+      },
+      "decoder": "Prior baseline: upstream best_of=5, same decoder state reused; not current post-fix qualification"
+    },
+    {
+      "load": {
+        "model": "small-q5_1",
+        "load_ms": 2712,
+        "threads": 2,
+        "memory_limit_bytes": 1073741824,
+        "loaded_probes": 1,
+        "probes": 1,
+        "observed_primary_probes": 21,
+        "loads": 21,
+        "cold_load_ms": {
+          "median": 2748,
+          "max": 2787
+        }
+      },
+      "short": {
+        "en": {
+          "cases": 3,
+          "text_wer": 0.1096,
+          "auto_text_wer": 0.1096,
+          "text_cer": 0.0341,
+          "auto_text_cer": 0.0341,
+          "draft_prefix_revision_fraction": 0.0263,
+          "draft_ms": {
+            "median": 4264,
+            "max": 4295
+          },
+          "final_ms": {
+            "median": 4367,
+            "max": 4471
+          },
+          "auto_ms": {
+            "median": 8441,
+            "max": 8592
+          },
+          "audio_seconds": 30.78
+        },
+        "de": {
+          "cases": 3,
+          "text_wer": 0.0161,
+          "auto_text_wer": 0.0161,
+          "text_cer": 0.0058,
+          "auto_text_cer": 0.0058,
+          "draft_prefix_revision_fraction": 0.1364,
+          "draft_ms": {
+            "median": 4268,
+            "max": 4313
+          },
+          "final_ms": {
+            "median": 4482,
+            "max": 4554
+          },
+          "auto_ms": {
+            "median": 8594,
+            "max": 8707
+          },
+          "audio_seconds": 41.52
+        },
+        "fr": {
+          "cases": 3,
+          "text_wer": 0.0917,
+          "auto_text_wer": 0.0917,
+          "text_cer": 0.0402,
+          "auto_text_cer": 0.0402,
+          "draft_prefix_revision_fraction": 0.0526,
+          "draft_ms": {
+            "median": 4313,
+            "max": 4489
+          },
+          "final_ms": {
+            "median": 4532,
+            "max": 5138
+          },
+          "auto_ms": {
+            "median": 8602,
+            "max": 9139
+          },
+          "audio_seconds": 41.88
+        },
+        "es": {
+          "cases": 3,
+          "text_wer": 0.0294,
+          "auto_text_wer": 0.0294,
+          "text_cer": 0.0062,
+          "auto_text_cer": 0.0062,
+          "draft_prefix_revision_fraction": 0.0,
+          "draft_ms": {
+            "median": 4278,
+            "max": 4279
+          },
+          "final_ms": {
+            "median": 4533,
+            "max": 4787
+          },
+          "auto_ms": {
+            "median": 8617,
+            "max": 8895
+          },
+          "audio_seconds": 43.92
+        },
+        "ar": {
+          "cases": 3,
+          "text_wer": 0.3188,
+          "auto_text_wer": 0.3188,
+          "text_cer": 0.0973,
+          "auto_text_cer": 0.0973,
+          "draft_prefix_revision_fraction": 0.2,
+          "draft_ms": {
+            "median": 4552,
+            "max": 4561
+          },
+          "final_ms": {
+            "median": 4788,
+            "max": 4861
+          },
+          "auto_ms": {
+            "median": 8930,
+            "max": 8997
+          },
+          "audio_seconds": 38.34
+        },
+        "zh": {
+          "cases": 3,
+          "text_wer": 0.9474,
+          "auto_text_wer": 0.9474,
+          "text_cer": 0.1481,
+          "auto_text_cer": 0.1481,
+          "draft_prefix_revision_fraction": 0.5574,
+          "draft_ms": {
+            "median": 4287,
+            "max": 9753
+          },
+          "final_ms": {
+            "median": 4407,
+            "max": 4455
+          },
+          "auto_ms": {
+            "median": 8538,
+            "max": 8561
+          },
+          "audio_seconds": 32.52
+        }
+      },
+      "long": {
+        "en": {
+          "cases": 1,
+          "text_wer": 0.1731,
+          "auto_text_wer": 0.1731,
+          "text_cer": 0.1133,
+          "auto_text_cer": 0.1133,
+          "draft_prefix_revision_fraction": 0.0,
+          "draft_ms": {
+            "median": 4223,
+            "max": 4223
+          },
+          "final_ms": {
+            "median": 14934,
+            "max": 14934
+          },
+          "auto_ms": {
+            "median": 18944,
+            "max": 18944
+          },
+          "audio_seconds": 70.04
+        },
+        "fr": {
+          "cases": 1,
+          "text_wer": 0.2629,
+          "auto_text_wer": 0.2629,
+          "text_cer": 0.176,
+          "auto_text_cer": 0.176,
+          "draft_prefix_revision_fraction": 1.0,
+          "draft_ms": {
+            "median": 4293,
+            "max": 4293
+          },
+          "final_ms": {
+            "median": 20566,
+            "max": 20566
+          },
+          "auto_ms": {
+            "median": 24599,
+            "max": 24599
+          },
+          "audio_seconds": 87.66
+        },
+        "zh": {
+          "cases": 1,
+          "text_wer": 0.9412,
+          "auto_text_wer": 0.9412,
+          "text_cer": 0.149,
+          "auto_text_cer": 0.149,
+          "draft_prefix_revision_fraction": 0.5,
+          "draft_ms": {
+            "median": 4259,
+            "max": 4259
+          },
+          "final_ms": {
+            "median": 20737,
+            "max": 20737
+          },
+          "auto_ms": {
+            "median": 24749,
+            "max": 24749
+          },
+          "audio_seconds": 89.76
+        }
+      },
+      "decoder": "whisper.cpp 1.8.3 CPU greedy, two threads, best_of=1; weights loaded without state, input released before readiness; fresh decoder state per transcription"
     }
   ],
   "rejected_experiment": {
@@ -736,16 +948,19 @@
     "result": "Long English WER 55.13% versus 64.74%, but long French worsened to 63.36% versus 40.09% and Mandarin CER to 54.51% versus 42.75%; omissions remained. No production decoder change retained."
   },
   "stronger_model_probe": {
-    "name": "small-q5_1",
-    "size_bytes": 190085487,
+    "model": "small-q5_1",
     "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
-    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
-    "license": "MIT",
-    "result": "Verified input; GGML_ASSERT(ctx->mem_buffer != NULL) during native loading under unchanged 1 GiB RLIMIT_AS, before transcript probes. No accuracy or latency claim.",
-    "isolated_clip": {
-      "id": "en_us-0",
-      "audio_samples": 168960,
-      "result": "Same native allocation assertion before load with only one 10.56-second clip, ruling out bulk fixture preload as the cause."
+    "size_bytes": 190085487,
+    "result": "All 21 public probes pass under the unchanged 1 GiB cap after bounded loading, one fallback decoder, per-case process isolation, and fresh per-transcription decoder state. Each of the three long final calls was repeated exactly after auto recognition.",
+    "initial_failures": [
+      "Default eager state plus verified weight buffer exceeded cap even on one short clip.",
+      "Unrealistic all-fixture preload exceeded cap after deferred state initialization.",
+      "Default five-candidate fallback exceeded cap and the upstream -7 error freed state, leaving a dangling pointer until the wrapper was corrected.",
+      "Reused fallback RNG/caches changed repeated French final output until state was reset per call."
+    ],
+    "cold_load_ms": {
+      "median": 2748,
+      "max": 2787
     }
   },
   "loader_regression": {

@@ -179,6 +179,8 @@ pub(crate) enum LayerIntent {
     /// schedules.
     Repaint,
     Dictation(super::dictation_layer::Request),
+    /// Open the normal Settings launcher from a missing-model prompt.
+    DictationSetup,
 }
 
 /// What a layer may read and ask for while handling one event.

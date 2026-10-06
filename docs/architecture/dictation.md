@@ -64,7 +64,8 @@ is for the trusted local speech service; it is not an unprivileged socket operat
 - The native service tick checks liveness and drives the owned worker actor.
   Any invalidated target stops recording/inference; callers of the low-level
   insertion API remain responsible for their own capture lifecycle.
-- A request is bounded to 120 seconds and 16 KiB of draft UTF-8. A final
+- A request has a 180-second wall-clock bound, with up to 105 seconds of capture,
+  and 16 KiB of draft UTF-8. A final
   is limited to 4,000 UTF-8 bytes so one commit fits the standard Wayland
   4 KiB message buffer. Larger finals enter private recovery before sending any text; splitting
   would lose atomic selected-range replacement and undo. Native final delivery
@@ -83,7 +84,8 @@ is for the trusted local speech service; it is not an unprivileged socket operat
 - No transcripts, audio or surrounding-text strings are automatically logged or
   persisted. Explicit Copy uses the normal system clipboard and its history;
   discarding the private recovery does not erase an already exported copy.
-  Errors contain typed status only. Dropping a draft is not a secure memory wipe.
+  Errors contain typed status only. Private capture buffers, framed audio and
+  drafts use zeroizing owners; explicit insertion and Copy necessarily export text.
 
 The bounded Phonon event decoder handles partial replacement, consecutive final
 segments and a complete `done` result. Engine errors are mapped to a typed status
@@ -235,8 +237,8 @@ stamps now come from the shared host input contract described above.
 
 ## Remaining release and acceptance gates
 
-1. Approve the exact speech model, licence receipt and signed catalogue release
-   through the existing protected publisher. The review inputs are prepared;
+1. Produce and review the exact speech model, licence receipt and signed catalog
+   through the existing protected publisher. Candidate-review tooling is implemented;
    no protected signing, publication, trust change or model installation has run.
    A positive installed-worker CLI journey needs a non-root image session;
    the remote builder's root-only development override is deliberately refused.
@@ -245,14 +247,15 @@ stamps now come from the shared host input contract described above.
    document, Terminal and browser journeys with selected-range replacement and
    system undo. Current actor, worker-core and Wayland tests prove separate
    production boundaries, not a complete assembled microphone journey.
-3. Qualify recognition on public noisy and non-English recordings, and measure
-   an older CPU and Arm device. The current public JFK fixture and two-thread
-   CPU measurements are narrower evidence, not multilingual accuracy claims.
+3. Extend the public six-language read-speech qualification below to noisy
+   natural conversation, and measure an older CPU and Arm device. Three short
+   probes per language and artificial long splices remain narrow evidence.
 4. Inspect the complete local consent/status surface in light, dark, high
    contrast and enlarged text, and verify touch/switch access and screen-reader
    announcements. Toggle/finish/cancel work through shared controls; a hold
-   gesture, explicit language chooser, mic-source display and editable draft
-   review remain product extensions. No opaque LLM rewrite is implemented.
+   gesture, current mic-source display and editable draft review remain product
+   extensions. The shared language chooser and private live caption are implemented.
+   No opaque LLM rewrite is implemented.
 5. Confirm remote collaborators cannot activate local microphone consent through
    the existing input firewall and action authority boundaries. The production
    remote-input publisher now mutes shared-seat input while dictation controls
@@ -308,8 +311,8 @@ Neither journey proves multilingual accuracy or any live microphone flow.
 `dist/local-models/catalog-source-speech-candidate.json` and
 `tools/release/prepare_speech_catalog.py` prepare receipt-checked review inputs
 and the complete OpenAI MIT notice without signing, publishing, changing a trust
-key or activating the image catalogue. The protected publisher remains unchanged.
-Publication and normal image delivery require their separate approval.
+key or activating the image catalogue. The protected publisher has the explicit candidate-review mode described below.
+Publication and normal image delivery follow the existing protected release workflow.
 
 ## Compositor worker controller
 
@@ -317,13 +320,14 @@ The shell shares only bounded worker wire types through `agent-provider-config`;
 it does not link the decoder or its native build. An owned actor performs source
 probing, recording, pipe I/O and child cleanup away from the render thread. It
 executes only `/usr/bin/tilo-speech-worker`, uses private pipes and ordered framed
-messages, bounds pending audio to 256 KiB and replaces private hypotheses at most
+messages, bounds pending audio to 4 MiB and replaces private hypotheses at most
 once per second. Model readiness alone never starts recording: an explicit
 capture command follows the caller's local microphone decision and target check.
 Cancellation is checked before and after the bounded source probe. The compositor
 retains the busy actor until its capture and worker have actually been reaped;
-a successor cannot overlap them. Recording reserves 15 seconds for finalization
-inside the 120-second session budget. Lost audio, malformed/replayed replies,
+a successor cannot overlap them. The actor allows 15 seconds for startup,
+105 seconds of recording and 60 seconds for finalization inside the
+180-second session budget. Lost audio, malformed/replayed replies,
 timeouts and failed queues cancel insertion and return typed status only.
 
 Real private-pipe actor tests prove normal/canceled-busy/normal sessions, replay
@@ -349,71 +353,73 @@ supported vocabulary; no network recognizer, paid API or automatic licence
 acceptance is introduced.
 
 
-## Concrete speech release decision and staged provenance
+## Speech model candidates and protected release
 
-The selected review candidate is **Whisper tiny multilingual**, rather than the
-English-only `tiny.en`. This chooses the smallest unquantized multilingual
-baseline reviewed with the CPU worker; it is not yet an accuracy-qualified default.
+The candidate catalog keeps U²-Net unchanged and adds two MIT multilingual
+models at the same pinned revision: compact **Whisper tiny** (77,691,713 bytes)
+and **Whisper small-q5_1** (190,085,487 bytes). Small needs 2 GiB system memory;
+both workers retain the 1 GiB address-space cap and two CPU threads. Small
+improves the public probes below, while tiny remains a lighter short-dictation
+option. Neither result establishes everyday reliability or Flow parity.
 The [pinned upstream model card](https://huggingface.co/ggerganov/whisper.cpp/blob/5359861c739e955e79d9a303bcbc70fb988958b1/README.md)
-identifies converted OpenAI weights and MIT licensing. The complete upstream
-copyright and permission notice is preserved in `dist/local-models/whisper-tiny/LICENSE`.
+identifies converted OpenAI weights and MIT licensing. Both checked-in receipt
+directories retain the complete 1,063-byte upstream copyright and permission
+notice, SHA-256 `b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d`.
 No account, paid endpoint, extra runtime image or new trust identity is needed.
 
-The remote review directory `/tmp/tilo-dictation-review-ce8` contains:
+`tools/release/prepare_speech_catalog.py` accepts only the unchanged subject
+release and these two exact speech recipes: immutable URLs, exact byte counts,
+hashes, full notices, CPU capability and hardware requirements. It rejects
+insecure transport, altered receipts, excess bytes and overwriting. Its output
+is staging, not installation or permission to record.
 
-| File | Bytes | Verified SHA-256 |
-| --- | ---: | --- |
-| `ggml-tiny.bin` | 77,691,713 | `be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21` |
-| `LICENSE` | 1,063 | `b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d` |
-| `provenance.json` | 895 | `bd78051261f7c46309e4a52c8d3a8fdb6a31f6bd2c67e3fd17060c258b3b17e3` |
+The existing protected `release-local-model-catalog.yml` has two explicit modes:
 
-These are public review inputs under private directory permissions. The directory
-is temporary builder storage, not a release destination or an installed model.
-`tools/release/prepare_speech_catalog.py` prepares a complete review candidate
-with unchanged U²-Net inputs and the exact speech receipts. Its offline tests
-reject insecure transport, altered receipts, excess bytes and overwriting.
+1. `review-speech` stages public inputs without credentials, signs a candidate
+   with the existing `TILO_MODEL_CATALOG_SIGNING_KEY`, compares the resulting
+   public key with the installed image key, and uploads only signed catalog,
+   public key, declarative source and review hashes. It publishes no weights,
+   changes no installed image and needs no package token.
+2. Review those exact artifact bytes and commit the matching source and signed
+   image catalog through the normal protected PR path. A development key or
+   removal of the reproduction comparison cannot bootstrap a release.
+3. Default `publish` supports the prior U²-Net-only release or these exact three
+   models. It stages verified speech inputs, publishes weights and full MIT
+   notices using the existing `RELEASE_TOKEN`, and verifies anonymous readback
+   before signing. Authentication, rate-limit or server read failures never
+   become an upload; an existing receipt conflict fails without overwriting.
+   It reproduces the checked-in catalog and key bytes before catalog publication.
+4. The normal OS image lifecycle delivers that catalog; Settings' existing
+   license-acceptance and installation actions obtain a model. Installation
+   neither starts recognition nor grants microphone permission.
 
-After the candidate is qualified, the concrete release work is:
+Both modes run only from protected main with the existing release key id
+`tilo-local-model-release-2026-10`. Live microphone consent remains a separate
+local decision for each recording. The source candidate and workflow extension
+alone leave the currently installed catalog unchanged.
 
-1. Review `dist/local-models/catalog-source-speech-candidate.json`, the retained
-   MIT notice, model receipt, CPU source receipt and public-audio qualification.
-   Public multilingual results below are insufficient for approving this model
-   as an everyday dictation default; older-device timings also remain untested.
-2. Extend the existing protected `release-local-model-catalog.yml` allowlist to
-   these **two exact** models, retaining `runtimes: []`, empty chat recommendation,
-   immutable URLs, receipt checks and the existing trust key. General arbitrary
-   models, new keys and ambient executables are outside this change.
-3. Publish the weight and MIT notice to the pinned `whisper-tiny/<revision>`
-   Forgejo package URLs already declared by the candidate. Independently read
-   them anonymously and check the exact receipts before signing the catalogue.
-4. Let the protected publisher create the signed catalogue and verify its
-   unchanged public key. Review the resulting signed image input and reproduce
-   it with the existing compiler; do not substitute a development signature or
-   relax the publisher's comparison against reviewed image bytes.
-5. Deliver those catalogue bytes through the normal image lifecycle, then use
-   Settings' existing licence-acceptance and install action to obtain the model.
-   Run the nonroot installed-worker journey and separately approved live
-   microphone/denial/removal journeys before lifting the PR's hold.
+## Language, preview and correction
 
-Nothing in this work dispatches the publisher, publishes artifacts, modifies the
-production catalogue, installs a model or approves microphone access. The pending
-operator decision is approval of this exact reviewed release and its later image
-qualification, not a vague grant of model or account access.
+The missing-model prompt has a semantic Set up action through the normal Settings
+launcher, with no installation or recording grant. Shared microphone symbols
+distinguish listening from states in which capture is off.
 
-The supported publisher already owns `TILO_MODEL_CATALOG_SIGNING_KEY` and
-`RELEASE_TOKEN`, and retains the existing `tilo-local-model-release-2026-10`
-public key. It requires neither a new trust key nor a new account permission.
-Today it permits only U²-Net and publishes catalogue/key bytes, so it cannot
-publish speech unchanged. The exact two-model allowlist, receipt-checked weight
-and notice publication, and first signed-candidate review must be implemented
-before the unchanged reproduction gate can publish new image inputs. Review
-signing must produce an artifact for review first, followed by committing and
-reproducing those signed bytes; removing the comparison is not that workflow.
-The publisher runs only from protected main after normal integration and an
-explicit release dispatch. Microphone consent is a separate
-one-session decision after installation; it is not a prerequisite for reviewing
-or releasing the licensed model. Recognition quality is the current model
-selection blocker, rather than missing account or signing access.
+Settings → Accessibility exposes a shared, persisted dictation-language dropdown
+and the same semantic `SetDictationLanguage` action. Stable language codes are
+separate from localized labels; unknown saved values fall back to automatic
+detection. A session reads that preference when local consent is granted. The
+system microphone is the source selected by Sound settings; no second per-app
+microphone preference or permission is introduced.
+
+While listening or finishing, the trusted local overlay shows the last 160
+Unicode scalars of the provisional draft in the shared themed Text widget,
+with a polite live accessibility caption. It is labeled Draft, does not enter
+the field or workspace, and clears on retirement, cancellation, lock or recovery.
+The complete private session draft is bounded and zeroized on replacement/drop;
+words are absent from prompt diagnostics. Finish commits corrected text once to
+the original selected range. Ordinary shared text editing and system undo/redo
+provide correction; spoken replacement commands and a personal dictionary are
+not yet implemented.
 
 ## Public multilingual and long-speech qualification
 
@@ -442,36 +448,47 @@ Normalization is NFKC/casefold and punctuation/whitespace cleanup only. It does
 not hide number, accent or Chinese script errors. Mandarin uses CER because
 space-token WER is not meaningful; Simplified/Traditional differences count.
 
-| Three short probes | Tiny WER | Base WER |
-| --- | ---: | ---: |
-| English | 16.44% | 10.96% |
-| German | 27.42% | 20.97% |
-| French | 36.70% | 26.61% |
-| Spanish | 16.67% | 9.80% |
-| Arabic | 59.42% | 42.03% |
-| Mandarin CER | 24.69% | 33.33% |
+| Three short probes | Tiny baseline WER | Base baseline WER | Small current WER |
+| --- | ---: | ---: | ---: |
+| English | 16.44% | 10.96% | 10.96% |
+| German | 27.42% | 20.97% | 1.61% |
+| French | 36.70% | 26.61% | 9.17% |
+| Spanish | 16.67% | 9.80% | 2.94% |
+| Arabic | 59.42% | 42.03% | 31.88% |
+| Mandarin CER | 24.69% | 33.33% | 14.81% |
 
-On this remote x86_64 machine, base's median final pass was 1.17–1.33 seconds
-per short language group; auto language took approximately another second.
-These exclude cold loading and capture completion. Draft revision scores align
-a five-second draft to the best final prefix, allowing appended words; they
-measure decoder revisions, not human correction effort. Older CPU and ARM
-timings, natural conversation, noise and accents remain unqualified.
+Tiny/base rows are the prior upstream-parameter baseline, not qualification of
+the changed decoder. Small rows use the current bounded CPU implementation:
+weights are loaded without decoder arenas, verified input is dropped before
+readiness allocation, greedy fallback uses one candidate, and each transcription
+gets fresh decoder state. Each probe runs in its own confined worker process.
+All 21 small probes pass the unchanged 1 GiB address-space limit; each long
+final is also repeated exactly after automatic-language recognition.
 
-Long English WER was 66.03% (tiny) and 64.74% (base), with substantial omissions;
-French was 53.45%/40.09%, and Mandarin CER 49.02%/42.75%. Globally disabling
-timestamp prediction still omitted English text and worsened French and Mandarin,
-so that experiment was discarded. Both current models fail the quality goal.
-Base is retained as a tested stronger tier candidate, not universally preferred
-or approved as a default. Tiny is an initial lightweight review candidate, not
-proof of Wispr Flow parity.
+Small's median cold load is 2.748 seconds. Short final medians are 4.37–4.79
+seconds, with automatic language approximately another four seconds; long
+English/French/Mandarin finals are 14.93/20.57/20.74 seconds, automatic finals
+18.94/24.60/24.75 seconds. These remote x86_64 timings exclude capture completion;
+older CPUs and ARM remain unqualified. An explicit language removes detection
+work. The actor preserves bounded audio under decoder backpressure and allows
+60 seconds for a final, rather than discarding these valid long results after
+15 seconds. Cancellation remains responsive and retires the exact child.
 
-The pinned multilingual small-q5_1 model (190,085,487 bytes) was also verified
-and tried. It failed native allocation under the unchanged 1 GiB address-space
-limit before decoding, including with only one 10.56-second clip loaded; bulk
-benchmark preload did not cause that failure. No accuracy claim is made and no limit was raised. A
-future stronger tier needs bounded memory planning and separate device evidence.
-Base initially failed loading with geometric model-buffer growth; reserving the
-exact signed receipt size plus one overflow byte allowed it to load and finish
-all 21 probes under the existing limit. The signed-store qualification separately
-asserts the production loader's bounded capacity, preserving receipt validation.
+Long English WER improves from 66.03%/64.74% (tiny/base baseline) to 17.31%
+(small); French from 53.45%/40.09% to 26.29%, and Mandarin CER from
+49.02%/42.75% to 14.90%. These are one artificial splice per language, not
+conversational accuracy. Small still omits the first French sentence, mishears
+proper names, and sometimes hallucinates words in a short draft. It is an
+improved local candidate, not proof of Wispr Flow parity. Draft revision scores
+align a five-second draft to the best final prefix, allowing appended words;
+they measure decoder revisions, not human correction effort.
+
+The original eager loader failed native allocation on small even with a single
+10.56-second clip. Deferred state preparation fixed that peak without raising
+the cap. Default five-candidate fallback then exceeded the cap; upstream's -7
+failure frees its state, so the wrapper now clears its pointer on that path.
+Fresh state per transcription also prevents fallback RNG/caches from changing
+repeated results. Public probes exposed and verified each fix. The signed-store
+qualification separately asserts the production loader's exact bounded capacity.
+Disabling timestamp prediction was tested and discarded because it worsened
+French and Mandarin. No timestamp-policy change is included.

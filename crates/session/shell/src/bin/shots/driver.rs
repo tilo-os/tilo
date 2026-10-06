@@ -1433,6 +1433,17 @@ impl ShellDriver {
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "dictation-consent"
+            | "dictation-listening"
+            | "dictation-finishing"
+            | "dictation-model-required" => {
+                #[cfg(debug_assertions)]
+                self.host_mut()
+                    .seed_dictation_for_shots(name)
+                    .map_err(str::to_owned)?;
+                #[cfg(not(debug_assertions))]
+                return Err("dictation shots require a debug build".into());
+            }
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
             "room-activity-all" => self.scene_room_activity_all(),
@@ -2651,6 +2662,10 @@ impl ShellDriver {
         "emoji-picker",
         "display-confirm",
         "portal-permission",
+        "dictation-consent",
+        "dictation-listening",
+        "dictation-finishing",
+        "dictation-model-required",
         "notifications",
         "notifications-one",
         "notifications-dnd",

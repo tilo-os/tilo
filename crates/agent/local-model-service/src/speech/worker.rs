@@ -86,6 +86,7 @@ pub fn serve(
     super::confine_worker()?;
     let mut engine = SpeechEngine::load(&mut bytes)?;
     drop(bytes);
+    engine.prepare()?;
     let language = engine.language(&config.language)?;
     reply(
         output,

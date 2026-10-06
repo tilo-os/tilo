@@ -2453,3 +2453,6 @@ dictation-copy-failed = Clipboard unavailable. Your complete transcript is still
 search-action-tab-drag-cancel = Cancel tab drag
 search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
 search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
+
+dictation-live-preview = Draft · { $text }
+dictation-open-settings = Set up

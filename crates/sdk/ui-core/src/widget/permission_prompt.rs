@@ -100,6 +100,7 @@ pub struct PermissionPrompt {
     focused_choice: Option<PromptChoice>,
     has_keyboard_focus: bool,
     local_input: Option<LocalInputPrompt>,
+    icon: Option<crate::icons::Icon>,
 }
 
 /// Local input consent and controls preserve the editable field's keyboard owner.
@@ -127,6 +128,7 @@ impl PermissionPrompt {
             focused_choice: None,
             has_keyboard_focus: false,
             local_input: None,
+            icon: None,
         }
     }
 
@@ -144,6 +146,13 @@ impl PermissionPrompt {
         let mut prompt = Self::new(app_label, capability_label, false);
         prompt.local_input = Some(LocalInputPrompt { labels, modal });
         prompt
+    }
+
+    /// Use a shared system symbol for a trusted local surface.
+    #[must_use]
+    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     fn visible_choices(&self) -> &[PromptChoice] {
@@ -470,13 +479,22 @@ impl Widget for PermissionPrompt {
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
             let icon_shape =
                 RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.detail));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.intent.inverted,
-                None,
-                &icon_shape,
-            );
+            if let Some(icon) = self.icon {
+                icon.draw(
+                    scene,
+                    transform,
+                    icon_rect,
+                    theme.tokens.colors.text_primary,
+                );
+            } else {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.intent.inverted,
+                    None,
+                    &icon_shape,
+                );
+            }
 
             // Button geometry first: the label block ends `spacing.s3` before the
             // leftmost button and is elided to that width, so the two never

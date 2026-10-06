@@ -24,7 +24,12 @@ pub(crate) fn service(
         let result = match request {
             Request::Toggle => {
                 if let Some(id) = surface.session() {
-                    if surface.is_recovery() {
+                    if surface.is_recovery()
+                        || matches!(
+                            state.dictation_status(),
+                            DictationStatus::StoppingRecording | DictationStatus::Finishing
+                        )
+                    {
                         Ok(())
                     } else if state.dictation_status() == DictationStatus::Listening {
                         state.finish_recording(id)
@@ -39,12 +44,15 @@ pub(crate) fn service(
                 }
             }
             Request::Consent(id) if surface.session() == Some(id) && surface.is_consent() => {
-                state.start_authorized_dictation(id, "auto", now).map(|()| {
-                    if let Some(session) = state.text_commit.dictation.session.as_mut() {
-                        session.deadline = now.checked_add(SESSION_WINDOW).unwrap_or(now);
-                    }
-                    surface.status(DictationStatus::Loading);
-                })
+                let language = settings_store::dictation::DictationLanguage::load();
+                state
+                    .start_authorized_dictation(id, language.code(), now)
+                    .map(|()| {
+                        if let Some(session) = state.text_commit.dictation.session.as_mut() {
+                            session.deadline = now.checked_add(SESSION_WINDOW).unwrap_or(now);
+                        }
+                        surface.status(DictationStatus::Loading);
+                    })
             }
             Request::Finish(id) if surface.session() == Some(id) && !surface.is_recovery() => {
                 state.finish_recording(id)
@@ -97,6 +105,8 @@ pub(crate) fn service(
             surface.status(state.dictation_status());
         }
     }
+    let preview = surface.session().and_then(|id| state.dictation_preview(id));
+    surface.preview(preview);
 }
 
 #[cfg(test)]
@@ -177,6 +187,65 @@ mod tests {
             );
             self.surface.session().unwrap()
         }
+    }
+
+    #[test]
+    fn dictation_repeated_finish_and_toggle_keep_one_final_on_the_original_field() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        let directory = tempfile::tempdir().unwrap();
+        let pid = directory.path().join("peer");
+        let actor = super::super::runtime::finishing_test_peer(&pid);
+        fixture.state.shell_field_active = true;
+        fixture.state.text_commit.dictation.recognition = Some(super::super::Recognition {
+            id,
+            actor,
+            phase: DictationStatus::Listening,
+        });
+        fixture.surface.status(DictationStatus::Listening);
+        fixture.surface.request_finish();
+        fixture.pump();
+        assert!(matches!(
+            fixture.state.dictation_status(),
+            DictationStatus::StoppingRecording | DictationStatus::Finishing
+        ));
+        for request in [Request::Finish(id), Request::Toggle, Request::Finish(id)] {
+            fixture.surface.enqueue(request);
+            fixture.pump();
+            assert_eq!(fixture.state.dictation_target_id(), Some(id));
+        }
+        std::fs::write(
+            directory.path().join("peer.release"),
+            b"public fixture release",
+        )
+        .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        while fixture.state.dictation_target_id().is_some()
+            || fixture.state.text_commit.dictation.recognition.is_some()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the final and actor teardown must complete"
+            );
+            fixture.pump();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        let events = fixture.proxy.drain_dictation_commit().unwrap();
+        let commits: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commits, ["Corrected 👋"]);
+        assert!(fixture.proxy.drain_dictation_commit().is_none());
+        let pid = std::fs::read_to_string(pid).unwrap();
+        assert!(!std::path::Path::new("/proc").join(pid).exists());
     }
 
     #[test]
