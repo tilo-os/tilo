@@ -99,6 +99,14 @@ pub struct PermissionPrompt {
     /// an accidental Enter cannot grant a capability.
     focused_choice: Option<PromptChoice>,
     has_keyboard_focus: bool,
+    local_input: Option<LocalInputPrompt>,
+}
+
+/// Local input consent and controls preserve the editable field's keyboard owner.
+#[derive(Clone, Debug)]
+struct LocalInputPrompt {
+    labels: [&'static str; 2],
+    modal: bool,
 }
 
 impl PermissionPrompt {
@@ -118,7 +126,46 @@ impl PermissionPrompt {
             hover_idx: None,
             focused_choice: None,
             has_keyboard_focus: false,
+            local_input: None,
         }
+    }
+
+    /// Two one-shot choices for a trusted local input surface. The translated
+    /// label keys name the affirmative/negative controls. Session and persistent
+    /// grants are absent from paint, hit testing and the accessibility door.
+    /// Pointer activation preserves the original editable field's keyboard owner.
+    /// Identical labels collapse to a single negative control for loading/error status.
+    pub fn for_local_input(
+        app_label: String,
+        capability_label: String,
+        labels: [&'static str; 2],
+        modal: bool,
+    ) -> Self {
+        let mut prompt = Self::new(app_label, capability_label, false);
+        prompt.local_input = Some(LocalInputPrompt { labels, modal });
+        prompt
+    }
+
+    fn visible_choices(&self) -> &[PromptChoice] {
+        if let Some(local) = &self.local_input {
+            if local.labels[0] == local.labels[1] {
+                return &[PromptChoice::Deny];
+            }
+            &[PromptChoice::Allow, PromptChoice::Deny]
+        } else {
+            &CHOICES
+        }
+    }
+
+    fn button_label(&self, choice: PromptChoice) -> String {
+        if let Some(local) = &self.local_input {
+            match choice {
+                PromptChoice::Allow => return crate::i18n!(local.labels[0]),
+                PromptChoice::Deny => return crate::i18n!(local.labels[1]),
+                _ => {}
+            }
+        }
+        button_label(choice)
     }
 
     /// For call-sites that always want the `Always` button enabled.
@@ -153,6 +200,14 @@ impl PermissionPrompt {
         self.session_rect = Rect::new(session_x0, by, session_x1, by1);
         self.always_rect = Rect::new(always_x0, by, always_x1, by1);
         self.deny_rect = Rect::new(deny_x0, by, deny_x1, by1);
+        if self.local_input.is_some() {
+            self.allow_rect = Rect::new(always_x0, by, always_x1, by1);
+            self.session_rect = Rect::ZERO;
+            self.always_rect = Rect::ZERO;
+            if !self.visible_choices().contains(&PromptChoice::Allow) {
+                self.allow_rect = Rect::ZERO;
+            }
+        }
     }
 
     pub fn allow_rect(&self) -> Rect {
@@ -170,7 +225,8 @@ impl PermissionPrompt {
     }
 
     fn choice_enabled(&self, choice: PromptChoice) -> bool {
-        !matches!(choice, PromptChoice::Always) || self.is_owner
+        self.visible_choices().contains(&choice)
+            && (!matches!(choice, PromptChoice::Always) || self.is_owner)
     }
 
     fn choose(&mut self, choice: PromptChoice) -> bool {
@@ -182,8 +238,8 @@ impl PermissionPrompt {
         }
     }
 
-    fn choice_from_index(index: usize) -> Option<PromptChoice> {
-        CHOICES.get(index).copied()
+    fn choice_from_index(&self, index: usize) -> Option<PromptChoice> {
+        self.visible_choices().get(index).copied()
     }
 
     fn choice_from_key(key: u64) -> Option<PromptChoice> {
@@ -428,8 +484,13 @@ impl Widget for PermissionPrompt {
             // draw without a preceding `apply_layout` hit-testing correctly.
             self.apply_layout_helper();
             let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
-            let label_max_w =
-                (self.allow_rect.x0 - f64::from(theme.tokens.spacing.s3) - label_x).max(0.0);
+            let label_max_w = (if self.allow_rect == Rect::ZERO {
+                self.deny_rect.x0
+            } else {
+                self.allow_rect.x0
+            } - f64::from(theme.tokens.spacing.s3)
+                - label_x)
+                .max(0.0);
             let app_id_style = theme.text(TextRole::Caption);
             let cap_style = theme.text(TextRole::Body);
             #[allow(
@@ -477,13 +538,16 @@ impl Widget for PermissionPrompt {
                 let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
                 let is_hover = self.hover_idx.is_some_and(|h| usize::from(h) == i) && !is_disabled;
                 let is_focused = self.has_keyboard_focus && self.focused_choice == Some(*choice);
+                if !self.visible_choices().contains(choice) {
+                    continue;
+                }
                 draw_button(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     *rect,
-                    &button_label(*choice),
+                    &self.button_label(*choice),
                     ButtonVisualState {
                         hover: is_hover,
                         disabled: is_disabled,
@@ -526,25 +590,33 @@ impl Widget for PermissionPrompt {
                 if self.allow_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Allow);
                     self.choose(PromptChoice::Allow);
-                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.local_input.is_none() {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                     *ctx.handled = true;
                 } else if self.session_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Session);
                     self.choose(PromptChoice::Session);
-                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.local_input.is_none() {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                     *ctx.handled = true;
                 } else if self.always_rect.contains(p) {
                     if self.is_owner {
                         self.focused_choice = Some(PromptChoice::Always);
                         self.choose(PromptChoice::Always);
-                        *ctx.focus_target = Some(ctx.node_id);
+                        if self.local_input.is_none() {
+                            *ctx.focus_target = Some(ctx.node_id);
+                        }
                         *ctx.handled = true;
                     }
                     // Dropped for a non-owner: `pending_choice` stays untouched.
                 } else if self.deny_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Deny);
                     self.choose(PromptChoice::Deny);
-                    *ctx.focus_target = Some(ctx.node_id);
+                    if self.local_input.is_none() {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                     *ctx.handled = true;
                 }
             }
@@ -586,11 +658,12 @@ impl Widget for PermissionPrompt {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let children = CHOICES
+        let children = self
+            .visible_choices()
             .iter()
             .map(|choice| {
                 AccessNode::new(Role::Button)
-                    .with_name(button_label(*choice))
+                    .with_name(self.button_label(*choice))
                     .with_key(Self::key_for_choice(*choice))
                     .with_state(AccessState {
                         focusable: self.choice_enabled(*choice),
@@ -608,7 +681,7 @@ impl Widget for PermissionPrompt {
                     "app" => self.app_id.as_str()
                 ))
                 .with_state(AccessState {
-                    modal: true,
+                    modal: self.local_input.as_ref().is_none_or(|local| local.modal),
                     focusable: true,
                     focused: self.has_keyboard_focus,
                     ..Default::default()
@@ -656,23 +729,25 @@ impl Widget for PermissionPrompt {
     }
 
     fn traps_focus(&self) -> bool {
-        true
+        self.local_input.as_ref().is_none_or(|local| local.modal)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        match path {
-            [0] => Some(self.allow_rect),
-            [1] => Some(self.session_rect),
-            [2] => Some(self.always_rect),
-            [3] => Some(self.deny_rect),
-            _ => None,
+        let [index] = path else {
+            return None;
+        };
+        match self.choice_from_index(*index)? {
+            PromptChoice::Allow => Some(self.allow_rect),
+            PromptChoice::Session => Some(self.session_rect),
+            PromptChoice::Always => Some(self.always_rect),
+            PromptChoice::Deny => Some(self.deny_rect),
         }
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let Some(choice) = path
             .first()
-            .and_then(|index| Self::choice_from_index(*index))
+            .and_then(|index| self.choice_from_index(*index))
         else {
             return false;
         };
@@ -725,6 +800,71 @@ mod tests {
         // `mem::zeroed`. Same pattern as `quick-tilo_ui::widget::slider`'s
         // own test helpers.
         unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn local_input_prompt_has_only_one_shot_choices_and_preserves_field_focus() {
+        let mut prompt = PermissionPrompt::for_local_input(
+            "Dictation".into(),
+            "Microphone".into(),
+            ["dictation-record-once", "dictation-cancel"],
+            true,
+        );
+        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+        let node = prompt.accessibility().unwrap();
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(
+            prompt.synthetic_accessibility_rect(&[1]),
+            Some(prompt.deny_rect())
+        );
+        assert_eq!(prompt.session_rect(), Rect::ZERO);
+        assert_eq!(prompt.always_rect(), Rect::ZERO);
+        let mut doc = AutoCommit::new();
+        for key in [SESSION_KEY, ALWAYS_KEY] {
+            assert!(!prompt.perform_action_at(
+                &crate::a11y::Action::Activate,
+                &[key],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+            assert!(prompt.pending_choice.is_none());
+        }
+        let mut tree = TaffyTree::<()>::new();
+        let field = tree.leaf_node(Style::default());
+        let overlay = tree.leaf_node(Style::default());
+        let mut focus = Some(field);
+        let mut handled = false;
+        for event in [cursor_at(prompt.allow_rect().center()), left_press()] {
+            prompt.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: crate::widget::Edits::lend(&mut doc),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: overlay,
+                    taffy: &tree,
+                },
+            );
+        }
+        assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
+        assert_eq!(
+            focus,
+            Some(field),
+            "microphone consent must not redirect IME insertion"
+        );
+        let mut single = PermissionPrompt::for_local_input(
+            "Dictation".into(),
+            "Loading".into(),
+            ["dictation-cancel", "dictation-cancel"],
+            false,
+        );
+        single.set_rect(prompt.get_rect());
+        assert_eq!(single.accessibility().unwrap().children.len(), 1);
+        assert!(!single.traps_focus());
+        assert_eq!(single.allow_rect(), Rect::ZERO);
     }
 
     #[test]

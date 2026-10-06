@@ -194,6 +194,18 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.clone()
     }
 
+    /// Observe what this participant may do, without storing their role in
+    /// the shared resource. Use this with [`Self::switch`] for an owner-only
+    /// pane, or with a bound widget for a permission-specific label. Changes
+    /// follow the host even when the document and write access stay unchanged.
+    /// This controls presentation; the action door remains the authority.
+    pub fn permission_state(
+        &self,
+        requirement: tilo_actions::PermissionRequirement,
+    ) -> LocalState<bool> {
+        self.dispatch.permission_state(requirement)
+    }
+
     /// The dispatcher of the resource nested in this one at `id`, whose
     /// edits are this resource's action `wrap(edit)`: a rich-text body, a
     /// draft, a SQL buffer. See [`Dispatcher::child`].

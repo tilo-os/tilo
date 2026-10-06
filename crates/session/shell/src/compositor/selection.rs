@@ -1404,7 +1404,7 @@ pub fn install_host_services(store: SharedSelection) {
 
 /// The services in-process widgets see: native, except that the clipboard is
 /// the compositor's own mirror.
-fn host_services(store: SharedSelection) -> ui::host::HostServices {
+pub(crate) fn host_services(store: SharedSelection) -> ui::host::HostServices {
     ui::host::native::services(None).with_clipboard(Arc::new(HostClipboard { store }))
 }
 

@@ -70,6 +70,7 @@ pub mod fixed_chords;
 pub mod fixture_inputs;
 pub mod floating;
 pub mod foreign;
+mod foreign_damage;
 pub mod frame;
 pub mod fs_authority;
 pub mod gpu_frames;

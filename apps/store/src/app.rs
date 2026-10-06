@@ -1855,7 +1855,7 @@ impl StoreApp {
                     Ok(status) => {
                         app.status_line.clone_from(&status);
                         app.operation_error = None;
-                        Ok(Effected::value(status))
+                        Ok(Effected::done())
                     }
                     Err(error) => {
                         app.show_failure(&error);

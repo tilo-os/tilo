@@ -301,6 +301,37 @@ mod tests {
     }
 
     #[test]
+    fn shared_space_call_status_exposes_muted_join_and_leave_without_starting_capture() {
+        let mut doc = automerge::AutoCommit::new();
+        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        let before = doc.save();
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.answer_effect(crate::effects::ChatEffect::JoinCall {
+            channel: "c_standup".into(),
+        })
+        .unwrap();
+        app.answer_effect(crate::effects::ChatEffect::CallStatus {
+            channel: "c_standup".into(),
+        })
+        .unwrap();
+        assert_eq!(app.native_voice.snapshot.state, State::Preparing);
+        assert!(app.native_voice.snapshot.muted);
+        assert!(!app.native_voice.snapshot.capture_active);
+        app.answer_effect(crate::effects::ChatEffect::LeaveCall {
+            channel: "c_standup".into(),
+        })
+        .unwrap();
+        assert_eq!(app.native_voice.snapshot.state, State::Ended);
+        assert!(app.native_voice.channel.is_none());
+        assert_eq!(
+            doc.save(),
+            before,
+            "call state is transient, never persistent consent"
+        );
+    }
+
+    #[test]
     fn newer_join_response_retires_prior_pending_intents() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();

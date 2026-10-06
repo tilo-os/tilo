@@ -57,6 +57,9 @@ use ui::{ImageStore, TextRole};
 
 use crate::account::{Account, AccountStore};
 use crate::actions::{MailAction, Outgoing, ServerUpdate};
+#[path = "contact_recipients.rs"]
+mod contact_recipients;
+
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
@@ -278,6 +281,9 @@ pub struct MailApp {
     /// The Drafts-folder message the open composer is editing, if any. On save
     /// the same message is updated (not duplicated); on send it is removed.
     editing_draft: Option<MessageId>,
+    /// Retained projection of the canonical CRDT draft; preserves its metadata
+    /// when the Drafts-folder row reopens and reuses that row across frames.
+    projected_draft: RefCell<Option<(MessageId, Draft)>>,
     /// The row menu, and the message it acts on while open.
     menu: ContextMenu,
     menu_target: Option<MenuTarget>,
@@ -326,6 +332,8 @@ pub struct MailApp {
     /// The person's accounts, which Settings keeps and every device of theirs
     /// shares, followed in a live window; and the revision last shown.
     person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
+    pub(crate) contact_directory: Option<PersonRecord<tilo_contact_directory::ContactDirectory>>,
+    pub(crate) has_contact_draft_conflict: bool,
     /// The person's Mail preferences, followed in a live window: the compose
     /// format and the folded account sidebars.
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
@@ -509,6 +517,7 @@ impl MailApp {
             compose: ComposeWindow::new(ComposeFormat::default()),
             shortcuts: MailShortcutsOverlay::new(),
             editing_draft: None,
+            projected_draft: RefCell::new(None),
             menu: ContextMenu::new(),
             menu_target: None,
             pending_menu: None,
@@ -529,6 +538,8 @@ impl MailApp {
             accounts_persist,
             persisted_active_account: None,
             person_accounts: None,
+            contact_directory: None,
+            has_contact_draft_conflict: false,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
             connect_requested: false,
@@ -1081,6 +1092,9 @@ impl MailApp {
                 Command::Compose => {
                     self.shared.borrow_mut().push_intent(Intent::Compose);
                 }
+                Command::ContactRecipients => {
+                    self.open_contact_recipients();
+                }
                 Command::OpenSearch => {
                     let request = self.folder_search();
                     self.search.open(request);
@@ -1360,9 +1374,15 @@ impl MailApp {
 
     /// Reopen a Drafts-folder message in the composer for further editing.
     fn open_draft(&mut self, id: MessageId) {
-        let draft = match self.shared.borrow().mailbox.get(id) {
-            Some(m) => draft_from_message(m),
-            None => return,
+        let draft = self
+            .projected_draft
+            .borrow()
+            .as_ref()
+            .filter(|(projected, _)| *projected == id)
+            .map(|(_, draft)| draft.clone())
+            .or_else(|| self.shared.borrow().mailbox.get(id).map(draft_from_message));
+        let Some(draft) = draft else {
+            return;
         };
         self.editing_draft = Some(id);
         self.compose.open_with_draft(&draft);
@@ -1394,6 +1414,11 @@ impl MailApp {
         self.store_preferences_if_changed();
         let draft = self.compose.to_draft(doc);
         let acct = self.shared.borrow().accounts.active_config();
+        if !self.contact_sender_matches(&draft) {
+            self.shared.borrow_mut().status = Some(crate::i18n::t("mail-contact-sender-changed"));
+            self.dirty = true;
+            return;
+        }
         if acct.email.trim().is_empty() {
             self.shared.borrow_mut().status =
                 Some("Add a sending account before sending this message".into());
@@ -1459,9 +1484,29 @@ impl MailApp {
         let (from, now) = {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
-            (Addr::new(acct.display_name.clone(), acct.email), st.now_min)
+            let from = draft.sender.as_ref().map_or_else(
+                || Addr::new(acct.display_name.clone(), acct.email),
+                |sender| {
+                    Addr::new(
+                        st.accounts
+                            .accounts
+                            .iter()
+                            .find(|account| {
+                                account.id == sender.account && account.config.email == sender.email
+                            })
+                            .map_or_else(String::new, |account| {
+                                account.config.display_name.clone()
+                            }),
+                        sender.email.clone(),
+                    )
+                },
+            );
+            (from, st.now_min)
         };
-        let id = self.editing_draft.unwrap_or_else(uuid::Uuid::new_v4);
+        let id = self
+            .editing_draft
+            .or_else(|| self.projected_draft.borrow().as_ref().map(|(id, _)| *id))
+            .unwrap_or_else(uuid::Uuid::new_v4);
         let msg = Message {
             id,
             rfc_message_id: None,
@@ -1488,6 +1533,7 @@ impl MailApp {
             st.mailbox.insert(msg);
             st.register_message_target(doc, &id.to_string());
         }
+        *self.projected_draft.borrow_mut() = Some((id, draft.clone()));
         id
     }
 
@@ -2448,7 +2494,12 @@ impl MailApp {
             .accounts
             .accounts
             .iter()
-            .find(|account| account.config.email == outgoing.account)
+            .find(|account| {
+                account.config.email == outgoing.account
+                    && outgoing.draft.sender.as_ref().is_none_or(|sender| {
+                        account.id == sender.account && account.config.email == sender.email
+                    })
+            })
             .map(|account| account.config.clone());
         let Some(account) = account else {
             done(Err(format!(
@@ -2732,8 +2783,10 @@ impl MailApp {
         // A persisted draft becomes a local Drafts projection, but does not
         // force another collaborator's composer open.
         let draft = MailDoc::load_draft(doc);
-        if !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty() {
+        if !draft.is_empty() {
             self.upsert_draft_message(doc, &draft);
+        } else if let Some((id, _)) = self.projected_draft.borrow_mut().take() {
+            self.shared.borrow_mut().mailbox.purge(id);
         }
     }
 
@@ -2906,6 +2959,7 @@ fn draft_from_message(m: &Message) -> Draft {
             .join(", ")
     };
     Draft {
+        sender: None,
         to: join(&m.to),
         cc: join(&m.cc),
         bcc: String::new(),
@@ -3424,6 +3478,7 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.background_poll_deadline.set(None);
@@ -3976,6 +4031,16 @@ impl Widget for MailApp {
     }
 }
 
+impl ui::widget::controls::ActionControls for MailApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.search.take().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+}
+
 /// What an effect asked the window to show that needs the document to show
 /// it: opening a message records it read through the same `SetRead` action
 /// as every control, the draft is read from the document, and an invitation
@@ -3985,6 +4050,7 @@ enum Reveal {
     Message(MessageId),
     Draft,
     Invitation(Draft),
+    Contact(Draft),
 }
 
 impl MailApp {
@@ -4004,10 +4070,37 @@ impl MailApp {
         use crate::actions::MailEffect;
         let done = ui::framework::Effected::done();
         match effect {
+            MailEffect::ContactRecipients => {
+                self.open_contact_recipients();
+                Ok(done)
+            }
             MailEffect::Compose => {
                 self.shared.borrow_mut().push_intent(Intent::Compose);
                 self.process_intents();
                 Ok(done)
+            }
+            MailEffect::PrepareContactDraft {
+                person,
+                label,
+                email,
+                sender_account,
+                sender_email,
+            } => {
+                let draft = self.prepare_contact_draft(
+                    &person,
+                    &label,
+                    &email,
+                    &sender_account,
+                    &sender_email,
+                )?;
+                self.reveals.push(Reveal::Contact(draft));
+                self.has_contact_draft_conflict = true;
+                Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
+                    value: Some(
+                        serde_json::json!({ "person": person, "recipient": email, "sender_account": sender_account, "sender_email": sender_email }),
+                    ),
+                    resources: vec!["mail.draft".into()],
+                }))
             }
             MailEffect::Refresh => {
                 if self.engine.is_none() {
@@ -4146,6 +4239,13 @@ impl MailApp {
                     let draft = MailDoc::load_draft(doc);
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
+                }
+                Reveal::Contact(draft) => {
+                    self.shared.borrow_mut().save_draft(doc, &draft);
+                    self.compose.open_with_draft(&draft);
+                    self.editing_draft = None;
+                    self.shared.borrow_mut().status =
+                        Some(crate::i18n::t("mail-contact-draft-prepared"));
                 }
                 Reveal::Invitation(draft) => {
                     self.shared.borrow_mut().save_draft(doc, &draft);
@@ -4305,6 +4405,7 @@ impl MailApp {
         rows.push(live_row(crate::actions::accounts_collection(
             &self.accounts_rows(),
         )));
+        rows.extend(self.contact_recipient_rows());
         rows
     }
 
@@ -4312,6 +4413,9 @@ impl MailApp {
     /// a message the document has no flags for yet, a thread, an attachment,
     /// an account.
     pub(crate) fn live_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if id.starts_with("mail.contact") {
+            return self.contact_recipient_row(id);
+        }
         if id.starts_with("mail.account") {
             let accounts = crate::actions::accounts_collection(&self.accounts_rows());
             if id == "mail.accounts" {
@@ -4417,6 +4521,7 @@ fn prepare_calendar_invitation_draft(
         return Err("calendar invitation is not a bounded METHOD:REQUEST VCALENDAR".into());
     }
     Ok(Draft {
+        sender: None,
         to: to.into(),
         cc: String::new(),
         bcc: String::new(),

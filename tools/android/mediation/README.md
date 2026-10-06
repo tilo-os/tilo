@@ -3,7 +3,7 @@
 This is a private runtime integration and an owned SDK-built test APK. It is not
 an installed Tilo app, a package-store publisher, or a general Android framework.
 
-`patch_framework.py` checks exact SHA-256 pins for the five modified Java sources
+`patch_framework.py` checks exact SHA-256 pins for the six modified Java sources
 from ATL commit `f4622e36186f5757b75a605deff543145df3094b` before changing anything.
 Upstream Java sources retain GPL-3.0-only licensing. The added chooser and fixture
 sources carry MIT notices. No upstream or built framework/APK binary is vendored.
@@ -16,6 +16,17 @@ reply, oversized frame, stream loss and timeout return cancellation. A transport
 failure closes the stream permanently so a late reply cannot satisfy another
 request. Requests serialize off the UI thread; a finishing activity gets no reply.
 Multiple selection and persisted Android URI permissions are unsupported.
+
+File-URI `ContentResolver.query` supports a null projection, `_display_name`,
+`_size` and filename-derived `mime_type`; unknown columns are null. Metadata
+requires a successful read-authorized open inside the existing launcher sandbox,
+then uses `fstat` on that descriptor. It never reopens a checked path or reads
+content to guess MIME type. UTF-16/UTF-8 conversion preserves supplementary-plane
+filenames and rejects embedded NUL. Projection and path sizes are bounded.
+Precancelled queries fail before access. The two-argument `openOutputStream`
+delegates to ATL's existing descriptor mode parsing and confinement.
+This does not add `content://` providers or grant authority. Cold restoration
+requires the separate real-FUSE journey below; a metadata API result alone is not proof.
 
 Notification APIs check Tilo's existing provider over the already registered
 GApplication filtered bus. Explicit fixture preparation with `--notifications`
@@ -73,7 +84,46 @@ external AT-SPI, checks notification delivery and withdrawal, exact document
 bytes, read-only/sibling denials, close lifecycle and external content description,
 revokes both grants, then relaunches and requires former URI read/write denials.
 It always revokes outstanding fixture grants and stops its owned processes.
-See `docs/verification/android-integration` for actual results and original PNGs.
+See the [PR #2908 evidence attachment](https://code.tilo.so/attachments/9cc177c1-c0ef-4607-8872-0a7b1af8c5e0) for actual results and original PNGs.
+Write generated reports under `target/android-acceptance/` or outside the checkout;
+the runners reject output in tracked source. Publish selected reports and PNGs as
+PR attachments or CI artifacts, never private session profiles or signing keys.
+
+For document metadata and editor modes, compile `DocumentActivity.java` with
+`DocumentManifest.xml` into one separately signed APK, then qualify those exact
+bytes against both the previous and changed runtimes. Run
+`tools/android/run_document_journey.py --fixture-grants --help` for inputs.
+`--expect-incompatibility` requires the previous runtime's actual null-projection
+`NullPointerException` and missing-overload `NoSuchMethodError`; it never marks that
+runtime compatible. The changed runtime must pass Unicode names, byte sizes,
+projections, cancellation, input bounds, `wt`/`wa`/`rw`/`rwt` modes and invalid-mode
+denial. Source writes and ungranted sibling metadata/reads must fail. After grants
+are revoked, relaunch must deny former metadata, reads and writes. Both runs use
+the actual production launcher, compositor, ART and external accessibility client.
+
+For a cold recipient, build `fs` and the `android_hydration_fixture` example
+remotely, then add `--cold-hydration` to the document journey. Use a short private
+runtime parent: the filesystem's authority sockets must fit Linux's Unix socket
+path limit. The existing test container must already support actual FUSE mounts;
+do not expand device access or substitute a mocked filesystem.
+
+The runner creates fresh synthetic owner/recipient identities and an exact-record
+View share. The host seeds only the disposable document. The recipient starts
+with no manifest or chunk blobs, verified through the production persistent store
+while its filesystem process is stopped. Immediately before the real picker
+selection, the file must still be projected. Only the actual APK read may restore
+it. After the APK closes, the runner verifies stored bytes, restarts the recipient,
+uses the existing safe eviction control, waits for durable completion, verifies actual backend absence, and
+restarts again. The same APK must then repeat its successful reads, metadata and
+output modes. Revocation tests run with the source restored and resident.
+
+Exact-record mounts use `Shared-<record>` names rather than the host's filename.
+The fixture's optional private `expected-document-name.txt` is authored before
+launch and independently asserts that name. Without that input, the original
+Unicode-name assertion remains mandatory. The cold exact-record namespace has no
+sibling file; its denial does not replace the ordinary journey's existing-sibling
+isolation test. Keep both journeys. All mounts, grants and processes are owned
+fixtures and cleaned up; generated JSON/PNGs remain outside committed source.
 
 ## Acceptance checklist
 
@@ -87,7 +137,12 @@ See `docs/verification/android-integration` for actual results and original PNGs
 - [x] Filtered notification delivery/withdrawal reaches Tilo with room attribution.
 - [x] External AT-SPI client selects real picker controls and observes Android TextView description.
 - [x] Real close invokes pause, stop and destroy; owned session/bus clean up.
-- [ ] Cold P2P hydration, persisted URI authority and already-open FD revocation.
+- [x] Same signed APK reproduces old metadata/mode failures and passes the changed runtime.
+- [x] Unicode metadata, byte size, projections, cancellation and editor modes retain file isolation.
+- [x] Relaunch denies metadata as well as reads/writes after fixture grants are revoked.
+- [x] Actual APK cold FUSE read, verified backend eviction, recipient restart and APK restoration.
+- [x] Cold journey denies revoked metadata/reads/writes with the restored source still resident.
+- [ ] Persisted URI authority, already-open FD revocation and native Btrfs projection.
 - [ ] Full notification identity/tags, actions and background persistence.
 - [ ] Compositor loss, room stop, background services and updates.
 - [ ] Real-device GPU/DRM, ARM64, touch/IME and complete Android accessibility/resources.
