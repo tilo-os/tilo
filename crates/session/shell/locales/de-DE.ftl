@@ -2401,3 +2401,7 @@ shortcut-name-tab-menu = Tab-Menü öffnen
 search-action-tab-menu = Tab-Menü öffnen
 search-action-tab-menu-subtitle = Aktionen für den fokussierten Tab
 search-action-tab-menu-unavailable = Kein fokussierter Tab verfügbar
+
+search-action-tab-drag-cancel = Tab-Ziehen abbrechen
+search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
+search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
