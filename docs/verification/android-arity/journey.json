@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "execution": "headless production Tilo compositor, x86_64 software graphics",
-  "completed_at_utc": "2026-10-06T03:29:16.507836+00:00",
+  "completed_at_utc": "2026-10-06T03:50:20.645341+00:00",
   "production_binaries": {
-    "shell": "18d9e6493e16c043243bfeb73ace75ac21d6bcc4fee5a25d3543cb0ac1adbf01",
-    "tilo-launcher": "40a06a23424e9857fd8c734e29cb495313f573e523cdf0f02e768219762dd563"
+    "shell": "52532568caf1d2dca0930fa2a8c91912c98ca15e51c9ed9a2a934427b22e395c",
+    "tilo-launcher": "f3d7e43041afc20d2f5d97bca93e01117cb68cf3cff0d41c1441632761152453"
   },
   "apk_sha256": "1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
   "runtime_receipt_sha256": "b139102cb605c839ad4d152c0ee7fd364eb55208000d56b6dd9fcd77473ef090",
@@ -13,12 +13,12 @@
       "step": "calculation",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "1e73adc4d884b7dd2bb2fe957926114be20cb4c22223ba1f807961e88fdea726",
+      "png_sha256": "d9039da195b916e5fd28932c1dc0652ddefd3c3d57c54cb31a9aeae88909ff2c",
       "frame": {
         "surface_id": 4294967333,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
         "sheets": [],
-        "frame_seq": 28,
+        "frame_seq": 31,
         "last_error": null,
         "rect": {
           "x": 265.99998474121094,
@@ -33,13 +33,13 @@
         "presented": true,
         "opening": false
       },
-      "room": "cab8c94b-e728-46f0-bd0c-6b1755071c06"
+      "room": "83f6a2aa-fc0e-4782-86da-84b4190dbd6b"
     },
     {
       "step": "reopened",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "9961f966f238212cf3f980749ba77fcfcbb8bc84e92dbfd2b7494353578bce54",
+      "png_sha256": "530c82e00520cdf22f7a1449e875bbb97bc740cf35a5c01d5bcef86c67b09bef",
       "frame": {
         "surface_id": 8589934629,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
@@ -59,13 +59,13 @@
         "presented": true,
         "opening": false
       },
-      "room": "cab8c94b-e728-46f0-bd0c-6b1755071c06"
+      "room": "83f6a2aa-fc0e-4782-86da-84b4190dbd6b"
     },
     {
       "step": "second-workspace-calculation",
       "expression": "234+567",
       "answer": "801",
-      "png_sha256": "dc4d7c4693d161d2d9956fb3fd0a38b79f8140c8f069f8c243d45a6365068f90",
+      "png_sha256": "f5b3056577e0571eb4d2ec553dddb0b8d82a2229863880faad1046acf4bd32a1",
       "frame": {
         "surface_id": 12884901925,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
@@ -85,13 +85,13 @@
         "presented": true,
         "opening": false
       },
-      "room": "d073c982-bdd8-4dd9-926e-5f2a30f60fdf"
+      "room": "22fc04c9-9e2d-4571-b98f-d0addb0eafba"
     },
     {
       "step": "first-workspace-restored",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "4b2614fe3633bc6da0c123fc3a2f07f2de45890de593468bd468b765422d3095",
+      "png_sha256": "16a537f214b47380df364f2478fe261fcd50c7f185aa2c7f29004bcecd8bee16",
       "frame": {
         "surface_id": 17179869221,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
@@ -111,11 +111,11 @@
         "presented": true,
         "opening": false
       },
-      "room": "cab8c94b-e728-46f0-bd0c-6b1755071c06"
+      "room": "83f6a2aa-fc0e-4782-86da-84b4190dbd6b"
     }
   ],
-  "first_room": "cab8c94b-e728-46f0-bd0c-6b1755071c06",
-  "second_room": "d073c982-bdd8-4dd9-926e-5f2a30f60fdf",
+  "first_room": "83f6a2aa-fc0e-4782-86da-84b4190dbd6b",
+  "second_room": "22fc04c9-9e2d-4571-b98f-d0addb0eafba",
   "confinement": {
     "file_read": "denied",
     "file_write": "denied",
