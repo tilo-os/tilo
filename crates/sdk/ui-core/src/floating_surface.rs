@@ -55,11 +55,43 @@ pub enum FloatingRole {
     LiveActivity,
 }
 
-/// Version of the app ↔ shell floating-surface lifecycle wire contract.
-/// Geometry is encoded as plain logical-pixel arrays rather than renderer
-/// types so sandbox services, Wayland protocol shims, and test transports can
-/// all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 4;
+/// What a floating surface's body is made of. A surface names its material;
+/// the toolkit and compositor decide how it renders — the blur radius, the
+/// tint and the opaque fallback are never the caller's
+/// (`docs/design-language.md`, "Material and transparency").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Material {
+    /// Floating chrome — palette, menus, popovers, quick settings, sheets,
+    /// notifications, and chrome over media: the blurred backdrop tinted
+    /// with `surfaces.overlay`. Opaque `surfaces.overlay` where the renderer
+    /// cannot blur, and under reduced transparency or forced colours.
+    #[default]
+    Floating,
+    /// Always opaque `surfaces.overlay`: a surface whose backdrop must not
+    /// show through, such as a prompt for a secret over content the user
+    /// does not own.
+    Opaque,
+}
+
+/// Paint a floating surface's body: `shape` filled with `material`. Edges,
+/// shadows and content are drawn by the caller on top, exactly as on an
+/// opaque surface.
+pub fn paint_material(
+    scene: &mut vello::Scene,
+    transform: Affine,
+    shape: &impl vello::kurbo::Shape,
+    material: Material,
+    theme: &crate::theme::Theme,
+) {
+    crate::backdrop::fill(scene, transform, shape, material, theme);
+}
+
+/// Version of the app ↔ shell wire contract on the shell-ui channel:
+/// floating-surface lifecycle and the window's appearance. Geometry is
+/// encoded as plain logical-pixel arrays rather than renderer types so
+/// sandbox services, Wayland protocol shims, and test transports can all
+/// carry the same messages.
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 5;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
@@ -185,6 +217,8 @@ pub enum FloatingSurfaceClientMessage {
     /// later too, and drops it when this connection closes.
     SetCaptureProtection {
         protected: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation: Option<u64>,
     },
     /// One frame of the page this app's window shows, as a paint stream
     /// (`tilo_paint_stream::wire::Payload`, base64): the session shares it
@@ -229,6 +263,11 @@ pub enum FloatingSurfaceClientMessage {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceHostMessage {
+    /// Sent only after the compositor has installed the requested policy.
+    CaptureProtectionApplied {
+        generation: u64,
+        protected: bool,
+    },
     /// The trusted desktop's answer, after supervisor admission.
     HostShellAllowed {
         allowed: bool,
@@ -275,6 +314,53 @@ pub enum FloatingSurfaceHostMessage {
     Closed {
         id: String,
     },
+    /// Where and for whom the app's window is shown
+    /// ([`crate::theme::WindowAppearance`]): the temperature of the
+    /// workspace holding it and the person's colour. Sent when the app
+    /// connects and again whenever either changes — a workspace switch, a
+    /// new wallpaper, a window moved to another workspace, a colour chosen
+    /// in Settings.
+    Appearance {
+        /// OKLCH degrees; absent while the workspace has no temperature.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_hue: Option<f32>,
+        /// A presence hue by its stored name (`PresenceHue::id`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        your_colour: Option<String>,
+    },
+}
+
+impl FloatingSurfaceHostMessage {
+    /// The message that tells a window `appearance`.
+    #[must_use]
+    pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
+        Self::Appearance {
+            workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
+            your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
+        }
+    }
+
+    /// What an [`Self::Appearance`] message says, `None` for any other. A
+    /// colour this build does not name, or a hue that is not a number,
+    /// counts as unsaid.
+    #[must_use]
+    pub fn window_appearance(&self) -> Option<crate::theme::WindowAppearance> {
+        let Self::Appearance {
+            workspace_hue,
+            your_colour,
+        } = self
+        else {
+            return None;
+        };
+        Some(crate::theme::WindowAppearance {
+            workspace_hue: workspace_hue
+                .filter(|hue| hue.is_finite())
+                .map(|hue| hue.rem_euclid(360.0)),
+            your_colour: your_colour
+                .as_deref()
+                .and_then(crate::tokens::PresenceHue::from_id),
+        })
+    }
 }
 
 /// Non-blocking app-side connection to the session shell. The launcher hands
@@ -289,6 +375,10 @@ pub struct FloatingSurfaceServiceClient {
     outgoing: VecDeque<Vec<u8>>,
     outgoing_offset: usize,
     outgoing_bytes: usize,
+    /// Tells the readable watcher ([`Self::from_stream_waking`]) the app
+    /// has read; dropping it stops the watcher.
+    #[cfg(any(test, feature = "local-daemons"))]
+    rearm_wake: Option<std::sync::mpsc::Sender<()>>,
 }
 
 #[cfg(unix)]
@@ -301,7 +391,69 @@ impl FloatingSurfaceServiceClient {
         // The inherited service descriptor belongs to this one client. Lift
         // it exactly once; dropping the client closes it cleanly.
         let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-        Self::from_stream(UnixStream::from(owned)).ok()
+        // The shell writes unprompted (a workspace switch changes the
+        // window's appearance), so an idle app must wake to read it.
+        let wake = crate::wake::WakeHandle::new();
+        Self::from_stream_waking(UnixStream::from(owned), move || wake.wake()).ok()
+    }
+
+    /// [`Self::from_stream`], calling `wake` whenever the shell has written
+    /// something the app has not read yet: one wake, then nothing until the
+    /// app has read ([`Self::pump`] rearms it), so unread bytes never spin
+    /// it. Dropping the client stops the watcher within one poll interval.
+    #[cfg(any(test, feature = "local-daemons"))]
+    fn from_stream_waking(
+        stream: UnixStream,
+        wake: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd as _;
+        use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+        const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+        // Its own descriptor for the same socket: closing the client's never
+        // leaves the watcher polling a number the process reused.
+        let watched = stream.try_clone()?;
+        let (rearm, armed) = std::sync::mpsc::channel::<()>();
+        tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
+            loop {
+                let mut readable = libc::pollfd {
+                    fd: watched.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let timeout = libc::c_int::try_from(POLL.as_millis()).unwrap_or(500);
+                // SAFETY: one valid pollfd for a descriptor this thread owns.
+                let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
+                if ready < 0 {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return;
+                }
+                if ready == 0 {
+                    // Idle: stop once the client is gone. A rearm that
+                    // arrives while armed means nothing.
+                    match armed.try_recv() {
+                        Err(TryRecvError::Disconnected) => return,
+                        Ok(()) | Err(TryRecvError::Empty) => continue,
+                    }
+                }
+                wake();
+                if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    return;
+                }
+                loop {
+                    match armed.recv_timeout(POLL) {
+                        Ok(()) => break,
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+                while armed.try_recv().is_ok() {}
+            }
+        })?;
+        let mut client = Self::from_stream(stream)?;
+        client.rearm_wake = Some(rearm);
+        Ok(client)
     }
 
     /// Without the local daemons there is no inherited session service.
@@ -311,7 +463,7 @@ impl FloatingSurfaceServiceClient {
     }
 
     #[cfg(any(test, feature = "local-daemons"))]
-    fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
+    pub(crate) fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
         stream.set_nonblocking(true)?;
         Ok(Self {
             stream,
@@ -319,6 +471,7 @@ impl FloatingSurfaceServiceClient {
             outgoing: VecDeque::new(),
             outgoing_offset: 0,
             outgoing_bytes: 0,
+            rearm_wake: None,
         })
     }
 
@@ -379,6 +532,10 @@ impl FloatingSurfaceServiceClient {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(format!("read floating-surface service: {error}")),
             }
+        }
+        #[cfg(any(test, feature = "local-daemons"))]
+        if let Some(rearm) = &self.rearm_wake {
+            let _ = rearm.send(());
         }
 
         let mut messages = Vec::new();
@@ -718,6 +875,9 @@ pub struct FloatingPlacement {
     /// parent, while desktop geometry can continue to identify the stable
     /// content region used by the native-surface protocol.
     attached_chrome: [f64; 4],
+    /// Bands of the app the surface keeps clear of while attached (the
+    /// window's header row), as `[left, top, right, bottom]`.
+    safe_insets: [f64; 4],
     /// Translation between the app's local widget space and the shell's
     /// desktop space while a native surface owns presentation.
     desktop_coordinate_offset: Vec2,
@@ -739,6 +899,7 @@ impl FloatingPlacement {
             drag: None,
             preferred_size,
             attached_chrome: [0.0; 4],
+            safe_insets: [0.0; 4],
             desktop_coordinate_offset: Vec2::ZERO,
             handoff_motion: None,
             handoff_progress_override: None,
@@ -774,6 +935,23 @@ impl FloatingPlacement {
     /// `[left, top, right, bottom]` logical pixels.
     pub fn set_attached_chrome(&mut self, chrome: [f64; 4]) {
         self.attached_chrome = chrome.map(|value| value.max(0.0));
+    }
+
+    /// Keep the attached surface clear of bands of the app as `[left, top,
+    /// right, bottom]` logical pixels: its home sits inside them and a drag
+    /// inside the app does not slide it under them. A host with a header
+    /// row passes `[0.0, header_height, 0.0, 0.0]`. Separate from
+    /// [`Self::set_attached_chrome`], which is the surface's own decoration.
+    pub fn set_safe_insets(&mut self, insets: [f64; 4]) {
+        self.safe_insets = insets.map(|value| value.max(0.0));
+    }
+
+    /// The part of `app` an attached surface may stand in.
+    fn safe_area(&self, app: Rect) -> Rect {
+        let [left, top, right, bottom] = self.safe_insets;
+        let x0 = (app.x0 + left).min(app.x1);
+        let y0 = (app.y0 + top).min(app.y1);
+        Rect::new(x0, y0, (app.x1 - right).max(x0), (app.y1 - bottom).max(y0))
     }
 
     /// Restore only app-local presentation; never restore desktop surface authority.
@@ -1008,6 +1186,7 @@ impl FloatingPlacement {
     }
 
     fn attached_home_rect(&self, app: Rect) -> Rect {
+        let app = self.safe_area(app);
         let [left, top, right, bottom] = self.attached_chrome;
         let w = self
             .preferred_size
@@ -1108,8 +1287,16 @@ impl FloatingPlacement {
             }
             Attachment::App { .. } => {
                 let home = self.attached_home_rect(app);
+                // Within the app, the surface never slides under the bands
+                // its host keeps clear (the header row).
+                let top = self.safe_area(app).y0 + self.attached_chrome[1];
+                let y0 = if self.safe_insets[1] > 0.0 {
+                    moved.y0.max(top)
+                } else {
+                    moved.y0
+                };
                 self.attachment = Attachment::App {
-                    offset: Vec2::new(moved.x0 - home.x0, moved.y0 - home.y0),
+                    offset: Vec2::new(moved.x0 - home.x0, y0 - home.y0),
                 };
                 Handoff::None
             }
@@ -1203,6 +1390,27 @@ mod tests {
             let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), desk);
             assert_eq!(b.x0 - a.x0, 140.0);
             assert_eq!(b.y0 - a.y0, 40.0);
+        }
+
+        // Case `safe_insets_keep_the_home_and_a_drag_below_the_header_row`.
+        {
+            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+            let plain = p.rect(app, desk);
+            p.set_safe_insets([0.0, 56.0, 0.0, 0.0]);
+            let home = p.rect(app, desk);
+            assert!(
+                (home.y0 - (plain.y0 + 56.0)).abs() < 1e-9,
+                "home clears the header row"
+            );
+            p.begin_drag(home.center(), app, desk);
+            p.update_drag(home.center() - Vec2::new(0.0, 100.0), app, desk);
+            let dragged = p.rect(app, desk);
+            assert!(
+                dragged.y0 >= app.y0 + 56.0 - 1e-9,
+                "a drag stays below it: {dragged:?}"
+            );
         }
 
         // Case `attached_chrome_keeps_the_complete_surface_inside_its_app`.
@@ -1472,7 +1680,10 @@ mod tests {
     #[test]
     fn capture_protection_request_has_a_stable_wire_form() {
         for protected in [true, false] {
-            let message = FloatingSurfaceClientMessage::SetCaptureProtection { protected };
+            let message = FloatingSurfaceClientMessage::SetCaptureProtection {
+                protected,
+                generation: None,
+            };
             let json = serde_json::to_string(&message).unwrap();
             assert_eq!(
                 json,
@@ -1831,5 +2042,89 @@ mod tests {
             });
             assert_eq!(received, vec![inbound]);
         }
+    }
+
+    #[test]
+    fn a_window_appearance_round_trips_and_unknown_values_are_unsaid() {
+        use crate::theme::WindowAppearance;
+        use crate::tokens::PresenceHue;
+
+        let told = WindowAppearance {
+            workspace_hue: Some(40.0),
+            your_colour: Some(PresenceHue::Violet),
+        };
+        let message = FloatingSurfaceHostMessage::appearance(&told);
+        let wire = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"type": "appearance", "workspace_hue": 40.0, "your_colour": "violet"})
+        );
+        let back: FloatingSurfaceHostMessage = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.window_appearance(), Some(told));
+
+        let neutral: FloatingSurfaceHostMessage =
+            serde_json::from_value(serde_json::json!({"type": "appearance"})).unwrap();
+        assert_eq!(
+            neutral.window_appearance(),
+            Some(WindowAppearance::default()),
+            "no temperature and no colour said"
+        );
+        let unknown: FloatingSurfaceHostMessage = serde_json::from_value(
+            serde_json::json!({"type": "appearance", "workspace_hue": 400.0, "your_colour": "chartreuse"}),
+        )
+        .unwrap();
+        assert_eq!(
+            unknown.window_appearance(),
+            Some(WindowAppearance {
+                workspace_hue: Some(40.0),
+                your_colour: None,
+            })
+        );
+        assert_eq!(
+            FloatingSurfaceHostMessage::Closed { id: "pip".into() }.window_appearance(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_idle_client_wakes_once_per_arrival() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        let mut client = FloatingSurfaceServiceClient::from_stream_waking(app_side, move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+        let send = |shell_side: &mut UnixStream| {
+            let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
+                &crate::theme::WindowAppearance {
+                    workspace_hue: Some(40.0),
+                    your_colour: None,
+                },
+            ))
+            .unwrap();
+            bytes.push(b'\n');
+            shell_side.write_all(&bytes).unwrap();
+        };
+        send(&mut shell_side);
+        tilo_test_env::wait_until("the shell's write wakes the app", || {
+            wakes.load(Ordering::SeqCst) >= 1
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "unread bytes wake the app once, not in a loop"
+        );
+        assert_eq!(client.pump().unwrap().len(), 1);
+        send(&mut shell_side);
+        tilo_test_env::wait_until("the next arrival wakes it again", || {
+            wakes.load(Ordering::SeqCst) >= 2
+        });
+        assert_eq!(client.pump().unwrap().len(), 1);
     }
 }

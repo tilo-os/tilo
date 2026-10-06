@@ -227,15 +227,15 @@ class Session:
     def open_palette(self, machine_wide: bool = True) -> None:
         """Open the command palette.
 
-        Super+K searches the whole machine; Ctrl+K narrows to the
+        Super+Space searches the whole machine; Ctrl+K narrows to the
         focused app. Which one to use depends on the row wanted: the
-        shell's own actions only appear under Super+K, while the
+        shell's own actions only appear under Super+Space, while the
         peer-sync rows are offered under both and win the ranking under
         Ctrl+K, where filenames merely containing "invite" are not
         competing for the top row.
         """
         self.modifiers(logo=machine_wide, ctrl=not machine_wide)
-        self.key("k")
+        self.key("Space" if machine_wide else "k")
         self.modifiers()
         self.settle(0.4)
 

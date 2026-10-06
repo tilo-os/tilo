@@ -106,3 +106,39 @@ fn native_snapshot_observes_real_wheel_input_with_explicit_units() {
     assert_eq!(snapshot["body_hash"], manifest.body_hash);
     assert_eq!(snapshot["ready"], true);
 }
+
+#[test]
+fn bottom_panel_availability_tracks_its_real_host_mode() {
+    let mut capture =
+        ui::framework::testing::TestApp::<crate::CodeEditorShell>::capture(Some("selection"))
+            .unwrap();
+    crate::test_support::editor(&mut capture, |app| {
+        assert!(!app.panel_toggle.is_enabled());
+        assert!(
+            ui::widget::controls::ActionControls::control_action_bindings(&app.panel_toggle)
+                .is_empty(),
+            "the captured toggle cannot advertise an effect without an executor"
+        );
+    });
+
+    let (_directory, mut live, _manifest) = loaded_fixture();
+    let before = crate::test_support::editor(&mut live, |app| {
+        assert!(app.panel_toggle.is_enabled());
+        let bindings =
+            ui::widget::controls::ActionControls::control_action_bindings(&app.panel_toggle);
+        assert!(bindings.iter().any(|binding| matches!(
+            &binding.kind,
+            ui::widget::ControlBindingKind::Action(address)
+                if address.resource.as_str() == crate::resource::PROJECT_KIND
+                    && address.action == "toggle-bottom-panel"
+        )));
+        app.panel_visible
+    });
+    live.harness().click_named(BottomPanelToggle::ID).unwrap();
+    live.settle();
+    assert_eq!(
+        crate::test_support::editor(&mut live, |app| app.panel_visible),
+        !before,
+        "the live retained toggle invokes its real canonical effect"
+    );
+}

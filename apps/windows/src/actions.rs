@@ -55,6 +55,12 @@ pub fn register(registry: &mut ActionRegistry) {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "windows.effect")]
 pub enum WindowsEffect {
+    /// Show this application in the manager.
+    #[effect(view, row, idempotent)]
+    Show {
+        #[param("The application id")]
+        app: String,
+    },
     /// Install Windows application.
     #[effect(job, privileged, permission = "admin")]
     Install {
@@ -163,6 +169,7 @@ impl WindowsEffect {
     pub(crate) fn operation(&self) -> (&'static str, String) {
         let none = String::new;
         match self {
+            Self::Show { app } => ("windows.show", app.clone()),
             Self::Install { path } => ("windows.install", path.clone().unwrap_or_default()),
             Self::ImportIso { path } => ("windows.import-iso", path.clone().unwrap_or_default()),
             Self::Recovery => ("windows.recovery", none()),
@@ -342,6 +349,12 @@ fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
         format!("windows.app:{}", app.id),
         "windows.compat-app",
         &app.name,
+    )
+    .operation(
+        WindowsEffect::Show {
+            app: app.id.clone(),
+        }
+        .bound(),
     )
     .operation(launch)
     .operation(offered(

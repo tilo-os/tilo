@@ -216,6 +216,42 @@ pub(crate) fn refresh(
         }
     });
 }
+/// Run a History door control (the History control in an app's header row)
+/// on the History of the tile that hosts the app `owner` names, as the
+/// window's own History runs it for a window's app. `None` when no tile in
+/// `root` hosts that app with History.
+pub(crate) fn invoke_door(
+    root: &mut dyn Widget,
+    owner: &HistoryOwner,
+    intent: &tilo_actions::ControlInvocation,
+) -> Option<Result<(), tilo_actions::DoorError>> {
+    let mut result = None;
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
+        if result.is_some() || !history.encloses(owner) {
+            return;
+        }
+        let resources = [history.door_resource()];
+        result = Some((|| {
+            let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+                &resources,
+                &intent.address,
+                None,
+                Some(&intent.arguments),
+                false,
+            )?;
+            let encoded = crate::bound_dispatch::encode_resource_action(
+                &resources,
+                &intent.address,
+                arguments.as_ref(),
+                None,
+            )?;
+            history
+                .invoke_door(&encoded)
+                .map_err(tilo_actions::DoorError::Failed)
+        })());
+    });
+    result
+}
 pub(crate) fn has_review(root: &dyn Widget) -> bool {
     let mut pending = false;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {

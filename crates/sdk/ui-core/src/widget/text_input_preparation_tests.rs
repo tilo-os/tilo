@@ -183,7 +183,7 @@ fn measure_keeps_warm_attributed_preparation() {
     input.set_rich_spans(Some(vec![RichSpan::new(&input.text).bold(true)]));
     let style = input.multiline_style(theme.text_scale);
     let width = 300.0;
-    let content_width = (f64::from(width) - input.ml_left() - ML_PAD_X) as f32;
+    let content_width = (f64::from(width) - input.ml_left() - input.ml_pad_x()) as f32;
     input.ensure_shaped_layout(&mut tr, &theme, &style, content_width);
     let before = input.single_layout.as_ref().unwrap().height();
     let ((), stats) = measure_test_allocations(|| {

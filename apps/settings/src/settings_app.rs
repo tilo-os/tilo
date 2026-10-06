@@ -2,7 +2,7 @@
 //!
 //! ## Layout
 //!
-//! The whole app is one [`AppShell`] (from the shared toolkit): a cohesive
+//! The whole app is one [`NavShell`] (from the shared toolkit): a cohesive
 //! sidebar panel — the search field pinned at its top, the nav list beneath —
 //! beside the selected category's content pane. The shell owns the responsive
 //! behaviour end to end, resolving into exactly one of two states by whether
@@ -35,9 +35,12 @@
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
+use ui::tokens::Metrics;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{AppShell, Column, Container, NarrowScreen, Scrollable, TextInput, Widget};
+use ui::widget::{Column, Container, NavPane, NavShell, Scrollable, Widget};
+use ui::widget::{NavMode, SearchField};
 use ui::{AppKind, AppWidget, IconDescriptor};
+const MEASURE: f32 = ui::tokens::Metrics::BASE.panel_width_sheet;
 
 /// At or above this allocated width (logical px) the sidebar docks beside the
 /// content; below it the shell switches to the narrow list-vs-content screens.
@@ -45,27 +48,7 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 /// docked while a narrow / split-screen placement gets the phone layout. At a
 /// large-text preference the live breakpoint is this times the text scale
 /// (see `SettingsApp::build_shell`).
-pub const NAV_BREAKPOINT: f64 = ui::widget::DEFAULT_SHELL_BREAKPOINT;
-
-/// Horizontal gutter (logical px) of the page column inside the content
-/// area — the `s6` step.
-const PAGE_GUTTER: f32 = ui::tokens::Spacing::BASE.s6;
-
-/// Horizontal inset (logical px) of a pane from the content area's edge: the
-/// filling container's standard padding (`s3`, the theme's
-/// `padding_standard` default) plus [`PAGE_GUTTER`]. A pane's first-frame
-/// width hint is the content area less this on each side.
-const PAGE_INSET: f32 = ui::tokens::Spacing::BASE.s3 + PAGE_GUTTER;
-
-/// Readable measure (logical px) the External Accounts cards are centred
-/// within on large monitors; see [`SettingsApp::readable_content_measure`].
-const ACCOUNTS_READABLE_WIDTH: f32 = 1040.0;
-
-/// Readable measure (logical px) for a short label/chooser form — the same
-/// default the toolkit's `FormPage` bounds its content to, so a settings form
-/// and an automatic form agree on how far a trailing control may sit from its
-/// label. See [`SettingsApp::readable_content_measure`].
-const FORM_READABLE_WIDTH: f32 = 720.0;
+pub const NAV_BREAKPOINT: f64 = ui::tokens::Metrics::BASE.compact_breakpoint as f64;
 
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
@@ -83,7 +66,7 @@ pub struct SettingsApp {
     /// Which narrow screen the shell starts on: the selected category's
     /// content unless a test asks for the list. Applied when the shell is
     /// created.
-    narrow_screen: NarrowScreen,
+    narrow_screen: NavPane,
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
@@ -99,8 +82,6 @@ pub struct SettingsApp {
     /// between frames, never under an event being dispatched. Selection
     /// stays out of collaboration, persistence and undo.
     sidebar_selection: ui::LocalState<Option<Category>>,
-    /// Local navigation position survives row selection and shell rebuilds.
-    sidebar_scroll: ScrollOffset,
     /// Each pane's scroll offset. The content scroller is rebuilt whenever the
     /// pane's structure changes (a control applied, a category opened), so the
     /// offset lives here, per category, rather than in the rebuilt widget.
@@ -117,7 +98,7 @@ pub struct SettingsApp {
     /// The reusable app-shell, created lazily on the first `build_layout` and
     /// persisted across rebuilds so its collapse/overlay state survives a
     /// category switch. Its nav + content are swapped on selection.
-    shell: Option<AppShell>,
+    shell: Option<NavShell>,
     /// Where the last wallpaper request stands, for the Appearance pane.
     wallpaper_status: ui::LocalState<Option<String>>,
     /// The assistive software this device has installed.
@@ -197,11 +178,10 @@ impl SettingsApp {
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
-            narrow_screen: NarrowScreen::Content,
+            narrow_screen: NavPane::Content,
             width_hint: None,
             search_query: String::new(),
             sidebar_selection: ui::LocalState::new(None),
-            sidebar_scroll: ScrollOffset::default(),
             pane_scroll: std::cell::RefCell::default(),
             search_state: ui::LocalState::new(String::new()),
             account_root,
@@ -239,7 +219,7 @@ impl SettingsApp {
     /// effect when the layout is wide.
     #[must_use]
     pub fn with_category_list(mut self) -> Self {
-        self.narrow_screen = NarrowScreen::List;
+        self.narrow_screen = NavPane::Sidebar;
         self
     }
 
@@ -266,58 +246,26 @@ impl SettingsApp {
             self.refresh_shell_children();
         }
         if let Some(shell) = &mut self.shell {
-            shell.notify_selection();
+            shell.show(ui::widget::NavPane::Content);
         }
     }
 
     /// Whether the current frame resolves to the narrow (phone) layout.
     pub fn is_narrow(&self) -> bool {
         match &self.shell {
-            Some(s) => s.is_narrow(),
-            None => self
+            Some(shell) if shell.geometry().content_column.width() > 0.0 => {
+                !shell.geometry().stack.is_empty()
+            }
+            _ => self
                 .width_hint
-                .is_some_and(|w| f64::from(w) < self.scaled_breakpoint()),
+                .is_some_and(|w| w < Metrics::BASE.compact_breakpoint * self.shell_text_scale),
         }
-    }
-
-    /// The width a pane can expect on the coming frame: the shell's content
-    /// area once laid out, else the window hint less the docked sidebar —
-    /// either way less the page inset on both sides, so the value is the
-    /// pane's own width, not the content area's. A pane that composes
-    /// differently at phone width (the Region formats card) reads this for
-    /// its first frame and its own rect thereafter.
-    fn content_width_hint(&self) -> Option<f32> {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a logical-pixel width comfortably representable by f32"
-        )]
-        let content_area = self
-            .shell
-            .as_ref()
-            .map(ui::AppShell::content_area_rect)
-            .filter(|rect| rect.width() > 0.0)
-            .map(|rect| rect.width() as f32)
-            .or_else(|| {
-                self.width_hint.map(|w| {
-                    if self.is_narrow() {
-                        w
-                    } else {
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            reason = "the docked sidebar width is a small logical-pixel value"
-                        )]
-                        let sidebar = self.scaled_sidebar_width() as f32;
-                        (w - sidebar).max(0.0)
-                    }
-                })
-            });
-        content_area.map(|w| (w - 2.0 * PAGE_INSET).max(0.0))
     }
 
     /// Whether the sidebar / list is currently shown (always when wide, or the
     /// list screen when narrow). Used by `--shots` assertions.
     pub fn sidebar_open(&self) -> bool {
-        self.shell.as_ref().is_some_and(ui::AppShell::sidebar_open)
+        self.shell.as_ref().is_some_and(NavShell::is_sidebar_open)
     }
 
     /// The current search query (empty when not searching).
@@ -331,29 +279,16 @@ impl SettingsApp {
     pub fn back_button_rect(&self) -> vello::kurbo::Rect {
         self.shell
             .as_ref()
-            .map_or(vello::kurbo::Rect::ZERO, ui::AppShell::back_rect)
+            .map_or(vello::kurbo::Rect::ZERO, |shell| shell.geometry().back)
     }
 
     /// Filter the sidebar by `query`, as typing it into the search field
     /// does.
     pub fn search(&mut self, query: &str) {
         self.search_state.set(query.to_string());
-    }
-
-    /// Build the local search field placed at the top of the shell's sidebar.
-    /// The field shares typed local state with the app, so filtering survives a
-    /// structural rebuild without creating a document draft. Because the shell
-    /// hosts it as a direct child in the App's tree, a click focuses it and
-    /// `autofocus_on_structure_change` restores focus + caret after the
-    /// filtered sidebar rebuilds.
-    fn build_search_field(&self) -> Box<dyn Widget> {
-        Box::new(
-            TextInput::from_state(&self.search_state)
-                .with_kind(ui::widget::TextInputKind::Search)
-                .with_id("settings.search")
-                .with_placeholder(&crate::i18n::t("settings-search-placeholder"))
-                .with_font_size(13.0),
-        )
+        if let Some(field) = self.shell.as_mut().and_then(NavShell::filter_mut) {
+            field.set_query(query);
+        }
     }
 
     /// Build the content pane: an unboxed category heading followed by the
@@ -367,33 +302,22 @@ impl SettingsApp {
     /// the Settings list).
     fn build_content(&self) -> Box<dyn Widget> {
         let body = self.build_pane_body();
-        // The page gutter (`s6`) inside the filling container's standard
-        // inset is what `PAGE_INSET` names; heading and body sit a card step
-        // apart, one `s4` below the page's top.
+        let gutter = ui::tokens::Spacing::BASE.s6;
         let inner = Column::new()
             .with_no_padding()
-            .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
-            .with_vertical_padding(crate::widgets::CARD_GAP)
+            .with_horizontal_padding(gutter, gutter)
+            .with_vertical_padding(gutter)
             .with_intrinsic_height()
-            .with_gap(ui::tokens::Spacing::BASE.s4)
-            .push(crate::widgets::page_heading(
-                &self.selected.label(),
-                &self.selected.subtitle(),
-            ))
             .push(body);
-        // Account forms and cards are more legible as a column on large
-        // desktop displays. Operational panes deliberately keep their full
-        // detail width for device tables, channel controls, and bindings.
-        let content: Box<dyn Widget> = if let Some(width) = self.readable_content_measure() {
-            Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_centered_max_width(width)
-                    .with_child(Box::new(inner)),
-            )
-        } else {
-            Box::new(inner)
-        };
+        // Forms are more legible as a column on large displays: a trailing
+        // control stays near its label.
+        let measure = (MEASURE + 2.0 * gutter) * self.shell_text_scale;
+        let content: Box<dyn Widget> = Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_centered_max_width(measure)
+                .with_child(Box::new(inner)),
+        );
         let offset = std::rc::Rc::clone(
             self.pane_scroll
                 .borrow_mut()
@@ -404,27 +328,6 @@ impl SettingsApp {
             .with_persisted_offset(offset)
             .with_child(content);
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
-    }
-
-    /// The readable measure (logical px) a pane's content is centred within on
-    /// large monitors, or `None` for panes that keep the full detail width.
-    /// Every cap is a maximum, so narrow screens stay fluid.
-    ///
-    /// - Account cards keep the wide review measure their row hierarchy was
-    ///   accepted at.
-    /// - Region & Formats is a short label/chooser form: at the full detail
-    ///   width its trailing dropdowns drifted ~600 px from their labels, so it
-    ///   takes the same readable form measure the toolkit's `FormPage` uses.
-    ///   (UI-review A3, settings-region-wide-balance.)
-    ///
-    /// Other panes keep their full width until each has an equivalent
-    /// content-measure review.
-    fn readable_content_measure(&self) -> Option<f32> {
-        match self.selected {
-            Category::ExternalAccounts => Some(ACCOUNTS_READABLE_WIDTH),
-            Category::RegionFormats => Some(FORM_READABLE_WIDTH),
-            _ => None,
-        }
     }
 
     /// Hand the panes their host: panes built from now on bind their
@@ -569,6 +472,7 @@ impl SettingsApp {
             Staged::Pane(category) => self.select(category),
             Staged::List(category) => {
                 self.select(category);
+                self.narrow_screen = NavPane::Sidebar;
                 if let Some(shell) = &mut self.shell {
                     shell.back();
                 }
@@ -644,13 +548,7 @@ impl SettingsApp {
             Category::AgentModels => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.agent_models.model(),
             ))),
-            Category::RegionFormats => {
-                let pane = panes::region::RegionPane::new(self.cx.clone());
-                Box::new(match self.content_width_hint() {
-                    Some(width) => pane.with_width_hint(width),
-                    None => pane,
-                })
-            }
+            Category::RegionFormats => Box::new(panes::region::RegionPane::new(self.cx.clone())),
             Category::Permissions => panes::permissions::build(&self.cx),
             Category::Updates => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.updates.model(),
@@ -659,57 +557,28 @@ impl SettingsApp {
         }
     }
 
-    /// The factor the shell's own metrics grow by under a large-text
-    /// preference: the text scale, never below 1×. Large text needs the room
-    /// a narrow window does — the sidebar's labels grow with the type, so
-    /// its docked width and the breakpoint at which it docks grow with them
-    /// rather than clipping 28 px labels into a 264 px column. At 1× both are
-    /// exactly the shared shell's defaults. App-side until `AppShell`
-    /// resolves the scaled `Metrics` from the theme itself (HIG §9.6 names
-    /// that as the shells' next step); a scale change rebuilds the shell, so
-    /// its narrow-screen memory resets on that one event.
-    fn shell_scale(&self) -> f64 {
-        f64::from(self.shell_text_scale.max(1.0))
-    }
-
-    /// The width at or above which the sidebar docks, at the current scale.
-    fn scaled_breakpoint(&self) -> f64 {
-        NAV_BREAKPOINT * self.shell_scale()
-    }
-
-    /// The docked sidebar's width at the current scale.
-    fn scaled_sidebar_width(&self) -> f64 {
-        sidebar::SIDEBAR_WIDTH * self.shell_scale()
-    }
-
-    /// Create the persistent [`AppShell`] with the current nav + content +
-    /// search and the seeded shot state, for `shell_text_scale` (see
-    /// [`Self::shell_scale`]).
-    fn build_shell(&self) -> AppShell {
-        let nav = sidebar::build_with_scroll(
+    /// Create the persistent [`NavShell`] with the current nav + content +
+    /// search and the seeded shot state. Shared layout resolves scaled metrics.
+    fn build_shell(&self) -> NavShell {
+        let nav = sidebar::build(
             &self.cx,
             self.selected,
             &self.search_query,
             &self.sidebar_selection,
-            std::rc::Rc::clone(&self.sidebar_scroll),
         );
-        let content = self.build_content();
-        // A narrow (phone) layout keeps the selected category's CONTENT on
-        // screen — the category list is one back-tap away, never the default a
-        // collapse lands on. A `--shots` capture can pin a specific narrow
-        // screen; otherwise the shell collapses to the content.
-        let narrow_screen = self.narrow_screen;
-        let mut shell = AppShell::new(nav, content)
-            .with_search(self.build_search_field())
-            // AppShell resolves text-authored extents against the live theme.
-            // Pass the 1x values here; pre-scaling them would apply the text
-            // scale twice when the shell refreshes its metrics.
-            .with_breakpoint(NAV_BREAKPOINT)
-            .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
-            .with_narrow_screen(narrow_screen);
-        if let Some(w) = self.width_hint {
-            shell = shell.with_width_hint(f64::from(w));
-        }
+        let mut filter = SearchField::filter()
+            .with_id("settings.search")
+            .with_placeholder(&crate::i18n::t("settings-search-placeholder"));
+        filter.set_query(&self.search_query);
+        let mut shell = NavShell::new()
+            .with_id("settings.shell")
+            .mode(NavMode::Push)
+            .sidebar(nav)
+            .sidebar_header("", Vec::new())
+            .with_filter(filter)
+            .content(self.build_content())
+            .content_header(self.selected.label(), Vec::new());
+        shell.show(self.narrow_screen);
         shell
     }
 
@@ -717,17 +586,25 @@ impl SettingsApp {
     /// query. No-op before the shell exists (the first `build_layout` will
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
-        let nav = sidebar::build_with_scroll(
-            &self.cx,
-            self.selected,
-            &self.search_query,
-            &self.sidebar_selection,
-            std::rc::Rc::clone(&self.sidebar_scroll),
-        );
         let content = self.build_content();
         if let Some(shell) = &mut self.shell {
-            shell.set_nav(nav);
+            // Keep the retained navigation's viewport and focus when only
+            // the selected pane changes.
+            if let Some(nav) = shell.sidebar_mut::<ui::widget::NavList>() {
+                nav.set_filter(&self.search_query);
+                if nav.selected_id().as_deref() != Some(self.selected.slug()) {
+                    nav.set_selected(Some(self.selected.slug()));
+                }
+            } else {
+                shell.set_sidebar(Some(sidebar::build(
+                    &self.cx,
+                    self.selected,
+                    &self.search_query,
+                    &self.sidebar_selection,
+                )));
+            }
             shell.set_content(content);
+            shell.set_content_title(self.selected.label());
         }
     }
 }
@@ -746,7 +623,11 @@ impl Widget for SettingsApp {
             widget: &dyn Widget,
             search: &mut Option<serde_json::Value>,
             categories: &mut Vec<&'static str>,
+            nav_id: &mut Option<&'static str>,
         ) {
+            if widget.test_id() == Some(sidebar::NAV_ID) {
+                *nav_id = Some(sidebar::NAV_ID);
+            }
             if widget.test_id() == Some("settings.search") {
                 let review = widget.text_review();
                 *search = Some(serde_json::json!({
@@ -756,19 +637,23 @@ impl Widget for SettingsApp {
                     "text": review.map(|(_, text)| text),
                 }));
             }
-            if widget.name() == "SidebarRow"
-                && let Some(category) = Category::ALL
-                    .iter()
-                    .find(|category| widget.test_id() == Some(category.label().as_str()))
+            if let Some(list) = widget
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
             {
-                categories.push(category.slug());
+                for id in list.visible_item_ids() {
+                    if let Some(category) = Category::from_slug(&id) {
+                        categories.push(category.slug());
+                    }
+                }
             }
-            widget.for_each_child(&mut |child| inspect(child, search, categories));
+            widget.for_each_child(&mut |child| inspect(child, search, categories, nav_id));
         }
         let (state, path) = ui::doc::document_ref(state, path);
         let mut search = None;
         let mut categories = Vec::new();
-        inspect(self, &mut search, &mut categories);
+        let mut nav_id = None;
+        inspect(self, &mut search, &mut categories, &mut nav_id);
         // get_heads closes pending transactions. Only a disposable clone may
         // perform that operation: the original document stays untouched.
         let mut witness = state.clone();
@@ -795,6 +680,7 @@ impl Widget for SettingsApp {
         Some(serde_json::json!({
             "app": "so.tilo.settings",
             "search_id": "settings.search",
+            "nav_id": nav_id,
             "ready": valid(self.rect) && search_ready,
             "local_search_text": self.search_state.with(Clone::clone),
             "synchronized_search_query": self.search_query,
@@ -833,22 +719,28 @@ impl Widget for SettingsApp {
             self.sidebar_selection.set(None);
             self.select(category);
         }
+        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
+            && self.search_state.with(|query| query == &self.search_query)
+            && field.value() != self.search_query
+        {
+            self.search_state.set(field.value().to_owned());
+        }
         let query = self.search_state.with(Clone::clone);
         if query != self.search_query {
             self.search_query = query;
+            if let Some(field) = self.shell.as_mut().and_then(NavShell::filter_mut) {
+                field.set_query(&self.search_query);
+            }
             self.structure_dirty = true;
             // Filtering changes only navigation. Reconstructing the active
             // pane here would discard its transient state and reseed its
             // document bindings on every search character.
-            let nav = sidebar::build_with_scroll(
-                &self.cx,
-                self.selected,
-                &self.search_query,
-                &self.sidebar_selection,
-                std::rc::Rc::clone(&self.sidebar_scroll),
-            );
-            if let Some(shell) = &mut self.shell {
-                shell.set_nav(nav);
+            if let Some(nav) = self
+                .shell
+                .as_mut()
+                .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
+            {
+                nav.set_filter(&self.search_query);
             }
         }
 
@@ -965,6 +857,11 @@ impl Widget for SettingsApp {
         {
             shell.handle_event(event, &mut ctx.reborrow(ctx.path, shell_node));
         }
+        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
+            && self.search_state.with(|query| query != field.value())
+        {
+            self.search_state.set(field.value().to_owned());
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1071,43 +968,53 @@ mod tests {
 
     #[test]
     fn selecting_a_scrolled_sidebar_row_keeps_the_navigation_in_place() {
-        fn row_rect(widget: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
-            if widget.test_id() == Some(name) {
-                return Some(widget.get_rect());
-            }
-            widget
-                .children()
+        fn row_rect(app: &Framed<SettingsApp>, category: Category) -> Option<vello::kurbo::Rect> {
+            Framed::harness(app)
+                .a11y_nodes()
                 .into_iter()
-                .find_map(|child| row_rect(child, name))
+                .find_map(|(_, node)| {
+                    if node.role() != ui::accesskit::Role::TreeItem
+                        || node.label() != Some(category.label().as_str())
+                    {
+                        return None;
+                    }
+                    node.bounds().map(|bounds| {
+                        vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1)
+                    })
+                })
         }
         let config = crate::prefs::test_env::ScratchConfig::new();
         let mut app = layout_at(config.app(), 1200.0, 520.0);
-        let original = row_rect(&*app, "About").expect("actual navigation row");
+        // Shared lists publish the actual visible rows, so choose a measured
+        // destination near the viewport's bottom rather than an offscreen id.
+        let (category, original) = Category::ALL
+            .iter()
+            .filter_map(|&category| {
+                let rect = row_rect(&app, category)?;
+                (category != app.selected() && rect.y0 >= 200.0 && rect.y1 <= 520.0)
+                    .then_some((category, rect))
+            })
+            .max_by(|a, b| a.1.y0.total_cmp(&b.1.y0))
+            .expect("a real visible navigation row");
         let harness = Framed::harness_mut(&mut app);
         harness.send(&winit::event::WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(100.0, 300.0),
         });
-        harness.scroll(0.0, -40.0);
-        let scrolled = row_rect(&*app, "About").expect("scrolled navigation row");
+        harness.scroll(0.0, -3.0);
+        let scrolled = row_rect(&app, category).expect("scrolled navigation row");
         assert!(
             scrolled.y0 < original.y0,
             "the real wheel route scrolled the sidebar"
         );
         assert!(
             scrolled.y0 >= 0.0 && scrolled.y1 <= 520.0,
-            "About is visible before activation: {scrolled:?}"
+            "the destination is visible before activation: {scrolled:?}"
         );
-        Framed::harness_mut(&mut app)
-            .click_named("About")
-            .expect("activate the real sidebar row");
-        assert_eq!(
-            app.selected(),
-            Category::About,
-            "pending sidebar request: {:?}",
-            app.sidebar_selection.with(|request| *request)
-        );
-        let selected = row_rect(&*app, "About").expect("selected navigation row");
+        let center = scrolled.center();
+        Framed::harness_mut(&mut app).click_at(center.x, center.y);
+        assert_eq!(app.selected(), category, "the actual row selected its pane");
+        let selected = row_rect(&app, category).expect("selected navigation row");
         assert_eq!(
             selected, scrolled,
             "selection must retain the navigation's scroll offset"
@@ -1286,8 +1193,8 @@ mod tests {
             let heading = heading.expect("the content page names the selected destination");
             let back = app.back_button_rect();
             assert!(
-                heading.y0 >= back.y1,
-                "the destination heading begins below the back band, so the back arrow remains obvious"
+                heading.intersect(back).area() == 0.0,
+                "the destination heading and back control must not overlap"
             );
         }
 
@@ -1323,18 +1230,19 @@ mod tests {
         // Case `wide_large_text_reserves_a_readable_sidebar_before_layout`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = config.app().with_width_hint(1440.0);
+            let app = config.app().with_width_hint(1800.0);
             let app =
-                layout_at_with_theme(app, 1440.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
+                layout_at_with_theme(app, 1800.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
             assert!(
                 !app.is_narrow(),
-                "1440px still admits a readable split at 200% text"
+                "1800px admits a readable split above the scaled compact breakpoint"
             );
             let sidebar = app
                 .shell
                 .as_ref()
                 .expect("layout builds the shell")
-                .sidebar_panel_rect();
+                .geometry()
+                .sidebar_column;
             assert!(
                 (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
                 "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
@@ -1439,13 +1347,20 @@ mod tests {
             let app = layout_at(app, 1200.0, 760.0);
             let shell = app.shell.as_ref().expect("shell built");
             let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
-            assert_eq!(
-                names,
-                vec!["TextInput", "Container", "Container"],
-                "shell chrome is search + nav + content — no title/app-name header widget"
+            assert!(names.contains(&"NavList"), "the category list is admitted");
+            assert!(
+                names.contains(&"SearchField"),
+                "the search field is admitted"
             );
+            for child in shell.children() {
+                assert_ne!(
+                    child.accessibility().and_then(|node| node.name).as_deref(),
+                    Some("Settings"),
+                    "window chrome owns the app name; the shell may name its destination"
+                );
+            }
             // And the resolved layout is the wide split.
-            assert_eq!(shell.layout(), ui::widget::ShellLayout::Wide);
+            assert!(shell.geometry().side_by_side);
         }
 
         // Case `root_landmark_is_retained_across_responsive_shell_rebuilds`.
