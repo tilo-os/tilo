@@ -63,7 +63,9 @@ pub struct Dispatcher<R: Resource> {
     me: Option<Rc<str>>,
     /// A dispatcher lent to an admitted effect keeps its original custody.
     /// Clones cannot turn later work into the host participant's invocation.
-    custody: Option<ui_core::invocation_scope::ResourceInvocationScope>,
+    /// Share the immutable scope rather than embedding its owner/lease in every
+    /// view dispatcher: copying the full scope also inflates construction stacks.
+    custody: Option<Rc<ui_core::invocation_scope::ResourceInvocationScope>>,
     /// Each queued invocation with the effect invocation it continues,
     /// when an effect's handler or completion queued it.
     queue: Rc<RefCell<VecDeque<AttributedControlInvocation>>>,
@@ -155,7 +157,7 @@ impl<R: Resource> Dispatcher<R> {
         custody: ui_core::invocation_scope::ResourceInvocationScope,
     ) -> Self {
         let mut dispatcher = self.clone();
-        dispatcher.custody = Some(custody);
+        dispatcher.custody = Some(Rc::new(custody));
         // An effect's group cannot absorb the person's unrelated input.
         dispatcher.group = Rc::default();
         dispatcher
