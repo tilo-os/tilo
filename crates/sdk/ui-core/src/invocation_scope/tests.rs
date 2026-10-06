@@ -240,6 +240,28 @@ fn shared_actual_dispatch_isolates_typed_range_after_untyped_same_document_edit(
                     Some(caller.lease.request.invocation)
                 );
                 assert_eq!(action.action, *encoded);
+                assert_eq!(
+                    action.context.as_ref().unwrap().executed_action,
+                    Some(action.id)
+                );
+                fixture
+                    .store
+                    .read(&fixture.checkout.id, |doc| {
+                        for hash in contribution.changes {
+                            let change = doc.get_change_by_hash(hash).unwrap();
+                            let context = tilo_actions::ActionContext::from_change_message(
+                                change.message().unwrap(),
+                            )
+                            .unwrap();
+                            assert_eq!(context.executed_action, Some(action.id));
+                            assert_eq!(
+                                context.source_invocation,
+                                Some(caller.lease.request.invocation)
+                            );
+                            assert_eq!(change.actor_id(), &action.actor());
+                        }
+                    })
+                    .unwrap();
             }
             Ok(())
         })
