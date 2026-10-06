@@ -1,8 +1,8 @@
 {
   "date": "2026-10-06",
   "base_commit": "d534036ea8ba0929a0fdbca5fb1f4a13c1bcf301",
-  "fixture": "existing Fedora EPYC rcargo builder; real private dbus-daemon and xdg-dbus-proxy; no user bus",
-  "command": "rcargo --no-fallback --on-builder run --locked -p launcher --release --example dbus_proxy_startup -j8",
+  "fixture": "existing Fedora EPYC measurement host; real private dbus-daemon and xdg-dbus-proxy; no user bus",
+  "command": "$CARGO run --locked -p launcher --release --example dbus_proxy_startup -j8",
   "endpoint": "elapsed spawn to production guard returned, with a real UnixStream connect verified per sample; teardown excluded",
   "order": "40 baseline samples, then 40 candidate samples; same checkout, compiler profile, helper and host; no cold filesystem cache guarantee",
   "dbus_proxy": {

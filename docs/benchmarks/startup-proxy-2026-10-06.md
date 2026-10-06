@@ -24,10 +24,11 @@ and guard cleanup pass with the candidate.
 
 ## Reproduction
 
-Run on the same builder with the same checkout/profile and installed helper:
+Run on the measurement host with the same checkout/profile and installed helper.
+Set `CARGO` to cargo or a compatible cargo drop-in:
 
 ```sh
-rcargo --no-fallback --on-builder run --locked -p launcher --release --example dbus_proxy_startup -j8
+"${CARGO:-cargo}" run --locked -p launcher --release --example dbus_proxy_startup -j8
 ```
 
 The example starts its own private dbus-daemon, launches 40 production proxies,
@@ -78,7 +79,7 @@ a pipeline cache contains the driver's deferred shader compilation.
 
 ## Validation
 
-Remote `rcargo --no-fallback`, `--locked`, eight jobs:
+Built and executed on the remote measurement host with `--locked`, eight jobs:
 
 - Launcher `--lib dbus_proxy::`: six production/guard regression tests passed.
 - Launcher `--test it bus_filters::`: real private-bus allowlist test passed.
