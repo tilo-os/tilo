@@ -23,13 +23,15 @@ use std::collections::HashSet;
 
 /// Private foreground feedback, stripped of logical keys and typed text.
 /// Observers cannot consume the input or obtain a document edit context.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum PhysicalInput {
     Key {
         key: winit::keyboard::PhysicalKey,
         state: winit::event::ElementState,
     },
     Focused(bool),
+    /// Immutable configuration from the ordinary focused native event stream.
+    Layout(Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>),
 }
 
 impl PhysicalInput {
@@ -44,6 +46,7 @@ impl PhysicalInput {
                 state: event.state,
             }),
             WindowEvent::Focused(focused) => Some(Self::Focused(*focused)),
+            WindowEvent::KeyboardLayoutChanged(layout) => Some(Self::Layout(layout.clone())),
             _ => None,
         }
     }

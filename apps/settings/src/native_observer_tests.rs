@@ -637,3 +637,97 @@ fn keyboard_map_observes_foreground_physical_keys_while_search_keeps_editing() {
     h.rebuild();
     assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
 }
+
+fn keyboard_map_symbols(
+    widget: &dyn Widget,
+    key: PhysicalKey,
+) -> Option<Vec<winit::keyboard::KeyboardLayoutSymbol>> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return map.active_symbols(key);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| keyboard_map_symbols(child, key))
+}
+
+fn keyboard_map_value(widget: &dyn Widget) -> Option<String> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return map.accessibility()?.value;
+    }
+    widget.children().into_iter().find_map(keyboard_map_value)
+}
+
+#[test]
+fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_capture() {
+    let mut h = Harness::new();
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    let snapshot = |text: &str| {
+        std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+            depressed: 1,
+            latched: 0,
+            locked: 0,
+            group: 1,
+            keys: vec![winit::keyboard::KeyboardLayoutKey {
+                physical: key,
+                symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                    name: text.into(),
+                    text: text.into(),
+                }],
+            }],
+        })
+    };
+    let original = snapshot("z");
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(original)));
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    assert_eq!(keyboard_map_symbols(&*h.app, key).unwrap()[0].text, "z");
+    let value = keyboard_map_value(&*h.app).unwrap();
+    assert!(value.contains("AD06: z"));
+    assert!(
+        !value.contains("AD06: y"),
+        "live accessibility must not claim the preferred US symbol"
+    );
+    h.app.select(Category::About);
+    h.rebuild();
+    let active = snapshot("Z");
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(active)));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Pressed,
+        });
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    assert_eq!(keyboard_map_symbols(&*h.app, key).unwrap()[0].text, "Z");
+    assert!(keyboard_map_value(&*h.app).unwrap().contains("AD06: Z"));
+    assert_eq!(
+        keyboard_map_pressed(&*h.app, key),
+        Some(false),
+        "off-page presses never enter the map"
+    );
+    let heads = h.doc.get_heads();
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    assert_eq!(
+        keyboard_map_symbols(&*h.app, key),
+        None,
+        "actual blur revokes native configuration"
+    );
+    let value = keyboard_map_value(&*h.app).unwrap();
+    assert!(!value.contains("AD06: y"));
+    assert!(!value.contains("AD06: Z"));
+    assert_eq!(
+        h.doc.get_heads(),
+        heads,
+        "configuration and press feedback stay out of CRDT state"
+    );
+}

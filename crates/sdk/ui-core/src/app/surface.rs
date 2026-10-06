@@ -39,6 +39,22 @@ impl AppSurface for winit::window::Window {
 }
 
 impl App {
+    /// Restore the real focused native configuration after modal/page
+    /// replacement, without replaying any key press or typed input.
+    pub(super) fn restore_physical_configuration(&mut self) {
+        if self.close_admission.dialog.is_none()
+            && self
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
+            && self.history_layout.is_none_or(|layout| layout.app_visible)
+            && let Some(layout) = self.input.keyboard_layout.clone()
+        {
+            self.root_widget
+                .observe_physical_input(crate::widget::PhysicalInput::Layout(Some(layout)));
+        }
+    }
+
     /// Handle `event` from the surface the app is shown on. Pointer
     /// positions are in the surface's physical pixels, relative to the
     /// app's own origin. `synthesized_touch` marks pointer events the host
@@ -55,6 +71,14 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
+        match &event {
+            WindowEvent::KeyboardLayoutChanged(layout) => {
+                self.input.keyboard_layout.clone_from(layout)
+            }
+            WindowEvent::Focused(false) => self.input.keyboard_layout = None,
+            _ => {}
+        }
+        self.restore_physical_configuration();
         if self.close_admission.dialog.is_some()
             || self
                 .history
@@ -1064,6 +1088,75 @@ mod tests {
                     .all(|event| matches!(event, crate::widget::PhysicalInput::Focused(false))),
                 "modal keystrokes must not reach foreground observers"
             );
+        });
+    }
+
+    #[test]
+    fn native_configuration_resumes_after_modal_without_replaying_private_input() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        let snapshot = |text: &str| {
+            std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                depressed: 0,
+                latched: 0,
+                locked: 0,
+                group: 1,
+                keys: vec![winit::keyboard::KeyboardLayoutKey {
+                    physical: winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY),
+                    symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                        name: text.into(),
+                        text: text.into(),
+                    }],
+                }],
+            })
+        };
+        app.surface_input(
+            &region,
+            WindowEvent::KeyboardLayoutChanged(Some(snapshot("z"))),
+            false,
+        );
+        app.close_admission.show(
+            "close-title",
+            "close-unsaved",
+            &[crate::close_admission::Choice::KeepEditing],
+            app.input.platform,
+        );
+        PHYSICAL.with_borrow_mut(Vec::clear);
+        let active = snapshot("Z");
+        let heads = app.state.doc.get_heads();
+        app.surface_input(
+            &region,
+            WindowEvent::KeyboardLayoutChanged(Some(active.clone())),
+            false,
+        );
+        PHYSICAL.with_borrow(|events| {
+            assert!(
+                events
+                    .iter()
+                    .all(|event| matches!(event, crate::widget::PhysicalInput::Focused(false)))
+            )
+        });
+        app.close_admission.dialog = None;
+        app.surface_frame(&region, &mut Scene::new());
+        PHYSICAL.with_borrow(|events| assert!(events.iter().any(|event|
+            matches!(event, crate::widget::PhysicalInput::Layout(Some(layout)) if layout == &active))));
+        assert_eq!(
+            app.state.doc.get_heads(),
+            heads,
+            "configuration never edits the document"
+        );
+        app.surface_input(&region, WindowEvent::Focused(false), false);
+        PHYSICAL.with_borrow_mut(Vec::clear);
+        app.surface_frame(&region, &mut Scene::new());
+        PHYSICAL.with_borrow(|events| {
+            assert!(
+                events.is_empty(),
+                "actual window blur revokes native metadata"
+            )
         });
     }
 

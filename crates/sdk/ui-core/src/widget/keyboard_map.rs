@@ -62,10 +62,11 @@ impl KeyboardMapKey {
 struct PressState {
     foreground: bool,
     keys: HashSet<PhysicalKey>,
+    layout: Option<Arc<winit::keyboard::KeyboardLayout>>,
 }
 
 /// Private, process-local physical press state shared across page recomposition.
-/// It contains no logical keys or text and is never a resource or document value.
+/// It contains no entered text or logical input history and never edits a document.
 #[derive(Clone)]
 pub struct KeyboardMapInput {
     state: Arc<Mutex<PressState>>,
@@ -82,6 +83,35 @@ impl Default for KeyboardMapInput {
 }
 
 impl KeyboardMapInput {
+    /// Cache only native configuration while the page is absent. Off-page
+    /// key presses are never retained; actual window blur revokes the cache.
+    pub fn observe_configuration(&self, input: &crate::widget::PhysicalInput) {
+        let changed = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match input {
+                crate::widget::PhysicalInput::Layout(layout) => {
+                    let changed = state.layout != *layout;
+                    state.layout.clone_from(layout);
+                    changed
+                }
+                crate::widget::PhysicalInput::Focused(false) => {
+                    let changed = state.layout.is_some() || !state.keys.is_empty();
+                    state.layout = None;
+                    state.keys.clear();
+                    state.foreground = false;
+                    changed
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.wake.wake();
+        }
+    }
+
     /// Forget held positions when the owning foreground page disappears.
     pub fn clear(&self) {
         let changed = {
@@ -108,6 +138,8 @@ pub struct KeyboardMap {
     model_size: Size<f64>,
     label: String,
     extra_levels: bool,
+    preview_level: usize,
+    live_layout: bool,
     rect: Rect,
     focused: bool,
     input: KeyboardMapInput,
@@ -123,6 +155,8 @@ impl KeyboardMap {
             model_size,
             label,
             extra_levels: false,
+            preview_level: 0,
+            live_layout: false,
             rect: Rect::ZERO,
             focused: false,
             input: KeyboardMapInput::default(),
@@ -138,11 +172,27 @@ impl KeyboardMap {
         self
     }
 
+    /// Show the actual focused seat's effective symbols. Explicit layout
+    /// previews leave this disabled so they never masquerade as the live seat.
+    #[must_use]
+    pub fn with_live_layout(mut self, enabled: bool) -> Self {
+        self.live_layout = enabled;
+        self
+    }
+
     /// Show levels 5–8 when the selected XKB layout supplies them.
     /// Layouts with fewer levels retain their first bank.
     #[must_use]
     pub fn with_extra_levels(mut self, extra: bool) -> Self {
         self.extra_levels = extra && self.level_count() > 4;
+        self
+    }
+
+    /// Inspect any ordered native level while preserving all levels in the
+    /// shared tooltip/accessibility surface. Does not change the live seat.
+    #[must_use]
+    pub fn with_preview_level(mut self, level: usize) -> Self {
+        self.preview_level = level.min(31);
         self
     }
 
@@ -187,13 +237,19 @@ impl KeyboardMap {
                 crate::widget::PhysicalInput::Focused(false) => {
                     self.focused = false;
                     pressed.foreground = false;
-                    let changed = !pressed.keys.is_empty();
+                    let changed = !pressed.keys.is_empty() || pressed.layout.is_some();
                     pressed.keys.clear();
+                    pressed.layout = None;
                     changed
                 }
                 crate::widget::PhysicalInput::Focused(true) => {
                     pressed.foreground = true;
                     false
+                }
+                crate::widget::PhysicalInput::Layout(layout) => {
+                    let changed = pressed.layout != layout;
+                    pressed.layout = layout;
+                    changed
                 }
                 crate::widget::PhysicalInput::Key { key, state }
                     if self.keys.iter().any(|entry| entry.physical == key) =>
@@ -221,6 +277,39 @@ impl KeyboardMap {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys
             .contains(&key)
+    }
+
+    /// Effective focused-seat symbols for this position, independent of the
+    /// logical key event and preview layout. None means no native observation.
+    pub fn active_symbols(
+        &self,
+        key: PhysicalKey,
+    ) -> Option<Vec<winit::keyboard::KeyboardLayoutSymbol>> {
+        self.input
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .layout
+            .as_ref()?
+            .keys
+            .iter()
+            .find(|entry| entry.physical == key)
+            .map(|entry| entry.symbols.clone())
+    }
+
+    fn legend_values(&self, key: &KeyboardMapKey) -> Vec<String> {
+        if self.live_layout {
+            // Missing focused-seat evidence must never fall back to preferences.
+            let symbols = self.active_symbols(key.physical).unwrap_or_default();
+            let legend = symbols
+                .into_iter()
+                .map(|symbol| crate::keycaps::active().native_symbol(&symbol.name, &symbol.text))
+                .collect::<Vec<_>>()
+                .join(" ");
+            vec![legend]
+        } else {
+            key.levels.clone()
+        }
     }
 
     fn paint_key(
@@ -259,7 +348,11 @@ impl KeyboardMap {
             None,
             &path,
         );
-        let style = theme.text(TextRole::Caption);
+        let style = theme.text(if self.live_layout {
+            TextRole::Body
+        } else {
+            TextRole::Caption
+        });
         let ink = if pressed {
             colours.surfaces.content
         } else {
@@ -267,14 +360,24 @@ impl KeyboardMap {
         };
         // Preserve all native levels in metadata, but paint equivalent legends
         // once. Repeated function/control levels must not crowd the keycap.
+        let values = self.legend_values(key);
         let mut legends: Vec<&str> = Vec::new();
-        for legend in key
-            .levels
+        for legend in values
             .iter()
-            .skip(if self.extra_levels { 4 } else { 0 })
-            .take(4)
+            .skip(if self.live_layout {
+                0
+            } else {
+                self.preview_level
+                    .max(if self.extra_levels { 4 } else { 0 })
+            })
+            .take(if self.live_layout { 1 } else { 4 })
         {
-            if !legend.is_empty() && !legends.contains(&legend.as_str()) {
+            if !legend.is_empty()
+                && !legends.contains(&legend.as_str())
+                && (legends.is_empty()
+                    || self.rect.width() / self.model_size.width * key.legend_rect().width()
+                        >= f64::from(theme.text(TextRole::Body).size) * 3.0)
+            {
                 legends.push(legend);
             }
         }
@@ -416,6 +519,29 @@ impl Widget for KeyboardMap {
             self.input.wake.wake();
         }
     }
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        let scale = self.rect.width() / self.model_size.width.max(1.0);
+        let local = Point::new(
+            (point.x - self.rect.x0) / scale,
+            (point.y - self.rect.y0) / scale,
+        );
+        self.keys
+            .iter()
+            .find(|key| key.legend_rect().contains(local))
+            .map(|key| {
+                let rect = key.legend_rect();
+                (
+                    Rect::new(
+                        self.rect.x0 + rect.x0 * scale,
+                        self.rect.y0 + rect.y0 * scale,
+                        self.rect.x0 + rect.x1 * scale,
+                        self.rect.y0 + rect.y1 * scale,
+                    ),
+                    format!("{}: {}", key.name, self.legend_values(key).join(" / ")),
+                )
+            })
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -452,7 +578,7 @@ impl Widget for KeyboardMap {
                 .with_value(
                     self.keys
                         .iter()
-                        .map(|key| format!("{}: {}", key.name, key.levels.join(" / ")))
+                        .map(|key| format!("{}: {}", key.name, self.legend_values(key).join(" / ")))
                         .collect::<Vec<_>>()
                         .join("; "),
                 ),

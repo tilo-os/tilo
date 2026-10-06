@@ -834,13 +834,19 @@ pub enum InputEffect {
     /// Inspect any installed XKB layout without changing what the keyboard types.
     #[effect(idempotent)]
     PreviewLayout { source: String },
+    /// Show the actual focused keyboard group and modifier state.
+    #[effect(idempotent)]
+    ShowLiveKeyboardMap,
     /// Inspect XKB levels 5–8 when the selected layout supplies them.
     #[effect(idempotent)]
     SetPreviewExtraLevels { on: bool },
+    /// Inspect one of the compiled native modifier levels without applying it.
+    #[effect(idempotent)]
+    SetPreviewLevel { level: String },
     /// Choose an explicit physical model for the preview and keyboard.
     #[effect(idempotent)]
     SetKeyboardModel {
-        #[param("The physical model", choices = ["pc104", "pc105"])]
+        #[param("The physical model", choices = ["pc104", "pc105", "jp106", "kr106"])]
         model: String,
     },
     /// Type with the inspected layout, adding it when space is available.
@@ -1049,13 +1055,51 @@ fn apply(
                 return Err("the source is not an installed XKB layout".into());
             }
             input.keyboard_preview = Some(source);
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
         }
-        E::SetPreviewExtraLevels { on } => input.keyboard_preview_extra_levels = on,
+        E::ShowLiveKeyboardMap => {
+            input.keyboard_preview = None;
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+        }
+        E::SetPreviewExtraLevels { on } => {
+            input
+                .keyboard_preview
+                .get_or_insert_with(|| input.keyboard_layout.clone());
+            input.keyboard_preview_extra_levels = on;
+            input.keyboard_preview_level = 0;
+        }
+        E::SetPreviewLevel { level } => {
+            let level = level
+                .parse::<usize>()
+                .ok()
+                .filter(|level| *level < 32)
+                .ok_or("invalid keyboard preview level")?;
+            let source = input
+                .keyboard_preview
+                .as_deref()
+                .unwrap_or(&input.keyboard_layout);
+            let map = crate::keyboard_preview::map_with_options(
+                source,
+                &input.keyboard_model,
+                String::new(),
+                Some(""),
+            )?;
+            if level >= map.level_count() {
+                return Err("the layout does not supply this level".into());
+            }
+            input.keyboard_preview = Some(source.to_owned());
+            input.keyboard_preview_level = level;
+            input.keyboard_preview_extra_levels = false;
+        }
         E::SetKeyboardModel { model } => {
             if !crate::keyboard_preview::valid_model(&model) {
                 return Err("unknown physical keyboard model".into());
             }
             input.keyboard_model = model;
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
         }
         E::ApplyPreview => {
             let source = input
@@ -1067,7 +1111,11 @@ fn apply(
             } else {
                 E::AddSource { source }
             };
-            return apply(input, next, catalog);
+            apply(input, next, catalog)?;
+            input.keyboard_preview = None;
+            input.keyboard_preview_level = 0;
+            input.keyboard_preview_extra_levels = false;
+            return Ok(());
         }
         E::AddSource { source } => {
             if !installed(&source) {
@@ -1443,6 +1491,8 @@ impl MouseKeyboardPane {
                         vec![
                             ("pc104".into(), t("input-map-ansi")),
                             ("pc105".into(), t("input-map-iso")),
+                            ("jp106".into(), t("input-map-jis")),
+                            ("kr106".into(), t("input-map-korean")),
                         ],
                         &self.last.keyboard_model,
                         "input.map.model",
@@ -1452,25 +1502,45 @@ impl MouseKeyboardPane {
                 ),
             ),
             caption(&t("input-map-instructions")),
+            caption(&t(if self.last.keyboard_preview.is_none() {
+                "input-map-live-description"
+            } else {
+                "input-map-preview-description"
+            })),
         ];
         match self.keyboard_preview(source) {
             Ok(map) => {
                 content.push(choice_row(
-                    &t("input-map-extra-levels"),
+                    &t("input-map-level"),
                     Box::new(
-                        Toggle::from_state(&ui::LocalState::new(
-                            self.last.keyboard_preview_extra_levels,
-                        ))
-                        .with_id("input.map.extra_levels")
-                        .bound(&self.cx, effect(InputEffect::SET_PREVIEW_EXTRA_LEVELS)),
+                        id_dropdown(
+                            (0..map.level_count())
+                                .map(|level| {
+                                    (
+                                        level.to_string(),
+                                        format!("{} {}", t("input-map-level"), level + 1),
+                                    )
+                                })
+                                .collect(),
+                            &self.last.keyboard_preview_level.to_string(),
+                            "input.map.level",
+                            &t("input-map-level"),
+                        )
+                        .bound(&self.cx, effect(InputEffect::SET_PREVIEW_LEVEL)),
                     ),
                 ));
                 content.push(Box::new(
-                    map.with_extra_levels(self.last.keyboard_preview_extra_levels),
+                    map.with_extra_levels(self.last.keyboard_preview_extra_levels)
+                        .with_preview_level(self.last.keyboard_preview_level)
+                        .with_live_layout(self.last.keyboard_preview.is_none()),
                 ));
             }
             Err(_) => content.push(error_caption(&t("input-map-unavailable"))),
         }
+        content.push(Box::new(self.cx.bind_invocation(
+            Button::new("input.map.live", &t("input-map-live")),
+            InputEffect::ShowLiveKeyboardMap,
+        )));
         content.push(caption(&format!(
             "{} {}",
             t("input-map-levels"),
@@ -2695,6 +2765,8 @@ mod tests {
             preview.clone(),
             model.clone(),
             levels.clone(),
+            InputEffect::SetPreviewLevel { level: "1".into() },
+            InputEffect::ShowLiveKeyboardMap,
             InputEffect::ApplyPreview,
         ];
         let actions = app.actions().unwrap();
@@ -2730,6 +2802,20 @@ mod tests {
                 model: "../../private".into()
             }
         ));
+        assert!(!set(
+            &mut app,
+            InputEffect::SetPreviewLevel { level: "99".into() }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::SetPreviewLevel { level: "1".into() }
+        ));
+        assert_eq!(app.settings::<InputPrefs>().get().keyboard_preview_level, 1);
+        assert!(set(&mut app, InputEffect::ShowLiveKeyboardMap));
+        let input = app.settings::<InputPrefs>().get();
+        assert!(input.keyboard_preview.is_none());
+        assert_eq!(input.keyboard_preview_level, 0);
+        assert_eq!(input.keyboard_layout, "de");
     }
 
     fn set(app: &mut TestApp<SettingsShell>, effect: InputEffect) -> bool {

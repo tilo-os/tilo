@@ -35,7 +35,7 @@ removal live in the secondary Input sources card.
 
 Personal Settings' Keyboard page previews every installed XKB layout and variant
 without changing the active source. The explicit physical model is ANSI pc104 or
-ISO pc105; the map does not claim to detect a laptop's geometry. `keyboard_model`
+ISO pc105, Japanese jp106 or Korean kr106; the map does not claim to detect a laptop's geometry. `keyboard_model`
 selects the session model used by the compositor and Xwayland; missing or invalid
 legacy values retain pc105. **Use this layout** applies the preview through the
 same typed input preference action as the ordinary active-source chooser.
@@ -45,8 +45,18 @@ installation. It ignores environment and user include paths, rejects path
 arguments, and returns bounded native physical identities and symbol levels.
 Settings owns licensed Open Group model geometry, presentation and the declared
 Preview layout, Keyboard model, Additional levels and Use this layout actions.
-The shared KeyboardMap widget shows the first four modifier levels and offers a
-second bank for levels 5–8. Unsupported metadata is reported explicitly rather
+The shared KeyboardMap widget provides a selected native level, with every
+compiled level available through the declared level selector, shared tooltip
+and accessibility metadata. Narrow maps keep the selected symbol dominant.
+Show live keyboard follows immutable configuration emitted by the ordinary
+focused Wayland keymap/modifier events, including raw masks and current group;
+explicit previews never relabel themselves as the live seat. Physical presses
+remain private and foreground-only, including while page search has focus.
+Page replacement retains only configuration; actual blur revokes it. Framework
+modals suppress key feedback and resume from the real configuration cache.
+Catalogue entries require a symbols file in the compiler's same fixed root,
+so an uninstalled custom template is not offered. Installed custom files remain
+valid sources. Unsupported metadata is reported explicitly rather
 than replacing it with a sample QWERTY map.
 
 While this page is visible in the focused Settings window, ordinary physical

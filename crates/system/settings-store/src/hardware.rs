@@ -1518,7 +1518,7 @@ impl RichInputConfig {
         section
             .get("keyboard_model")
             .and_then(serde_json::Value::as_str)
-            .filter(|model| matches!(*model, "pc104" | "pc105"))
+            .filter(|model| matches!(*model, "pc104" | "pc105" | "jp106" | "kr106"))
             .unwrap_or("pc105")
             .clone_into(&mut config.keyboard_model);
         config.normalise_sources();

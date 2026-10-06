@@ -2,6 +2,23 @@ use super::{Error, Key, Symbol};
 use winit::{keyboard::PhysicalKey, platform::scancode::PhysicalKeyExtScancode};
 use xkbcommon::xkb;
 
+const ROOT: &str = "/usr/share/X11/xkb";
+
+pub(super) fn is_installed(layout: &str) -> Result<bool, Error> {
+    let root = std::path::Path::new(ROOT).join("symbols");
+    if !std::fs::metadata(&root)
+        .map_err(|_| Error::Unavailable)?
+        .is_dir()
+    {
+        return Err(Error::Unavailable);
+    }
+    match std::fs::metadata(root.join(layout)) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(Error::Unavailable),
+    }
+}
+
 pub(super) fn compile(
     layout: &str,
     variant: &str,
@@ -11,7 +28,7 @@ pub(super) fn compile(
 ) -> Result<Vec<Key>, Error> {
     let mut context =
         xkb::Context::new(xkb::CONTEXT_NO_DEFAULT_INCLUDES | xkb::CONTEXT_NO_ENVIRONMENT_NAMES);
-    if !context.include_path_append(std::path::Path::new("/usr/share/X11/xkb")) {
+    if !context.include_path_append(std::path::Path::new(ROOT)) {
         return Err(Error::Unavailable);
     }
     let keymap = xkb::Keymap::new_from_names(
