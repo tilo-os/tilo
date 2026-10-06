@@ -252,6 +252,16 @@ impl SelectionModel {
         self.anchor
     }
 
+    /// Follow items when their owning collection changes row order. Map each
+    /// old position to its new position, or `None` if the item disappeared.
+    /// The cursor and range anchor remain independent of the selected set,
+    /// including a cursor left on an item deselected by Ctrl-click.
+    pub fn remap_indices(&mut self, map: impl Fn(usize) -> Option<usize>) {
+        self.selected = self.selected.iter().copied().filter_map(&map).collect();
+        self.primary = self.primary.and_then(&map);
+        self.anchor = self.anchor.and_then(map);
+    }
+
     /// Drop everything — no selection, no anchor, no cursor.
     pub fn clear(&mut self) {
         self.selected.clear();
@@ -440,6 +450,24 @@ mod tests {
             assert!(selection.is_selected(&3));
             assert_eq!(selection.primary(), Some(&3));
         }
+    }
+
+    #[test]
+    fn remapping_selection_preserves_an_unselected_cursor_and_drops_missing_items() {
+        let mut selection = SelectionModel::new();
+        selection.apply_click(0, false, false);
+        selection.apply_click(2, true, false);
+        selection.apply_click(2, true, false);
+        selection.remap_indices(|index| [Some(3), None, Some(1)].get(index).copied().flatten());
+        assert_eq!(selection.selected(), vec![3]);
+        assert_eq!(selection.primary(), Some(1));
+        assert_eq!(selection.anchor(), Some(1));
+        selection.apply_click(2, false, true);
+        assert_eq!(selection.selected(), vec![1, 2]);
+        selection.remap_indices(|index| (index == 2).then_some(0));
+        assert_eq!(selection.selected(), vec![0]);
+        assert_eq!(selection.primary(), Some(0));
+        assert_eq!(selection.anchor(), None);
     }
 
     /// What must hold after one click of a scripted sequence.
