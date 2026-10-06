@@ -104,6 +104,7 @@ bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profi
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
 cp "$crate/web/resource.html" "$out/resource.html"
+cp "$crate/web/resource.css" "$out/resource.css"
 # The live plane's MoQ library is bundled from the published @moq/net pinned
 # in scripts/moq-browser/package-lock.json, never committed; this replaces
 # any local development copy just copied.

@@ -66,6 +66,12 @@ pub enum ChatEffect {
     /// whole text and the agent's record of its work.
     #[effect(view, row, returns)]
     ReadMessage { message: String },
+    /// Copy resource link
+    #[effect(job, device_only, returns)]
+    CopyResourceLink { message: String },
+    /// Open resource in browser
+    #[effect(job, device_only, returns)]
+    OpenResourceLink { message: String },
     /// Attach file
     ///
     /// Shares a file from this device in a conversation: its bytes go to
@@ -199,8 +205,11 @@ impl ChatApp {
                     "videoCapture": false,
                 })));
             }
-            ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
-                return Err("Browser handoff requires the owning host".into());
+            ChatEffect::CopyResourceLink { .. }
+            | ChatEffect::OpenResourceLink { .. }
+            | ChatEffect::OpenSlackChannel { .. }
+            | ChatEffect::OpenDiscordChannel { .. } => {
+                return Err("Browser navigation requires the owning host".into());
             }
             ChatEffect::JoinCall { channel } => {
                 let channel_id = channel.clone();
@@ -215,14 +224,7 @@ impl ChatApp {
             ChatEffect::Unmute { channel } => {
                 self.native_voice_command(&channel, Command::SetMuted { muted: false })?;
             }
-            ChatEffect::CallStatus { channel } => {
-                self.native_voice_command(&channel, Command::Status)?;
-                return Ok(Effected::value(serde_json::json!({
-                    "channel": self.native_voice.channel,
-                    "reported": self.native_voice.snapshot,
-                    "refreshRequested": true,
-                })));
-            }
+            ChatEffect::CallStatus { channel } => return self.native_call_status(&channel),
             ChatEffect::StartCall => self.start_call(None)?,
             ChatEffect::StartVideoCall => return Err(video_call_unavailable_reason()),
             ChatEffect::SelectInput { channel, input } => {
@@ -235,6 +237,15 @@ impl ChatApp {
             }
         }
         Ok(Effected::done())
+    }
+
+    fn native_call_status(&mut self, channel: &str) -> EffectAnswer {
+        self.native_voice_command(channel, Command::Status)?;
+        Ok(Effected::value(serde_json::json!({
+            "channel": self.native_voice.channel,
+            "reported": self.native_voice.snapshot,
+            "refreshRequested": true,
+        })))
     }
 
     /// Start a call in the open workspace: join its voice channel, making
@@ -502,6 +513,7 @@ impl ChatApp {
             "text": message.text,
             "work": message.work,
             "reference": message.reference,
+            "sourceProvider": message.source_provider,
         }))
     }
 }

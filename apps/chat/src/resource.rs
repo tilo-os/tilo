@@ -273,6 +273,7 @@ fn message_resource(
         pinned: message.pinned,
         parent: message.parent,
         reference: message.reference,
+        source_provider: message.source_provider,
     }
 }
 
@@ -507,6 +508,12 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     }
 
     fn effect(&mut self, effect: ChatEffect, cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
+        if matches!(
+            effect,
+            ChatEffect::CopyResourceLink { .. } | ChatEffect::OpenResourceLink { .. }
+        ) {
+            return self.begin_resource_navigation(&effect, cx.reply());
+        }
         if let Some(url) = crate::external::browser_destination(&effect)? {
             return Ok(cx.thread(
                 move |_| ui::widget::try_open_external_url(&url).map_err(|error| error.to_string()),
@@ -656,7 +663,7 @@ mod tests {
         app.call_on(
             "chat.channel:c_general",
             "share-resource",
-            serde_json::json!({"reference": reference, "text": "Discuss this paragraph"}),
+            serde_json::json!({"reference": reference, "sourceProvider": "record:so.tilo.word-processor:proposal", "text": "Discuss this paragraph"}),
         )
         .unwrap();
         app.settle();
@@ -677,6 +684,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result["reference"], reference);
+        assert_eq!(
+            result["sourceProvider"],
+            "record:so.tilo.word-processor:proposal"
+        );
         assert_eq!(result["author"], author);
         app.set_role(ui::permissions::Role::Viewer);
         assert!(
