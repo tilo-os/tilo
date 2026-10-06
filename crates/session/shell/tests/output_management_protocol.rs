@@ -386,6 +386,12 @@ impl Harness {
         while Instant::now() < deadline {
             let dispatched_at = Instant::now();
             self.display.dispatch_clients(&mut self.state).unwrap();
+            self.state.output_management.poll_staging();
+            if self.state.output_management.has_pending_apply() {
+                self.state
+                    .output_management
+                    .resolve_transactions(DisplayTransaction::load().as_ref());
+            }
             if dispatched_at.elapsed() > Duration::from_millis(100) {
                 eprintln!(
                     "separate client server dispatch: {:?}",
