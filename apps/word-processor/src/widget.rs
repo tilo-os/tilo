@@ -9864,11 +9864,40 @@ impl Widget for WordProcessorWidget {
         }))
     }
 
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        let mut handlers = self.tool_bar.resource_operation_handlers();
+        handlers.extend(
+            self.semantic_readers()
+                .iter()
+                .map(|reader| reader.operation_type().to_string()),
+        );
+        for child in self.children() {
+            handlers.extend(child.resource_operation_handlers());
+        }
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        operation: &ui::widget::ResourceOperation<'_>,
+        edits: &mut ui::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = self.tool_bar.start_operation(operation, edits, path)? {
+            return Ok(Some(started));
+        }
+        ui::widget::start_in_children(self, operation, edits, path)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the editor binds, rebases and reconciles in one sync pass"
     )]
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        // The toolbar is painted inside the document's authored chrome rather
+        // than exposed as another accessibility child. Its deferred native
+        // View requests still need the shared retained lifecycle.
+        self.tool_bar.sync(state, root);
         let (state, root) = ui::doc::document_ref(state, root);
         #[cfg(test)]
         if self.source.is_none() && self.dispatch.is_some() {
@@ -9919,7 +9948,8 @@ impl Widget for WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.tool_bar.settle(&mut edits.reborrow(), path);
         self.drain_image_choice(edits);
         if let Some(scenario) = self.staged_scenario.take() {
             self.run_staged_scenario(edits, &scenario);
@@ -10443,6 +10473,10 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
 }
 
 impl ui::resources::PublishesResources for WordProcessorWidget {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui::resources::resources(&self.tool_bar, doc)
+    }
+
     // The document is the framework's publication; the editor adds only
     // what an edit answers its caller with.
     fn document_action_result(
@@ -10473,17 +10507,23 @@ impl ui::widget::controls::ActionControls for WordProcessorWidget {
         domain: &ui::ControlDomain,
         attachment: ui::control_custody::CustodyAttachment,
     ) {
+        ui::widget::controls::install_control_custody(&mut self.tool_bar, domain, attachment);
         for child in self.children_mut() {
             ui::widget::controls::install_control_custody(child, domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
+        ui::widget::controls::take_control_invocation(&mut self.tool_bar).or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        bindings.extend(ui::widget::controls::control_action_bindings(
+            &self.tool_bar,
+        ));
         self.for_each_child(&mut |child| {
             bindings.extend(ui::widget::controls::control_action_bindings(child));
         });
@@ -10493,6 +10533,7 @@ impl ui::widget::controls::ActionControls for WordProcessorWidget {
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
+        ui::widget::controls::refresh_control_action_availability(&mut self.tool_bar, allowed);
         for child in self.children_mut() {
             ui::widget::controls::refresh_control_action_availability(child, allowed);
         }

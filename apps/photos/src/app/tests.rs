@@ -1644,39 +1644,38 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
     eprintln!("phase narrow_header_keeps_every_command_reachable_through_more");
     {
-        let mut app = test_app();
-        let mut doc = AutoCommit::new();
-        let image = OpenImage::from_path("/tmp/compact.png", 100, 50);
-        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
-        app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
-        app.original_identity = Some(decode_key(&image));
-        present(&mut app, &doc);
-        app.refresh();
-        sync(&mut app, &mut doc);
-        lay_out_header(&mut app, 520.0);
+        let mut hosted =
+            ui::framework::testing::TestApp::<crate::resource::PhotosShell>::capture_at(
+                Some("opened"),
+                (520, 800),
+            )
+            .unwrap();
         assert!(
-            toolbar_names(&app)
+            hosted
+                .harness()
+                .controls()
                 .iter()
-                .any(|name| name == "More commands"),
+                .any(|control| { control.name.as_deref() == Some("More commands") }),
             "a narrow header moves commands into More"
         );
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            "toolbar.overflow",
-            &AccessAction::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
-        let toolbar = app.chrome.toolbar.accessibility().unwrap();
-        let menu = toolbar
-            .children
-            .iter()
-            .find(|node| node.role == Role::Menu)
-            .expect("the overflow opens a menu");
+        hosted
+            .harness()
+            .perform_named("toolbar.overflow", &AccessAction::Activate)
+            .expect("the actual host admits the overflow view action");
+        hosted.settle();
         assert!(
-            menu.children
+            hosted
+                .harness()
+                .a11y_nodes()
                 .iter()
-                .any(|item| item.name.as_deref() == Some(tr("photos-save").as_str())),
+                .any(|(_, node)| { node.role() == ui::accesskit::Role::Menu }),
+            "the admitted overflow opens a real menu"
+        );
+        assert!(
+            hosted.harness().controls().iter().any(|control| {
+                control.role == ui::accesskit::Role::MenuItem
+                    && control.name.as_deref() == Some(tr("photos-save").as_str())
+            }),
             "Save stays reachable from the menu"
         );
     }
