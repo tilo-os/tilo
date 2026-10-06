@@ -1844,17 +1844,17 @@ fn pending_change_actions(task: &tilo_desktop_model::WorkspaceTask) -> [Publishe
         tilo_actions::ActionParam::required(
             "status",
             tilo_actions::ParamType::Text,
-            "Exact queued or waiting status returned by read-task",
+            "Exact queued or waiting status returned by read-pending-task",
         ),
         tilo_actions::ActionParam::required(
             "run_epoch",
             tilo_actions::ParamType::Integer,
-            "Run epoch returned by read-task",
+            "Run epoch returned by read-pending-task",
         ),
         tilo_actions::ActionParam::required(
             "pending_revision",
             tilo_actions::ParamType::Integer,
-            "Pending instruction revision returned by read-task",
+            "Pending instruction revision returned by read-pending-task",
         ),
     ];
     let mut amendment = frontier.clone();
@@ -2449,6 +2449,91 @@ mod tests {
             task.title,
             "only explicitly legacy title-only work may use its title as instruction"
         );
+    }
+
+    #[test]
+    fn pending_reader_and_catalogue_follow_current_owner_frontier() {
+        use tilo_desktop_model::WorkspaceTaskStatus;
+
+        let room = "room-pending";
+        let mut task = task("task:pending", "scribe");
+        let resource = format!("{TASK_PREFIX}{}", task.id);
+        let read = envelope(&resource, "read-pending-task", None);
+        let instruction = "Complete replacement\n  preserve indentation\n";
+        let mut owner_control = control("scribe", 7, 0, instruction);
+        owner_control.active_run = None;
+        owner_control.pending_revision = 3;
+        owner_control.queue_ordinal = Some(12);
+
+        for status in [
+            WorkspaceTaskStatus::Queued,
+            WorkspaceTaskStatus::Waiting,
+            WorkspaceTaskStatus::InProgress,
+            WorkspaceTaskStatus::Done,
+            WorkspaceTaskStatus::Cancelled,
+        ] {
+            task.status = status;
+            for active in [false, true] {
+                let mut current = owner_control.clone();
+                if active {
+                    current.active_run = control("scribe", 7, 0, instruction).active_run;
+                }
+                let service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
+                    room: room.into(),
+                    generation: 9,
+                    tasks: vec![task.clone()],
+                    controls: std::collections::BTreeMap::from([(task.id.clone(), current)]),
+                });
+                let pending = matches!(
+                    status,
+                    WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
+                ) && !active;
+                let result = read_pending_task(room, &read, &service);
+                assert_eq!(
+                    result.is_ok(),
+                    pending,
+                    "status {status:?}, active {active}"
+                );
+                let actions = task_actions(&service.0.tasks, &service.0.controls);
+                for verb in ["read-pending-task", "amend-pending", "cancel-pending"] {
+                    assert_eq!(
+                        actions
+                            .iter()
+                            .any(|action| action.resource == resource && action.action == verb),
+                        pending,
+                        "catalogue {verb}, status {status:?}, active {active}"
+                    );
+                }
+                if let Ok(value) = result {
+                    assert_eq!(value["generation"], 9);
+                    assert_eq!(value["instruction"], instruction);
+                    assert_eq!(value["queue_ordinal"], 12);
+                    assert_eq!(
+                        value["frontier"],
+                        serde_json::json!({
+                            "status": status, "run_epoch": 7, "revision": 3,
+                        })
+                    );
+                    for arguments in [serde_json::json!({}), serde_json::json!({"room": room})] {
+                        assert!(
+                            read_pending_task(
+                                room,
+                                &envelope(&resource, "read-pending-task", Some(arguments)),
+                                &service
+                            )
+                            .is_err()
+                        );
+                    }
+                    assert!(read_pending_task("other-room", &read, &service).is_err());
+                    let mut unavailable = service.0.clone();
+                    unavailable.generation = 0;
+                    assert!(read_pending_task(room, &read, &ReadOnlyTasks(unavailable)).is_err());
+                    let mut unavailable = service.0.clone();
+                    unavailable.controls.clear();
+                    assert!(read_pending_task(room, &read, &ReadOnlyTasks(unavailable)).is_err());
+                }
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
