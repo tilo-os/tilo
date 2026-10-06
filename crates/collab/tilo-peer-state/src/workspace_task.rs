@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{
     MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
     MAX_WORKSPACE_TASK_SUMMARY_BYTES, WorkspaceTask, WorkspaceTaskActiveRun,
-    WorkspaceTaskAuditEvent, WorkspaceTaskControl, WorkspaceTaskDirection,
-    WorkspaceTaskDirectionApplied, WorkspaceTaskExecution, WorkspaceTaskExecutionPhase,
-    WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,
-    WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTaskAuditEvent, WorkspaceTaskCancellationRequest, WorkspaceTaskControl,
+    WorkspaceTaskDirection, WorkspaceTaskDirectionApplied, WorkspaceTaskExecution,
+    WorkspaceTaskExecutionPhase, WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult,
+    WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 
 pub const TASK_CONTROL_KEY: &str = "task_control_v1";
@@ -156,6 +156,13 @@ pub enum WorkspaceTaskCommand {
         assigned_agent: String,
         route: WorkspaceTaskRoute,
         resource: Option<Box<WorkspaceTaskResource>>,
+    },
+    /// Request cooperative cancellation of one exact active run. Appended to
+    /// preserve every prior encoded command variant index.
+    CancelRun {
+        task_id: String,
+        run_epoch: u64,
+        after_revision: u64,
     },
 }
 
@@ -332,6 +339,18 @@ fn dispatch(
         WorkspaceTaskCommand::Retry { task_id, run_epoch } => {
             dispatch_retry(tasks, controls, context, task_id, *run_epoch)
         }
+        WorkspaceTaskCommand::CancelRun {
+            task_id,
+            run_epoch,
+            after_revision,
+        } => cancel_run(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            (*run_epoch, *after_revision),
+            context.now,
+        ),
     }
 }
 
@@ -592,6 +611,7 @@ fn start_run(
         .checked_add(1)
         .ok_or("task run epoch exhausted")?;
     let epoch = control.run_epoch;
+    control.cancellation = None;
     control.active_run = Some(WorkspaceTaskActiveRun {
         epoch,
         agent_id: agent_id.to_owned(),
@@ -702,6 +722,63 @@ fn direct_for_run(
     )
 }
 
+fn cancel_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    actor: &AdmittedTaskActor,
+    task_id: &str,
+    fence: (u64, u64),
+    now: i64,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id, .. } = actor else {
+        return Err("only a person may request task cancellation".into());
+    };
+    let task = task_mut(tasks, task_id)?;
+    let control = controls
+        .get_mut(task_id)
+        .ok_or("active task has no execution control")?;
+    let latest = control
+        .directions
+        .last()
+        .map_or(0, |direction| direction.revision);
+    if task.status != WorkspaceTaskStatus::InProgress
+        || control.active_run.as_ref().map(|run| run.epoch) != Some(fence.0)
+        || latest != fence.1
+    {
+        return Err("task run or instruction frontier changed; review before stopping".into());
+    }
+    if let Some(existing) = &control.cancellation {
+        if existing.run_epoch == fence.0 && existing.requested_by == *id {
+            return Ok((
+                task_id.into(),
+                WorkspaceTaskMutationResult::CancellationRequested {
+                    task_id: task_id.into(),
+                    epoch: fence.0,
+                },
+            ));
+        }
+        return Err("task cancellation was already requested by another person".into());
+    }
+    control.cancellation = Some(WorkspaceTaskCancellationRequest {
+        run_epoch: fence.0,
+        requested_by: id.clone(),
+        requested_at: now,
+    });
+    task.updated_at = now;
+    task.audit.push(WorkspaceTaskAuditEvent {
+        at: now,
+        actor: id.clone(),
+        summary: format!("Requested cancellation of run {}", fence.0),
+    });
+    Ok((
+        task_id.into(),
+        WorkspaceTaskMutationResult::CancellationRequested {
+            task_id: task_id.into(),
+            epoch: fence.0,
+        },
+    ))
+}
+
 fn direct(
     tasks: &mut [WorkspaceTask],
     controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
@@ -724,6 +801,32 @@ fn direct(
         .ok_or("active task has no execution control")?;
     if control.active_run.is_none() {
         return Err("active task has no live run epoch".into());
+    }
+    let original = control.instruction.as_deref().unwrap_or(&task.title);
+    let total_bytes = control
+        .directions
+        .iter()
+        .try_fold(original.len(), |total, direction| {
+            total
+                .checked_add(direction.text.len())
+                .and_then(|value| value.checked_add(3))
+        })
+        .and_then(|total| total.checked_add(text.len()))
+        .and_then(|total| total.checked_add(3))
+        .ok_or("task direction byte count overflow")?;
+    let total_chars = control
+        .directions
+        .iter()
+        .try_fold(original.chars().count(), |total, direction| {
+            total
+                .checked_add(direction.text.chars().count())
+                .and_then(|value| value.checked_add(3))
+        })
+        .and_then(|total| total.checked_add(text.chars().count()))
+        .and_then(|total| total.checked_add(3))
+        .ok_or("task direction character count overflow")?;
+    if total_bytes > MAX_WORKSPACE_TASK_INSTRUCTION_BYTES || total_chars > 8_000 {
+        return Err("task directions exceed the run instruction bound".into());
     }
     let revision = match control.directions.last() {
         Some(direction) => direction
@@ -839,11 +942,12 @@ fn finish(
         .as_ref()
         .ok_or("task has no active run")?;
     let latest = control.directions.last().map_or(0, |value| value.revision);
+    let unapplied_direction = run.applied_direction_revision != latest;
     if task.status != WorkspaceTaskStatus::InProgress
         || task.assigned_agent.as_deref() != Some(agent_id)
         || run.agent_id != *agent_id
         || run.epoch != run_epoch
-        || run.applied_direction_revision != latest
+        || (outcome != WorkspaceTaskFinish::Cancelled && unapplied_direction)
     {
         return Err("task finish is stale or has unapplied directions".into());
     }
@@ -1564,6 +1668,82 @@ mod tests {
             !run(&mut reopened, 4, 4, &person(), &direction(1, 0))
                 .unwrap()
                 .changed
+        );
+    }
+
+    #[test]
+    fn cancellation_is_requested_for_an_exact_run_until_agent_acknowledges() {
+        let mut doc = AutoCommit::new();
+        let queued = run(&mut doc, 41, 41, &person(), &queue_command()).unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
+            panic!("queue result")
+        };
+        run(
+            &mut doc,
+            42,
+            42,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        let request = WorkspaceTaskCommand::CancelRun {
+            task_id: task_id.clone(),
+            run_epoch: 1,
+            after_revision: 0,
+        };
+        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 9);
+        let result = run(&mut doc, 43, 43, &person(), &request).unwrap();
+        assert_eq!(
+            result.result,
+            WorkspaceTaskMutationResult::CancellationRequested {
+                task_id: task_id.clone(),
+                epoch: 1,
+            }
+        );
+        let state = snapshot(&doc).unwrap();
+        assert_eq!(state.tasks[0].status, WorkspaceTaskStatus::InProgress);
+        assert_eq!(
+            state.controls[&task_id]
+                .cancellation
+                .as_ref()
+                .map(|request| request.run_epoch),
+            Some(1)
+        );
+        let before = doc.save();
+        assert!(
+            run(
+                &mut doc,
+                44,
+                44,
+                &person(),
+                &WorkspaceTaskCommand::CancelRun {
+                    task_id: task_id.clone(),
+                    run_epoch: 2,
+                    after_revision: 0,
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(doc.save(), before);
+        run(
+            &mut doc,
+            45,
+            45,
+            &agent(),
+            &WorkspaceTaskCommand::Finish {
+                task_id,
+                run_epoch: 1,
+                outcome: WorkspaceTaskFinish::Cancelled,
+                summary: "Stopped at the person's request".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot(&doc).unwrap().tasks[0].status,
+            WorkspaceTaskStatus::Cancelled
         );
     }
 

@@ -455,6 +455,12 @@ pub enum CollabRequest {
         run_id: u64,
         lease: String,
     },
+    /// Read saved directions and cancellation for one exact leased run.
+    TaskRunControl {
+        request_id: u64,
+        run_id: u64,
+        lease: String,
+    },
 }
 
 impl CollabRequest {
@@ -807,6 +813,10 @@ pub enum CollabEvent {
     TaskRunCancellation {
         request_id: u64,
         result: Result<bool, String>,
+    },
+    TaskRunControl {
+        request_id: u64,
+        result: Result<runtime_collab::TaskRunControl, String>,
     },
     WorkspaceControl {
         session_id: u64,

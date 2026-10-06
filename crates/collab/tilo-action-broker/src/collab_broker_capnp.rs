@@ -5493,17 +5493,7 @@ impl CapnpBrokerState {
     ) -> Result<bool, String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
         if run.task_epoch.is_some() {
-            let service = self
-                .services
-                .workspace_tasks
-                .as_ref()
-                .ok_or("canonical task owner unavailable")?;
-            let snapshot = service.snapshot(&run.cluster_id)?;
-            return Ok(snapshot
-                .tasks
-                .iter()
-                .find(|task| task.id == run.task_id)
-                .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled));
+            return Ok(self.owner_task_run_control(&run)?.cancel_requested);
         }
         let membership = self
             .membership
@@ -5565,6 +5555,9 @@ impl CapnpBrokerState {
                 Some(WorkspaceTaskStatus::Cancelled),
                 true,
             ),
+            runtime_collab::TaskRunUpdate::DirectionApplied { .. } => {
+                return Err("legacy task runs do not accept direction acknowledgements".into());
+            }
         };
         if terminal {
             let mut runs = self
@@ -6066,6 +6059,7 @@ impl CapnpBrokerState {
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::TaskRunControl { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
@@ -8647,6 +8641,42 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .task_run_cancelled(peer_id, &agent_id, request.get_run_id(), &lease)
                 .map_err(capnp::Error::failed)?;
             results.get().set_cancelled(cancelled);
+            Ok(())
+        })
+    }
+
+    fn task_run_control(
+        self: Rc<Self>,
+        params: channel_handle::TaskRunControlParams,
+        mut results: channel_handle::TaskRunControlResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let Some(agent_id) = current.agent_id else {
+            return Promise::err(capnp::Error::failed(
+                "only an agent may observe task control".into(),
+            ));
+        };
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let lease = request.get_lease()?.to_str()?.to_owned();
+            let run = state
+                .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
+                .map_err(capnp::Error::failed)?;
+            let control = state
+                .owner_task_run_control(&run)
+                .map_err(capnp::Error::failed)?;
+            results.get().set_control_json(
+                &serde_json::to_string(&control)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
+            );
             Ok(())
         })
     }

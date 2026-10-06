@@ -181,6 +181,16 @@ pub struct WorkspaceTaskExecution {
     pub updated_at: i64,
 }
 
+/// A person's durable request to stop one exact active run. The task remains
+/// in progress until the leased Agent acknowledges cancellation.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskCancellationRequest {
+    pub run_epoch: u64,
+    pub requested_by: String,
+    pub requested_at: i64,
+}
+
 /// Result retained beside a task command so an exact retry is deterministic.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -192,6 +202,7 @@ pub enum WorkspaceTaskMutationResult {
     Finished { task_id: String },
     Abandoned { task_id: String },
     ExecutionReported { task_id: String, sequence: u64 },
+    CancellationRequested { task_id: String, epoch: u64 },
 }
 
 /// Exact replay record for one owner-admitted task mutation.
@@ -224,6 +235,8 @@ pub struct WorkspaceTaskControl {
     /// Missing means no authenticated phase is known, not "working".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<WorkspaceTaskExecution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation: Option<WorkspaceTaskCancellationRequest>,
     #[serde(default)]
     pub directions: Vec<WorkspaceTaskDirection>,
     #[serde(default)]

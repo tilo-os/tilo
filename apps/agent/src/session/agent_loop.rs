@@ -482,6 +482,8 @@ pub(super) enum LoopEnd {
     Failed(String),
     /// Cancelled from Task Center, or a step was cancelled.
     Cancelled(String),
+    /// Saved direction arrived; the caller rebuilds a fresh model context.
+    Directed(Vec<runtime_collab::TaskRunDirection>),
 }
 
 /// What handling one call produced.
@@ -719,6 +721,7 @@ impl Session {
             LoopEnd::Finished(finish, _) => finish.reply.clone().unwrap_or_default(),
             LoopEnd::Failed(message) => format!("(failed) {message}"),
             LoopEnd::Cancelled(message) => format!("(cancelled) {message}"),
+            LoopEnd::Directed(_) => "(direction received; rebuilding context)".into(),
         };
         self.memory.remember(
             run.execution_instruction(),
@@ -876,11 +879,18 @@ impl Session {
                 .set_state(crate::live::LiveState::Thinking, "Thinking", None);
             self.live_publish(true);
         }
-        if self.task_cancelled(run)? {
-            self.turn = None;
-            return Ok(Some(LoopEnd::Cancelled(
-                "Cancelled before the next step".into(),
-            )));
+        match self.task_control_change(run)? {
+            super::TaskControlChange::Current => {}
+            super::TaskControlChange::Cancelled => {
+                self.turn = None;
+                return Ok(Some(LoopEnd::Cancelled(
+                    "Cancelled before the next step".into(),
+                )));
+            }
+            super::TaskControlChange::Directed(directions) => {
+                self.turn = None;
+                return Ok(Some(LoopEnd::Directed(directions)));
+            }
         }
         state.streaming = None;
         state.stream_decided.clear();
@@ -895,9 +905,16 @@ impl Session {
         let body = loop {
             self.pump_turn_waiting(Duration::from_millis(50));
             if cancellation_checked.elapsed() >= THINKING_CANCELLATION_POLL {
-                if self.task_cancelled(run)? {
-                    self.turn = None;
-                    return Ok(Some(LoopEnd::Cancelled("Cancelled while thinking".into())));
+                match self.task_control_change(run)? {
+                    super::TaskControlChange::Current => {}
+                    super::TaskControlChange::Cancelled => {
+                        self.turn = None;
+                        return Ok(Some(LoopEnd::Cancelled("Cancelled while thinking".into())));
+                    }
+                    super::TaskControlChange::Directed(directions) => {
+                        self.turn = None;
+                        return Ok(Some(LoopEnd::Directed(directions)));
+                    }
                 }
                 cancellation_checked = ui::time::now();
             }
@@ -2374,14 +2391,26 @@ mod tests {
                         });
                     }
                 }
-                CollabRequest::TaskRunCancellation { request_id, .. } => {
+                CollabRequest::TaskRunControl { request_id, .. } => {
                     let mut world = self.world.borrow_mut();
                     world.cancellation_checks += 1;
                     let cancelled = world.cancel_after_checks != 0
                         && world.cancellation_checks > world.cancel_after_checks;
+                    self.events.push(CollabEvent::TaskRunControl {
+                        request_id: *request_id,
+                        result: Ok(runtime_collab::TaskRunControl {
+                            version: 1,
+                            run_epoch: 1,
+                            applied_revision: 0,
+                            directions: Vec::new(),
+                            cancel_requested: cancelled,
+                        }),
+                    });
+                }
+                CollabRequest::TaskRunCancellation { request_id, .. } => {
                     self.events.push(CollabEvent::TaskRunCancellation {
                         request_id: *request_id,
-                        result: Ok(cancelled),
+                        result: Ok(false),
                     });
                 }
                 CollabRequest::ReportEnrolledTask { request_id, .. }

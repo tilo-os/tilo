@@ -899,7 +899,8 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(action);
             json_map_bytes(arguments, &mut meter);
         }
-        CollabRequest::TaskRunCancellation { lease, .. } => meter.string_capacity(lease),
+        CollabRequest::TaskRunCancellation { lease, .. }
+        | CollabRequest::TaskRunControl { lease, .. } => meter.string_capacity(lease),
     }
     meter.finish()
 }
@@ -1299,6 +1300,10 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
                 meter.string_capacity(error);
             }
         }
+        CollabEvent::TaskRunControl { result, .. } => match result {
+            Ok(control) => serialized_bytes(control, &mut meter),
+            Err(error) => meter.string_capacity(error),
+        },
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
         }
@@ -5993,6 +5998,18 @@ async fn dispatch_sdk_request(
                 .map_err(|error| error.to_string());
             let _ =
                 inbound_tx.send_durable(CollabEvent::TaskRunCancellation { request_id, result });
+        }
+        CollabRequest::TaskRunControl {
+            request_id,
+            run_id,
+            lease,
+        } => {
+            let result = route
+                .channel
+                .task_run_control(run_id, &lease)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx.send_durable(CollabEvent::TaskRunControl { request_id, result });
         }
     }
     true

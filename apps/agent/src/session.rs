@@ -121,10 +121,33 @@ fn dispatched_action_key(
     format!("{id}\0{}", serde_json::Value::Object(arguments.clone()))
 }
 
+fn directed_instruction(original: &str, directions: &[runtime_collab::TaskRunDirection]) -> String {
+    let mut instruction = String::with_capacity(
+        original.len()
+            + directions
+                .iter()
+                .map(|direction| direction.text.len() + 32)
+                .sum::<usize>(),
+    );
+    instruction.push_str(original);
+    instruction.push_str("\n\nDirections for this run:");
+    for direction in directions {
+        instruction.push_str("\n- ");
+        instruction.push_str(&direction.text);
+    }
+    instruction
+}
+
 #[derive(Debug)]
 enum TaskActionStop {
     Cancelled(Option<String>),
     Failed(String),
+}
+
+enum TaskControlChange {
+    Current,
+    Cancelled,
+    Directed(Vec<runtime_collab::TaskRunDirection>),
 }
 
 /// The host's durable step bound (`MAX_AGENT_TASK_STEPS`).
@@ -744,41 +767,65 @@ impl Session {
         if matches!(run.planning, runtime_collab::TaskRunPlanning::Model)
             && (self.chooser.loop_model().is_ok() || self.enrolled_custody.is_some())
         {
-            return match self.run_task_loop(run)? {
-                agent_loop::LoopEnd::Finished(finish, completed) => {
-                    // `done: false` is an answer, not a fault: the agent says
-                    // in its reply what it could not do, and stays available
-                    // for the next message. Reporting it as a failed task
-                    // would mark the whole agent failed and end its
-                    // conversation. Only the loop's own faults (no model,
-                    // a bound reached, a broken turn) fail the task.
-                    let finish = if finish.done {
-                        finish
-                    } else {
-                        tracing::info!(completed, "the agent could not complete the request");
-                        crate::tools::Finish {
-                            reply: Some(finish.reply.unwrap_or_else(|| {
-                                "I couldn't complete that with the operations available here."
-                                    .into()
-                            })),
-                            done: true,
+            let mut directed_run = run.clone();
+            return loop {
+                match self.run_task_loop(&directed_run)? {
+                    agent_loop::LoopEnd::Finished(finish, completed) => {
+                        // `done: false` is an answer, not a fault: the agent says
+                        // in its reply what it could not do, and stays available
+                        // for the next message. Reporting it as a failed task
+                        // would mark the whole agent failed and end its
+                        // conversation. Only the loop's own faults (no model,
+                        // a bound reached, a broken turn) fail the task.
+                        let finish = if finish.done {
+                            finish
+                        } else {
+                            tracing::info!(completed, "the agent could not complete the request");
+                            crate::tools::Finish {
+                                reply: Some(finish.reply.unwrap_or_else(|| {
+                                    "I couldn't complete that with the operations available here."
+                                        .into()
+                                })),
+                                done: true,
+                            }
+                        };
+                        if let Some(reply) = &finish.reply {
+                            self.live.set_reply(reply, true);
                         }
-                    };
-                    if let Some(reply) = &finish.reply {
-                        self.live.set_reply(reply, true);
+                        let message = match finish.reply {
+                            // The model's own reply is the durable chat answer. The
+                            // legacy Task Center carrier bounds it to 280 characters.
+                            Some(reply) if self.enrolled_active.is_some() => reply,
+                            Some(reply) => reply.chars().take(280).collect(),
+                            None => format!("Completed {completed} broker-approved action(s)"),
+                        };
+                        self.live_end(crate::live::LiveState::Done, "Done");
+                        break self.report_task(
+                            &directed_run,
+                            runtime_collab::TaskRunUpdate::Succeeded { message },
+                        );
                     }
-                    let message = match finish.reply {
-                        // The model's own reply is the durable chat answer. The
-                        // legacy Task Center carrier bounds it to 280 characters.
-                        Some(reply) if self.enrolled_active.is_some() => reply,
-                        Some(reply) => reply.chars().take(280).collect(),
-                        None => format!("Completed {completed} broker-approved action(s)"),
-                    };
-                    self.live_end(crate::live::LiveState::Done, "Done");
-                    self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
+                    agent_loop::LoopEnd::Failed(message) => {
+                        break self.fail_task(&directed_run, &message);
+                    }
+                    agent_loop::LoopEnd::Cancelled(message) => {
+                        break self.cancel_task(&directed_run, &message);
+                    }
+                    agent_loop::LoopEnd::Directed(directions) => {
+                        let Some(revision) = directions.last().map(|direction| direction.revision)
+                        else {
+                            break self
+                                .fail_task(&directed_run, "Task direction frontier was empty");
+                        };
+                        let instruction =
+                            directed_instruction(directed_run.execution_instruction(), &directions);
+                        self.report_task(
+                            &directed_run,
+                            runtime_collab::TaskRunUpdate::DirectionApplied { revision },
+                        )?;
+                        directed_run.instruction = Some(instruction);
+                    }
                 }
-                agent_loop::LoopEnd::Failed(message) => self.fail_task(run, &message),
-                agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
             };
         }
         let (actions, reply) = match self.plan_task(run) {
@@ -1161,13 +1208,49 @@ impl Session {
     }
 
     fn task_cancelled(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<bool> {
+        Ok(matches!(
+            self.task_control_change(run)?,
+            TaskControlChange::Cancelled
+        ))
+    }
+
+    fn task_control_change(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+    ) -> Result<TaskControlChange> {
         let request_id = self.next_request_id();
-        self.link.send(&CollabRequest::TaskRunCancellation {
+        if self.enrolled_active.is_some() {
+            self.link.send(&CollabRequest::TaskRunCancellation {
+                request_id,
+                run_id: run.run_id,
+                lease: run.lease.clone(),
+            })?;
+            return self
+                .wait_for_task_cancellation(request_id)
+                .map(|cancelled| {
+                    if cancelled {
+                        TaskControlChange::Cancelled
+                    } else {
+                        TaskControlChange::Current
+                    }
+                });
+        }
+        self.link.send(&CollabRequest::TaskRunControl {
             request_id,
             run_id: run.run_id,
             lease: run.lease.clone(),
         })?;
-        self.wait_for_task_cancellation(request_id)
+        let control = self.wait_for_task_control(request_id)?;
+        if control.run_epoch == 0 {
+            return Err(anyhow::anyhow!("the broker returned an invalid task epoch"));
+        }
+        if control.cancel_requested {
+            Ok(TaskControlChange::Cancelled)
+        } else if control.directions.is_empty() {
+            Ok(TaskControlChange::Current)
+        } else {
+            Ok(TaskControlChange::Directed(control.directions))
+        }
     }
 
     fn wait_for_task_cancellation(&mut self, request_id: u64) -> Result<bool> {
@@ -1186,6 +1269,37 @@ impl Session {
                 .recv((deadline - now).min(Duration::from_millis(100)))?
             {
                 Some(CollabEvent::TaskRunCancellation {
+                    request_id: received,
+                    result,
+                }) if received == request_id => {
+                    self.link.defer(deferred);
+                    return result.map_err(anyhow::Error::msg);
+                }
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.set_broker_surfaces(surfaces);
+                }
+                Some(event) => deferred.push(event),
+                None => {}
+            }
+        }
+    }
+
+    fn wait_for_task_control(&mut self, request_id: u64) -> Result<runtime_collab::TaskRunControl> {
+        let deadline = ui::time::now() + Duration::from_secs(5);
+        let mut deferred = Vec::new();
+        loop {
+            let now = ui::time::now();
+            if now >= deadline {
+                self.link.defer(deferred);
+                return Err(anyhow::anyhow!(
+                    "the broker did not answer task cancellation status"
+                ));
+            }
+            match self
+                .link
+                .recv((deadline - now).min(Duration::from_millis(100)))?
+            {
+                Some(CollabEvent::TaskRunControl {
                     request_id: received,
                     result,
                 }) if received == request_id => {
@@ -3206,6 +3320,18 @@ mod tests {
                             )),
                         },
                     }),
+                    CollabRequest::TaskRunControl { request_id, .. } => {
+                        Some(CollabEvent::TaskRunControl {
+                            request_id: *request_id,
+                            result: Ok(runtime_collab::TaskRunControl {
+                                version: 1,
+                                run_epoch: 1,
+                                applied_revision: 0,
+                                directions: Vec::new(),
+                                cancel_requested: false,
+                            }),
+                        })
+                    }
                     CollabRequest::TaskRunCancellation { request_id, .. } => {
                         Some(CollabEvent::TaskRunCancellation {
                             request_id: *request_id,
@@ -3479,6 +3605,18 @@ mod tests {
                             )),
                         },
                     }),
+                    CollabRequest::TaskRunControl { request_id, .. } => {
+                        Some(CollabEvent::TaskRunControl {
+                            request_id: *request_id,
+                            result: Ok(runtime_collab::TaskRunControl {
+                                version: 1,
+                                run_epoch: 1,
+                                applied_revision: 0,
+                                directions: Vec::new(),
+                                cancel_requested: false,
+                            }),
+                        })
+                    }
                     CollabRequest::TaskRunCancellation { request_id, .. } => {
                         Some(CollabEvent::TaskRunCancellation {
                             request_id: *request_id,

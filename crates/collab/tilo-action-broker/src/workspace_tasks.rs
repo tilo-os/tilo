@@ -419,27 +419,27 @@ impl CapnpBrokerState {
         let Some(epoch) = run.task_epoch else {
             return Err("canonical task run has no owner epoch".into());
         };
-        let command = match &update {
-            runtime_collab::TaskRunUpdate::Accepted
-            | runtime_collab::TaskRunUpdate::Progress { .. } => return Ok(()),
-            runtime_collab::TaskRunUpdate::Succeeded { message } => WorkspaceTaskCommand::Finish {
-                task_id: run.task_id.clone(),
-                run_epoch: epoch,
-                outcome: tilo_peer_state::workspace_task::WorkspaceTaskFinish::Done,
-                summary: bounded_summary(message)?,
-            },
-            runtime_collab::TaskRunUpdate::Failed { message } => WorkspaceTaskCommand::Finish {
-                task_id: run.task_id.clone(),
-                run_epoch: epoch,
-                outcome: tilo_peer_state::workspace_task::WorkspaceTaskFinish::Waiting,
-                summary: bounded_summary(message)?,
-            },
-            runtime_collab::TaskRunUpdate::Cancelled { message } => WorkspaceTaskCommand::Finish {
-                task_id: run.task_id.clone(),
-                run_epoch: epoch,
-                outcome: tilo_peer_state::workspace_task::WorkspaceTaskFinish::Cancelled,
-                summary: bounded_summary(message)?,
-            },
+        if let runtime_collab::TaskRunUpdate::DirectionApplied { revision } = &update {
+            let frontier = self.owner_task_run_control(run)?;
+            if frontier.applied_revision == *revision {
+                // The Agent may retry the same acknowledgement after losing
+                // the transport reply. The owner frontier is the durable
+                // receipt; never append a second acknowledgement command.
+                return Ok(());
+            }
+            if frontier
+                .directions
+                .last()
+                .map(|direction| direction.revision)
+                != Some(*revision)
+            {
+                return Err(
+                    "direction acknowledgement is not the latest delivered frontier".into(),
+                );
+            }
+        }
+        let Some(command) = owner_update_command(&run.task_id, epoch, &update)? else {
+            return Ok(());
         };
         let service = self
             .services
@@ -467,10 +467,21 @@ impl CapnpBrokerState {
             .iter()
             .find(|task| task.id == run.task_id)
             .ok_or("finished task disappeared from owner projection")?;
-        if !task.status.is_finished()
+        let applied = matches!(
+            update,
+            runtime_collab::TaskRunUpdate::DirectionApplied { .. }
+        );
+        if applied && task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress {
+            return Err("owner did not retain the active task direction frontier".into());
+        }
+        if !applied
+            && !task.status.is_finished()
             && task.status != tilo_desktop_model::WorkspaceTaskStatus::Waiting
         {
             return Err("owner did not retain the terminal task state".into());
+        }
+        if applied {
+            return Ok(());
         }
         let mut runs = self
             .pending_task_runs
@@ -486,6 +497,65 @@ impl CapnpBrokerState {
         current.terminal = true;
         drop(runs);
         Ok(())
+    }
+
+    pub(super) fn owner_task_run_control(
+        &self,
+        run: &super::PendingTaskRun,
+    ) -> Result<runtime_collab::TaskRunControl, String> {
+        let epoch = run
+            .task_epoch
+            .ok_or("canonical task run has no owner epoch")?;
+        let service = self
+            .services
+            .workspace_tasks
+            .as_ref()
+            .ok_or("canonical task owner unavailable")?;
+        let snapshot = checked_snapshot(service.as_ref(), &run.cluster_id)?;
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == run.task_id)
+            .ok_or("canonical task disappeared")?;
+        let control = snapshot
+            .controls
+            .get(&run.task_id)
+            .ok_or("canonical task control disappeared")?;
+        let active = control
+            .active_run
+            .as_ref()
+            .filter(|active| active.epoch == epoch && active.agent_id == run.agent_id)
+            .ok_or("canonical task run is stale")?;
+        let directions = control
+            .directions
+            .iter()
+            .filter(|direction| direction.revision > active.applied_direction_revision)
+            .map(|direction| runtime_collab::TaskRunDirection {
+                revision: direction.revision,
+                text: direction.text.clone(),
+            })
+            .collect::<Vec<_>>();
+        let original = control.instruction.as_deref().unwrap_or(&task.title);
+        let total_bytes = direction_extent(original.len(), &directions, str::len)?;
+        let total_chars = direction_extent(original.chars().count(), &directions, |text| {
+            text.chars().count()
+        })?;
+        if directions.len() > 64
+            || total_bytes > tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES
+            || total_chars > 8_000
+        {
+            return Err("pending task directions exceed the control carrier bound".into());
+        }
+        Ok(runtime_collab::TaskRunControl {
+            version: 1,
+            run_epoch: epoch,
+            applied_revision: active.applied_direction_revision,
+            directions,
+            cancel_requested: control
+                .cancellation
+                .as_ref()
+                .is_some_and(|request| request.run_epoch == epoch),
+        })
     }
 
     pub(super) fn validate_owner_task_action_frontier(
@@ -510,6 +580,13 @@ impl CapnpBrokerState {
             .as_ref()
             .filter(|active| active.epoch == epoch && active.agent_id == run.agent_id)
             .ok_or("canonical task run is stale")?;
+        if control
+            .cancellation
+            .as_ref()
+            .is_some_and(|request| request.run_epoch == epoch)
+        {
+            return Err("task cancellation was requested before another action".into());
+        }
         let latest = control
             .directions
             .last()
@@ -519,6 +596,57 @@ impl CapnpBrokerState {
         }
         Ok(())
     }
+}
+
+fn owner_update_command(
+    task_id: &str,
+    epoch: u64,
+    update: &runtime_collab::TaskRunUpdate,
+) -> Result<Option<WorkspaceTaskCommand>, String> {
+    let finish = |outcome, message: &str| {
+        Ok(Some(WorkspaceTaskCommand::Finish {
+            task_id: task_id.into(),
+            run_epoch: epoch,
+            outcome,
+            summary: bounded_summary(message)?,
+        }))
+    };
+    match update {
+        runtime_collab::TaskRunUpdate::Accepted
+        | runtime_collab::TaskRunUpdate::Progress { .. } => Ok(None),
+        runtime_collab::TaskRunUpdate::DirectionApplied { revision } => {
+            Ok(Some(WorkspaceTaskCommand::AppliedAck {
+                task_id: task_id.into(),
+                run_epoch: epoch,
+                revision: *revision,
+            }))
+        }
+        runtime_collab::TaskRunUpdate::Succeeded { message } => finish(
+            tilo_peer_state::workspace_task::WorkspaceTaskFinish::Done,
+            message,
+        ),
+        runtime_collab::TaskRunUpdate::Failed { message } => finish(
+            tilo_peer_state::workspace_task::WorkspaceTaskFinish::Waiting,
+            message,
+        ),
+        runtime_collab::TaskRunUpdate::Cancelled { message } => finish(
+            tilo_peer_state::workspace_task::WorkspaceTaskFinish::Cancelled,
+            message,
+        ),
+    }
+}
+
+fn direction_extent(
+    initial: usize,
+    directions: &[runtime_collab::TaskRunDirection],
+    measure: impl Fn(&str) -> usize,
+) -> Result<usize, String> {
+    directions.iter().try_fold(initial, |total, direction| {
+        total
+            .checked_add(measure(&direction.text))
+            .and_then(|value| value.checked_add(3))
+            .ok_or_else(|| "task direction extent overflow".into())
+    })
 }
 
 fn run_invocation(room: &str, task: &str, epoch: u64) -> uuid::Uuid {
@@ -619,6 +747,22 @@ fn person_command(envelope: &InvocationEnvelope) -> Result<WorkspaceTaskCommand,
             text: input.text,
         });
     }
+    if let Some(task_id) = valid_task_target(envelope)
+        && envelope.action == "stop"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stop {
+            run_epoch: u64,
+            after_revision: u64,
+        }
+        let input: Stop = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        return Ok(WorkspaceTaskCommand::CancelRun {
+            task_id: task_id.into(),
+            run_epoch: input.run_epoch,
+            after_revision: input.after_revision,
+        });
+    }
     Err("unknown person task command".into())
 }
 
@@ -684,6 +828,9 @@ fn read_task(
         "active_agent": active.map(|run| &run.agent_id),
         "after_revision": after_revision,
         "applied_revision": active.map(|run| run.applied_direction_revision),
+        "cancellation_requested": control
+            .and_then(|control| control.cancellation.as_ref())
+            .is_some_and(|request| active.is_some_and(|run| run.epoch == request.run_epoch)),
     }))
 }
 
@@ -706,6 +853,32 @@ fn read_current_tasks(
         return Err("current task query agent is invalid".into());
     }
     let snapshot = checked_snapshot(service, room)?;
+    let mut pending = snapshot
+        .tasks
+        .iter()
+        .filter(|task| {
+            task.assigned_agent.as_deref() == Some(query.agent.as_str())
+                && matches!(
+                    task.status,
+                    tilo_desktop_model::WorkspaceTaskStatus::Queued
+                        | tilo_desktop_model::WorkspaceTaskStatus::Waiting
+                )
+        })
+        .map(|task| {
+            serde_json::json!({
+                "task_id": task.id,
+                "title": task.title,
+                "assigned_agent": task.assigned_agent,
+                "status": task.status,
+                "route": task.route,
+            })
+        })
+        .collect::<Vec<_>>();
+    pending.sort_by(|left, right| left["task_id"].as_str().cmp(&right["task_id"].as_str()));
+    let pending_total =
+        u64::try_from(pending.len()).map_err(|_| "pending task count exceeds u64")?;
+    let pending_complete = pending.len() <= MAX_CURRENT_TASK_FRONTIERS;
+    pending.truncate(MAX_CURRENT_TASK_FRONTIERS);
     let mut tasks = snapshot
         .tasks
         .iter()
@@ -738,6 +911,9 @@ fn read_current_tasks(
         "complete": complete,
         "total": total,
         "tasks": tasks,
+        "pending_complete": pending_complete,
+        "pending_total": pending_total,
+        "pending": pending,
     }))
 }
 
@@ -748,17 +924,40 @@ fn task_actions(
     let mut actions = vec![current_tasks_action(), queue_action()];
     for task in tasks {
         actions.push(task_read_action(task));
-        if task.status == tilo_desktop_model::WorkspaceTaskStatus::InProgress
-            && controls
-                .get(&task.id)
-                .and_then(|control| control.active_run.as_ref())
-                .is_some()
-        {
+        let active = controls
+            .get(&task.id)
+            .filter(|control| control.active_run.is_some() && control.cancellation.is_none());
+        if task.status == tilo_desktop_model::WorkspaceTaskStatus::InProgress && active.is_some() {
+            if task.route == tilo_desktop_model::WorkspaceTaskRoute::Model {
+                actions.push(effect_action(
+                    &format!("{TASK_PREFIX}{}", task.id),
+                    "direct",
+                    &task.title,
+                    "Direct task",
+                    vec![
+                        tilo_actions::ActionParam::required(
+                            "run_epoch",
+                            tilo_actions::ParamType::Integer,
+                            "Run epoch returned by read-task",
+                        ),
+                        tilo_actions::ActionParam::required(
+                            "after_revision",
+                            tilo_actions::ParamType::Integer,
+                            "Direction revision returned by read-task",
+                        ),
+                        tilo_actions::ActionParam::required(
+                            "text",
+                            tilo_actions::ParamType::Text,
+                            "New direction for this exact run",
+                        ),
+                    ],
+                ));
+            }
             actions.push(effect_action(
                 &format!("{TASK_PREFIX}{}", task.id),
-                "direct",
+                "stop",
                 &task.title,
-                "Direct task",
+                "Stop task",
                 vec![
                     tilo_actions::ActionParam::required(
                         "run_epoch",
@@ -769,11 +968,6 @@ fn task_actions(
                         "after_revision",
                         tilo_actions::ParamType::Integer,
                         "Direction revision returned by read-task",
-                    ),
-                    tilo_actions::ActionParam::required(
-                        "text",
-                        tilo_actions::ParamType::Text,
-                        "New direction for this exact run",
                     ),
                 ],
             ));
@@ -892,8 +1086,25 @@ fn effect_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{sync::Mutex, time::SystemTime};
+    use tilo_peer_state::TransportOrigin;
 
     struct ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot);
+
+    #[derive(Clone)]
+    struct NativeTasks {
+        owner: tilo_joined_room::NativeWorkspaceOwner,
+        room: tilo_desktop_model::RoomId,
+        now: SystemTime,
+    }
+
+    struct NativeRunFixture {
+        _directory: tempfile::TempDir,
+        service: Arc<dyn crate::services::WorkspaceTasks>,
+        state: Arc<CapnpBrokerState>,
+        receiver: tokio::sync::mpsc::UnboundedReceiver<super::super::TaskRunEnvelope>,
+        caller: tilo_user_identity::DeviceCert,
+    }
 
     impl crate::services::WorkspaceTasks for ReadOnlyTasks {
         fn requires_room(&self, room: &str) -> bool {
@@ -915,6 +1126,144 @@ mod tests {
             _request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         ) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("read-only fixture cannot mutate".into()) })
+        }
+    }
+
+    impl crate::services::WorkspaceTasks for NativeTasks {
+        fn requires_room(&self, room: &str) -> bool {
+            room == tilo_joined_room::testing::ROOM
+        }
+
+        fn snapshot(&self, room: &str) -> Result<crate::services::WorkspaceTaskSnapshot, String> {
+            if !self.requires_room(room) {
+                return Err("wrong native task room".into());
+            }
+            self.owner.with_current(self.room, |view| {
+                let state = tilo_peer_state::workspace_task::snapshot(
+                    view.peer()
+                        .admitted_room()
+                        .ok_or("native room has no admitted task document")?,
+                )?;
+                Ok(crate::services::WorkspaceTaskSnapshot {
+                    room: room.into(),
+                    generation: view.generation(),
+                    tasks: state.tasks,
+                    controls: state.controls,
+                })
+            })
+        }
+
+        fn host_certificate(&self, room: &str) -> Result<tilo_user_identity::DeviceCert, String> {
+            if !self.requires_room(room) {
+                return Err("wrong native task room".into());
+            }
+            self.owner.with_current(self.room, |view| {
+                Ok(view.host().unwrap_or_else(|| view.governor()).clone())
+            })
+        }
+
+        fn execute(
+            &self,
+            request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
+            let owner = self.owner.clone();
+            let now = self.now;
+            Box::pin(async move { owner.commit_workspace_task_command(request, now) })
+        }
+    }
+
+    fn native_tasks() -> (
+        tempfile::TempDir,
+        NativeTasks,
+        tilo_user_identity::DeviceCert,
+    ) {
+        use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+        use ed25519_dalek::SigningKey;
+
+        let directory = tempfile::tempdir().unwrap();
+        let owner = tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap();
+        let (intent, bootstrap, messages, governor, now) = tilo_joined_room::testing::raw_fixture();
+        let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+        let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+        owner.install(&enrollment, now).unwrap();
+        let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        for message in messages.into_iter().skip(1) {
+            owner
+                .receive(
+                    room,
+                    TransportOrigin::RetainedRelayDelta(governor),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        let signed = owner
+            .with_current(room, |view| {
+                let before = view.peer().clone();
+                let mut candidate = before.clone();
+                candidate.put_governed_capabilities(
+                    &[
+                        CapOverride::grant(Subject::agent("scribe"), Scope::Workspace, Verb::Write)
+                            .with_id("test-agent-scribe"),
+                    ],
+                    &SigningKey::from_bytes(&[61; 32]),
+                    now,
+                )?;
+                candidate.durable_mutation_messages(
+                    &before,
+                    &SigningKey::from_bytes(&[61; 32]),
+                    now,
+                    view.generation().checked_add(1).unwrap(),
+                )
+            })
+            .unwrap();
+        for message in signed {
+            owner
+                .receive(
+                    room,
+                    TransportOrigin::RetainedRelayDelta(governor),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        let caller = owner
+            .with_current(room, |view| Ok(view.device().clone()))
+            .unwrap();
+        (directory, NativeTasks { owner, room, now }, caller)
+    }
+
+    fn native_run_fixture() -> NativeRunFixture {
+        let (directory, service, caller) = native_tasks();
+        let service: Arc<dyn crate::services::WorkspaceTasks> = Arc::new(service);
+        let fanout = Arc::new(super::super::FanoutState::new());
+        let (state, _bridge) = CapnpBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(super::super::BrokerChannels::default())),
+            super::super::PeerPublisher::disabled(),
+            None,
+            None,
+            None,
+            crate::services::HostServices {
+                workspace_tasks: Some(service.clone()),
+                ..Default::default()
+            },
+        );
+        let (tx, receiver) = tokio::sync::mpsc::unbounded_channel();
+        state.task_subscribers.lock().unwrap().insert(
+            71,
+            super::super::TaskSubscription {
+                agent_id: "scribe".into(),
+                cluster_id: tilo_joined_room::testing::ROOM.into(),
+                tx,
+            },
+        );
+        NativeRunFixture {
+            _directory: directory,
+            service,
+            state,
+            receiver,
+            caller,
         }
     }
 
@@ -991,6 +1340,20 @@ mod tests {
     }
 
     #[test]
+    fn active_rules_task_exposes_stop_but_not_unsupported_direction() {
+        let mut task = task("task:1", "scribe");
+        task.status = tilo_desktop_model::WorkspaceTaskStatus::InProgress;
+        task.route = tilo_desktop_model::WorkspaceTaskRoute::RulesOnly;
+        let controls = std::collections::BTreeMap::from([(
+            task.id.clone(),
+            control("scribe", 1, 0, "private instruction"),
+        )]);
+        let actions = task_actions(&[task], &controls);
+        assert!(actions.iter().any(|action| action.action == "stop"));
+        assert!(actions.iter().all(|action| action.action != "direct"));
+    }
+
+    #[test]
     fn owner_reads_publish_only_exact_active_agent_frontiers() {
         let mut scribe = task("task:scribe", "scribe");
         scribe.status = tilo_desktop_model::WorkspaceTaskStatus::InProgress;
@@ -1006,10 +1369,11 @@ mod tests {
                 control("builder", 1, 0, "other agent private instruction"),
             ),
         ]);
+        let queued = task("task:queued", "scribe");
         let service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
             room: "room-a".into(),
             generation: 7,
-            tasks: vec![scribe, builder],
+            tasks: vec![scribe, builder, queued],
             controls,
         });
         let result = read_current_tasks(
@@ -1028,9 +1392,113 @@ mod tests {
         assert_eq!(result["tasks"][0]["task_id"], "task:scribe");
         assert_eq!(result["tasks"][0]["run_epoch"], 4);
         assert_eq!(result["tasks"][0]["applied_revision"], 2);
+        assert_eq!(result["pending_complete"], true);
+        assert_eq!(result["pending_total"], 1);
+        assert_eq!(result["pending"][0]["task_id"], "task:queued");
+        assert_eq!(result["pending"][0]["status"], "queued");
         let encoded = result.to_string();
         assert!(!encoded.contains("never publish"));
         assert!(!encoded.contains("other agent"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_owner_run_delivers_direction_ack_and_exact_stop() {
+        let NativeRunFixture {
+            service,
+            state,
+            mut receiver,
+            caller,
+            ..
+        } = native_run_fixture();
+        let room = tilo_joined_room::testing::ROOM;
+        let task_id = queue_native_task(service.as_ref(), room, caller.clone()).await;
+        let run_id = state
+            .dispatch_live_workspace_task(room, &task_id, service.as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        let envelope = receiver.recv().await.unwrap();
+        assert_eq!(envelope.run_id, run_id);
+        assert_eq!(
+            envelope.instruction.as_deref(),
+            Some("Line one.\n\nKeep all details.")
+        );
+        let run = state.pending_task_runs.lock().unwrap()[&run_id].clone();
+
+        commit_person_command(
+            service.as_ref(),
+            room,
+            WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                after_revision: 0,
+                text: "Use the revised date.".into(),
+            },
+            102,
+            caller.clone(),
+        )
+        .await;
+        let control = state.owner_task_run_control(&run).unwrap();
+        assert_eq!(control.directions[0].text, "Use the revised date.");
+        state
+            .record_owner_task_run_update(
+                run_id,
+                &run,
+                runtime_collab::TaskRunUpdate::DirectionApplied { revision: 1 },
+            )
+            .await
+            .unwrap();
+        // A lost transport reply retries against the same durable frontier.
+        state
+            .record_owner_task_run_update(
+                run_id,
+                &run,
+                runtime_collab::TaskRunUpdate::DirectionApplied { revision: 1 },
+            )
+            .await
+            .unwrap();
+        assert!(
+            state
+                .owner_task_run_control(&run)
+                .unwrap()
+                .directions
+                .is_empty()
+        );
+
+        commit_person_command(
+            service.as_ref(),
+            room,
+            WorkspaceTaskCommand::CancelRun {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                after_revision: 1,
+            },
+            103,
+            caller,
+        )
+        .await;
+        assert!(state.owner_task_run_control(&run).unwrap().cancel_requested);
+        assert!(state.validate_owner_task_action_frontier(&run).is_err());
+        state
+            .record_owner_task_run_update(
+                run_id,
+                &run,
+                runtime_collab::TaskRunUpdate::Cancelled {
+                    message: "Stopped at the person's request".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let snapshot = service.snapshot(room).unwrap();
+        assert_eq!(
+            snapshot
+                .tasks
+                .iter()
+                .find(|task| task.id == task_id)
+                .unwrap()
+                .status,
+            tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+        );
     }
 
     #[test]
@@ -1054,6 +1522,64 @@ mod tests {
         assert!(result.get("instruction").is_none());
         request.argument = Some("{}".into());
         assert!(read_task("room-a", &request, &service).is_err());
+    }
+
+    async fn queue_native_task(
+        service: &dyn crate::services::WorkspaceTasks,
+        room: &str,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> String {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+            room: room.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation: uuid::Uuid::from_u128(101),
+                authority: WorkspaceTaskAuthority::Person { caller },
+                command: WorkspaceTaskCommand::QueueTask {
+                    title: "Line one".into(),
+                    instruction: "Line one.\n\nKeep all details.".into(),
+                    assigned_agent: "scribe".into(),
+                    route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+            },
+        };
+        service
+            .execute(request.clone())
+            .await
+            .unwrap()
+            .validate_for(&request)
+            .unwrap();
+        service
+            .snapshot(room)
+            .unwrap()
+            .tasks
+            .into_iter()
+            .next()
+            .map(|task| task.id)
+            .unwrap()
+    }
+
+    async fn commit_person_command(
+        service: &dyn crate::services::WorkspaceTasks,
+        room: &str,
+        command: WorkspaceTaskCommand,
+        invocation: u128,
+        caller: tilo_user_identity::DeviceCert,
+    ) {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+            room: room.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation: uuid::Uuid::from_u128(invocation),
+                authority: WorkspaceTaskAuthority::Person { caller },
+                command,
+            },
+        };
+        service
+            .execute(request.clone())
+            .await
+            .unwrap()
+            .validate_for(&request)
+            .unwrap();
     }
 
     fn task(id: &str, agent: &str) -> tilo_desktop_model::WorkspaceTask {

@@ -1737,6 +1737,33 @@ impl ChannelHandle {
         Ok(reply.get()?.get_cancelled())
     }
 
+    /// Read saved directions and cooperative cancellation for one exact
+    /// broker-minted task lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the lease is refused or the broker's
+    /// closed control envelope is malformed.
+    pub async fn task_run_control(
+        &self,
+        run_id: u64,
+        lease: &str,
+    ) -> Result<TaskRunControl, NotAvailable> {
+        let mut request = self.inner.task_run_control_request();
+        let mut params = request.get();
+        params.set_run_id(run_id);
+        params.set_lease(lease);
+        let reply = request.send().promise.await?;
+        let json = reply
+            .get()?
+            .get_control_json()?
+            .to_str()
+            .map_err(|error| capnp::Error::failed(format!("invalid task control: {error}")))?;
+        serde_json::from_str(json).map_err(|error| {
+            capnp::Error::failed(format!("invalid task control JSON: {error}")).into()
+        })
+    }
+
     /// Report what became of an invocation. An empty `code` means it ran;
     /// anything else is a refusal, reported to whoever asked rather than
     /// swallowed — a caller that can't see the screen has no other way to
@@ -2838,10 +2865,42 @@ pub enum TaskRunPlanning {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskRunUpdate {
     Accepted,
-    Progress { message: String },
-    Succeeded { message: String },
-    Failed { message: String },
-    Cancelled { message: String },
+    Progress {
+        message: String,
+    },
+    Succeeded {
+        message: String,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled {
+        message: String,
+    },
+    /// The agent abandoned the stale turn, rebuilt its context with every
+    /// direction through `revision`, and is ready to act at that frontier.
+    DirectionApplied {
+        revision: u64,
+    },
+}
+
+/// One person-authored direction in the exact current run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunDirection {
+    pub revision: u64,
+    pub text: String,
+}
+
+/// Owner-confirmed task control for one exact leased run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunControl {
+    pub version: u16,
+    pub run_epoch: u64,
+    pub applied_revision: u64,
+    pub directions: Vec<TaskRunDirection>,
+    pub cancel_requested: bool,
 }
 
 /// Client-pulled stream of broker-addressed task leases.
@@ -2875,7 +2934,9 @@ impl TaskRunStream {
 
 #[cfg(test)]
 mod task_run_tests {
-    use super::{TaskRunEnvelope, TaskRunPlanning, TaskRunUpdate};
+    use super::{
+        TaskRunControl, TaskRunDirection, TaskRunEnvelope, TaskRunPlanning, TaskRunUpdate,
+    };
 
     #[test]
     fn task_run_wire_is_typed_and_rejects_unknown_fields() {
@@ -2908,6 +2969,31 @@ mod task_run_tests {
             TaskRunUpdate::Progress {
                 message: "checking".into()
             }
+        );
+
+        let control = TaskRunControl {
+            version: 1,
+            run_epoch: 4,
+            applied_revision: 2,
+            directions: vec![TaskRunDirection {
+                revision: 3,
+                text: "Use the corrected launch date.".into(),
+            }],
+            cancel_requested: false,
+        };
+        let control_json = serde_json::to_string(&control).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TaskRunControl>(&control_json).unwrap(),
+            control
+        );
+        assert!(serde_json::from_str::<TaskRunControl>(
+            r#"{"version":1,"run_epoch":4,"applied_revision":2,"directions":[],"cancel_requested":false,"actor":"forged"}"#
+        )
+        .is_err());
+        assert_eq!(
+            serde_json::from_str::<TaskRunUpdate>(r#"{"kind":"direction_applied","revision":3}"#)
+                .unwrap(),
+            TaskRunUpdate::DirectionApplied { revision: 3 }
         );
     }
 }
