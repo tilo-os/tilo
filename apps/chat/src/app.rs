@@ -2047,6 +2047,7 @@ impl ChatApp {
         view.agent_task_actions = parent.agent_task_actions.clone();
         view.agent_intents = parent.agent_intents.clone();
         view.agent_submissions = parent.agent_submissions.clone();
+        view.agent_submission_errors = parent.agent_submission_errors.clone();
         view.agent_work_expanded = parent.agent_work_expanded.clone();
         view.conversation_surface = true;
         view.thread_open = None;

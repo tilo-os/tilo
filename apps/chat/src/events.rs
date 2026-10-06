@@ -2594,12 +2594,19 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "Keep after refusal");
-        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        app.composer_main.select(5, 10);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        app.agent_surfaces
+            .get_mut(&channel)
+            .expect("the detached conversation")
+            .view
+            .send_focused(&mut ui::widget::Edits::lend(&mut doc));
         settle_agent_submissions(&mut app);
-        assert_eq!(
-            app.composer_main.private_plain().as_deref(),
-            Some("Keep after refusal")
-        );
+        let surface = &app.agent_surfaces[&channel];
+        assert_eq!(surface.view.composer_main.value(), "Keep after refusal");
+        assert_eq!(surface.view.composer_main.selection(), (5, 10));
         assert!(app.agent_submissions.get().is_empty());
         assert_eq!(
             app.agent_submission_errors
@@ -2609,8 +2616,18 @@ mod tests {
             Some("Message was not sent. Your draft is still here."),
             "a terminal refusal is visible beside the retained draft"
         );
-        render_frame(&mut app, 800.0, 600.0);
-        let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+            &mut app,
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+        let accessible = ui::Widget::accessibility(&*app.agent_surfaces[&channel].view)
+            .expect("detached Chat accessibility tree");
         assert!(accessible.children.iter().any(|node| {
             node.role == ui::a11y::Role::StaticText
                 && node.name.as_deref() == Some("Message was not sent. Your draft is still here.")
@@ -3323,6 +3340,11 @@ mod tests {
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
         app.room_agents.push("scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
         app.reload(&doc);
         render_frame(&mut app, 1200.0, 800.0);
         app.on_hit(
@@ -3330,6 +3352,7 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "Keep this view-only draft");
+        app.composer_main.select(5, 14);
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
         let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
         app.perms = crate::permissions::ChatPermissions::from_context(
@@ -3354,10 +3377,34 @@ mod tests {
             surface.view.composer_main.private_plain().as_deref(),
             Some("Keep this view-only draft")
         );
+        assert_eq!(surface.view.composer_main.selection(), (5, 14));
         assert!(
             surface.view.hits.iter().all(|(_, hit)| {
                 !matches!(hit, Hit::AgentIntent(_) | Hit::FocusMain | Hit::Send)
             })
+        );
+        let accessible =
+            ui::Widget::accessibility(&*surface.view).expect("detached Chat accessibility tree");
+        assert!(accessible.children.iter().all(|node| {
+            node.role != ui::a11y::Role::TextInput
+                && node.name.as_deref() != Some("Send message")
+                && node.name.as_deref() != Some("Queue task")
+                && node.name.as_deref() != Some("Send direction")
+        }));
+        let requests_before = host.requests().len();
+        app.agent_surfaces
+            .get_mut(&channel)
+            .expect("the detached conversation")
+            .view
+            .on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(host.requests().len(), requests_before);
+        assert_eq!(
+            app.agent_surfaces[&channel]
+                .view
+                .composer_main
+                .private_plain()
+                .as_deref(),
+            Some("Keep this view-only draft")
         );
     }
 
