@@ -109,7 +109,9 @@ pub const CODECS_DESCRIPTION: &str = "Enables hardware video on AMD and Intel gr
 H.264/HEVC playback and encoding for videos, screen sharing and calls. After the first start, this \
 computer downloads them directly from RPM Fusion and Cisco (OpenH264) under their own licences, as \
 soon as it is online; Tilo does not host or distribute them. You can install or remove them later \
-in Settings, Updates.";
+in Settings, Updates. OpenH264 Video Codec provided by Cisco Systems, Inc. The complete Cisco \
+binary license is in /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt and at \
+https://www.openh264.org/BINARY_LICENSE.txt.";
 
 /// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "tilo";
@@ -4528,9 +4530,27 @@ mod tests {
             "Cisco",
             "AMD and Intel",
             "screen sharing and calls",
+            "OpenH264 Video Codec provided by Cisco Systems, Inc.",
+            "https://www.openh264.org/BINARY_LICENSE.txt",
         ] {
             assert!(CODECS_DESCRIPTION.contains(needle), "{needle}");
         }
+        assert!(
+            find_accessible(composed, CODECS_DESCRIPTION).is_some(),
+            "the rendered codec control must expose the complete attribution and license location"
+        );
+        let resources = app.publish();
+        let options = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == op::OPTIONS)
+            .expect("published installation options");
+        let install = options
+            .actions
+            .iter()
+            .find(|action| action.id == "set-media-codecs")
+            .expect("published codec choice");
+        assert_eq!(install.description.as_deref(), Some(CODECS_DESCRIPTION));
         app.codecs = true;
         app.step = Step::Review;
         app.dirty_structure = true;
