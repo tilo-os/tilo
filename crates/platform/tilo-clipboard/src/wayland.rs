@@ -211,10 +211,14 @@ impl WaylandClipboard {
     pub fn new_for_wayland_test(
         connection: smithay_client_toolkit::reexports::client::Connection,
     ) -> Self {
-        Self::new_test_connection(connection, CLIPBOARD_READ_BUDGET)
+        Self::new_for_wayland_test_with_read_budget(connection, CLIPBOARD_READ_BUDGET)
     }
 
-    fn new_test_connection(
+    /// Use the production worker with an explicit transfer deadline in protocol
+    /// tests. Cancellation tests must finish before this deadline, so expiry
+    /// cannot satisfy an assertion that focus loss or NULL cleared an offer.
+    #[doc(hidden)]
+    pub fn new_for_wayland_test_with_read_budget(
         connection: smithay_client_toolkit::reexports::client::Connection,
         rich_read_budget: tilo_clock::Duration,
     ) -> Self {

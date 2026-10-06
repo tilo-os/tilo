@@ -1076,11 +1076,35 @@ impl Drop for ServingClipboard {
 }
 
 fn wait_for_clipboard(client: &mut TestClient, condition: impl Fn() -> bool, failure: &str) {
-    let started = Instant::now();
-    while !condition() && started.elapsed() < deadline() {
+    wait_for_clipboard_before(client, condition, failure, tilo_test_env::hang_deadline());
+}
+
+fn wait_for_clipboard_before(
+    client: &mut TestClient,
+    condition: impl Fn() -> bool,
+    failure: &str,
+    end: Instant,
+) {
+    while !condition() && Instant::now() < end {
         dispatch_any(&mut [&mut *client], None, Duration::from_millis(5));
     }
+    assert!(
+        Instant::now() < end,
+        "{failure}: fixture exceeded its deadline"
+    );
     assert!(condition(), "{failure}");
+}
+
+fn cancellation_clipboard(app: &TestClient) -> (ui::clipboard::WaylandClipboard, Instant) {
+    // The fixture's absolute failure deadline precedes transfer expiry. A
+    // successful clear therefore proves cancellation rather than a timer firing.
+    let end = tilo_test_env::hang_deadline();
+    let read_budget = deadline().checked_mul(2).expect("cancellation read budget");
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test_with_read_budget(
+        app.conn.clone(),
+        read_budget,
+    );
+    (clipboard, end)
 }
 
 impl TestClient {
@@ -1707,13 +1731,14 @@ fn wayland_rich_clipboard_pairs_one_offer_and_clears_on_focus_loss() {
     );
     let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-sink");
     app.assert_is_tilo_compositor();
-    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    let (clipboard, end) = cancellation_clipboard(&app);
     app.map_window(&compositor);
     // Exercise the real worker alongside the app's own connection and queue.
-    wait_for_clipboard(
+    wait_for_clipboard_before(
         &mut app,
         || clipboard.rich_text().is_some(),
         "rich offer missing",
+        end,
     );
     let offer = clipboard.rich_text().expect("completed rich offer");
     assert_eq!(offer.html, "<p><strong>文🙂</strong></p>");
@@ -1722,10 +1747,11 @@ fn wayland_rich_clipboard_pairs_one_offer_and_clears_on_focus_loss() {
     let mut other = TestClient::new(compositor.connect(), "org.tilo.test.rich-focus-loss");
     other.map_window(&compositor);
     app.wait_until(|state| !state.keyboard_focused, "sink did not lose focus");
-    wait_for_clipboard(
+    wait_for_clipboard_before(
         &mut app,
         || clipboard.rich_text().is_none(),
         "rich cache survived Leave",
+        end,
     );
 }
 
@@ -1744,12 +1770,13 @@ fn wayland_rich_clipboard_replacement_keeps_ordinary_plain_paste() {
     );
     let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-replace-sink");
     app.assert_is_tilo_compositor();
-    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    let (clipboard, end) = cancellation_clipboard(&app);
     app.map_window(&compositor);
-    wait_for_clipboard(
+    wait_for_clipboard_before(
         &mut app,
         || clipboard.rich_text().is_some(),
         "initial rich offer missing",
+        end,
     );
 
     let previous = app.state.clipboard_offer.clone();
@@ -1759,10 +1786,11 @@ fn wayland_rich_clipboard_replacement_keeps_ordinary_plain_paste() {
         "replacement offer missing",
     );
     assert_eq!(app.read_clipboard(None), "replacement plain 文🙂");
-    wait_for_clipboard(
+    wait_for_clipboard_before(
         &mut app,
         || clipboard.rich_text().is_none(),
         "superseded rich offer survived",
+        end,
     );
 }
 
@@ -1781,12 +1809,13 @@ fn wayland_rich_clipboard_null_selection_clears_completed_offer() {
     );
     let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-null-sink");
     app.assert_is_tilo_compositor();
-    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    let (clipboard, end) = cancellation_clipboard(&app);
     app.map_window(&compositor);
-    wait_for_clipboard(
+    wait_for_clipboard_before(
         &mut app,
         || clipboard.rich_text().is_some(),
         "initial rich offer missing",
+        end,
     );
     app.data_device
         .as_ref()
@@ -1797,10 +1826,11 @@ fn wayland_rich_clipboard_null_selection_clears_completed_offer() {
         |state| state.clipboard_offer.is_none(),
         "NULL selection missing",
     );
-    wait_for_clipboard(
+    wait_for_clipboard_before(
         &mut app,
         || clipboard.rich_text().is_none(),
         "NULL selection retained rich data",
+        end,
     );
 }
 
