@@ -55,18 +55,23 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
-        if let Some(input) = crate::widget::PhysicalInput::from_window_event(&event)
-            && (matches!(input, crate::widget::PhysicalInput::Focused(false))
-                || (self.close_admission.dialog.is_none()
-                    && self
-                        .history
-                        .as_ref()
-                        .is_none_or(|history| history.live_interactive())
-                    && self.history_layout.is_none_or(|layout| layout.app_visible)))
+        if self.close_admission.dialog.is_some()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| !history.live_interactive())
+            || self
+                .history_layout
+                .is_some_and(|layout| !layout.app_visible)
         {
+            self.root_widget
+                .observe_physical_input(crate::widget::PhysicalInput::Focused(false));
+        } else if let Some(input) = crate::widget::PhysicalInput::from_window_event(&event) {
             self.root_widget.observe_physical_input(input);
         }
         if self.close_handle_event(&event, window.scale_factor()) {
+            self.root_widget
+                .observe_physical_input(crate::widget::PhysicalInput::Focused(false));
             window.request_redraw();
             return true;
         }
@@ -1005,6 +1010,60 @@ mod tests {
                 events.last(),
                 Some(crate::widget::PhysicalInput::Focused(false))
             ))
+        });
+    }
+
+    #[test]
+    fn physical_feedback_clears_when_framework_modal_takes_input() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        app.close_admission.show(
+            "close-title",
+            "close-unsaved",
+            &[crate::close_admission::Choice::KeepEditing],
+            app.input.platform,
+        );
+        app.layout.structure_dirty = true;
+        app.layout.layout_dirty = true;
+        app.surface_frame(&region, &mut Scene::new());
+        PHYSICAL.with_borrow_mut(Vec::clear);
+        app.surface_input(
+            &region,
+            WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: winit::event::KeyEvent::synthetic(
+                    winit::event::RawKeyEvent {
+                        physical_key: winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::KeyY,
+                        ),
+                        state: ElementState::Pressed,
+                    },
+                    winit::keyboard::Key::Character("private-modal-input".into()),
+                    None,
+                    winit::keyboard::KeyLocation::Standard,
+                    false,
+                    None,
+                    winit::keyboard::Key::Character("private-modal-input".into()),
+                ),
+                is_synthetic: false,
+            },
+            false,
+        );
+        PHYSICAL.with_borrow(|events| {
+            assert!(
+                !events.is_empty(),
+                "modal priority clears previous held positions"
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| matches!(event, crate::widget::PhysicalInput::Focused(false))),
+                "modal keystrokes must not reach foreground observers"
+            );
         });
     }
 
