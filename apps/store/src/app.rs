@@ -2439,12 +2439,41 @@ impl StoreApp {
             }) {
                 browse = browse.on_action(binding);
             }
-            let controls = Box::new(
-                Row::new()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .push(Box::new(browse))
-                    .push(remove),
-            );
+            let mut widgets: Vec<Box<dyn Widget>> = vec![Box::new(browse)];
+            if remote.user_managed {
+                let effect = remote_enabled_effect(remote);
+                let mut toggle = ui::widget::Button::new(
+                    &format!("store.{}.toggle", remote.resource_id()),
+                    &ui::i18n!(if remote.disabled {
+                        "store-remote-enable"
+                    } else {
+                        "store-remote-disable"
+                    }),
+                )
+                .fit_content(40.0);
+                if let Some(binding) = bindings::effect(&effect) {
+                    toggle = toggle.on_action(binding);
+                }
+                widgets.push(Box::new(toggle));
+            }
+            widgets.push(remove);
+            let controls: Box<dyn Widget> = if self.compact_layout() {
+                Box::new(
+                    widgets.into_iter().fold(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(theme.tokens.spacing.s2),
+                        Column::push,
+                    ),
+                )
+            } else {
+                Box::new(
+                    widgets
+                        .into_iter()
+                        .fold(Row::new().with_gap(theme.tokens.spacing.s2), Row::push),
+                )
+            };
             let remote_row: Box<dyn Widget> = if self.compact_layout() {
                 Box::new(
                     Container::new().with_no_padding().with_child(Box::new(
@@ -3997,6 +4026,12 @@ impl StoreApp {
                     Finish::Status,
                 ));
             }
+            StoreEffect::EnableRemote { remote } => {
+                return self.admit_remote_enabled(&remote, true);
+            }
+            StoreEffect::DisableRemote { remote } => {
+                return self.admit_remote_enabled(&remote, false);
+            }
             StoreEffect::RemoveRemote { name } => {
                 validate_remote_name(&name)?;
                 if !self
@@ -4452,6 +4487,8 @@ impl StoreApp {
             StoreEffect::FLATPAK_OPEN,
             StoreEffect::FLATPAK_REMOVE,
             StoreEffect::FLATPAK_SETUP,
+            StoreEffect::ENABLE_REMOTE,
+            StoreEffect::DISABLE_REMOTE,
         ]
         .into_iter()
         .map(|effect| EffectStatus::unavailable(effect, "flatpak_host_unavailable", reason))
@@ -4609,8 +4646,29 @@ impl StoreApp {
         package_action_label(action, self.flatpak_error.as_deref())
     }
 
+    fn admit_remote_enabled(&self, id: &str, enabled: bool) -> Result<Admitted, String> {
+        if !self.flatpak_available {
+            return Err(flatpak_unavailable_reason(self.flatpak_error.as_deref()).into());
+        }
+        let remote = self
+            .remotes
+            .iter()
+            .find(|remote| remote.resource_id() == id && remote.user_managed)
+            .ok_or_else(|| ui::i18n!("store-remote-managed-change"))?;
+        let name = remote.name.clone();
+        validate_remote_name(&name)?;
+        self.reserve_job()?;
+        Ok(Job::admitted(
+            Request::RemoteSetEnabled { name, enabled },
+            Finish::Status,
+        ))
+    }
+
     fn remote_live_row(&self, remote: &crate::flathub_client::Remote) -> LiveRow {
-        let row = remote_row(remote);
+        let mut row = remote_row(remote);
+        if remote.user_managed {
+            row = row.effect(&remote_enabled_effect(remote));
+        }
         if self.flathub_account_source(&remote.resource_id()).is_ok() {
             row.effect(&StoreEffect::UseFlathubForAccount {
                 remote: remote.resource_id(),
@@ -4699,6 +4757,18 @@ fn case_record(
 const REMOTES_ID: &str = "store:remotes";
 const LATEST_JOB_ID: &str = "store:latest-job";
 const CATALOGUE_SNAPSHOT_ID: &str = "store:catalogue-snapshot";
+
+fn remote_enabled_effect(remote: &crate::flathub_client::Remote) -> StoreEffect {
+    if remote.disabled {
+        StoreEffect::EnableRemote {
+            remote: remote.resource_id(),
+        }
+    } else {
+        StoreEffect::DisableRemote {
+            remote: remote.resource_id(),
+        }
+    }
+}
 
 fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
     crate::resource::STORE_CATALOG.ensure();
@@ -5062,6 +5132,107 @@ mod tests {
                 .unwrap_err()
                 .contains("not installed")
         );
+    }
+
+    #[test]
+    fn remote_enabled_actions_preserve_account_scope_and_declaration() {
+        let mut app = seeded_app();
+        let user = crate::flathub_client::Remote {
+            name: "custom-tools".into(),
+            title: "Custom tools".into(),
+            url: "https://tools.example.test/repo/".into(),
+            disabled: true,
+            user_managed: true,
+        };
+        let system = crate::flathub_client::Remote {
+            user_managed: false,
+            ..user.clone()
+        };
+        app.set_remotes(vec![user.clone(), system.clone()]);
+        for (disabled, expected, enabled) in [
+            (true, "enable-remote", true),
+            (false, "disable-remote", false),
+        ] {
+            let remote = crate::flathub_client::Remote {
+                disabled,
+                ..user.clone()
+            };
+            app.set_remotes(vec![remote.clone(), system.clone()]);
+            let row = app.live_row(&remote.resource_id()).unwrap().into_resource();
+            let action = row
+                .actions
+                .iter()
+                .find(|action| action.id == expected)
+                .unwrap();
+            assert_eq!(
+                action.contract.permission,
+                tilo_actions::PermissionRequirement::Admin
+            );
+            let job = admitted_job(&mut app, remote_enabled_effect(&remote));
+            assert!(
+                matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
+            );
+            let system_row = app.live_row(&system.resource_id()).unwrap().into_resource();
+            assert!(
+                !system_row
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action.id.as_str(), "enable-remote" | "disable-remote"))
+            );
+            assert!(
+                app.admit(StoreEffect::EnableRemote {
+                    remote: system.resource_id()
+                })
+                .is_err()
+            );
+            assert!(
+                app.admit(StoreEffect::DisableRemote {
+                    remote: "remote:user:missing".into()
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn account_remote_enabled_controls_are_accessible_on_the_owner_surface() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_remotes(vec![crate::flathub_client::Remote {
+                name: "custom-tools".into(),
+                title: "Custom tools".into(),
+                url: "https://tools.example.test/repo/".into(),
+                disabled: true,
+                user_managed: true,
+            }]);
+            store.show_remotes();
+        })
+        .unwrap();
+        let control = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-remote-enable").as_str())
+            })
+            .unwrap();
+        assert!(!control.disabled);
+        app.with_surface(|store: &mut StoreApp| {
+            store.remotes[0].disabled = false;
+            store.structure_dirty = true;
+        })
+        .unwrap();
+        let control = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-remote-disable").as_str())
+            })
+            .unwrap();
+        assert!(!control.disabled);
     }
 
     #[test]
