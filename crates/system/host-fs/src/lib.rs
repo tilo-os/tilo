@@ -1,6 +1,7 @@
 //! Portable access to file metadata that only some platforms have:
 //! permission bits, symbolic links, extended attributes, no-replace
-//! rename, private staging directories and trash management.
+//! rename, private staging directories, trash management and the capacity
+//! and free space of a filesystem.
 //!
 //! Apps that preserve or present such metadata (a backup engine, a file
 //! manager) call these functions; each one says what it does where the
@@ -10,10 +11,12 @@ pub mod attributes;
 pub mod names;
 mod private_dir;
 mod rename;
+mod space;
 pub mod trash;
 
 pub use private_dir::{create_private_dir, mark_private};
 pub use rename::rename_noreplace;
+pub use space::{Space, space};
 
 use std::fs::Metadata;
 use std::io;

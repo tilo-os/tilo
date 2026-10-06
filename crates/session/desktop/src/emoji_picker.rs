@@ -42,6 +42,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::i18n::{t, t_args};
 use crate::text_entry::{self, Edit};
+use ui::TextRole;
 
 /// Matches listed for a query at most.
 const SEARCH_RESULTS: usize = 96;
@@ -1041,7 +1042,7 @@ impl EmojiPicker {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let g = self.geometry.clone();
 
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, g.card.height());
@@ -1081,23 +1082,22 @@ impl EmojiPicker {
             text_renderer,
             theme,
             &SegmentedFace::new(&g.tabs, &icons, self.group)
-                .style(SegmentedStyle::Underline)
-                .hovered(hovered_tab)
-                .text_size(type_scale.lg)
-                .weight(TextWeight::Regular),
+                .style(SegmentedStyle::Tabs)
+                .hovered(hovered_tab),
         );
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &g.grid);
         for (heading, y) in &g.headings {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 heading,
-                type_scale.xs,
                 colors.text_dim,
                 transform
                     .pre_translate((g.grid.x0 + 4.0, g.grid.y0 + y - self.scroll + 6.0).into()),
                 Some(f64_to_f32(g.grid.width())),
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         }
         for (i, text) in self.items.iter().enumerate() {
@@ -1107,9 +1107,11 @@ impl EmojiPicker {
             if rect.y1 < g.grid.y0 || rect.y0 > g.grid.y1 {
                 continue;
             }
-            let shape = RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.md));
+            let shape =
+                RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.control));
             if i == self.selected {
-                scene.fill(Fill::NonZero, transform, theme.bg_active, None, &shape);
+                let lift = colors.lift_on(ui::chrome::shell::panel_ground(theme), 1.0);
+                scene.fill(Fill::NonZero, transform, lift, None, &shape);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.5),
                     transform,
@@ -1118,17 +1120,18 @@ impl EmojiPicker {
                     &shape,
                 );
             } else if self.hover == Some(Hit::Emoji(i)) {
-                scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &shape);
+                let lift = colors.lift_on(ui::chrome::shell::panel_ground(theme), 0.5);
+                scene.fill(Fill::NonZero, transform, lift, None, &shape);
             }
             draw_emoji(scene, transform, text_renderer, theme, rect, text);
         }
         if self.items.is_empty() {
             let message = t("emoji-picker-no-results");
-            let (w, h) = text_renderer.measure(&message, type_scale.sm, None);
-            text_renderer.draw_text(
+            let (w, h) =
+                text_renderer.measure_style(&message, None, &type_scale.style(TextRole::Caption));
+            text_renderer.draw_style(
                 scene,
                 &message,
-                type_scale.sm,
                 colors.text_dim,
                 transform.pre_translate(
                     (
@@ -1138,6 +1141,7 @@ impl EmojiPicker {
                         .into(),
                 ),
                 None,
+                &type_scale.style(TextRole::Caption),
             );
         }
         scene.pop_layer();
@@ -1154,40 +1158,46 @@ impl EmojiPicker {
             let name = self.spoken_name(text);
             let hint = self.hint();
             let text_x = glyph.x1 + f64::from(self.spacing.s2);
-            let (hint_w, hint_h) = text_renderer.measure(&hint, type_scale.xs, None);
+            let (hint_w, hint_h) =
+                text_renderer.measure_style(&hint, None, &type_scale.style(TextRole::Caption));
             let hint_x = (g.footer.x1 - f64::from(hint_w)).max(text_x);
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &name,
-                type_scale.sm,
                 colors.text_primary,
                 transform.pre_translate(
-                    (text_x, g.footer.center().y - f64::from(type_scale.sm) * 0.7).into(),
+                    (
+                        text_x,
+                        g.footer.center().y - f64::from(type_scale.size(TextRole::Caption)) * 0.7,
+                    )
+                        .into(),
                 ),
                 Some(f64_to_f32(
                     (hint_x - text_x - f64::from(self.spacing.s2)).max(0.0),
                 )),
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &hint,
-                type_scale.xs,
                 colors.text_dim,
                 transform
                     .pre_translate((hint_x, g.footer.center().y - f64::from(hint_h) / 2.0).into()),
                 None,
+                &type_scale.style(TextRole::Caption),
             );
         }
 
         if let Some(tones) = &self.tones {
-            let radius = f64::from(theme.tokens.radii.md);
+            let radius = f64::from(theme.tokens.radii.control);
             ui::surface::shadow(
                 scene,
                 transform,
                 tones.rect,
                 radius,
-                &theme.tokens.elevation.e2,
+                &theme.tokens.elevation.floating,
             );
             let shape = RoundedRect::from_rect(tones.rect, radius);
             scene.fill(
@@ -1206,9 +1216,12 @@ impl EmojiPicker {
             );
             for (i, (text, rect)) in tones.forms.iter().zip(&tones.cells).enumerate() {
                 if i == tones.selected {
-                    let cell_shape =
-                        RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.md));
-                    scene.fill(Fill::NonZero, transform, theme.bg_active, None, &cell_shape);
+                    let cell_shape = RoundedRect::from_rect(
+                        rect.inset(-2.0),
+                        f64::from(theme.tokens.radii.control),
+                    );
+                    let lift = colors.lift_on(colors.surfaces.raised, 1.0);
+                    scene.fill(Fill::NonZero, transform, lift, None, &cell_shape);
                     scene.stroke(
                         &vello::kurbo::Stroke::new(1.5),
                         transform,

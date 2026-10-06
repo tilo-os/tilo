@@ -87,6 +87,7 @@ pub mod input_policy;
 pub mod install_card;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
+pub(crate) mod launch_readiness;
 pub mod launcher;
 pub mod live_activities;
 pub mod live_presence;
@@ -165,6 +166,7 @@ pub mod topbar_chrome;
 pub mod trusted_ui;
 pub mod uri_open;
 pub mod window_actions;
+pub mod window_appearance;
 pub mod window_previews;
 pub mod window_transfer;
 #[cfg(target_os = "linux")]
@@ -1189,6 +1191,7 @@ pub fn build_tilo_overlay_host_with_inputs(
     // construction; feeds only the *initial* layout, the live chrome
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
+    launcher::action_authority::Export::of(&tree).publish();
     for room in tree.rooms() {
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }

@@ -106,6 +106,7 @@ impl ControlOwner {
             },
             Self::Component(binding) => {
                 PendingControlOrigin::Component(crate::bound_dispatch::BoundActionTarget {
+                    physical_text: false,
                     binding: binding.clone(),
                     address: crate::bound_dispatch::BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -130,7 +131,7 @@ enum DomainEntry {
 struct Producer {
     id: ControlProducerId,
     discipline: ControlProducerDiscipline,
-    pending: VecDeque<(ControlRequestId, ControlInvocation)>,
+    pending: VecDeque<(ControlRequestId, ControlInvocation, bool)>,
 }
 /// A retained producer does not keep its owner, registry or widget alive.
 #[derive(Clone)]
@@ -393,9 +394,15 @@ impl ControlDomain {
             match entry {
                 DomainEntry::Producer(producer) => {
                     if let Some(owner) = &owner {
-                        for (_, invocation) in producer.borrow_mut().pending.drain(..) {
+                        for (_, invocation, physical_text) in
+                            producer.borrow_mut().pending.drain(..)
+                        {
+                            let mut origin = owner.origin(&invocation);
+                            if let PendingControlOrigin::Component(target) = &mut origin {
+                                target.physical_text = physical_text;
+                            }
                             output.push(OwnedControl {
-                                origin: owner.origin(&invocation),
+                                origin,
                                 invocation,
                                 domain: self.downgrade(),
                             });
@@ -459,7 +466,9 @@ impl ControlOutbox {
                 }
             }
         }
-        producer.pending.push_back((id, invocation));
+        producer
+            .pending
+            .push_back((id, invocation, crate::bound_dispatch::physical_text()));
         Ok(LocalEmission::Queued(id))
     }
     pub fn replace(&self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
@@ -481,7 +490,7 @@ pub(crate) struct ControlHolder {
 }
 enum HolderStorage {
     Legacy {
-        pending: VecDeque<ControlInvocation>,
+        pending: VecDeque<(ControlInvocation, bool)>,
         emitted: bool,
     },
     Registered(ControlOutbox),
@@ -549,8 +558,10 @@ impl ControlHolder {
         let outbox = domain.producer(self.discipline);
         let old = std::mem::replace(&mut self.storage, HolderStorage::Registered(outbox.clone()));
         if let HolderStorage::Legacy { pending, .. } = old {
-            for invocation in pending {
-                let _ = outbox.emit(invocation);
+            for (invocation, physical_text) in pending {
+                let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
+                    outbox.emit(invocation)
+                });
             }
         }
         Ok(())
@@ -582,14 +593,19 @@ impl ControlHolder {
                         }
                     }
                 }
-                pending.push_back(invocation);
+                pending.push_back((invocation, crate::bound_dispatch::physical_text()));
                 Ok(RawControlEmission::LegacyPending)
             }
         }
     }
     pub(crate) fn take(&mut self) -> Option<ControlInvocation> {
         match &mut self.storage {
-            HolderStorage::Legacy { pending, .. } => pending.pop_front(),
+            HolderStorage::Legacy { pending, .. } => {
+                pending.pop_front().map(|(invocation, physical_text)| {
+                    crate::bound_dispatch::note_drained_physical_text(physical_text);
+                    invocation
+                })
+            }
             HolderStorage::Registered(_) => None,
         }
     }
@@ -602,13 +618,15 @@ impl ControlHolder {
     #[cfg(any(test, feature = "test-support"))]
     fn controlled_pending_for_test(&self) -> Option<ControlInvocation> {
         match &self.storage {
-            HolderStorage::Legacy { pending, .. } => pending.front().cloned(),
+            HolderStorage::Legacy { pending, .. } => {
+                pending.front().map(|(invocation, _)| invocation.clone())
+            }
             HolderStorage::Registered(outbox) => outbox
                 .producer
                 .borrow()
                 .pending
                 .front()
-                .map(|(_, invocation)| invocation.clone()),
+                .map(|(_, invocation, _)| invocation.clone()),
         }
     }
 }

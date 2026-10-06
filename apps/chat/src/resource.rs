@@ -144,7 +144,7 @@ impl Resource for Chat {
             let owned = key.clone();
             publish_child::<RichText, Chat>(
                 &crate::composer::draft_id(key),
-                &format!("Draft · {key}"),
+                &format!("Draft in {key}"),
                 None,
                 move |edit| ChatAction::EditDraft {
                     key: owned.clone(),
@@ -196,7 +196,7 @@ impl Resource for Chat {
         let channels = state.channels.iter().map(|channel| {
             let id = format!("chat.channel:{}", channel.id);
             SearchEntry::new(
-                format!("{}{}", channel.kind.glyph(), channel.name),
+                channel.name.clone(),
                 format!("{} {}", channel.topic, workspace_name(&channel.workspace)),
             )
             .invoking(open(&id, "open-channel"))

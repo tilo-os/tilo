@@ -2577,7 +2577,7 @@
     "action": "new-artwork",
     "resource_kind": "canvas.artwork",
     "label": "New artwork",
-    "description": "Start over on a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
+    "description": "Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
     "operation": "Document",
     "params": [
       {
@@ -3809,7 +3809,7 @@
     "params": []
   },
   {
-    "resource": "tilo.control:canvas-export-open",
+    "resource": "tilo.control:canvas-export-title",
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Export a picture",
@@ -3822,15 +3822,6 @@
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Show the layer's adjustments",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:canvas-sidebar",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Show or hide the panels",
     "description": null,
     "operation": "View",
     "params": []
@@ -3885,6 +3876,33 @@
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Zoom out",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:nav-shell-inspector",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Hide inspector",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dhistory",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dinspector",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
     "description": null,
     "operation": "View",
     "params": []
