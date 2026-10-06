@@ -39,6 +39,8 @@ pub struct AgentMessageAdmissionData {
     pub publisher_digest: [u8; 32],
     pub operation: AgentMessageOperationData,
     pub executed_action: tilo_actions::ActionId,
+    /// Actual immutable `ActionEnvelope` actor, never inferred from `ActionId`.
+    pub executed_actor: Vec<u8>,
     /// Strictly sorted exact newly committed range of this executed action.
     pub changes: Vec<[u8; 32]>,
 }
@@ -67,7 +69,13 @@ impl AgentMessageAdmissionAttestation {
     pub fn signing_bytes(&self) -> Result<Vec<u8>, String> {
         if self.data.invocation.is_nil()
             || self.data.action.is_empty()
-            || self.data.action.len() > MAX_ACTION_BYTES
+            || self.data.executed_actor.is_empty()
+            || self
+                .data
+                .action
+                .len()
+                .checked_add(self.data.executed_actor.len())
+                .is_none_or(|bytes| bytes > MAX_ACTION_BYTES)
             || self.data.publisher_digest == [0; 32]
             || self.data.executed_action.0.is_nil()
             || self.data.changes.is_empty()
@@ -188,6 +196,7 @@ impl AgentMessageAdmissionAttestation {
             publisher_digest: self.data.publisher_digest,
             operation: self.data.operation.clone(),
             executed_action: self.data.executed_action,
+            executed_actor: self.data.executed_actor.clone(),
             changes: self.data.changes.clone(),
             document: self.data.document.clone(),
         };
@@ -287,6 +296,9 @@ mod tests {
                     foreign_restriction: false,
                 },
                 executed_action: tilo_actions::ActionId(uuid::Uuid::from_u128(501)),
+                executed_actor: tilo_actions::ActionId(uuid::Uuid::from_u128(501))
+                    .actor_bytes()
+                    .to_vec(),
                 changes: vec![[6; 32]],
             },
             attestor: fixture.certificate.clone(),
@@ -352,6 +364,12 @@ mod tests {
         assert!(verify(&fixture, &changed, &request).is_err());
         let mut changed = proof.clone();
         changed.data.publisher_digest = [9; 32];
+        assert!(verify(&fixture, &changed, &request).is_err());
+        let mut changed = proof.clone();
+        changed.data.executed_action = tilo_actions::ActionId(uuid::Uuid::from_u128(999));
+        assert!(verify(&fixture, &changed, &request).is_err());
+        let mut changed = proof.clone();
+        changed.data.executed_actor = b"asserted-other-writer".to_vec();
         assert!(verify(&fixture, &changed, &request).is_err());
         let mut changed_request = request;
         if let tilo_peer_state::owner_commit::CommitOperation::Document { record, .. } =

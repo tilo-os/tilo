@@ -92,8 +92,23 @@ fn verify_row(
     for hash in &source.changes {
         let change = ReadDoc::get_change_by_hash(&doc, &automerge::ChangeHash(*hash))
             .ok_or("Agent Message contribution is absent from admitted document")?;
-        if change.actor_id().to_bytes() != source.executed_action.actor_bytes() {
+        if change.actor_id().to_bytes() != source.executed_actor {
             return Err("Agent Message contribution includes another action actor".into());
+        }
+        let context = change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message);
+        if context.as_ref().and_then(|context| context.executed_action)
+            != Some(source.executed_action)
+        {
+            return Err("Agent Message contribution belongs to another action or lacks executor correlation".into());
+        }
+        if context
+            .as_ref()
+            .and_then(|context| context.source_invocation)
+            != Some(tilo_actions::InvocationId(source.invocation))
+        {
+            return Err("Agent Message contribution has another original invocation or lacks admission correlation".into());
         }
     }
     let channels = object(&doc, &ROOT, "channels", ObjType::Map)?;
@@ -167,7 +182,7 @@ fn verify_operation(
     let ObjId::Id(counter, actor, _) = operation else {
         return Err("Agent Message fact has no original operation".into());
     };
-    if actor.to_bytes() != source.executed_action.actor_bytes() {
+    if actor.to_bytes() != source.executed_actor {
         return Err("Agent Message fact was created by another action contributor".into());
     }
     for hash in &source.changes {
@@ -198,6 +213,7 @@ fn validated_sources(
         .iter()
         .try_fold(0usize, |sum, attestation| {
             sum.checked_add(attestation.data.action.len())
+                .and_then(|bytes| bytes.checked_add(attestation.data.executed_actor.len()))
         })
         .is_none_or(|bytes| bytes > collab_types::MAX_DOCUMENT_TRANSFER_BYTES)
     {

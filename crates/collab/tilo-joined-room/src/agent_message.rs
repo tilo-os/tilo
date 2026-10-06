@@ -92,6 +92,9 @@ pub(crate) struct MessageSource {
     pub(crate) publisher_digest: [u8; 32],
     pub(crate) operation: crate::agent_message_admission::AgentMessageOperationData,
     pub(crate) executed_action: tilo_actions::ActionId,
+    /// Exact executor writer from its immutable envelope. Attributed person
+    /// and Agent writers are deliberately independent of the `ActionId`.
+    pub(crate) executed_actor: Vec<u8>,
     pub(crate) changes: Vec<[u8; 32]>,
     pub(crate) document: CommitBinding,
 }
@@ -117,7 +120,12 @@ impl MessageSource {
             || self.document.basis == [0; 32]
             || self.action_digest == [0; 32]
             || self.action.is_empty()
-            || self.action.len() > collab_types::MAX_DOCUMENT_TRANSFER_BYTES
+            || self.executed_actor.is_empty()
+            || self
+                .action
+                .len()
+                .checked_add(self.executed_actor.len())
+                .is_none_or(|bytes| bytes > collab_types::MAX_DOCUMENT_TRANSFER_BYTES)
             || self.action_digest != *blake3::hash(&self.action).as_bytes()
             || self.publisher_digest == [0; 32]
             || self.executed_action.0.is_nil()

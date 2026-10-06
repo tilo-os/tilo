@@ -38,6 +38,9 @@ fn message(fixture: &Fixture) -> StoredAgentMessage {
                 foreign_restriction: false,
             },
             executed_action: tilo_actions::ActionId(uuid::Uuid::from_u128(500)),
+            executed_actor: tilo_actions::ActionId(uuid::Uuid::from_u128(500))
+                .actor_bytes()
+                .to_vec(),
             changes: vec![[6; 32]],
             document: CommitBinding {
                 room: room.to_string(),
