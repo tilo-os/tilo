@@ -146,6 +146,9 @@ request, packages each platform, and publishes when you push a tag named
 `v*`. Add one secret, `TILO_PUBLISHER_KEY`, holding your publisher key; builds
 without it, such as pull requests from forks, are never published.
 [From CI](../publishing.md#from-ci) lists what each forge's workflow builds.
+On GitHub the generated entry workflow calls `tilo-build.yml`, which other
+repositories can [reuse](../publishing.md#reuse-a-github-build-workflow)
+through GitHub's built-in workflow imports.
 
 ## Publish it
 
@@ -166,6 +169,9 @@ Nothing is public until the registry's owner approves it.
 
 - [Templates and examples](../examples.md): what each template starts you
   with and what each example teaches.
+- [A resource workflow](../sdk-resource-journey.md): a small checklist showing
+  validation, identity, permission revocation, confirmation, undo and persistence
+  through shared UI controls and the agent action surface.
 - [Build an app](../app-development.md): templates, screens, localization,
   text, large collections, testing and every `tilo-app` command.
 - [Interface guidelines](../../crates/sdk/ui-core/HIG.md): layout, navigation

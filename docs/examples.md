@@ -31,6 +31,13 @@ shapes earlier versions offered as templates (data, list, tree, workspace,
 async, qr) were each teaching one widget rather than giving an app a
 starting point, so they are examples now; naming one tells you which.
 
+The starter's generated tests exercise its public actions and live controls,
+Viewer refusal, persistence, and a two-participant edit. That journey checks
+that sync updates both replicas and the running view, history retains the
+peer's authorship, and local undo/redo preserves the collaborator's edit.
+It exchanges production resource documents headlessly; it does not certify
+network transport or sign-in on two devices.
+
 ## Examples
 
 | Example | Teaches | Web |

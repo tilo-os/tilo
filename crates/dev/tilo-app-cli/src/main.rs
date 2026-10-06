@@ -1456,6 +1456,9 @@ fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> R
         "Would create"
     };
     println!("{verb} {}", outcome.path.display());
+    if let Some(path) = &outcome.reusable_path {
+        println!("{verb} {} (reusable GitHub workflow)", path.display());
+    }
     println!(
         "Next: add the TILO_PUBLISHER_KEY secret (what `tilo-app keys export` prints), then push a v* tag to publish"
     );
