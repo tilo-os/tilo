@@ -172,6 +172,113 @@ fn native_certified_local_membership_retains_original_and_settles_failed_and_suc
     drop(home);
 }
 
+#[test]
+fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() {
+    let NativeFixture {
+        home,
+        owner,
+        broker,
+        certificate,
+        room,
+        path,
+    } = fixture();
+    let discovery = broker.app_action_broker().unwrap().downgrade();
+    let actions = discovery.upgrade().unwrap();
+    await_membership_source(&actions, room);
+    let first = failed_effect(&actions, room, &certificate);
+    assert!(matches!(first, InvocationUpdate::Failed { .. }));
+    let effect = owner
+        .with_current(room, |view| {
+            tilo_desktop_model::projection::workspace_effect_receipts_of(
+                view.peer().admitted_room().unwrap(),
+            )
+            .into_iter()
+            .find(|receipt| receipt.invocation == first.invocation())
+            .ok_or_else(|| "actual native effect receipt missing".into())
+        })
+        .unwrap();
+    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+        room: room.to_string(),
+        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+            invocation: effect.invocation.0,
+            redacted: serde_json::to_vec(&effect).unwrap(),
+        },
+    };
+    let (key, governor) =
+        tilo_identity_host::broker::trusted_current_device(&room.to_string()).unwrap();
+    assert_eq!(governor, certificate);
+    let original = owner
+        .commit_effect_receipt(&request, &governor, &key, std::time::SystemTime::now())
+        .unwrap();
+    for _ in 1..130 {
+        assert!(matches!(
+            failed_effect(&actions, room, &certificate),
+            InvocationUpdate::Failed { .. }
+        ));
+    }
+    owner
+        .with_current(room, |view| {
+            assert_eq!(
+                tilo_desktop_model::projection::workspace_effect_receipts_of(
+                    view.peer().admitted_room().unwrap()
+                )
+                .len(),
+                130
+            );
+            assert!(view.peer().workspace_effect_history_root()?.is_some());
+            Ok(())
+        })
+        .unwrap();
+    drop(actions);
+    drop(broker);
+    assert!(discovery.upgrade().is_err());
+    crate::shell::persist::wait_for_saves();
+    drop(owner);
+    let mut stored = crate::shell::persist::load_tree_from(&path).unwrap();
+    stored.persist_path = Some(path.clone());
+    let reopened = native_workspace_owner::open(stored.shared()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let retry = reopened
+        .commit_effect_receipt(&request, &governor, &key, std::time::SystemTime::now())
+        .unwrap();
+    assert_eq!(retry.binding, original.binding);
+    assert_eq!(retry.generation, original.generation);
+    assert_eq!(retry.aggregate_hash, original.aggregate_hash);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    reopened
+        .with_current(room, |view| {
+            let restored = tilo_desktop_model::projection::workspace_effect_receipts_of(
+                view.peer().admitted_room().unwrap(),
+            )
+            .into_iter()
+            .find(|receipt| receipt.invocation == effect.invocation)
+            .ok_or_else(|| "reopened native effect receipt missing".to_string())?;
+            assert_eq!(restored, effect);
+            Ok(())
+        })
+        .unwrap();
+    drop(home);
+}
+
+fn await_membership_source(
+    actions: &tilo_action_broker::collab_broker::AppActionBroker,
+    room: crate::shell::state::RoomId,
+) {
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    while !actions.state().published_surfaces().iter().any(|surface| {
+        surface.live
+            && surface.app_id == "so.tilo.desktop"
+            && surface.route.cluster_id == room.to_string()
+            && surface.route.record_id == "membership"
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "native membership source missing"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn failed_effect(
     actions: &tilo_action_broker::collab_broker::AppActionBroker,
     room: crate::shell::state::RoomId,

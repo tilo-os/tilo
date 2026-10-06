@@ -174,8 +174,8 @@ fn effect_private_facets_and_unbounded_context_refuse_without_publication() {
 }
 
 #[test]
-fn effect_capacity_refusal_preserves_last_signed_checkpoint_and_retry() {
-    let fixture = fixture();
+fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
+    let mut fixture = fixture();
     let first = request(EffectReceiptStatus::Succeeded);
     let accepted = commit(&fixture, &first).unwrap();
     for _ in 1..128 {
@@ -183,14 +183,20 @@ fn effect_capacity_refusal_preserves_last_signed_checkpoint_and_retry() {
     }
     let path = fixture.directory.path().join("owner.json");
     let bytes = std::fs::read(&path).unwrap();
-    let refused = request(EffectReceiptStatus::Succeeded);
-    assert!(commit(&fixture, &refused).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    let retry = commit(&fixture, &first).unwrap();
+    for _ in 128..160 {
+        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+    }
+    assert_archived_file_layout(&path);
+    assert_ne!(std::fs::read(&path).unwrap(), bytes);
+    let bytes = std::fs::read(&path).unwrap();
+    let reopened = crate::open_file(&path).unwrap();
+    let retry = reopened
+        .commit_effect_receipt(&first, &fixture.certificate, &fixture.key, fixture.now)
+        .unwrap();
     assert_eq!(retry.binding, accepted.binding);
     assert_eq!(retry.generation, accepted.generation);
+    assert_eq!(retry.aggregate_hash, accepted.aggregate_hash);
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    let reopened = crate::open_file(&path).unwrap();
     reopened
         .with_current(RoomId::parse(crate::testing::ROOM).unwrap(), |view| {
             assert_eq!(view.record.effect_receipts.len(), 128);
@@ -199,10 +205,144 @@ fn effect_capacity_refusal_preserves_last_signed_checkpoint_and_retry() {
                     view.peer().admitted_room().unwrap()
                 )
                 .len(),
-                128
+                160
             );
-            assert_eq!(view.generation(), 129);
+            assert_eq!(view.generation(), 161);
+            assert_eq!(view.record.version, 3);
+            assert!(
+                !view
+                    .record
+                    .effect_receipts
+                    .contains_key(&decode(&first).unwrap().invocation.0.to_string())
+            );
+            assert_eq!(
+                view.record.effect_history_root,
+                view.peer().workspace_effect_history_root()?
+            );
             Ok(())
         })
         .unwrap();
+    let room = RoomId::parse(crate::testing::ROOM).unwrap();
+    let frames = reopened
+        .with_outgoing(room, fixture.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| entry.bytes().to_vec())
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    assert!(!frames.is_empty());
+    for frame in frames {
+        fixture
+            .governor
+            .receive(
+                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                    fixture.certificate.device_public_key,
+                ),
+                postcard::from_bytes(&frame).unwrap(),
+            )
+            .unwrap();
+    }
+    let admitted_root = fixture
+        .governor
+        .peer()
+        .workspace_effect_history_root()
+        .unwrap();
+    let local_root = reopened
+        .with_current(room, |view| Ok(view.record.effect_history_root))
+        .unwrap();
+    assert!(admitted_root.is_some());
+    assert_eq!(admitted_root, local_root);
+    let mut conflict = decode(&first).unwrap();
+    conflict.completed_at += 1;
+    let mut changed = first;
+    if let CommitOperation::EffectReceipt { redacted, .. } = &mut changed.operation {
+        *redacted = serde_json::to_vec(&conflict).unwrap();
+    }
+    assert!(
+        reopened
+            .commit_effect_receipt(&changed, &fixture.certificate, &fixture.key, fixture.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
+fn assert_archived_file_layout(path: &std::path::Path) {
+    let storage: crate::NativeAuthorityStorage =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert!(crate::publication::validate_file_layout(3, &storage).is_ok());
+    assert!(crate::publication::validate_file_layout(2, &storage).is_err());
+    let mut mismatched = storage.clone();
+    mismatched.rooms.values_mut().next().unwrap().version = 2;
+    assert!(crate::publication::validate_file_layout(3, &mismatched).is_err());
+    let mut missing = storage;
+    missing
+        .rooms
+        .values_mut()
+        .next()
+        .unwrap()
+        .effect_history_root = None;
+    assert!(crate::publication::validate_file_layout(3, &missing).is_err());
+}
+
+#[test]
+fn effect_archive_io_and_root_publication_failure_preserve_active_custody() {
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+    let fixture = fixture();
+    let first = request(EffectReceiptStatus::Succeeded);
+    let original = commit(&fixture, &first).unwrap();
+    for _ in 1..128 {
+        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+    }
+    let path = fixture.directory.path().join("owner.json");
+    let bytes = std::fs::read(&path).unwrap();
+    let content = fixture.directory.path().join("content");
+    std::fs::write(&content, b"not a directory").unwrap();
+    let next = request(EffectReceiptStatus::Succeeded);
+    assert!(commit(&fixture, &next).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    std::fs::remove_file(&content).unwrap();
+    assert!(with_failure(Checkpoint::BeforePublish, || commit(&fixture, &next)).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let retry = commit(&fixture, &first).unwrap();
+    assert_eq!(retry.generation, original.generation);
+    assert_eq!(retry.aggregate_hash, original.aggregate_hash);
+    commit(&fixture, &next).unwrap();
+    assert!(crate::open_file(&path).is_ok());
+}
+
+#[test]
+fn missing_or_corrupt_effect_history_is_not_unknown_uuid_or_successful_restore() {
+    let fixture = fixture();
+    let first = request(EffectReceiptStatus::Succeeded);
+    commit(&fixture, &first).unwrap();
+    for _ in 1..129 {
+        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+    }
+    let room = RoomId::parse(crate::testing::ROOM).unwrap();
+    let hash = fixture
+        .owner
+        .with_current(room, |view| Ok(view.record.effect_history_root.unwrap()))
+        .unwrap();
+    let address = blake3::Hash::from_bytes(hash).to_hex().to_string();
+    let block = fixture
+        .directory
+        .path()
+        .join("content")
+        .join(address.get(..2).unwrap())
+        .join(&address);
+    let block_bytes = std::fs::read(&block).unwrap();
+    let path = fixture.directory.path().join("owner.json");
+    let state_bytes = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&block).unwrap();
+    assert!(commit(&fixture, &first).is_err());
+    assert!(commit(&fixture, &request(EffectReceiptStatus::Succeeded)).is_err());
+    assert!(crate::open_file(&path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), state_bytes);
+    std::fs::write(&block, b"corrupt").unwrap();
+    assert!(commit(&fixture, &first).is_err());
+    assert!(crate::open_file(&path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), state_bytes);
+    std::fs::write(&block, block_bytes).unwrap();
+    assert!(crate::open_file(&path).is_ok());
 }

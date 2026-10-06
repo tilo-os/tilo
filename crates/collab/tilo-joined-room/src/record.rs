@@ -61,6 +61,9 @@ pub(crate) struct StoredRoom {
     /// Exact broker terminal bindings, committed with the signed room checkpoint.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effect_receipts: BTreeMap<String, crate::effect_receipt::StoredEffectReceipt>,
+    /// Content-addressed cold UUID index, also anchored in signed public room history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_history_root: Option<[u8; 32]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DescriptorFloor {
