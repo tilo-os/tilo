@@ -56,7 +56,7 @@
 
 use std::collections::HashSet;
 
-use chat::model::Message;
+use chat::model::{AgentIntent, Channel, Message};
 use tilo_reference::ResourceRef;
 
 use crate::plan::Instruction;
@@ -73,10 +73,12 @@ pub const RECENCY_SECS: i64 = 180;
 
 /// How a message came to be addressed to the agent.
 ///
-/// There are two ways and there is deliberately no third. Neither is inferred
-/// from tone, topic or timing: both are things the author did on purpose.
+/// Every way is explicit. None is inferred from tone, topic or timing: each is
+/// something the author or the owning Chat channel recorded on purpose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Address {
+    /// The durable conversation channel names this exact stable Agent id.
+    Direct,
     /// An `@mention` resolved to the agent's participant id when the message
     /// was sent. The strongest signal there is — the author picked this
     /// participant out of the room.
@@ -89,6 +91,7 @@ pub enum Address {
 impl Address {
     pub fn label(&self) -> &'static str {
         match self {
+            Address::Direct => "direct conversation",
             Address::Mentioned => "mentioned",
             Address::Named => "named",
         }
@@ -191,6 +194,9 @@ pub struct Summons {
     /// What was asked, with the addressing token removed — the words a
     /// decision is made from.
     pub asked: String,
+    /// Direct Message is text-only. Legacy explicit addressing retains the
+    /// pre-existing action-request path.
+    pub conversation: bool,
     /// How it came to be addressed to the agent.
     pub address: Address,
     /// What it is about.
@@ -218,6 +224,7 @@ pub fn addressed(message: &Message, me: &str, name: &str) -> Option<Address> {
 /// minted together and only they are guaranteed to agree.
 pub fn asked_of(message: &Message, me: &str, name: &str, address: Address) -> String {
     match address {
+        Address::Direct => message.text.trim().to_string(),
         Address::Named => Instruction::addressed(&message.text, name).unwrap_or_default(),
         Address::Mentioned => {
             let text = message.text.as_str();
@@ -315,7 +322,9 @@ pub fn record_of<'a>(messages: &'a [Message], me: &str, parent: &str) -> Option<
 /// [`answered`] found, plus anything the caller knows it has in flight.
 pub fn next_summons<S: std::hash::BuildHasher>(
     messages: &[Message],
+    channels: &[Channel],
     me: &str,
+    agent: &str,
     name: &str,
     last: Option<&LastAction>,
     now: i64,
@@ -332,15 +341,37 @@ pub fn next_summons<S: std::hash::BuildHasher>(
         if m.author == me {
             continue;
         }
-        let Some(address) = addressed(m, me, name) else {
-            continue;
+        let channel = channels.iter().find(|channel| channel.id == m.channel);
+        let direct = channel.and_then(|channel| channel.conversation_with.as_deref());
+        let (address, conversation) = match direct {
+            Some(addressee)
+                if addressee == agent
+                    && m.agent_intent == Some(AgentIntent::Message)
+                    && m.parent.is_none()
+                    && !m.author.starts_with("agent:")
+                    && channel.is_some_and(|channel| {
+                        channel.kind == chat::model::ChannelKind::Text && !channel.archived
+                    }) =>
+            {
+                (Address::Direct, true)
+            }
+            // A direct channel has one durable addressee, and Queue/Steer
+            // travel through the Task owner rather than this legacy listener.
+            Some(_) => continue,
+            None => {
+                let Some(address) = addressed(m, agent, name) else {
+                    continue;
+                };
+                (address, false)
+            }
         };
         return Some(Summons {
             message: m.id.clone(),
             channel: m.channel.clone(),
             author: m.author.clone(),
             ts: m.ts,
-            asked: asked_of(m, me, name, address),
+            asked: asked_of(m, agent, name, address),
+            conversation,
             address,
             subject: subject_of(m, last, now),
         });
@@ -376,7 +407,8 @@ mod tests {
     use super::*;
     use chat::mention::Mention;
 
-    const ME: &str = "agent_claude";
+    const ME: &str = "agent:claude";
+    const AGENT: &str = "claude";
     const NAME: &str = "Claude";
 
     fn msg(id: &str, author: &str, text: &str, ts: i64) -> Message {
@@ -397,6 +429,7 @@ mod tests {
             attachment: None,
             pinned: false,
             work: None,
+            agent_intent: None,
         }
     }
 
@@ -551,17 +584,25 @@ mod tests {
 
         // Case `the_oldest_unanswered_summons_is_taken_and_the_agents_own_words_are_not_one`.
         {
-            let msgs = vec![
+            let mut msgs = vec![
                 mentioning(msg("m1", "u_ada", "@Claude first", 100)),
                 mentioning(msg("m2", "u_ada", "@Claude second", 200)),
                 // The agent addressing itself must never be work.
                 mentioning(msg("m3", ME, "@Claude done", 150)),
             ];
-            let s = next_summons(&msgs, ME, NAME, None, 300, &HashSet::new()).expect("a summons");
+            // The author namespace and the ID encoded by a mention are
+            // distinct. Keep the self-authored row while targeting the
+            // same stable Agent ID in every structured mention.
+            for message in &mut msgs {
+                message.mentions[0].user = AGENT.into();
+            }
+            let s = next_summons(&msgs, &[], ME, AGENT, NAME, None, 300, &HashSet::new())
+                .expect("a summons");
             assert_eq!(s.message, "m1");
 
             let done: HashSet<String> = ["m1".to_string()].into_iter().collect();
-            let s = next_summons(&msgs, ME, NAME, None, 300, &done).expect("the next one");
+            let s =
+                next_summons(&msgs, &[], ME, AGENT, NAME, None, 300, &done).expect("the next one");
             assert_eq!(
                 s.message, "m2",
                 "answered ones are skipped, the rest keep their order"
@@ -577,10 +618,146 @@ mod tests {
             // Even sitting right on top of the agent's own last action.
             let last = LastAction::new("word-processor.block:blk_1", 105);
             assert_eq!(
-                next_summons(&msgs, ME, NAME, Some(&last), 120, &HashSet::new()),
+                next_summons(
+                    &msgs,
+                    &[],
+                    ME,
+                    AGENT,
+                    NAME,
+                    Some(&last),
+                    120,
+                    &HashSet::new(),
+                ),
                 None,
                 "being near the agent's work is not the same as speaking to it"
             );
         }
+    }
+
+    #[test]
+    fn direct_message_needs_exact_channel_agent_and_message_intent() {
+        let channel = Channel {
+            id: "c_agent".into(),
+            workspace: "w_main".into(),
+            category: String::new(),
+            name: "Claude".into(),
+            topic: String::new(),
+            kind: chat::model::ChannelKind::Text,
+            conversation_with: Some(AGENT.into()),
+            order: 0,
+            unread: 0,
+            archived: false,
+        };
+        let mut message = msg("m1", "u_ada", "Could you explain that?", 100);
+        message.channel.clone_from(&channel.id);
+        message.agent_intent = Some(AgentIntent::Message);
+        let summons = next_summons(
+            std::slice::from_ref(&message),
+            std::slice::from_ref(&channel),
+            ME,
+            AGENT,
+            NAME,
+            None,
+            100,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(summons.address, Address::Direct);
+        assert!(summons.conversation);
+        assert_eq!(summons.asked, "Could you explain that?");
+
+        message.agent_intent = Some(AgentIntent::Queue);
+        assert!(
+            next_summons(
+                &[message],
+                &[channel],
+                ME,
+                AGENT,
+                NAME,
+                None,
+                100,
+                &HashSet::new(),
+            )
+            .is_none(),
+            "Queue is handled only by the Task owner provider"
+        );
+    }
+
+    #[test]
+    fn invalid_direct_requests_are_not_repeatedly_sent_to_the_model() {
+        let channel = Channel {
+            id: "c_agent".into(),
+            workspace: "w_main".into(),
+            category: String::new(),
+            name: "Claude".into(),
+            topic: String::new(),
+            kind: chat::model::ChannelKind::Text,
+            conversation_with: Some(AGENT.into()),
+            order: 0,
+            unread: 0,
+            archived: false,
+        };
+        let mut message = msg("request", "person", "Explain the changes", 100);
+        message.channel.clone_from(&channel.id);
+        message.agent_intent = Some(AgentIntent::Message);
+        let mut candidates = Vec::new();
+        let mut nested = message.clone();
+        nested.parent = Some("earlier-question".into());
+        candidates.push((channel.clone(), nested));
+        let mut agent_authored = message.clone();
+        agent_authored.author = "agent:other".into();
+        candidates.push((channel.clone(), agent_authored));
+        let mut other_agent = channel.clone();
+        other_agent.conversation_with = Some("other".into());
+        candidates.push((other_agent, message.clone()));
+        let mut archived = channel.clone();
+        archived.archived = true;
+        candidates.push((archived, message.clone()));
+        let mut voice = channel.clone();
+        voice.kind = chat::model::ChannelKind::Voice;
+        candidates.push((voice, message.clone()));
+        let mut steer = message;
+        steer.agent_intent = Some(AgentIntent::Steer);
+        candidates.push((channel, steer));
+        for (channel, message) in candidates {
+            assert!(
+                next_summons(
+                    &[message],
+                    &[channel],
+                    ME,
+                    AGENT,
+                    NAME,
+                    None,
+                    100,
+                    &HashSet::new(),
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_author_identity_does_not_replace_the_mentioned_agent_id() {
+        let mut message = msg("request", "person", "@Claude explain this", 100);
+        message.mentions.push(chat::mention::Mention {
+            user: AGENT.into(),
+            start: 0,
+            len: 7,
+            is_agent: true,
+        });
+        let summons = next_summons(
+            &[message],
+            &[],
+            &format!("agent:{AGENT}"),
+            AGENT,
+            "Different display name",
+            None,
+            100,
+            &HashSet::new(),
+        )
+        .expect("a structured mention addresses the stable Agent ID, not its author namespace");
+        assert_eq!(summons.address, Address::Mentioned);
+        assert_eq!(summons.asked, "explain this");
+        assert!(!summons.conversation);
     }
 }

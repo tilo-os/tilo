@@ -1321,6 +1321,75 @@ impl ChatDoc {
         true
     }
 
+    /// Append one reply from the Agent addressed by a direct conversation.
+    ///
+    /// The caller supplies no author or agent identity. The action layer
+    /// derives `author` from its signed actor, and this method requires that
+    /// canonical `agent:<id>` actor to match the channel's durable addressee.
+    pub fn reply_agent_message(
+        doc: &mut AutoCommit,
+        channel: &str,
+        parent: &str,
+        id: &str,
+        ts: i64,
+        text: &str,
+        body: &[tilo_document::ClipBlock],
+        author: &str,
+    ) -> bool {
+        let Some(conversation) = Self::list_channels(doc)
+            .into_iter()
+            .find(|candidate| candidate.id == channel)
+        else {
+            return false;
+        };
+        let Some(agent) = conversation.conversation_with.as_deref() else {
+            return false;
+        };
+        let body_text = body
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body_bytes = serde_json::to_vec(body).map_or(usize::MAX, |encoded| encoded.len());
+        if conversation.kind != ChannelKind::Text
+            || author != format!("agent:{agent}")
+            || parent.is_empty()
+            || !Self::valid_message_id(id)
+            || text.len() > MAX_MESSAGE_TEXT_BYTES
+            || body_bytes > MAX_MESSAGE_TEXT_BYTES
+            || (!body.is_empty() && body_text != text)
+            || Self::message_id_exists(doc, id)
+        {
+            return false;
+        }
+        let Some(request) = Self::list_messages(doc, channel)
+            .into_iter()
+            .find(|message| message.id == parent)
+        else {
+            return false;
+        };
+        if request.parent.is_some()
+            || request.agent_intent != Some(AgentIntent::Message)
+            || request.author.starts_with("agent:")
+        {
+            return false;
+        }
+        Self::push_message_with_id(
+            doc,
+            channel,
+            id,
+            NewMessage {
+                author: author.to_owned(),
+                ts,
+                text: text.to_owned(),
+                body: body.to_vec(),
+                parent: Some(parent.to_owned()),
+                ..Default::default()
+            },
+        );
+        true
+    }
+
     /// A message id belongs to one durable row across the whole chat
     /// namespace.  This makes direct resolution deterministic and makes an
     /// action replay idempotent before it reaches the list writer.

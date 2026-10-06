@@ -42,6 +42,46 @@ fn chat_reply_id(agent_id: &str, summons_id: &str) -> String {
     format!("agent-reply-{}", digest.0.simple())
 }
 
+fn conversation_context(
+    messages: &[::chat::model::Message],
+    summons: &crate::listen::Summons,
+) -> Vec<crate::plan::Block> {
+    const MAX_CONTEXT_MESSAGES: usize = 60;
+    let prior = messages
+        .iter()
+        .filter(|message| message.channel == summons.channel)
+        .take_while(|message| message.id != summons.message)
+        .collect::<Vec<_>>();
+    let keep_from = prior.len().saturating_sub(MAX_CONTEXT_MESSAGES);
+    prior
+        .into_iter()
+        .skip(keep_from)
+        .map(|message| crate::plan::Block {
+            id: message.id.clone(),
+            kind: "chat_message".into(),
+            text: format!("{}: {}", message.author, message.text),
+            attrs: BTreeMap::new(),
+        })
+        .collect()
+}
+
+fn textual_conversation_reply(answer: crate::tools::Answer) -> String {
+    if !answer.actions.is_empty() {
+        return crate::i18n::t("agent-message-actions-not-run");
+    }
+    let reply = answer
+        .reply
+        .filter(|reply| !reply.trim().is_empty())
+        .unwrap_or_else(|| crate::i18n::t("agent-message-no-reply"));
+    if reply.len() > ::chat::doc::MAX_MESSAGE_TEXT_BYTES {
+        // The Chat action refuses oversized text. Record a truthful bounded
+        // outcome instead of silently leaving this request unanswered, which
+        // would ask the model again after every restart.
+        return crate::i18n::t("agent-message-reply-too-long");
+    }
+    reply
+}
+
 impl Session {
     /// The artifact id is part of the authenticated envelope, unlike a
     /// schema discovered by inspecting untrusted document contents.
@@ -59,6 +99,40 @@ impl Session {
             }
         }
         Ok(changed)
+    }
+
+    fn answer_chat_conversation(
+        &mut self,
+        summons: &crate::listen::Summons,
+        messages: &[::chat::model::Message],
+        reply_id: &str,
+    ) -> Result<bool> {
+        // Message has no operation surface. Even a malicious model action
+        // proposal becomes text explaining that nothing ran.
+        let catalogue = surface::Catalogue {
+            offers: Vec::new(),
+            facts: Vec::new(),
+            held: Vec::new(),
+        };
+        let context = conversation_context(messages, summons);
+        let reply = match self
+            .chooser
+            .choose_actions(&summons.asked, &context, &catalogue, 0)
+        {
+            Ok(answer) => textual_conversation_reply(answer),
+            Err(route) => {
+                self.last_route = Some(route);
+                crate::i18n::t("agent-message-model-unavailable")
+            }
+        };
+        self.publish_chat(&::chat::actions::reply_agent_message_action(
+            &summons.channel,
+            &summons.message,
+            reply_id,
+            now(),
+            &reply,
+        ))?;
+        Ok(true)
     }
 
     fn document_heads(&mut self) -> BTreeMap<&'static str, Vec<automerge::ChangeHash>> {
@@ -151,29 +225,47 @@ impl Session {
     ) -> bool {
         let route_app_id = contract.app_id();
         match mutation {
-            DocumentMutation::Snapshot(data) => match self.peers.get_mut(contract.namespace) {
-                Some(peer) => peer.route_app_id() == route_app_id && peer.merge_full(&data),
-                None => match Editor::peer_from_snapshot_on_route(
-                    contract,
-                    route_app_id,
-                    &data,
-                    &self.cfg.agent_id,
-                    self.cfg.permissions.clone(),
-                ) {
-                    Ok(peer) => {
-                        self.peers.insert(contract.namespace, peer);
-                        true
-                    }
-                    Err(error) => {
-                        tracing::debug!(app = contract.namespace, %error, "ignored a snapshot");
-                        false
-                    }
-                },
-            },
+            DocumentMutation::Snapshot(data) => {
+                self.absorb_route_snapshot(contract, route_app_id, &data)
+            }
             DocumentMutation::Incremental(data) => {
                 self.peers.get_mut(contract.namespace).is_some_and(|peer| {
                     peer.route_app_id() == route_app_id && peer.merge_incremental(&data)
                 })
+            }
+        }
+    }
+
+    fn absorb_route_snapshot(
+        &mut self,
+        contract: &'static AppContract,
+        route_app_id: &str,
+        data: &[u8],
+    ) -> bool {
+        if let Some(peer) = self.peers.get_mut(contract.namespace) {
+            return peer.route_app_id() == route_app_id && peer.merge_full(data);
+        }
+        let chat_actor;
+        let participant = if contract.namespace == "chat" {
+            chat_actor = format!("agent:{}", self.cfg.agent_id);
+            &chat_actor
+        } else {
+            &self.cfg.agent_id
+        };
+        match Editor::peer_from_snapshot_on_route(
+            contract,
+            route_app_id,
+            data,
+            participant,
+            self.cfg.permissions.clone(),
+        ) {
+            Ok(peer) => {
+                self.peers.insert(contract.namespace, peer);
+                true
+            }
+            Err(error) => {
+                tracing::debug!(app = contract.namespace, %error, "ignored a snapshot");
+                false
             }
         }
     }
@@ -305,21 +397,20 @@ impl Session {
         reason = "one serial summons owns its canonical reply and dispatch lifecycle through completion"
     )]
     pub(super) fn act_chat(&mut self) -> Result<bool> {
-        // The document and catalogue use independent transport streams.
-        // Decide only after the broker's first permission-filtered survey.
-        if !self.chat_catalogue_received {
-            return Ok(false);
-        }
         let Some(editor) = self.peers.get("chat") else {
             return Ok(false);
         };
-        let messages: Vec<_> = ChatDoc::list_channels(editor.doc())
+        let channels = ChatDoc::list_channels(editor.doc());
+        let messages: Vec<_> = channels
             .iter()
             .flat_map(|channel| ChatDoc::list_messages(editor.doc(), &channel.id))
             .collect();
-        let handled = crate::listen::answered(&messages, &self.cfg.agent_id);
+        let participant = format!("agent:{}", self.cfg.agent_id);
+        let handled = crate::listen::answered(&messages, &participant);
         let Some(summons) = crate::listen::next_summons(
             &messages,
+            &channels,
+            &participant,
             &self.cfg.agent_id,
             &self.cfg.name,
             self.last_chat_action.as_ref(),
@@ -328,12 +419,20 @@ impl Session {
         ) else {
             return Ok(false);
         };
-        let reply = crate::listen::record_of(&messages, &self.cfg.agent_id, &summons.message)
+        let reply = crate::listen::record_of(&messages, &participant, &summons.message)
             .map_or_else(
                 || chat_reply_id(&self.cfg.agent_id, &summons.message),
                 |record| record.id.clone(),
             );
-        if crate::listen::record_of(&messages, &self.cfg.agent_id, &summons.message).is_none() {
+        if summons.conversation {
+            return self.answer_chat_conversation(&summons, &messages, &reply);
+        }
+        // Catalogue and document arrive independently. Message needs no
+        // action service; legacy action requests do.
+        if !self.chat_catalogue_received {
+            return Ok(false);
+        }
+        if crate::listen::record_of(&messages, &participant, &summons.message).is_none() {
             self.publish_chat(&::chat::actions::send_message_action(
                 &summons.channel,
                 &reply,
@@ -526,6 +625,86 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message(id: &str, author: &str, text: &str) -> ::chat::model::Message {
+        ::chat::model::Message {
+            id: id.into(),
+            channel: "c_agent".into(),
+            author: author.into(),
+            ts: 1,
+            text: text.into(),
+            body: vec![],
+            edited: false,
+            history: vec![],
+            parent: None,
+            reactions: vec![],
+            mentions: vec![],
+            reference: None,
+            source_provider: None,
+            attachment: None,
+            pinned: false,
+            work: None,
+            agent_intent: None,
+        }
+    }
+
+    #[test]
+    fn direct_message_context_preserves_causal_channel_order_and_is_bounded() {
+        let mut messages = (0..65)
+            .map(|index| message(&format!("m{index}"), "person", &format!("prior {index}")))
+            .collect::<Vec<_>>();
+        messages.push(message("request", "person", "question"));
+        messages.push(message("later", "person", "must stay out"));
+        messages.push({
+            let mut other = message("other", "person", "other channel");
+            other.channel = "c_other".into();
+            other
+        });
+        let summons = crate::listen::Summons {
+            message: "request".into(),
+            channel: "c_agent".into(),
+            author: "person".into(),
+            ts: 1,
+            asked: "question".into(),
+            conversation: true,
+            address: crate::listen::Address::Direct,
+            subject: crate::listen::Subject::Nothing,
+        };
+
+        let context = conversation_context(&messages, &summons);
+
+        assert_eq!(context.len(), 60);
+        assert_eq!(context.first().map(|block| block.id.as_str()), Some("m5"));
+        assert_eq!(context.last().map(|block| block.id.as_str()), Some("m64"));
+        assert!(
+            context
+                .iter()
+                .all(|block| block.id != "later" && block.id != "other")
+        );
+    }
+
+    #[test]
+    fn direct_message_never_executes_a_model_action_proposal() {
+        let reply = textual_conversation_reply(crate::tools::Answer {
+            actions: vec!["delete-everything".into()],
+            reply: Some("Done".into()),
+            ..Default::default()
+        });
+
+        assert!(reply.contains("did not run any actions"), "{reply}");
+        assert!(!reply.contains("Done"), "{reply}");
+    }
+
+    #[test]
+    fn oversized_model_reply_becomes_a_bounded_explicit_outcome() {
+        let reply = textual_conversation_reply(crate::tools::Answer {
+            reply: Some("x".repeat(::chat::doc::MAX_MESSAGE_TEXT_BYTES + 1)),
+            ..Default::default()
+        });
+        assert_eq!(reply, crate::i18n::t("agent-message-reply-too-long"));
+        assert!(reply.len() <= ::chat::doc::MAX_MESSAGE_TEXT_BYTES);
+        assert!(!reply.trim().is_empty());
+    }
 
     #[test]
     fn routed_document_lookup_matches_only_the_contract_app_id() {

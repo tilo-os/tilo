@@ -11,7 +11,7 @@ use crate::typed_peer;
 use automerge::AutoCommit;
 use chat::{
     doc::{ChatDoc, NewMessage},
-    model::{AgentRoute, AgentStepOutcome, AgentWorkState},
+    model::{AgentIntent, AgentRoute, AgentStepOutcome, AgentWorkState},
 };
 use tilo_actions::ActionAddress;
 use tilo_agent::{Config, Session};
@@ -372,7 +372,7 @@ fn scenario_outcome(
             durable_reply = (1..=expected_requests).all(|number| {
                 let parent = format!("request-{number}");
                 let mut replies = messages.iter().filter(|message| {
-                    message.author == "Scribe" && message.parent.as_deref() == Some(&parent)
+                    message.author == "agent:Scribe" && message.parent.as_deref() == Some(&parent)
                 });
                 replies.next().is_some_and(|message| {
                     message.work.as_ref().is_some_and(|work| match outcome {
@@ -390,7 +390,20 @@ fn scenario_outcome(
         if !restart && expected_reply {
             assert!(
                 durable_reply,
-                "the canonical answered state must replicate before restart"
+                "the canonical answered state must replicate before restart (rows={}, replies={}, canonical={}, work={}, owner_invocations={invocations}, acted={acted})",
+                ChatDoc::list_messages(&chat, "c_general").len(),
+                ChatDoc::list_messages(&chat, "c_general")
+                    .iter()
+                    .filter(|message| message.parent.is_some())
+                    .count(),
+                ChatDoc::list_messages(&chat, "c_general")
+                    .iter()
+                    .filter(|message| message.author == "agent:Scribe")
+                    .count(),
+                ChatDoc::list_messages(&chat, "c_general")
+                    .iter()
+                    .filter(|message| message.work.is_some())
+                    .count(),
             );
         }
         assert_eq!(
@@ -437,7 +450,7 @@ fn scenario_outcome(
         return;
     }
     let reply = &replies[0];
-    assert_eq!(reply.author, "Scribe");
+    assert_eq!(reply.author, "agent:Scribe");
     assert_eq!(reply.channel, "c_general");
     let work = reply.work.as_ref().unwrap();
     if requests == 0 {
@@ -491,6 +504,100 @@ fn scenario_outcome(
             .any(|w| matches!(w.state, AgentWorkState::Doing { .. })
                 && w.trace.iter().any(|s| s.outcome == AgentStepOutcome::Asked))
     );
+}
+
+#[test]
+fn direct_message_reaches_its_exact_agent_without_a_mention_or_action_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("direct-chat.sock");
+    let _broker = typed_peer::spawn_with_agent_actions(&socket, &[]);
+    let mut chat_peer = peer(&socket, CHAT);
+    let mut chat = AutoCommit::new();
+    ChatDoc::seed_starter(&mut chat, "human-author", "Human", "HU");
+    let workspace = ChatDoc::list_workspaces(&chat)
+        .first()
+        .expect("starter workspace")
+        .id
+        .clone();
+    let request_id = "direct-request";
+    assert!(ChatDoc::post_agent_message(
+        &mut chat,
+        &workspace,
+        "Scribe",
+        request_id,
+        NewMessage {
+            author: "human-author".into(),
+            ts: 1,
+            text: "What changed in this conversation?".into(),
+            agent_intent: Some(AgentIntent::Message),
+            ..Default::default()
+        },
+    ));
+    let channel = ChatDoc::agent_conversation_channel_id(&workspace, "Scribe");
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let cfg = config(socket);
+    let runner = std::thread::spawn(move || {
+        let mut session = Session::connect(cfg).unwrap();
+        ready_tx.send(()).unwrap();
+        session
+            .run_until(ui::time::now() + Duration::from_secs(3))
+            .unwrap()
+    });
+    ready_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+    send(
+        &mut chat_peer,
+        &CollabRequest::document_snapshot(chat.save()),
+    )
+    .unwrap();
+
+    let deadline = ui::time::now() + Duration::from_secs(4);
+    let mut saw_invocation = false;
+    while ui::time::now() < deadline && !runner.is_finished() {
+        if let Some(event) = chat_peer.recv().unwrap() {
+            saw_invocation |= matches!(event, CollabEvent::Invocation { .. });
+            if let Some(DocumentMutation::Incremental(data)) = typed_peer::document_mutation(&event)
+            {
+                chat.load_incoming(&data).unwrap();
+            }
+        }
+    }
+    assert!(
+        runner.join().unwrap(),
+        "the direct Message should be answered"
+    );
+    let drain = ui::time::now() + Duration::from_secs(2);
+    while ui::time::now() < drain {
+        let Some(event) = chat_peer.recv().unwrap() else {
+            continue;
+        };
+        saw_invocation |= matches!(event, CollabEvent::Invocation { .. });
+        if let Some(DocumentMutation::Incremental(data)) = typed_peer::document_mutation(&event) {
+            chat.load_incoming(&data).unwrap();
+        }
+        if ChatDoc::list_messages(&chat, &channel)
+            .iter()
+            .any(|message| message.parent.as_deref() == Some(request_id))
+        {
+            break;
+        }
+    }
+
+    let replies = ChatDoc::list_messages(&chat, &channel)
+        .into_iter()
+        .filter(|message| message.parent.as_deref() == Some(request_id))
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 1, "one canonical textual reply");
+    assert_eq!(replies[0].author, "agent:Scribe");
+    assert!(!replies[0].text.is_empty());
+    assert!(
+        replies[0].work.is_none(),
+        "Message must not become Task work"
+    );
+    assert!(
+        replies[0].agent_intent.is_none(),
+        "a reply is ordinary Chat"
+    );
+    assert!(!saw_invocation, "Message must not dispatch an app action");
 }
 
 #[test]

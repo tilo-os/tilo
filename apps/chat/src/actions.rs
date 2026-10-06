@@ -141,6 +141,18 @@ pub enum ChatAction {
         agent: String,
         message: AgentMessagePayload,
     },
+    /// Reply to one top-level Message in a direct Agent conversation. The
+    /// signed action actor is the only author/Agent identity; none is carried
+    /// in this payload.
+    ReplyAgentMessage {
+        channel: String,
+        parent: String,
+        id: String,
+        ts: i64,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        body: Vec<tilo_document::ClipBlock>,
+    },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
     EditMessage {
@@ -318,6 +330,9 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         ChatAction::PostAgentMessage {
             workspace, message, ..
         } => ("Message agent", workspace, &message.id, "chat.message"),
+        ChatAction::ReplyAgentMessage { channel, id, .. } => {
+            ("Reply to message", channel, id, "chat.message")
+        }
         ChatAction::EditMessage { channel, id, .. } => {
             ("Edit message", channel, id, "chat.message")
         }
@@ -571,6 +586,20 @@ impl Action for ChatAction {
         } = self
         {
             return apply_agent_request(doc, workspace, agent, message);
+        }
+        if let ChatAction::ReplyAgentMessage {
+            channel,
+            parent,
+            id,
+            ts,
+            text,
+            body,
+        } = self
+        {
+            let author = signed_by()?;
+            let _ =
+                ChatDoc::reply_agent_message(doc, channel, parent, id, *ts, text, body, &author);
+            return Ok(());
         }
         if let ChatAction::EnsureUser {
             name,
@@ -872,6 +901,23 @@ fn bounded_agent_name(name: &str) -> String {
     name.get(..end).unwrap_or(name).to_owned()
 }
 
+pub fn reply_agent_message_action(
+    channel: &str,
+    parent: &str,
+    id: &str,
+    ts: i64,
+    text: &str,
+) -> ChatAction {
+    ChatAction::ReplyAgentMessage {
+        channel: channel.to_owned(),
+        parent: parent.to_owned(),
+        id: id.to_owned(),
+        ts,
+        text: text.to_owned(),
+        body: Vec::new(),
+    }
+}
+
 pub fn send_message_action(
     channel: &str,
     id: &str,
@@ -901,7 +947,9 @@ impl ChatAction {
     #[must_use]
     pub fn with_body(mut self, written: Vec<tilo_document::ClipBlock>) -> Self {
         match &mut self {
-            ChatAction::SendMessage { body, .. } | ChatAction::EditMessage { body, .. } => {
+            ChatAction::SendMessage { body, .. }
+            | ChatAction::ReplyAgentMessage { body, .. }
+            | ChatAction::EditMessage { body, .. } => {
                 *body = written;
             }
             ChatAction::PostAgentMessage { message, .. } => message.body = written,
@@ -2054,6 +2102,23 @@ mod tests {
         }
     }
 
+    fn direct_message_doc() -> (AutoCommit, String, String) {
+        let mut doc = seeded();
+        let source = tilo_actions::InvocationId(uuid::Uuid::from_u128(27));
+        apply_as_with_source(
+            &mut doc,
+            model::ME,
+            source,
+            &agent_message(crate::model::AgentIntent::Message),
+        )
+        .unwrap();
+        (
+            doc,
+            ChatDoc::agent_conversation_channel_id("ws_acme", "scribe"),
+            agent_request_message_id(source),
+        )
+    }
+
     #[test]
     fn admitted_agent_message_uses_exact_source_and_atomically_creates_conversation() {
         let mut doc = seeded();
@@ -2125,6 +2190,120 @@ mod tests {
             .is_err()
         );
         assert_eq!(doc.save(), saved, "a retry cannot append a second row");
+    }
+
+    #[test]
+    fn only_the_addressed_agent_replies_to_an_exact_top_level_message_request() {
+        let (mut doc, channel, parent) = direct_message_doc();
+        let reply = reply_agent_message_action(
+            &channel,
+            &parent,
+            "agent-reply-27",
+            TS + 1,
+            "Here is the answer.",
+        );
+        apply_as(&mut doc, "agent:scribe", &reply).unwrap();
+        let messages = ChatDoc::list_messages(&doc, &channel);
+        let written = messages
+            .iter()
+            .find(|message| message.id == "agent-reply-27")
+            .unwrap();
+        assert_eq!(written.author, "agent:scribe");
+        assert_eq!(written.parent.as_deref(), Some(parent.as_str()));
+        assert_eq!(written.agent_intent, None);
+        assert!(written.work.is_none());
+        let history = history_context(&reply);
+        assert_eq!(history.action_label, "Reply to message");
+        assert_eq!(
+            history
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("chat.message:agent-reply-27")
+        );
+
+        let saved = doc.save();
+        apply_as(&mut doc, "agent:scribe", &reply).unwrap();
+        assert_eq!(doc.save(), saved, "an exact retry is a no-op");
+        let changed = reply_agent_message_action(
+            &channel,
+            &parent,
+            "agent-reply-27",
+            TS + 2,
+            "Changed replay payload",
+        );
+        apply_as(&mut doc, "agent:scribe", &changed).unwrap();
+        assert_eq!(
+            doc.save(),
+            saved,
+            "an id collision cannot rewrite the reply"
+        );
+
+        for (actor, candidate) in [
+            (
+                model::ME,
+                reply_agent_message_action(&channel, &parent, "person-reply", TS, "no"),
+            ),
+            (
+                "agent:other",
+                reply_agent_message_action(&channel, &parent, "other-agent-reply", TS, "no"),
+            ),
+            (
+                "agent:scribe",
+                reply_agent_message_action("c_general", &parent, "wrong-channel", TS, "no"),
+            ),
+            (
+                "agent:scribe",
+                reply_agent_message_action(&channel, "missing", "missing-parent", TS, "no"),
+            ),
+        ] {
+            apply_as(&mut doc, actor, &candidate).unwrap();
+        }
+        assert_eq!(doc.save(), saved, "wrong authority or parent is inert");
+    }
+
+    #[test]
+    fn agent_reply_rejects_nested_and_task_intent_parents() {
+        let (mut doc, channel, parent) = direct_message_doc();
+
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            &channel,
+            "nested",
+            NewMessage {
+                author: model::ME.into(),
+                ts: TS,
+                text: "nested".into(),
+                parent: Some(parent),
+                ..Default::default()
+            },
+        );
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            &channel,
+            "task-parent",
+            NewMessage {
+                author: model::ME.into(),
+                ts: TS,
+                text: "task".into(),
+                agent_intent: Some(crate::model::AgentIntent::Queue),
+                ..Default::default()
+            },
+        );
+        let before_invalid_parents = doc.save();
+        for (parent, id) in [("nested", "nested-reply"), ("task-parent", "task-reply")] {
+            apply_as(
+                &mut doc,
+                "agent:scribe",
+                &reply_agent_message_action(&channel, parent, id, TS, "no"),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            doc.save(),
+            before_invalid_parents,
+            "nested and Task-intent parents are not Message requests"
+        );
     }
 
     #[test]
