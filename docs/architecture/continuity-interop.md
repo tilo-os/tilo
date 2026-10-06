@@ -355,15 +355,34 @@ The resolver refused Fedora's downgrade to an HTTP redirect. The GStreamer
 plugin is `gstreamer1-plugin-openh264-1.28.1-1.fc44.x86_64`, compatible with the
 base under the existing rule. Tilo redistributes neither publisher's RPM bytes.
 
-The remaining publication step is the existing main-only
-`extension-manifests.yml` workflow with `images` set to this immutable image.
-It resolves, signs through the existing non-exportable extension-manifest KMS
-key, verifies that key against `keys/extensions.pub`, and publishes metadata and
-detached signatures. No new trust key or signer access is needed. Publication
-is separately gated by the delegation's deployment limit because enabled
-extensions can consume updates. The unsigned candidate cannot substitute for
-the image-trusted signature. No extension has been activated and no device
-changed. After authorized publication, the next proof must use the production
-consumer to verify/stage those exact bytes, then run the real encrypted AirPlay
-session and selected-source capture. Cancelled/skipped image workflows and
-subprocess substitutes do not qualify that gate.
+Publication is explicitly held until the candidate is qualified end to end.
+This is a release hold, not an automatic permission-review rejection. The
+original workflow re-resolves before signing, so an unsigned candidate's raw
+SHA cannot guarantee the package set a later workflow would publish. The
+signed-artifact qualification mode and material-content pin documented in
+`os/usr/share/tilo/system-extensions/README.md` separate testing from promotion
+and reject material drift. Neither an unsigned manifest nor a locally invented
+signing key can substitute for the image-trusted signature.
+
+An existing genuinely signed software part from base
+`52984c1a2ac5df71385f3bbb321c85e21e019bb62ab06ed1a63613d90d43011e`, revision
+`20261003202922`, was admitted by the unchanged consumer on this image after
+signature, upstream RPM and compatibility checks. Its twelve packages include
+the matching GStreamer 1.28.7 OpenH264 plugin but omit Cisco's codec library.
+The loaded `libopenh264.so.8` is the image's Fedora `noopenh264` 2.6.0 stub:
+`WelsCreateSVCEncoder` returns 1 with a null encoder and `WelsCreateDecoder`
+returns 3 with a null decoder. Correct ABI and successful plugin discovery do
+not establish usable codec initialization. The real encrypted sender fails
+before setup because the encoder cannot initialize. Production admission now
+rejects this incomplete runtime, and the encrypted-session test first requires
+thirty actual synthetic H.264 frames to encode and decode successfully.
+
+The same signed fixture successfully encoded and decoded thirty 160×96 I420
+frames through HEVC (`x265enc`/`libde265dec`) and VP8 (`vp8enc`/`vp8dec`), with
+691200 decoded bytes and zero pixel error for each. Its x264 H.264 encoding
+succeeded, while OpenH264 decoding failed initialization. These are independent
+codec results, not AirPlay authentication, encryption or physical-receiver
+qualification. No extension has been activated on a device. A genuinely signed
+complete candidate still needs production admission, OpenH264 round trips,
+the actual encrypted AirPlay session and selected-source capture before an
+AirPlay success claim or feed-promotion recommendation.
