@@ -24,16 +24,16 @@ use crate::region::{Coverage, Op, Region};
 use crate::render::{Options, Renderer};
 use crate::selection::{Select, UseSelection};
 
-/// The longest side of the picture a subject is found and refined in, in
-/// pixels.
-const SIDE: f64 = 2048.0; // a sampling budget in pixels, not on-screen spacing
 /// The closest a refined edge is looked at, in pixels per unit.
-const MOST_PIXELS_PER_UNIT: f64 = 8.0; // a sampling density, not on-screen spacing
+use crate::content_geometry::MOST_PIXELS_PER_UNIT;
+/// The most a caller may ask an edge be fitted over, in units.
+use crate::content_geometry::MOST_REFINE;
 /// How far a subject's edge is fitted to the picture when the caller names
 /// no reach, in pixels of the picture it is found in.
-pub const REFINE_PIXELS: f64 = 6.0; // a reach in the picture's pixels, not spacing
-/// The most a caller may ask an edge be fitted over, in units.
-const MOST_REFINE: f64 = 200.0; // a reach in artwork units, not spacing
+pub use crate::content_geometry::REFINE_PIXELS;
+/// The longest side of the picture a subject is found and refined in, in
+/// pixels.
+use crate::content_geometry::SIDE;
 
 /// What the model said about the last subject found, for the answer an
 /// agent gets.
@@ -271,7 +271,7 @@ impl Prepared {
             .map_err(|error| {
                 if error.needs_model() {
                     format!(
-                        "select subject needs the on-device subject model (U²-Net, 176 MB, Apache-2.0), which is not set up: set it up in Settings › Models ({SET_UP}), then select again ({error})"
+                        "select subject needs the on-device subject model (U²-Net, 176 MB, Apache-2.0), which is not set up: set it up in Settings, Agent Models ({SET_UP}), then select again ({error})"
                     )
                 } else {
                     format!("the subject could not be found: {error}")

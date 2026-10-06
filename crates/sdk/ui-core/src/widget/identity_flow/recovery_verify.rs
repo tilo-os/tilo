@@ -38,7 +38,7 @@ use crate::widget::identity_flow::sheet::{
     paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{RecoveryChallenge, ScreenOutcome};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 const TITLE: &str = "Confirm your recovery words";
@@ -428,7 +428,7 @@ impl RecoveryVerifyScreen {
         // Each blank takes its whole grid cell (the body clip trims its
         // paint); its pointer target is the part inside the visible body.
         for (editor, rect) in self.editors.iter_mut().zip(resolved.plan.slots.iter()) {
-            place_field(editor, *rect, text_renderer, theme);
+            place_field(editor, *rect);
         }
         for (slot, rect) in self.slot_rects.iter_mut().zip(resolved.plan.slots.iter()) {
             *slot = BodyScroll::visible(body, *rect);
@@ -558,7 +558,7 @@ impl RecoveryVerifyScreen {
             .as_ref()
             .is_some_and(|c| answer.trim().eq_ignore_ascii_case(&c.expected_word(slot)));
         if matches {
-            Some(theme.accent_primary)
+            Some(theme.tokens.colors.intent.inverted)
         } else if self.last_attempt_failed && !answer.is_empty() {
             Some(theme.tokens.colors.semantic.danger)
         } else {
@@ -589,7 +589,7 @@ impl RecoveryVerifyScreen {
                 transform,
                 edge,
                 None,
-                &RoundedRect::from_rect(editor.get_rect(), f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(editor.get_rect(), f64::from(theme.tokens.radii.control)),
             );
         }
     }
@@ -709,48 +709,52 @@ impl Widget for RecoveryVerifyScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: GRID_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
-        let control_h = sheet.control_height(theme);
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: TITLE,
+                max_width: GRID_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
+            let control_h = sheet.control_height(theme);
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.explanation,
-            EXPLANATION,
-            Role::Body,
-            Align::Start,
-            true,
-        );
-        self.draw_word_grid(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            plan,
-            control_h,
-        );
-        if let Some(rect) = plan.error {
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
             paint_text(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                MISMATCH,
-                Role::Error,
+                plan.explanation,
+                EXPLANATION,
+                Role::Body,
                 Align::Start,
                 true,
             );
-        }
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            self.draw_word_grid(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                plan,
+                control_h,
+            );
+            if let Some(rect) = plan.error {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    MISMATCH,
+                    Role::Error,
+                    Align::Start,
+                    true,
+                );
+            }
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {

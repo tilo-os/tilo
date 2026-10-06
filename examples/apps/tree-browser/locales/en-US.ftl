@@ -12,5 +12,4 @@ tree-title-placeholder = Untitled section
 tree-notes-label = Notes
 tree-notes-placeholder = Write something…
 tree-preview-heading = Preview
-tree-back = Back
 tree-share = Share

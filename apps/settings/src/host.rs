@@ -145,6 +145,31 @@ impl PaneCx {
         }
     }
 
+    /// Bind to a published item operation rather than exporting a row effect
+    /// on the root resource. Bound item arguments remain inside the spec.
+    pub(crate) fn row_binding<I: 'static>(
+        &self,
+        row: &ui::tilo_actions::Resource,
+        effect: impl Binds<SettingsEffect, I>,
+    ) -> Option<ui::tilo_actions::ActionBinding<I>> {
+        self.door.as_ref()?;
+        let spec = row
+            .actions
+            .iter()
+            .find(|spec| spec.id == effect.action_id())?;
+        let asked: Vec<String> = spec
+            .params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect();
+        ui::tilo_actions::ActionBinding::new(row, spec, move |input| {
+            let mut args = effect.arguments(input);
+            args.retain(|name, _| asked.contains(name));
+            args
+        })
+        .ok()
+    }
+
     /// The binding of `effect` for a control the toolkit does not know: a
     /// pane's own widget that emits a value. `None` outside a host.
     #[must_use]
@@ -168,6 +193,17 @@ impl PaneCx {
             Some(door) => door.actions.bind_effect_invocation(control, &effect.into()),
             None => control.unavailable(),
         }
+    }
+
+    /// The binding of one fully specified effect, for a shared navigation row.
+    #[must_use]
+    pub fn invocation_binding(
+        &self,
+        effect: impl Into<SettingsEffect>,
+    ) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        self.door
+            .as_ref()
+            .and_then(|door| door.actions.effect(&effect.into()))
     }
 
     /// Invoke `effect` through the same door as a bound control.

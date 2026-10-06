@@ -68,13 +68,13 @@ impl OskToolbarItem {
             OskToolbarItem::new(
                 "sel-left",
                 Some(Icon::ArrowLeft),
-                "Select ◂",
+                "Select left",
                 OskToolbarAction::SelectionLeft,
             ),
             OskToolbarItem::new(
                 "sel-right",
                 Some(Icon::ArrowRight),
-                "Select ▸",
+                "Select right",
                 OskToolbarAction::SelectionRight,
             ),
             OskToolbarItem::new("dismiss", Some(Icon::X), "Hide", OskToolbarAction::Dismiss),

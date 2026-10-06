@@ -149,7 +149,13 @@ impl ShellOverlayHost {
         }
         self.now_playing_card.set_text_scale(theme.text_scale);
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-        ui::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e4);
+        ui::surface::shadow(
+            scene,
+            transform,
+            rect,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         Self::draw_quick_settings_card_background(scene, transform, theme, rect);
         scene.push_layer(
             Fill::NonZero,
