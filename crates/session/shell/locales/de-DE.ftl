@@ -2363,8 +2363,7 @@ nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar
 # AirDrop lab receiver verification
 airdrop-verify-title = AirDrop-Empfänger überprüfen
 airdrop-verify-send-once = Einmal senden
-airdrop-verify-detail =
-    Datei: { $name }
+airdrop-verify-detail = Datei: { $name }
     Größe: { $bytes } Bytes
     Empfänger: { $endpoint }
     Den SHA-256-Fingerabdruck des Empfängerzertifikats als 64 Hexadezimalzeichen von einer vertrauenswürdigen Konsole oder einem unabhängig bestätigten Kanal eingeben. Nur bei Übereinstimmung wird diese vorbereitete Datei einmal gesendet. Ohne Überprüfung abbrechen.

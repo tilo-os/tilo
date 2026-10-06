@@ -188,6 +188,10 @@ impl NearbySendState {
             return;
         }
         self.next_poll = now + POLL_INTERVAL;
+        self.queue(
+            NearbyTransferCommand::Snapshot,
+            Pending::Snapshot { open_picker: false },
+        );
         if !self.queried_airdrop {
             self.queried_airdrop = true;
             self.queue(
@@ -195,10 +199,6 @@ impl NearbySendState {
                 Pending::AirDropAvailability,
             );
         }
-        self.queue(
-            NearbyTransferCommand::Snapshot,
-            Pending::Snapshot { open_picker: false },
-        );
     }
 
     pub fn next_poll(&self) -> Instant {
@@ -271,6 +271,14 @@ impl NearbySendState {
                 }
                 self.airdrop_available = *available;
                 vec![NearbyUiEffect::AvailabilityChanged]
+            }
+            (Pending::AirDropAvailability, _) => {
+                if self.airdrop_available {
+                    self.airdrop_available = false;
+                    vec![NearbyUiEffect::AvailabilityChanged]
+                } else {
+                    Vec::new()
+                }
             }
             (Pending::Snapshot { open_picker }, NearbyTransferReply::Snapshot { snapshot }) => {
                 self.apply_snapshot(snapshot.clone(), open_picker)
@@ -459,6 +467,38 @@ mod tests {
     }
 
     #[test]
+    fn optional_availability_mismatch_is_silent_and_withdraws_old_support() {
+        let mut state = NearbySendState::default();
+        for previously_available in [false, true] {
+            state.airdrop_available = previously_available;
+            state.queue(
+                NearbyTransferCommand::AirDropAvailability,
+                Pending::AirDropAvailability,
+            );
+            let CollabRequest::NearbyTransferCommand { request_id, .. } =
+                state.take_requests().pop().unwrap()
+            else {
+                panic!("availability request")
+            };
+            let effects = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::Snapshot {
+                    snapshot: NearbyTransferSnapshot::default(),
+                }),
+            });
+            assert_eq!(
+                effects,
+                if previously_available {
+                    vec![NearbyUiEffect::AvailabilityChanged]
+                } else {
+                    Vec::new()
+                }
+            );
+            assert!(!state.airdrop_available());
+        }
+    }
+
+    #[test]
     fn outgoing_airdrop_consent_never_opens_a_receive_offer() {
         let mut state = NearbySendState::default();
         let snapshot = NearbyTransferSnapshot {
@@ -556,9 +596,18 @@ mod tests {
     fn identical_background_snapshot_is_not_a_ui_effect() {
         let mut state = NearbySendState::default();
         state.poll_if_due(ui::time::now());
-        let request = state.take_requests().pop().expect("snapshot request");
-        let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
-            panic!("wrong request");
+        let request = state
+            .take_requests()
+            .into_iter()
+            .next()
+            .expect("snapshot request");
+        let CollabRequest::NearbyTransferCommand {
+            request_id,
+            command: NearbyTransferCommand::Snapshot,
+            ..
+        } = request
+        else {
+            panic!("background snapshot must remain the first request");
         };
         let idle = NearbyTransferSnapshot::default();
         let first = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
@@ -572,9 +621,18 @@ mod tests {
             "an empty idle roster must not open chrome"
         );
         state.poll_if_due(ui::time::now() + super::POLL_INTERVAL);
-        let request = state.take_requests().pop().expect("second snapshot");
-        let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
-            panic!("wrong request");
+        let request = state
+            .take_requests()
+            .into_iter()
+            .next()
+            .expect("second snapshot");
+        let CollabRequest::NearbyTransferCommand {
+            request_id,
+            command: NearbyTransferCommand::Snapshot,
+            ..
+        } = request
+        else {
+            panic!("background snapshot must remain the first request");
         };
         let second = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
             request_id,
