@@ -246,6 +246,7 @@ pub mod remote_actions;
 pub mod render_thread;
 pub mod reorder;
 pub mod resources;
+pub mod retained_present;
 pub mod richtext;
 pub mod scale;
 pub mod screen_reader;
