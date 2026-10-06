@@ -385,3 +385,17 @@ fn a_pixel_template_allows_an_explicit_paper_ground() {
     assert_eq!(app.state().ground.texture, "paper");
     assert_eq!(app.state().ground.colour, "#f4efe3");
 }
+
+#[test]
+fn a_small_vector_icon_keeps_vector_tools_in_the_automatic_workspace() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call("new-artwork", serde_json::json!({"width":32,"height":32}))
+        .unwrap();
+    app.call("draw", serde_json::json!({"marks":[{"id":"icon","shape":{"kind":"ellipse","cx":16,"cy":16,"rx":10,"ry":10},"fill":"#123456"}]})).unwrap();
+    let snapshot = app.harness().inspection();
+    let name = ui::i18n::I18nManager::lookup_plain(canvas::tools::Tool::Text.label());
+    assert!(
+        support::named_bounds(&snapshot.root, &name).is_some(),
+        "small vector icons still offer lettering"
+    );
+}

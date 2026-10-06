@@ -37,7 +37,11 @@ impl Workspace {
             Self::Photo
         } else if art.layers.iter().any(|layer| !layer.medium.is_empty()) {
             Self::Painting
-        } else if art.width <= 256.0 && art.height <= 256.0 && !art.marks.is_empty() {
+        } else if art
+            .marks
+            .iter()
+            .any(|mark| mark.style.brush.as_deref() == Some("pixel"))
+        {
             Self::Pixel
         } else {
             Self::Vector
