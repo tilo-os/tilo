@@ -204,6 +204,226 @@ mod owner_commit_tests {
             .await;
     }
 
+    struct RevalidatedAgentRead;
+    impl NativeDocumentReads for RevalidatedAgentRead {
+        fn requires_room(&self, _: &str) -> bool {
+            true
+        }
+
+        fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
+            if context.agent_id() != Some("scribe") {
+                return Err("committed read lost the admitted Agent identity".into());
+            }
+            context.revalidate()
+        }
+
+        fn capture(
+            &self,
+            context: &NativeDocumentReadContext,
+            _: Option<[u8; 32]>,
+            _: usize,
+        ) -> Result<NativeDocumentRead, String> {
+            if context.agent_id() != Some("scribe") {
+                return Err("committed capture lost the admitted Agent identity".into());
+            }
+            context.revalidate()?;
+            Ok(NativeDocumentRead::Unchanged([9; 32]))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn certified_agent_committed_read_requires_exact_live_custody_and_membership() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let directory = canonical_tempdir();
+                let root = SigningKey::from_bytes(&[68; 32]);
+                let device = SigningKey::from_bytes(&[69; 32]);
+                let principal = principal_id_for_root(root.verifying_key().to_bytes());
+                let mut workspace = crate::test_support::Workspace::new(
+                    crate::test_support::WorkspaceId(68),
+                    "Agent committed read",
+                );
+                workspace.set_owner(&principal);
+                let room = workspace.room.to_string();
+                let agent_membership = workspace.grant_capability(CapOverride::membership(
+                    Subject::agent("scribe"),
+                    room.clone(),
+                    Verb::Comment,
+                ));
+                let route = CrdtRoute::record("so.tilo.agent", room.clone(), "state");
+                let mut tree = WorkspaceTree::default();
+                tree.workspaces.push(workspace);
+                let membership = tree.shared();
+                let mut admitted = admit_verified_join(
+                    &membership.read(),
+                    &route,
+                    VerifiedJoinIdentity {
+                        user_public_key: root.verifying_key().to_bytes(),
+                        device_public_key: device.verifying_key().to_bytes(),
+                        capped: false,
+                    },
+                )
+                .expect("the certified workspace owner is admitted");
+                admit_agent_delegation(&membership.read(), &route, &mut admitted, "scribe")
+                    .expect("the owner may enter the admitted Agent session");
+                let mut certificate = tilo_user_identity::DeviceCert {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: device.verifying_key().to_bytes(),
+                    device_label: "Agent read fixture".into(),
+                    capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+                    issued_at_ns: 1,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                };
+                tilo_user_identity::sign_device_cert(&mut certificate, &root)
+                    .expect("the workspace owner signs the fixture device");
+                admitted.certificate = Some(certificate);
+                assert_eq!(admitted.agent_id.as_deref(), Some("scribe"));
+
+                let fanout = Arc::new(FanoutState::new());
+                let config = crate::peer_actions::NativePeerBrokerConfig {
+                    journal_root: directory.path().join("journal"),
+                    certificate_authority: Arc::new(ExplicitAuthority),
+                };
+                let services = HostServices {
+                    committed_documents: Some(Arc::new(RevalidatedAgentRead)),
+                    ..Default::default()
+                };
+                let (state, bridge_rx) = CapnpBrokerState::new_configured(
+                    &fanout,
+                    Arc::new(Mutex::new(BrokerChannels::default())),
+                    PeerPublisher::disabled(),
+                    Some(membership.authority()),
+                    None,
+                    Some(&config),
+                    services,
+                );
+                let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+                let (stream, _peer) = tokio::net::UnixStream::pair().unwrap();
+                let process = native_media::PeerProcess::from_socket(&stream)
+                    .expect("Linux exposes the actual connected process through SO_PEERPIDFD");
+                let connection = native_media::LocalAppConnection::attested(
+                    route.app_id.clone(),
+                    room.clone(),
+                    process.clone(),
+                    None,
+                )
+                .expect("the live process retains exact launcher custody");
+                let handle = |peer_id, local| CapnpChannelHandle {
+                    committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                    state: Arc::clone(&state),
+                    directories: Rc::clone(&directories),
+                    channel_id: route.channel_key(),
+                    peer_id,
+                    verified_identity: admitted.clone(),
+                    record_kind: None,
+                    lease: Some(Rc::new(ConnectionLease {
+                        local_media: Some(local),
+                        state: Arc::clone(&state),
+                        directories: Rc::clone(&directories),
+                        peer_id,
+                    })),
+                };
+                let request = runtime_collab::committed_document::Request::Open {
+                    known_revision: None,
+                };
+                assert_eq!(
+                    handle(1, Arc::clone(&connection))
+                        .committed_document_dispatch(&request)
+                        .expect("the exact live certified Agent may read"),
+                    runtime_collab::committed_document::Reply::Unchanged { revision: [9; 32] }
+                );
+
+                let documentless_route = CrdtRoute::record("so.tilo.agent", room.clone(), "");
+                let mut documentless_admitted = admitted.clone();
+                admit_agent_delegation(
+                    &membership.read(),
+                    &documentless_route,
+                    &mut documentless_admitted,
+                    "scribe",
+                )
+                .expect("the empty managed route retains the admitted Agent");
+                let documentless = native_media::LocalAppConnection::attested(
+                    documentless_route.app_id.clone(),
+                    room.clone(),
+                    process.clone(),
+                    None,
+                )
+                .unwrap();
+                let documentless_peer = 5;
+                let documentless_handle = CapnpChannelHandle {
+                    committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                    state: Arc::clone(&state),
+                    directories: Rc::clone(&directories),
+                    channel_id: documentless_route.channel_key(),
+                    peer_id: documentless_peer,
+                    verified_identity: documentless_admitted,
+                    record_kind: None,
+                    lease: Some(Rc::new(ConnectionLease {
+                        local_media: Some(documentless),
+                        state: Arc::clone(&state),
+                        directories: Rc::clone(&directories),
+                        peer_id: documentless_peer,
+                    })),
+                };
+                assert_eq!(
+                    documentless_handle
+                        .committed_document_dispatch(&request)
+                        .expect("an ordinary Agent app still follows its real document owner"),
+                    runtime_collab::committed_document::Reply::Unchanged { revision: [9; 32] },
+                    "an Agent label plus launcher custody must not manufacture managed-process documentless authority"
+                );
+
+                let revoked = native_media::LocalAppConnection::attested(
+                    route.app_id.clone(),
+                    room.clone(),
+                    process.clone(),
+                    None,
+                )
+                .unwrap();
+
+                let wrong_route = native_media::LocalAppConnection::attested(
+                    route.app_id.clone(),
+                    uuid::Uuid::new_v4().to_string(),
+                    process.clone(),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(
+                    handle(2, wrong_route)
+                        .committed_document_dispatch(&request)
+                        .unwrap_err(),
+                    "committed read launcher custody ended: workspace changed",
+                    "launcher custody for another room cannot read this Agent channel"
+                );
+
+                let stopped = native_media::LocalAppConnection::attested(
+                    route.app_id.clone(),
+                    room,
+                    process,
+                    None,
+                )
+                .unwrap();
+                stopped.stop();
+                assert_eq!(
+                    handle(3, stopped)
+                        .committed_document_dispatch(&request)
+                        .unwrap_err(),
+                    "committed read launcher custody ended: connection ended",
+                    "ended launcher custody cannot read the Agent channel"
+                );
+
+                assert!(membership.write().workspaces[0].revoke_capability(&agent_membership));
+                assert_eq!(
+                    handle(4, revoked)
+                        .committed_document_dispatch(&request)
+                        .unwrap_err(),
+                    "committed read admission ended",
+                    "revoked Agent membership invalidates the retained certified session"
+                );
+            })
+            .await;
+    }
     /// A transport observer at the existing App boundary. The checked Writer
     /// owns and mutates its actual record; the observer records ordering only.
     struct WorkerTransport {
@@ -1295,6 +1515,27 @@ mod owner_commit_tests {
             let authority = CurrentHost::new(&route, &cert, None);
             assert!(state.certificate_authority.set(authority.clone()).is_ok());
             let bytes = presentation(&route.cluster_id, &cert, &key);
+            let agent_client = state
+                .connect_local_worker(route.clone(), &cert)
+                .expect("genuine host gets only a private worker descriptor");
+            let pending = state.workers.lock().unwrap().pop().unwrap();
+            let (agent_rpc, agent_server, agent_task) = rpc_pair(
+                state.clone(),
+                900,
+                pending.stream,
+                agent_client,
+                Some(pending.binding),
+                empty_directories(),
+            );
+            assert!(
+                agent_rpc
+                    .join_channel_as_kind(&route.channel_key(), &bytes, "scribe", "agent", "",)
+                    .await
+                    .is_err(),
+                "a Person/host descriptor cannot cast itself to an Agent"
+            );
+            agent_server.abort();
+            agent_task.abort();
             let client = state
                 .connect_local_worker(route.clone(), &cert)
                 .expect("genuine host gets only a private worker descriptor");
@@ -1311,6 +1552,10 @@ mod owner_commit_tests {
                 .join_channel(&route.channel_key(), &bytes)
                 .await
                 .expect("actual descriptor signed host join");
+            assert!(
+                handle.subscribe_enrolled_tasks().await.is_err(),
+                "a signed Person/host channel is not managed Agent process custody"
+            );
             assert!(handle.published_invocation_status(999).await.is_ok());
             assert!(
                 state.is_current_host_worker(901, &route, &cert).unwrap(),

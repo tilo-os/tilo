@@ -2,7 +2,7 @@
 //! This wrapper does not compile or launch applications itself: the shared
 //! headless control example installs signed packages and uses shell actions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 #[path = "packaged_native_bootstrap/native_document.rs"]
@@ -33,6 +33,21 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .parent()
         .and_then(Path::parent)
         .ok_or("example executable must live in target/profile/examples")?;
+    // Preserve the real Cargo binary before the isolation wrapper replaces
+    // HOME. This machine's `cargo` command may itself be a routing shim which
+    // intentionally resolves rustup relative to the caller's original home.
+    let cargo = std::env::var_os("CARGO")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("CARGO_HOME").map(|home| PathBuf::from(home).join("bin/cargo"))
+        })
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo/bin/cargo"))
+        })
+        .ok_or("the proof requires the caller's Cargo binary")?;
+    if !cargo.is_file() {
+        return Err(format!("the proof Cargo binary is unavailable: {}", cargo.display()).into());
+    }
     // The AT-SPI bus must be this proof's own ordinary session bus, not the
     // operator's desktop bus or a mock AccessKit tree.
     // Bus-activated services inherit the bus daemon's environment, not the

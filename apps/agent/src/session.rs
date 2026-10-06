@@ -680,14 +680,22 @@ impl Session {
             self.link
                 .send(&CollabRequest::SubscribeEnrolledTasks { request_id })?;
             self.link.wait_enrolled_reply(request_id)?;
+            tracing::info!("managed Agent enrolled subscription acknowledged");
         }
+        // A Task run carries its own exact owner-admitted instruction. Do not
+        // borrow the launching Person's Chat document permission merely to
+        // begin processing Tasks. Direct-message delivery is a separate,
+        // explicitly authorized Agent input path.
         tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
         loop {
             match self.link.recv(Duration::from_millis(100))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
                 }
-                Some(CollabEvent::EnrolledTask(run)) => self.run_enrolled_task(&run)?,
+                Some(CollabEvent::EnrolledTask(run)) => {
+                    tracing::info!("managed Agent enrolled task event observed");
+                    self.run_enrolled_task(&run)?;
+                }
                 Some(CollabEvent::EnrolledTaskDisconnected { detail }) => anyhow::bail!(detail),
                 Some(CollabEvent::TaskRun(run)) if self.enrolled_custody.is_none() => {
                     self.run_task(&run)?;
@@ -757,7 +765,13 @@ impl Session {
                 message: "Reviewing the permission-filtered action catalogue".into(),
             },
         )?;
+        tracing::info!("managed Agent enrolled progress acknowledged");
         self.wait_for_task_catalogue()?;
+        if self.broker_surfaces.is_empty() {
+            tracing::info!("managed Agent task catalogue unavailable");
+        } else {
+            tracing::info!("managed Agent task catalogue observed");
+        }
         if self.task_cancelled(run)? {
             return self.cancel_task(run, "Cancelled before planning");
         }
@@ -767,6 +781,7 @@ impl Session {
         if matches!(run.planning, runtime_collab::TaskRunPlanning::Model)
             && (self.chooser.loop_model().is_ok() || self.enrolled_custody.is_some())
         {
+            tracing::info!("managed Agent model turn entered");
             let mut directed_run = run.clone();
             return loop {
                 match self.run_task_loop(&directed_run)? {
@@ -3115,6 +3130,7 @@ impl Session {
             acceptance: decision.acceptance.clone(),
         })?;
         self.link.wait_enrolled_reply(request_id)?;
+        tracing::info!("managed Agent enrolled task acceptance acknowledged");
         if !decision.execute {
             return Ok(());
         }
@@ -3128,6 +3144,7 @@ impl Session {
         {
             tracing::warn!("ignored an unreadable agent history");
         }
+        tracing::info!("managed Agent enrolled task execution entered");
         let result = self.run_task(&run.task);
         self.enrolled_active = None;
         result

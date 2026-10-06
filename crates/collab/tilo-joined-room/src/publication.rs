@@ -654,6 +654,7 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
         )?;
     }
     reservation::validate(view, &originals)?;
+    crate::agent_session::validate(view)?;
     Ok(())
 }
 

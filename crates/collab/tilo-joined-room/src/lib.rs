@@ -9,6 +9,8 @@
 //! standalone runtime keeps it in a file of its own ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
+mod agent_session;
+mod agent_session_history;
 mod application_record;
 mod bootstrap;
 mod certified;
@@ -32,6 +34,7 @@ mod workspace_membership;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 
+pub use agent_session::{AgentSessionBinding, AgentSessionReservation};
 pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use bootstrap::NativeBootstrap;
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
@@ -305,6 +308,9 @@ impl NativeWorkspaceOwner {
         for (room, record) in &authority.rooms {
             let view = enrollment::restore(*room, record, now)?;
             effect_receipt::validate_history(&view, store.as_ref())?;
+            if let Some(root) = view.record.agent_session_history_root {
+                agent_session_history::validate_root(store.as_ref(), root)?;
+            }
             current.rooms.insert(*room, Arc::new(view));
         }
         Ok(Self(Arc::new(SharedOwner {

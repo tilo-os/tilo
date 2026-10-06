@@ -2271,6 +2271,23 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
     sdk_join_identity_from(runtime_identity::load()?, cluster_id)
 }
 
+#[cfg(unix)]
+fn sdk_agent_join_identity(
+    cluster_id: Uuid,
+) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
+    sdk_agent_join_identity_from(runtime_identity::load()?, cluster_id)
+}
+
+#[cfg(unix)]
+fn sdk_agent_join_identity_from<I: SdkCertifiedIdentity + 'static>(
+    identity: I,
+    cluster_id: Uuid,
+) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
+    let mut identity = sdk_join_identity_from(identity, cluster_id)?;
+    identity.participant_kind = "agent";
+    Ok(identity)
+}
+
 #[cfg_attr(
     not(unix),
     allow(
@@ -2350,6 +2367,13 @@ async fn sdk_join_identity_from_host(
 
 #[cfg(not(unix))]
 fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
+    Err(runtime_portal::NotAvailable::ServiceFdMissing)
+}
+
+#[cfg(not(unix))]
+fn sdk_agent_join_identity(
+    _cluster_id: Uuid,
+) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
     Err(runtime_portal::NotAvailable::ServiceFdMissing)
 }
 
@@ -2807,13 +2831,14 @@ impl CollaborationManager {
         record: Option<String>,
         agent_id: impl Into<String>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
+        let identity = sdk_agent_join_identity(cluster_id)?;
         Self::for_route_from(
             SdkConnectSource::Fd(fd),
             app_id.into(),
             cluster_id,
             record,
             Some(agent_id.into()),
-            None,
+            Some(identity),
             "agent",
         )
     }
@@ -3685,6 +3710,9 @@ async fn ensure_sdk_route(
             return Err(format!("{}: {error}", super::ROUTE_JOIN_FAILED));
         }
     };
+    if participant_kind == "agent" {
+        tracing::info!("managed Agent collaboration channel joined");
+    }
 
     // Only the explicit agent constructors consume the eager workspace
     // decision catalogue. Ordinary App owners discard that event and expose
@@ -3696,6 +3724,7 @@ async fn ensure_sdk_route(
         // Queue the first decision baseline before document traffic so an
         // agent cannot start deciding against stale local fallback data.
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
+        tracing::info!("managed Agent action catalogue subscribed");
     }
     let committed = committed_document::install(&channel, spec, inbound_tx).await?;
     // A committed route's owner admits and applies each edit itself, and a
@@ -4192,13 +4221,19 @@ async fn spawn_action_catalogue_stream(
     let stream = channel
         .subscribe_action_catalogue()
         .await
-        .map_err(|error| format!("subscribing to action catalogue failed: {error}"))?;
-    let initial = stream
-        .read()
-        .await
-        .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
-    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
-        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
+        .map_err(|error| {
+            tracing::warn!("managed Agent action catalogue subscription refused");
+            format!("subscribing to action catalogue failed: {error}")
+        })?;
+    let initial = stream.read().await.map_err(|error| {
+        tracing::warn!("managed Agent initial action catalogue read refused");
+        format!("reading initial action catalogue failed: {error}")
+    })?;
+    let catalogue =
+        serde_json::from_str::<BrokerActionCatalogueWire>(&initial).map_err(|error| {
+            tracing::warn!("managed Agent initial action catalogue decode refused");
+            format!("decoding initial action catalogue failed: {error}")
+        })?;
     // The initial baseline occupies the same turn as subsequent watched
     // snapshots. Otherwise a busy constructor retains both before its first
     // owner poll, which can exhaust the bridge despite each baseline fitting.
@@ -5882,11 +5917,19 @@ async fn dispatch_sdk_request(
                         loop {
                             match stream.read().await {
                                 Ok(run) => {
+                                    tracing::info!("managed Agent enrolled task stream received");
                                     if !tx.send_durable(CollabEvent::EnrolledTask(run)) {
+                                        tracing::info!(
+                                            "managed Agent enrolled task event delivery failed"
+                                        );
                                         break;
                                     }
+                                    tracing::info!("managed Agent enrolled task event delivered");
                                 }
                                 Err(error) => {
+                                    tracing::info!(
+                                        "managed Agent enrolled task stream read refused"
+                                    );
                                     let _ =
                                         tx.send_durable(CollabEvent::EnrolledTaskDisconnected {
                                             detail: error.to_string(),
@@ -5909,12 +5952,20 @@ async fn dispatch_sdk_request(
             request_id,
             acceptance,
         } => {
+            tracing::info!("managed Agent task acceptance RPC started");
             let result = route
                 .channel
                 .accept_enrolled_task(&acceptance)
                 .await
                 .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
+            if result.is_ok() {
+                tracing::info!("managed Agent task acceptance RPC acknowledged");
+            } else {
+                tracing::info!("managed Agent task acceptance RPC refused");
+            }
+            if !inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result }) {
+                tracing::info!("managed Agent task acceptance reply delivery failed");
+            }
         }
         CollabRequest::ReportEnrolledTask {
             request_id,
@@ -8010,6 +8061,66 @@ mod tests {
         ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
             Ok([9; 64])
         }
+    }
+
+    #[cfg(unix)]
+    struct UncertifiedIdentity;
+
+    #[cfg(unix)]
+    impl SdkCertifiedIdentity for UncertifiedIdentity {
+        fn channel_keys(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: u64,
+        ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+        {
+            unreachable!("an uncertified managed identity is refused before channel access")
+        }
+        fn device_certificate(&self) -> Option<&[u8]> {
+            None
+        }
+        fn signing_public_key(&self) -> [u8; 32] {
+            [0; 32]
+        }
+        fn sign_collaboration_join(
+            &self,
+            _: &str,
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            unreachable!("an uncertified managed identity is refused before signing")
+        }
+        fn sign_collaboration_op(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            unreachable!("an uncertified managed identity is refused before signing")
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn managed_agent_fd_identity_is_the_inherited_certified_device() {
+        let room = Uuid::new_v4();
+        let identity = sdk_agent_join_identity_from(
+            KeyedIdentity {
+                asked: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            },
+            room,
+        )
+        .unwrap();
+        assert_eq!(identity.participant_kind, "agent");
+        assert!(matches!(identity.signer, SdkDocumentSigner::Certified(_)));
+        let presentation = runtime_collab::CertifiedJoinIdentity::decode(&identity.presentation)
+            .unwrap()
+            .expect("a managed Agent carries its inherited device presentation");
+        assert_eq!(presentation.workspace_id, room.to_string());
+        assert_eq!(presentation.device_certificate, b"fixture");
+        assert_eq!(presentation.proof, [7; 64]);
+        assert!(sdk_agent_join_identity_from(UncertifiedIdentity, room).is_err());
     }
 
     /// How often a certified endpoint asked for channel keys after joining a

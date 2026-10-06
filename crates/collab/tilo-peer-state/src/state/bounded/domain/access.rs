@@ -19,6 +19,19 @@ impl PeerRoomAccess {
     }
 }
 impl PeerRead<'_> {
+    pub(super) fn agent_document_read_allowed(
+        &self,
+        agent: &str,
+        app: &str,
+        record: &str,
+        now: SystemTime,
+    ) -> bool {
+        let Some(room) = self.peer.core.room_doc.as_ref() else {
+            return false;
+        };
+        let (_, _, caps) = crate::room::extract_governed_fields(room.document());
+        backend::access::agent_document_read(&caps, agent, self.room(), app, record, now)
+    }
     /// Rechecks actual current membership, then the same canonical record
     /// capability decision. This is data, not a durable receipt or caller proof.
     ///

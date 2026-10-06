@@ -130,12 +130,18 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             if !view.peer().certificates().contains(context.certificate()) {
                 return Err("committed document caller certificate changed".into());
             }
-            view.peer().check_document_read(
-                context.certificate().device_public_key,
-                &route.app_id,
-                &route.record_id,
-                std::time::SystemTime::now(),
-            )
+            let now = std::time::SystemTime::now();
+            if let Some(agent) = context.agent_id() {
+                view.peer()
+                    .check_agent_document_read(agent, &route.app_id, &route.record_id, now)
+            } else {
+                view.peer().check_document_read(
+                    context.certificate().device_public_key,
+                    &route.app_id,
+                    &route.record_id,
+                    now,
+                )
+            }
         })?;
         context.revalidate()
     }
@@ -155,14 +161,26 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .as_ref()
             .ok_or("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
-            view.read_document(
-                context.certificate().device_public_key,
-                &route.app_id,
-                &route.record_id,
-                known_revision,
-                maximum,
-                std::time::SystemTime::now(),
-            )
+            let now = std::time::SystemTime::now();
+            if let Some(agent) = context.agent_id() {
+                view.read_document_as_agent(
+                    agent,
+                    &route.app_id,
+                    &route.record_id,
+                    known_revision,
+                    maximum,
+                    now,
+                )
+            } else {
+                view.read_document(
+                    context.certificate().device_public_key,
+                    &route.app_id,
+                    &route.record_id,
+                    known_revision,
+                    maximum,
+                    now,
+                )
+            }
         })?;
         Ok(match read {
             DocumentRead::Unchanged(revision) => NativeDocumentRead::Unchanged(revision),

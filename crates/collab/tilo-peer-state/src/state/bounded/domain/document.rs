@@ -53,6 +53,30 @@ impl<'peer> PeerDocumentRead<'peer> {
     }
 }
 impl<'peer> PeerRead<'peer> {
+    fn admitted_document(
+        &self,
+        app: &str,
+        record: &str,
+    ) -> Result<PeerDocumentRead<'peer>, PeerDocumentReadError> {
+        let (route, document) = self
+            .peer
+            .core
+            .documents
+            .iter()
+            .find(|(route, _)| route.app == app && route.record == record)
+            .ok_or(PeerDocumentReadError::Missing)?;
+        if document.encryption_required {
+            return Err(PeerDocumentReadError::Encrypted);
+        }
+        if document.doc.has_missing_dependencies() {
+            return Err(PeerDocumentReadError::Incomplete);
+        }
+        Ok(PeerDocumentRead {
+            route,
+            document: document.doc.document(),
+            heads: document.doc.heads(),
+        })
+    }
     /// Rechecks membership and document access before looking up the exact
     /// admitted plaintext, causally complete route. The embedding owner still
     /// binds the authenticated caller, actual lock/generation and fresh clock.
@@ -74,24 +98,27 @@ impl<'peer> PeerRead<'peer> {
         {
             return Err(PeerDocumentReadError::Denied);
         }
-        let (route, document) = self
-            .peer
-            .core
-            .documents
-            .iter()
-            .find(|(route, _)| route.app == app && route.record == record)
-            .ok_or(PeerDocumentReadError::Missing)?;
-        if document.encryption_required {
-            return Err(PeerDocumentReadError::Encrypted);
+        self.admitted_document(app, record)
+    }
+
+    /// Rechecks the named Agent's own governed permission before exposing the
+    /// exact admitted plaintext route. No device or person role is borrowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PeerDocumentReadError`] when the Agent is denied or the
+    /// exact admitted document is missing, encrypted or causally incomplete.
+    pub fn agent_document_read(
+        &self,
+        agent: &str,
+        app: &str,
+        record: &str,
+        now: SystemTime,
+    ) -> Result<PeerDocumentRead<'peer>, PeerDocumentReadError> {
+        if !self.agent_document_read_allowed(agent, app, record, now) {
+            return Err(PeerDocumentReadError::Denied);
         }
-        if document.doc.has_missing_dependencies() {
-            return Err(PeerDocumentReadError::Incomplete);
-        }
-        Ok(PeerDocumentRead {
-            route,
-            document: document.doc.document(),
-            heads: document.doc.heads(),
-        })
+        self.admitted_document(app, record)
     }
 }
 

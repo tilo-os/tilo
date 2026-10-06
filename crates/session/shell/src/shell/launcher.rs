@@ -2297,19 +2297,6 @@ pub fn launch_workspace_agent(
 /// Launch using the genuine original caller rather than the local UI identity.
 /// The canonical owner read remains held through the normal startup request,
 /// so a concurrent policy change cannot precede admission of that request.
-pub(super) fn launch_certified_workspace_agent(
-    agent_id: &str,
-    workspace: &Workspace,
-    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
-    caller: &tilo_user_identity::DeviceCert,
-) -> Result<InstalledApp, String> {
-    owner.with_current(workspace.room, |view| {
-        view.peer()
-            .check_workspace_agent_start(caller, agent_id, std::time::SystemTime::now())?;
-        launch_admitted_workspace_agent(agent_id, workspace).map_err(|error| error.user_message())
-    })
-}
-
 fn launch_admitted_workspace_agent(
     agent_id: &str,
     workspace: &Workspace,

@@ -95,6 +95,8 @@ pub mod launcher;
 pub mod live_activities;
 pub mod live_presence;
 pub mod magnifier;
+#[cfg(target_os = "linux")]
+mod managed_agent;
 pub mod media_keys;
 pub mod mpris;
 pub(crate) mod native_media;

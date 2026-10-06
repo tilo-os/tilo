@@ -16,8 +16,58 @@ const COLLECTION: &str = "desktop:tasks";
 const TASK_PREFIX: &str = "desktop:task:";
 const MAX_CURRENT_TASK_FRONTIERS: usize = 256;
 const MAX_TASK_ARGUMENT_BYTES: usize = 40 * 1024;
+const MAX_ENROLLED_RUNS_PER_PROCESS: usize = 1024;
+const MAX_ENROLLED_REPORTS_PER_RUN: usize = 4096;
+
+fn enrolled_label(domain: &[u8], parts: &[&str]) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    for part in parts {
+        hash.update(&(part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    hash.finalize().to_hex().chars().take(32).collect()
+}
+
+fn enrolled_run_number(room: &str, task: &str, epoch: u64) -> u64 {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tilo/enrolled-task-run/v1");
+    hash.update(room.as_bytes());
+    hash.update(task.as_bytes());
+    hash.update(&epoch.to_le_bytes());
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..8]);
+    u64::from_le_bytes(bytes).max(1)
+}
+
+fn is_terminal_update(update: &runtime_collab::TaskRunUpdate) -> bool {
+    matches!(
+        update,
+        runtime_collab::TaskRunUpdate::Succeeded { .. }
+            | runtime_collab::TaskRunUpdate::Failed { .. }
+            | runtime_collab::TaskRunUpdate::Cancelled { .. }
+    )
+}
 
 impl CapnpBrokerState {
+    pub(crate) fn managed_agent_session_is_ready(
+        &self,
+        room: &str,
+        agent: &str,
+        launch: &str,
+    ) -> bool {
+        self.enrolled_task_subscribers
+            .lock()
+            .is_ok_and(|subscribers| {
+                subscribers.values().any(|subscriber| {
+                    subscriber.cluster_id == room
+                        && subscriber.agent_id == agent
+                        && subscriber.facts.binding.launch == launch
+                        && !subscriber.tx.is_closed()
+                })
+            })
+    }
+
     /// Refresh from the admitted owner document, including rooms enrolled
     /// after boot. The published rows contain no task instruction text.
     pub(super) fn refresh_workspace_task_services(self: &Arc<Self>) -> Result<(), String> {
@@ -259,6 +309,11 @@ impl CapnpBrokerState {
         task_id: &str,
         service: &dyn crate::services::WorkspaceTasks,
     ) -> Result<Option<u64>, String> {
+        if let Some((peer, facts)) = self.live_enrolled_subscriber(room, task_id, service)? {
+            return self
+                .dispatch_enrolled_workspace_task(peer, facts, room, task_id, service)
+                .await;
+        }
         let _delivery = self.task_delivery_order.lock().await;
         let snapshot = checked_snapshot(service, room)?;
         let task = snapshot
@@ -293,32 +348,7 @@ impl CapnpBrokerState {
             .run_epoch
             .checked_add(1)
             .ok_or("task run epoch exhausted")?;
-        let invocation = run_invocation(room, task_id, epoch);
-        let request = OwnerCommitRequest {
-            room: room.into(),
-            operation: CommitOperation::WorkspaceTaskCommand {
-                invocation,
-                authority: WorkspaceTaskAuthority::Host {
-                    attestor: service.host_certificate(room)?,
-                },
-                command: WorkspaceTaskCommand::StartRun {
-                    task_id: task_id.into(),
-                    agent_id: agent.into(),
-                },
-            },
-        };
-        let receipt = service.execute(request.clone()).await?;
-        receipt.validate_for(&request)?;
-        let snapshot = checked_snapshot(service, room)?;
-        let task = snapshot
-            .tasks
-            .iter()
-            .find(|task| task.id == task_id)
-            .ok_or("started task disappeared")?;
-        let control = snapshot
-            .controls
-            .get(task_id)
-            .ok_or("started task has no owner control")?;
+        let (task, control) = start_owner_task_run(room, task_id, agent, epoch, service).await?;
         let active = control
             .active_run
             .as_ref()
@@ -360,6 +390,133 @@ impl CapnpBrokerState {
         Ok(Some(run_id))
     }
 
+    fn live_enrolled_subscriber(
+        &self,
+        room: &str,
+        task_id: &str,
+        service: &dyn crate::services::WorkspaceTasks,
+    ) -> Result<Option<(u64, launcher::managed::ChannelProcessFacts)>, String> {
+        let snapshot = checked_snapshot(service, room)?;
+        let agent = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .and_then(|task| task.assigned_agent.as_deref());
+        let Some(agent) = agent else {
+            return Ok(None);
+        };
+        let retained = self
+            .enrolled_task_subscribers
+            .lock()
+            .map_err(|_| "enrolled task subscription registry unavailable")?
+            .iter()
+            .find(|(_, subscriber)| {
+                subscriber.cluster_id == room
+                    && subscriber.agent_id == agent
+                    && !subscriber.tx.is_closed()
+                    && !subscriber
+                        .runs
+                        .values()
+                        .any(|run| !run.reports.values().any(is_terminal_update))
+            })
+            .map(|(peer, subscriber)| (*peer, subscriber.facts.clone()));
+        Ok(retained)
+    }
+
+    async fn dispatch_enrolled_workspace_task(
+        &self,
+        peer: u64,
+        facts: launcher::managed::ChannelProcessFacts,
+        room: &str,
+        task_id: &str,
+        service: &dyn crate::services::WorkspaceTasks,
+    ) -> Result<Option<u64>, String> {
+        let _delivery = self.task_delivery_order.lock().await;
+        let snapshot = checked_snapshot(service, room)?;
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or("queued task disappeared before enrolled delivery")?;
+        if task.status != tilo_desktop_model::WorkspaceTaskStatus::Queued {
+            return Ok(None);
+        }
+        let agent = task
+            .assigned_agent
+            .as_deref()
+            .filter(|_| task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual)
+            .ok_or("queued task has no Agent route")?
+            .to_owned();
+        if self.managed_agent_facts(peer, room, &agent)? != facts {
+            return Err("managed process facts changed before task delivery".into());
+        }
+        let control = snapshot
+            .controls
+            .get(task_id)
+            .ok_or("queued task has no owner control")?;
+        require_retained_task_instruction(control)?;
+        let epoch = control
+            .run_epoch
+            .checked_add(1)
+            .ok_or("task run epoch exhausted")?;
+        let (task, control) = start_owner_task_run(room, task_id, &agent, epoch, service).await?;
+        let active = control
+            .active_run
+            .as_ref()
+            .filter(|active| active.epoch == epoch && active.agent_id == agent)
+            .ok_or("owner did not retain the exact enrolled run")?;
+        let run_number = enrolled_run_number(room, task_id, epoch);
+        let envelope = enrolled_task_envelope(&facts, room, &task, &control, &agent, epoch)?;
+        let tx = {
+            let mut subscribers = self
+                .enrolled_task_subscribers
+                .lock()
+                .map_err(|_| "enrolled task subscription registry unavailable")?;
+            let subscriber = subscribers
+                .get_mut(&peer)
+                .filter(|subscriber| {
+                    subscriber.cluster_id == room
+                        && subscriber.agent_id == agent
+                        && subscriber.facts == facts
+                })
+                .ok_or("enrolled task subscriber changed before delivery")?;
+            if subscriber.runs.len() >= MAX_ENROLLED_RUNS_PER_PROCESS {
+                return Err("enrolled task retention capacity exhausted".into());
+            }
+            if subscriber.runs.values().any(|run| {
+                run.envelope.task_id == task_id && !run.reports.values().any(is_terminal_update)
+            }) {
+                return Err("enrolled task already has a live run for this process".into());
+            }
+            subscriber.runs.insert(
+                envelope.message_id.clone(),
+                super::EnrolledTaskRun {
+                    envelope: envelope.clone(),
+                    task_epoch: active.epoch,
+                    acceptance: None,
+                    report_sequence: 0,
+                    reports: std::collections::HashMap::new(),
+                },
+            );
+            let tx = subscriber.tx.clone();
+            drop(subscribers);
+            tx
+        };
+        if tx.send(envelope).is_err() {
+            if let Ok(mut subscribers) = self.enrolled_task_subscribers.lock()
+                && let Some(subscriber) = subscribers.get_mut(&peer)
+            {
+                subscriber
+                    .runs
+                    .retain(|_, run| run.envelope.task_id != task_id || run.task_epoch != epoch);
+            }
+            self.abandon_undelivered_workspace_task(room, task_id, epoch, service)
+                .await?;
+            return Err("enrolled task stream closed before delivery".into());
+        }
+        Ok(Some(run_number))
+    }
+
     pub(super) async fn dispatch_queued_workspace_task(
         &self,
         room: &str,
@@ -375,6 +532,301 @@ impl CapnpBrokerState {
         };
         self.dispatch_live_workspace_task(room, task_id, service.as_ref())
             .await
+    }
+
+    pub(super) async fn install_enrolled_task_subscription(
+        self: &Arc<Self>,
+        peer: u64,
+        agent: String,
+        facts: launcher::managed::ChannelProcessFacts,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<runtime_collab::EnrolledTaskEnvelope>, String>
+    {
+        let room = facts.binding.room.clone();
+        self.services
+            .workspace_tasks
+            .clone()
+            .filter(|service| service.requires_room(&room))
+            .ok_or("native task owner unavailable")?;
+        if self.managed_agent_facts(peer, &room, &agent)? != facts {
+            return Err("managed process facts changed before subscription".into());
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.enrolled_task_subscribers
+            .lock()
+            .map_err(|_| "enrolled task subscription registry unavailable")?
+            .insert(
+                peer,
+                super::EnrolledTaskSubscription {
+                    agent_id: agent.clone(),
+                    cluster_id: room.clone(),
+                    facts,
+                    tx,
+                    runs: std::collections::HashMap::new(),
+                },
+            );
+        if let Err(error) = self.dispatch_queued_workspace_task(&room, &agent).await {
+            if let Ok(mut subscribers) = self.enrolled_task_subscribers.lock() {
+                subscribers.remove(&peer);
+            }
+            return Err(error);
+        }
+        Ok(rx)
+    }
+
+    pub(super) fn revalidate_enrolled_peer(&self, peer: u64) -> Result<(), String> {
+        let (room, agent, facts) = self
+            .enrolled_task_subscribers
+            .lock()
+            .map_err(|_| "enrolled task subscription registry unavailable")?
+            .get(&peer)
+            .map(|subscriber| {
+                (
+                    subscriber.cluster_id.clone(),
+                    subscriber.agent_id.clone(),
+                    subscriber.facts.clone(),
+                )
+            })
+            .ok_or("enrolled task subscription closed")?;
+        if self.managed_agent_facts(peer, &room, &agent)? != facts {
+            return Err("managed process facts changed".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn close_enrolled_subscription(&self, peer: u64) {
+        if let Ok(mut subscribers) = self.enrolled_task_subscribers.lock() {
+            subscribers.remove(&peer);
+        }
+    }
+
+    pub(crate) async fn abandon_managed_agent_tasks(
+        self: &std::sync::Arc<Self>,
+        room: &str,
+        agent: &str,
+        launch: &str,
+    ) -> Result<(), String> {
+        let (peer, tasks) = {
+            let subscribers = self
+                .enrolled_task_subscribers
+                .lock()
+                .map_err(|_| "enrolled task subscription registry unavailable")?;
+            let (peer, subscriber) = subscribers
+                .iter()
+                .find(|(_, subscriber)| {
+                    subscriber.cluster_id == room
+                        && subscriber.agent_id == agent
+                        && subscriber.facts.binding.launch == launch
+                })
+                .ok_or("managed Agent launch has no enrolled subscription")?;
+            let tasks = subscriber
+                .runs
+                .values()
+                .filter(|run| !run.reports.values().any(is_terminal_update))
+                .map(|run| (run.envelope.task_id.clone(), run.task_epoch))
+                .collect::<Vec<_>>();
+            let peer = *peer;
+            drop(subscribers);
+            (peer, tasks)
+        };
+        let service = self
+            .services
+            .workspace_tasks
+            .as_ref()
+            .filter(|service| service.requires_room(room))
+            .ok_or("native task owner unavailable")?;
+        for (task, epoch) in tasks {
+            self.abandon_undelivered_workspace_task(room, &task, epoch, service.as_ref())
+                .await?;
+        }
+        self.close_enrolled_subscription(peer);
+        if let Ok(mut pending) = self.pending_task_runs.lock() {
+            pending.retain(|_, run| run.peer_id != peer);
+        }
+        Ok(())
+    }
+
+    pub(super) fn accept_enrolled_task(
+        &self,
+        peer: u64,
+        acceptance: &runtime_collab::EnrolledTaskAcceptance,
+    ) -> Result<(), String> {
+        self.revalidate_enrolled_peer(peer)?;
+        let (room, agent, envelope, epoch) = {
+            let subscribers = self
+                .enrolled_task_subscribers
+                .lock()
+                .map_err(|_| "enrolled task subscription registry unavailable")?;
+            let subscriber = subscribers
+                .get(&peer)
+                .ok_or("enrolled task subscription closed")?;
+            let run = subscriber
+                .runs
+                .get(&acceptance.message_id)
+                .ok_or("enrolled acceptance names an undelivered task")?;
+            if !acceptance.matches(&run.envelope) {
+                return Err("enrolled acceptance changed its delivered binding".into());
+            }
+            if run
+                .acceptance
+                .as_ref()
+                .is_some_and(|prior| prior != acceptance)
+            {
+                return Err("enrolled task was already accepted differently".into());
+            }
+            let retained = (
+                subscriber.cluster_id.clone(),
+                subscriber.agent_id.clone(),
+                run.envelope.clone(),
+                run.task_epoch,
+            );
+            drop(subscribers);
+            retained
+        };
+        let service = self
+            .services
+            .workspace_tasks
+            .as_ref()
+            .filter(|service| service.requires_room(&room))
+            .ok_or("native task owner unavailable")?;
+        let snapshot = checked_snapshot(service.as_ref(), &room)?;
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == envelope.task_id)
+            .ok_or("accepted enrolled task no longer exists")?;
+        let active = snapshot
+            .controls
+            .get(&task.id)
+            .and_then(|control| control.active_run.as_ref())
+            .filter(|active| active.epoch == epoch && active.agent_id == agent)
+            .ok_or("accepted enrolled task run is stale")?;
+        let pending = super::PendingTaskRun {
+            peer_id: peer,
+            agent_id: agent,
+            cluster_id: room,
+            task_id: task.id.clone(),
+            lease: envelope.task.lease.clone(),
+            action_context: serde_json::from_value(envelope.task.action_context.clone())
+                .map_err(|error| error.to_string())?,
+            task_epoch: Some(active.epoch),
+            terminal: false,
+        };
+        let mut pending_runs = self
+            .pending_task_runs
+            .lock()
+            .map_err(|_| "task run registry unavailable")?;
+        if let Some(prior) = pending_runs.get(&envelope.task.run_id) {
+            if prior.peer_id != peer
+                || prior.task_id != envelope.task_id
+                || prior.task_epoch != Some(epoch)
+            {
+                return Err("enrolled task run identity collided".into());
+            }
+        } else {
+            pending_runs.insert(envelope.task.run_id, pending);
+        }
+        drop(pending_runs);
+        let mut subscribers = self
+            .enrolled_task_subscribers
+            .lock()
+            .map_err(|_| "enrolled task subscription registry unavailable")?;
+        let run = subscribers
+            .get_mut(&peer)
+            .and_then(|subscriber| subscriber.runs.get_mut(&acceptance.message_id))
+            .ok_or("enrolled acceptance lost its retained delivery")?;
+        if run.acceptance.as_ref() == Some(acceptance) {
+            return Ok(());
+        }
+        if run.acceptance.is_some() {
+            return Err("enrolled acceptance raced another call".into());
+        }
+        run.acceptance = Some(acceptance.clone());
+        drop(subscribers);
+        Ok(())
+    }
+
+    pub(super) async fn report_enrolled_task(
+        self: &Arc<Self>,
+        peer: u64,
+        acceptance: runtime_collab::EnrolledTaskAcceptance,
+        sequence: u64,
+        update: runtime_collab::TaskRunUpdate,
+    ) -> Result<(), String> {
+        if sequence == 0 {
+            return Err("enrolled task report sequence is zero".into());
+        }
+        // Validation, durable owner mutation and local receipt retention are
+        // one serialized turn. Two RPCs must not both pass the same frontier
+        // and mutate the owner before either report becomes observable here.
+        let _turn = self.enrolled_report_order.lock().await;
+        self.revalidate_enrolled_peer(peer)?;
+        let (envelope, epoch) = {
+            let subscribers = self
+                .enrolled_task_subscribers
+                .lock()
+                .map_err(|_| "enrolled task subscription registry unavailable")?;
+            let run = subscribers
+                .get(&peer)
+                .and_then(|subscriber| subscriber.runs.get(&acceptance.message_id))
+                .ok_or("enrolled report names an undelivered task")?;
+            if run.acceptance.as_ref() != Some(&acceptance) || !acceptance.matches(&run.envelope) {
+                return Err("enrolled report changed its acceptance binding".into());
+            }
+            if let Some(prior) = run.reports.get(&sequence) {
+                return if prior == &update {
+                    Ok(())
+                } else {
+                    Err("enrolled report sequence was reused differently".into())
+                };
+            }
+            if sequence != run.report_sequence.saturating_add(1) {
+                return Err("enrolled report sequence is not contiguous".into());
+            }
+            let terminal = is_terminal_update(&update);
+            if run.reports.len()
+                >= MAX_ENROLLED_REPORTS_PER_RUN.saturating_sub(usize::from(!terminal))
+            {
+                return Err("enrolled task report capacity exhausted".into());
+            }
+            let retained = (run.envelope.clone(), run.task_epoch);
+            drop(subscribers);
+            retained
+        };
+        let pending = self
+            .pending_task_runs
+            .lock()
+            .map_err(|_| "task run registry unavailable")?
+            .get(&envelope.task.run_id)
+            .cloned()
+            .filter(|run| run.peer_id == peer && run.task_epoch == Some(epoch))
+            .ok_or("accepted enrolled task run disappeared")?;
+        self.record_owner_task_run_update(envelope.task.run_id, &pending, update.clone())
+            .await?;
+        let terminal_target = {
+            let mut subscribers = self
+                .enrolled_task_subscribers
+                .lock()
+                .map_err(|_| "enrolled task subscription registry unavailable")?;
+            let subscriber = subscribers
+                .get_mut(&peer)
+                .ok_or("enrolled task subscription closed")?;
+            let run = subscriber
+                .runs
+                .get_mut(&acceptance.message_id)
+                .ok_or("enrolled report lost its retained run")?;
+            run.reports.insert(sequence, update.clone());
+            run.report_sequence = sequence;
+            let target = is_terminal_update(&update)
+                .then(|| (subscriber.cluster_id.clone(), subscriber.agent_id.clone()));
+            drop(subscribers);
+            target
+        };
+        if let Some((room, agent)) = terminal_target
+            && let Err(error) = self.dispatch_queued_workspace_task(&room, &agent).await
+        {
+            tracing::warn!(%error, "queued enrolled task delivery deferred");
+        }
+        Ok(())
     }
 
     fn live_task_subscriber(
@@ -634,6 +1086,101 @@ impl CapnpBrokerState {
         }
         Ok(())
     }
+}
+
+async fn start_owner_task_run(
+    room: &str,
+    task_id: &str,
+    agent: &str,
+    epoch: u64,
+    service: &dyn crate::services::WorkspaceTasks,
+) -> Result<
+    (
+        tilo_desktop_model::WorkspaceTask,
+        tilo_desktop_model::WorkspaceTaskControl,
+    ),
+    String,
+> {
+    let request = OwnerCommitRequest {
+        room: room.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: run_invocation(room, task_id, epoch),
+            authority: WorkspaceTaskAuthority::Host {
+                attestor: service.host_certificate(room)?,
+            },
+            command: WorkspaceTaskCommand::StartRun {
+                task_id: task_id.into(),
+                agent_id: agent.into(),
+            },
+        },
+    };
+    let receipt = service.execute(request.clone()).await?;
+    receipt.validate_for(&request)?;
+    let snapshot = checked_snapshot(service, room)?;
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .cloned()
+        .ok_or("started task disappeared")?;
+    let control = snapshot
+        .controls
+        .get(task_id)
+        .cloned()
+        .ok_or("started task has no owner control")?;
+    Ok((task, control))
+}
+
+fn enrolled_task_envelope(
+    facts: &launcher::managed::ChannelProcessFacts,
+    room: &str,
+    task: &tilo_desktop_model::WorkspaceTask,
+    control: &tilo_desktop_model::WorkspaceTaskControl,
+    agent: &str,
+    epoch: u64,
+) -> Result<runtime_collab::EnrolledTaskEnvelope, String> {
+    let epoch_label = epoch.to_string();
+    let envelope = runtime_collab::EnrolledTaskEnvelope {
+        version: 1,
+        message_id: enrolled_label(
+            b"tilo/enrolled-task-message/v1",
+            &[room, &task.id, &epoch_label],
+        ),
+        task_id: task.id.clone(),
+        run_id: format!("run-{epoch}"),
+        launch_id: facts.binding.launch.clone(),
+        runtime_epoch: facts.runtime.runtime_epoch.clone(),
+        recipient_agent: agent.into(),
+        channel_lease: facts.channel_id.clone(),
+        task: runtime_collab::TaskRunEnvelope {
+            version: 1,
+            task_id: task.id.clone(),
+            title: task.title.clone(),
+            instruction: control.instruction.clone(),
+            run_id: enrolled_run_number(room, &task.id, epoch),
+            lease: enrolled_label(
+                b"tilo/enrolled-task-lease/v1",
+                &[&facts.channel_id, &task.id, &epoch_label],
+            ),
+            planning: task_run_planning(task.route)?,
+            action_context: serde_json::to_value(enrolled_task_action_context(task))
+                .map_err(|error| error.to_string())?,
+        },
+        history: None,
+    };
+    envelope.validate()?;
+    Ok(envelope)
+}
+
+/// A managed task already carries its complete private instruction in the
+/// owner-admitted envelope. Its action context is only an opaque correlation
+/// key: copying the display title into `purpose` or `group.label` both leaks
+/// private task text into later action attribution and violates the Agent's
+/// enrolled-input contract.
+fn enrolled_task_action_context(
+    task: &tilo_desktop_model::WorkspaceTask,
+) -> tilo_actions::ActionContext {
+    tilo_actions::ActionContext::default().with_group(&task.id, &task.id, "task")
 }
 
 fn require_retained_task_instruction(
@@ -938,6 +1485,10 @@ fn read_current_tasks(
                         | tilo_desktop_model::WorkspaceTaskStatus::Waiting
                 )
         })
+        .collect::<Vec<_>>();
+    pending.sort_by_key(|task| (task.created_at, task.id.as_str()));
+    let mut pending = pending
+        .into_iter()
         .map(|task| {
             serde_json::json!({
                 "task_id": task.id,
@@ -948,7 +1499,6 @@ fn read_current_tasks(
             })
         })
         .collect::<Vec<_>>();
-    pending.sort_by(|left, right| left["task_id"].as_str().cmp(&right["task_id"].as_str()));
     let pending_total =
         u64::try_from(pending.len()).map_err(|_| "pending task count exceeds u64")?;
     let pending_complete = pending.len() <= MAX_CURRENT_TASK_FRONTIERS;
@@ -1211,6 +1761,29 @@ mod tests {
         state: Arc<CapnpBrokerState>,
         receiver: tokio::sync::mpsc::UnboundedReceiver<super::super::TaskRunEnvelope>,
         caller: tilo_user_identity::DeviceCert,
+    }
+
+    #[test]
+    fn enrolled_task_context_is_opaque_and_exactly_correlated() {
+        let mut task = task("task:opaque-1", "scribe");
+        task.title = "private task title".into();
+        let context = enrolled_task_action_context(&task);
+        assert!(context.purpose.is_none());
+        assert!(context.resource.is_none());
+        assert!(context.app.is_none());
+        assert_eq!(
+            context.group,
+            Some(tilo_actions::ActionGroup {
+                id: "task:opaque-1".into(),
+                label: "task:opaque-1".into(),
+                kind: "task".into(),
+            })
+        );
+        assert!(
+            !serde_json::to_string(&context)
+                .unwrap()
+                .contains("private task title")
+        );
     }
 
     impl crate::services::WorkspaceTasks for ReadOnlyTasks {
@@ -1551,6 +2124,45 @@ mod tests {
         let encoded = result.to_string();
         assert!(!encoded.contains("never publish"));
         assert!(!encoded.contains("other agent"));
+    }
+
+    #[test]
+    fn owner_pending_projection_preserves_execution_fifo_and_waiting_state() {
+        let mut later_lexically_first = task("task:a-later", "scribe");
+        later_lexically_first.created_at = 30;
+        let mut waiting = task("task:m-waiting", "scribe");
+        waiting.created_at = 20;
+        waiting.status = tilo_desktop_model::WorkspaceTaskStatus::Waiting;
+        let mut first_lexically_last = task("task:z-first", "scribe");
+        first_lexically_last.created_at = 10;
+        let service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
+            room: "room-a".into(),
+            generation: 8,
+            tasks: vec![later_lexically_first, waiting, first_lexically_last],
+            controls: std::collections::BTreeMap::new(),
+        });
+
+        let result = read_current_tasks(
+            "room-a",
+            &envelope(
+                COLLECTION,
+                "read-current-tasks",
+                Some(serde_json::json!({"agent": "scribe"})),
+            ),
+            &service,
+        )
+        .unwrap();
+
+        let pending = result["pending"].as_array().unwrap();
+        assert_eq!(pending[0]["task_id"], "task:z-first");
+        assert_eq!(pending[0]["status"], "queued");
+        assert_eq!(pending[1]["task_id"], "task:m-waiting");
+        assert_eq!(pending[1]["status"], "waiting");
+        assert_eq!(pending[2]["task_id"], "task:a-later");
+        assert_eq!(
+            next_queued_task(&service.0.tasks, "scribe"),
+            Some("task:z-first")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

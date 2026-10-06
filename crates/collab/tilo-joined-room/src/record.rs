@@ -54,6 +54,12 @@ pub(crate) struct StoredRoom {
     /// Outgoing publication state; required on every committed room record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<crate::publication::StoredPublication>,
+    /// Private host launch custody, never part of the replicated room document.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_sessions: BTreeMap<String, crate::agent_session::StoredAgentSession>,
+    /// Content-addressed immutable claims for retired launch UUIDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_history_root: Option<[u8; 32]>,
     /// Original person membership command outcomes, private to the owning host.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub workspace_memberships:

@@ -160,3 +160,66 @@ fn access_evaluates_long_routes_and_refuses_unknown_devices() {
         old_document(&peer, [0x77; 32], "a", "b", now)
     );
 }
+
+#[test]
+fn agent_record_read_uses_only_its_exact_current_governed_capability() {
+    const AGENT: &str = "scribe";
+    const APP: &str = "so.tilo.chat";
+    const RECORD: &str = "";
+    let (mut peer, device, now) = fixture(Verb::Read);
+    let exact = collab_types::document_artifact_id(APP, peer.room(), RECORD);
+    let room = peer.core.room_doc.as_mut().unwrap();
+    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let grant = CapOverride::grant(
+        Subject::agent(AGENT),
+        Scope::ResourceInstance(exact),
+        Verb::Read,
+    );
+    room.put(
+        &caps,
+        "agent-document-read",
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
+    )
+    .unwrap();
+    room.commit();
+
+    assert!(
+        peer.check_agent_document_read(AGENT, APP, RECORD, now)
+            .is_ok()
+    );
+    assert!(
+        peer.check_agent_document_read(AGENT, APP, "somebody-else", now)
+            .is_err()
+    );
+    assert!(peer.check_document_read(device, APP, RECORD, now).is_ok());
+
+    let bytes = peer.durable().unwrap();
+    let restored = BoundedStatePeer::restore(
+        &bytes,
+        peer.room(),
+        peer.authority(),
+        &[],
+        &RevocationList::new(),
+        now,
+        &PeerLimits::default(),
+    )
+    .unwrap();
+    assert!(
+        restored
+            .read()
+            .agent_document_read_allowed(AGENT, APP, RECORD, now)
+    );
+
+    let room = peer.core.room_doc.as_mut().unwrap();
+    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
+    room.delete(&caps, "agent-document-read").unwrap();
+    room.commit();
+    assert!(
+        peer.check_agent_document_read(AGENT, APP, RECORD, now)
+            .is_err()
+    );
+    assert!(
+        peer.check_document_read(device, APP, RECORD, now).is_ok(),
+        "revoking the Agent must not revoke the independently admitted Person"
+    );
+}

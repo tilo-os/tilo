@@ -402,6 +402,8 @@ impl NativeWorkspaceOwner {
             continuity: 0,
             floor: None,
             publication: Some(publication::StoredPublication::default()),
+            agent_sessions: std::collections::BTreeMap::new(),
+            agent_session_history_root: None,
             workspace_memberships: std::collections::BTreeMap::new(),
             effect_receipts: std::collections::BTreeMap::new(),
             effect_history_root: None,

@@ -4,16 +4,16 @@ use super::{
     decide_capability, now_secs,
 };
 
-pub(in crate::state) fn document_read(
-    role: Role,
+fn document_read_for_actor(
+    actor: &Actor,
     caps: &[CapOverride],
-    person: &str,
     room: &str,
     app: &str,
     record: &str,
     now: SystemTime,
 ) -> bool {
-    let actor = Actor::person(Some(role), person)
+    let actor = actor
+        .clone()
         .with_principal(Principal::App(app.into()))
         .in_room(room.to_owned());
     let resource = ResourceRef::Artifact {
@@ -23,6 +23,34 @@ pub(in crate::state) fn document_read(
     };
     decide_capability(&actor, &resource, Verb::Read, caps, Some(now_secs(now)))
         == CapDecision::Allow
+}
+pub(in crate::state) fn document_read(
+    role: Role,
+    caps: &[CapOverride],
+    person: &str,
+    room: &str,
+    app: &str,
+    record: &str,
+    now: SystemTime,
+) -> bool {
+    document_read_for_actor(
+        &Actor::person(Some(role), person),
+        caps,
+        room,
+        app,
+        record,
+        now,
+    )
+}
+pub(in crate::state) fn agent_document_read(
+    caps: &[CapOverride],
+    agent: &str,
+    room: &str,
+    app: &str,
+    record: &str,
+    now: SystemTime,
+) -> bool {
+    document_read_for_actor(&Actor::agent(agent), caps, room, app, record, now)
 }
 pub(in crate::state) fn room(
     role: Role,

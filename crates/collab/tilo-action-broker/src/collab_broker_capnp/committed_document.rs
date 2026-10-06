@@ -13,6 +13,7 @@ use runtime_collab::committed_document::{
 pub struct NativeDocumentReadContext {
     route: CrdtRoute,
     certificate: tilo_user_identity::DeviceCert,
+    agent_id: Option<String>,
     record_kind: Option<String>,
     creation: Option<crate::services::ApplicationCreationEvidence>,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
@@ -34,6 +35,9 @@ impl NativeDocumentReadContext {
     }
     pub fn certificate(&self) -> &tilo_user_identity::DeviceCert {
         &self.certificate
+    }
+    pub fn agent_id(&self) -> Option<&str> {
+        self.agent_id.as_deref()
     }
     pub fn record_kind(&self) -> Option<&str> {
         self.record_kind.as_deref()
@@ -234,6 +238,7 @@ impl CapnpChannelHandle {
     pub(super) fn document_read_context(&self) -> Result<NativeDocumentReadContext, String> {
         let route = self.route();
         let admitted = self.verified_identity.clone();
+        let agent_id = admitted.agent_id.clone();
         let certificate = admitted
             .certificate
             .clone()
@@ -254,7 +259,11 @@ impl CapnpChannelHandle {
             if !state.is_accepting() {
                 return Err("committed read broker stopped".into());
             }
-            if let Some(scope) = &admitted.host_scope {
+            if admitted.managed_peer.is_some() {
+                state
+                    .revalidate_admission(&checked_route, &admitted)
+                    .map_err(|_| "committed read admission ended".to_string())?;
+            } else if let Some(scope) = &admitted.host_scope {
                 if !state.is_current_host_worker(peer, &checked_route, &scope.certificate)? {
                     return Err("committed read worker ended".into());
                 }
@@ -270,14 +279,19 @@ impl CapnpChannelHandle {
                     return Err("committed read launcher custody ended".into());
                 }
             }
-            state
-                .revalidate_admission(&checked_route, &admitted)
-                .map(|_| ())
-                .map_err(|_| "committed read admission ended".into())
+            if admitted.managed_peer.is_none() {
+                state
+                    .revalidate_admission(&checked_route, &admitted)
+                    .map(|_| ())
+                    .map_err(|_| "committed read admission ended".into())
+            } else {
+                Ok(())
+            }
         });
         let context = NativeDocumentReadContext {
             route,
             certificate,
+            agent_id,
             record_kind: self.record_kind.clone(),
             creation,
             revalidate,
@@ -286,6 +300,19 @@ impl CapnpChannelHandle {
         Ok(context)
     }
     pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
+        let route = self.route();
+        if matches!(request, Request::Open { .. })
+            && route.app_id == "so.tilo.agent"
+            && route.record_id.is_empty()
+            && self.verified_identity.agent_id.is_some()
+            && self.verified_identity.managed_peer.is_some()
+        {
+            self.state
+                .revalidate_admission(&route, &self.verified_identity)
+                .map_err(|_| "managed documentless route admission ended".to_string())?;
+            tracing::info!("managed Agent documentless route revalidated");
+            return Ok(Reply::Documentless);
+        }
         let required = self
             .state
             .services

@@ -151,6 +151,8 @@ pub struct BrokerHandle {
     /// End-to-end encryption of this device's collaboration channels.
     channel_encryption: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
     peer_departures: Option<Arc<crate::shell::network::PeerDepartureHistory>>,
+    #[cfg(target_os = "linux")]
+    _native_agents: Option<Arc<super::broker_services::agent_runtime::NativeAgentRuntime>>,
 }
 
 impl std::ops::Deref for BrokerHandle {
@@ -719,6 +721,16 @@ fn spawn_inner(
     });
 
     let local_session = crate::shell::collab_broker_capnp::LocalSessionAuthority::new();
+    #[cfg(target_os = "linux")]
+    let (mut services, native_agents) = if config.is_none() {
+        super::broker_services::native_services_with_agent_runtime(
+            membership.clone(),
+            peer_sync.cloned(),
+        )
+    } else {
+        (tilo_action_broker::services::HostServices::default(), None)
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut services = if config.is_none() {
         super::broker_services::native_services(membership.clone(), peer_sync.cloned())
     } else {
@@ -799,6 +811,13 @@ fn spawn_inner(
             )?
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Some(runtime) = &native_agents {
+        let facade = inner
+            .app_action_broker()
+            .ok_or_else(|| std::io::Error::other("native Agent broker unavailable"))?;
+        runtime.attach(&facade).map_err(std::io::Error::other)?;
+    }
     if let (Some(network), Some(tree), Some(broker)) =
         (peer_sync, membership, inner.app_action_broker())
         && let Ok((queue, host)) = broker.peer_action_attachment()
@@ -826,6 +845,8 @@ fn spawn_inner(
         mls_authority,
         channel_encryption,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
+        #[cfg(target_os = "linux")]
+        _native_agents: native_agents,
     })
 }
 

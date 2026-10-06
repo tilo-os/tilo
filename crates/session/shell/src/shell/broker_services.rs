@@ -3,6 +3,8 @@
 use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
+pub(crate) mod agent_runtime;
+#[cfg(target_os = "linux")]
 mod airdrop_transfer;
 mod committed_document;
 #[cfg(test)]
@@ -26,6 +28,8 @@ pub(crate) struct NativeOwnerCommitService {
     tree: WorkspaceTreeHandle,
     owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    #[cfg(target_os = "linux")]
+    agent_runtime: std::sync::OnceLock<std::sync::Weak<agent_runtime::NativeAgentRuntime>>,
 }
 impl NativeOwnerCommitService {
     pub(crate) fn new(
@@ -47,7 +51,19 @@ impl NativeOwnerCommitService {
             tree,
             owner,
             network,
+            #[cfg(target_os = "linux")]
+            agent_runtime: std::sync::OnceLock::new(),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn attach_agent_runtime(
+        &self,
+        runtime: &Arc<agent_runtime::NativeAgentRuntime>,
+    ) -> Result<(), String> {
+        self.agent_runtime
+            .set(Arc::downgrade(runtime))
+            .map_err(|_| "native Agent runtime already attached".into())
     }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
@@ -157,17 +173,21 @@ impl NativeOwnerCommitService {
                 return Err("Agent startup requires the governing owner".into());
             }
         }
-        let workspace = self
-            .tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room == room_id)
-            .cloned()
-            .ok_or("native Agent workspace disappeared")?;
-        super::launcher::launch_certified_workspace_agent(agent, &workspace, owner, caller)
-            .map(|_| ())
+        owner.with_current(room_id, |view| {
+            view.peer()
+                .check_workspace_agent_start(caller, agent, std::time::SystemTime::now())
+        })?;
+        #[cfg(target_os = "linux")]
+        {
+            return self
+                .agent_runtime
+                .get()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or("native Agent runtime unavailable")?
+                .start(room, agent, caller);
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err("managed Agent startup requires Linux".into())
     }
 }
 
@@ -1439,17 +1459,39 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
     }
 }
+#[cfg(not(target_os = "linux"))]
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
 ) -> HostServices {
-    let committed_documents = membership.as_ref().map(|tree| {
-        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
-            as Arc<dyn NativeDocumentReads>
+    native_services_with_agent_runtime(membership, network).0
+}
+
+pub(crate) fn native_services_with_agent_runtime(
+    membership: Option<WorkspaceTreeHandle>,
+    network: Option<Arc<super::network::ShellNetwork>>,
+) -> (HostServices, Option<Arc<agent_runtime::NativeAgentRuntime>>) {
+    let owner = membership
+        .as_ref()
+        .map(|tree| Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone())));
+    #[cfg(target_os = "linux")]
+    let agent_runtime = owner.as_ref().and_then(|owner| {
+        let runtime = Arc::new(agent_runtime::NativeAgentRuntime::new(owner.clone()));
+        match owner.attach_agent_runtime(&runtime) {
+            Ok(()) => Some(runtime),
+            Err(error) => {
+                tracing::error!(%error, "native Agent runtime attachment refused");
+                None
+            }
+        }
     });
-    let workspace_memberships = membership.as_ref().map(|tree| {
-        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
-            as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
+    #[cfg(not(target_os = "linux"))]
+    let agent_runtime = None;
+    let committed_documents = owner
+        .as_ref()
+        .map(|service| service.clone() as Arc<dyn NativeDocumentReads>);
+    let workspace_memberships = owner.as_ref().map(|service| {
+        service.clone() as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
     });
     let resource_views = membership
         .as_ref()
@@ -1463,10 +1505,10 @@ pub fn native_services(
                 network: network.clone(),
             }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
         });
-    let workspace_tasks = membership.as_ref().map(|tree| {
-        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
-            as Arc<dyn WorkspaceTasks>
-    });
+    let workspace_tasks = owner
+        .as_ref()
+        .map(|service| service.clone() as Arc<dyn WorkspaceTasks>);
+    drop(owner);
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
             as Arc<dyn WorkspaceGovernanceServices>
@@ -1485,8 +1527,9 @@ pub fn native_services(
         Arc::new(NativeAppActionGrants(tree.clone()))
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
-    let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
-    HostServices {
+    let launcher: Arc<dyn tilo_action_broker::services::LauncherServices> =
+        Arc::new(NativeLauncher(membership.clone(), network.clone()));
+    let services = HostServices {
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
         committed_documents,
@@ -1520,7 +1563,8 @@ pub fn native_services(
         settings: settings_store::installed_source(),
         live_activities: Some(super::live_activities::board()),
         ..Default::default()
-    }
+    };
+    (services, agent_runtime)
 }
 
 /// Where this session keeps closed apps' launchable actions. Unit tests

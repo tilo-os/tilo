@@ -345,6 +345,47 @@ impl AppActionBroker {
     pub fn downgrade(&self) -> WeakAppActionBroker {
         WeakAppActionBroker(Arc::new(WeakBrokerDiscovery(Arc::downgrade(&self.state))))
     }
+
+    /// Adopt the exact private collaboration descriptor proven by the
+    /// installed managed launcher. Descriptive launch JSON cannot enter this
+    /// boundary.
+    ///
+    /// # Errors
+    ///
+    /// The process, certificate, room membership, or broker lifetime changed.
+    pub fn adopt_managed_connection(
+        &self,
+        connection: launcher::managed::AdmittedManagedConnection,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        self.state
+            .while_live(|state| state.adopt_managed_connection(connection, certificate))
+    }
+
+    /// Whether the exact launcher-owned process has authenticated its enrolled
+    /// task subscription. This is readiness observation, never authority.
+    #[must_use]
+    pub fn managed_agent_session_is_ready(&self, room: &str, agent: &str, launch: &str) -> bool {
+        self.state
+            .while_live(|state| Ok(state.managed_agent_session_is_ready(room, agent, launch)))
+            .unwrap_or(false)
+    }
+
+    /// Release active owner epochs retained for one exact managed launch.
+    ///
+    /// # Errors
+    /// Owner continuity or the retained launch binding changed.
+    pub async fn abandon_managed_agent_tasks(
+        &self,
+        room: &str,
+        agent: &str,
+        launch: &str,
+    ) -> Result<(), String> {
+        self.state.while_live(|_| Ok(()))?;
+        self.state
+            .abandon_managed_agent_tasks(room, agent, launch)
+            .await
+    }
     /// Invoke one closed native workspace-membership command as the retained
     /// certified person. The owner still rechecks current Admin authority.
     ///

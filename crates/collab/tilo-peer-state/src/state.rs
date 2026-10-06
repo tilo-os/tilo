@@ -1152,6 +1152,29 @@ impl StatePeer {
         }
         Ok(())
     }
+    /// Read permission for an exact canonical record as the named Agent.
+    ///
+    /// Unlike a person read, this has no device role or launcher authority.
+    /// The Agent must hold its own live governed capability in this room.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if current governance does not let `agent` read the record.
+    pub fn check_agent_document_read(
+        &self,
+        agent: &str,
+        app: &str,
+        record: &str,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let (_, _, caps) = room::extract_governed_fields(
+            self.core.room_doc.as_deref().ok_or("missing governance")?,
+        );
+        if !backend::access::agent_document_read(&caps, agent, &self.core.room, app, record, now) {
+            return Err(format!("Agent record read forbidden: {app}/{record}"));
+        }
+        Ok(())
+    }
     pub fn has_governance(&self) -> bool {
         self.core.room_doc.is_some()
     }

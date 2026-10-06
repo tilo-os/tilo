@@ -79,8 +79,9 @@ use collab_types::{
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
     OpKind, action_catalogue_stream, action_directory, action_input, blob_stream, channel_handle,
-    collab_service, context_stream, invocation_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
+    collab_service, context_stream, enrolled_task_stream, invocation_stream, presence_event,
+    presence_handle, presence_payload, presence_stream, realtime_stream, scrollback_batch, stream,
+    task_run_stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -541,6 +542,11 @@ struct AdmittedJoinIdentity {
     /// Delegated agent principal for this channel. The certified device still
     /// proves which person launched it, while policy uses this revocable id.
     agent_id: Option<String>,
+    /// Set only after this connection's private descriptor is matched to the
+    /// launcher's live kernel-bound managed process and exact Agent route.
+    /// Every later policy check resolves this peer back through the retained
+    /// process registry; this is not a cached authority bit.
+    managed_peer: Option<u64>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -752,6 +758,7 @@ fn admit_verified_join_at(
             role,
             display_handle: None,
             agent_id: None,
+            managed_peer: None,
         });
     }
     let workspace = tree
@@ -777,6 +784,7 @@ fn admit_verified_join_at(
         role,
         display_handle: None,
         agent_id: None,
+        managed_peer: None,
     })
 }
 
@@ -1282,6 +1290,24 @@ struct TaskSubscription {
     agent_id: String,
     cluster_id: String,
     tx: mpsc::UnboundedSender<TaskRunEnvelope>,
+}
+
+#[derive(Clone)]
+struct EnrolledTaskSubscription {
+    agent_id: String,
+    cluster_id: String,
+    facts: launcher::managed::ChannelProcessFacts,
+    tx: mpsc::UnboundedSender<runtime_collab::EnrolledTaskEnvelope>,
+    runs: HashMap<String, EnrolledTaskRun>,
+}
+
+#[derive(Clone)]
+struct EnrolledTaskRun {
+    envelope: runtime_collab::EnrolledTaskEnvelope,
+    task_epoch: u64,
+    acceptance: Option<runtime_collab::EnrolledTaskAcceptance>,
+    report_sequence: u64,
+    reports: HashMap<u64, runtime_collab::TaskRunUpdate>,
 }
 
 #[derive(Clone, Debug)]
@@ -2736,6 +2762,18 @@ struct WorkerBinding {
     route: CrdtRoute,
     root: [u8; 32],
     device: [u8; 32],
+    /// Opaque kernel-bound managed process custody. Never accepted from a
+    /// channel request or reconstructed from descriptive launch labels.
+    managed: Option<launcher::managed::VerifiedManagedProcess>,
+}
+
+fn managed_process_route_matches(
+    binding: &launcher::managed::ManagedBinding,
+    route: &CrdtRoute,
+) -> bool {
+    route.cluster_id == binding.room
+        && route.record_id.is_empty()
+        && (route.app_id == binding.app || route.app_id == "so.tilo.chat")
 }
 struct PendingWorker {
     stream: std::os::unix::net::UnixStream,
@@ -2851,9 +2889,12 @@ pub struct CapnpBrokerState {
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
+    enrolled_task_subscribers: Mutex<HashMap<u64, EnrolledTaskSubscription>>,
+    managed_workers: Mutex<HashMap<u64, launcher::managed::VerifiedManagedProcess>>,
     /// Serialize delivery decisions through the owner acknowledgement. This is
     /// not execution authority: the owner still admits every exact `StartRun`.
     task_delivery_order: AsyncMutex<()>,
+    enrolled_report_order: AsyncMutex<()>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
     task_run_id: AtomicU64,
     invocation_id: AtomicU64,
@@ -3048,6 +3089,8 @@ impl CapnpBrokerState {
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
+        clear!(self.enrolled_task_subscribers);
+        clear!(self.managed_workers);
         clear!(self.pending_task_runs);
         clear!(self.workers);
         #[cfg(test)]
@@ -3101,6 +3144,111 @@ impl CapnpBrokerState {
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<std::os::unix::net::UnixStream, String> {
         self.connect_local_worker_registered(route, certificate, None)
+    }
+
+    /// Adopt the launcher's kernel-proven process and its already-connected
+    /// private collaboration descriptor. The child must still prove the exact
+    /// current certificate when joining its channel.
+    ///
+    /// # Errors
+    /// Refuses unhealthy owner state, changed process custody, an untrusted
+    /// certificate, stale Agent membership or a full worker admission queue.
+    pub fn adopt_managed_connection(
+        &self,
+        connection: launcher::managed::AdmittedManagedConnection,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        self.owner_health()?;
+        let facts = connection.process().facts()?;
+        facts.binding.validate()?;
+        let route = CrdtRoute::record(&facts.binding.app, &facts.binding.room, "");
+        let authority = self
+            .certificate_authority
+            .get()
+            .ok_or("current certificate authority unavailable")?;
+        let room =
+            uuid::Uuid::parse_str(&facts.binding.room).map_err(|_| "invalid managed room")?;
+        let host_scope = if certificate.capabilities.can_act_as_host {
+            authority.authorize_host_worker(&route, certificate)?;
+            Some(LocalHostWorkerScope {
+                route: route.clone(),
+                certificate: certificate.clone(),
+            })
+        } else {
+            authority.authorize_join(room, certificate)?;
+            None
+        };
+        let now = self.policy_now_ns()?;
+        tilo_user_identity::verify_device_cert_at(certificate, now)
+            .map_err(|_| "managed worker certificate rejected")?;
+        if !self.agent_is_active_member(&facts.binding.room, &facts.binding.agent)? {
+            return Err("managed agent is not a current workspace member".into());
+        }
+        let (process, stream) = connection.into_parts();
+        process.revalidate(&facts.binding, facts.process)?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|error| error.to_string())?;
+        let mut workers = self
+            .workers
+            .lock()
+            .map_err(|_| "worker admission unavailable")?;
+        if workers.len() >= 32 {
+            return Err("worker admission queue full".into());
+        }
+        workers.push(PendingWorker {
+            stream,
+            binding: WorkerBinding {
+                host_scope,
+                registration: None,
+                route,
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+                managed: Some(process),
+            },
+        });
+        drop(workers);
+        self.worker_admitted.notify_one();
+        Ok(())
+    }
+
+    fn agent_is_active_member(&self, room: &str, agent: &str) -> Result<bool, String> {
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or("current workspace authority unavailable")?;
+        let now = self.policy_now_ns()? / 1_000_000_000;
+        Ok(membership
+            .snapshot()?
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .and_then(|workspace| workspace.role_of_agent_at(agent, now))
+            .is_some_and(|role| role != collab_types::role::Role::Denied))
+    }
+
+    fn managed_agent_facts(
+        &self,
+        peer: u64,
+        room: &str,
+        agent: &str,
+    ) -> Result<launcher::managed::ChannelProcessFacts, String> {
+        let process = self
+            .managed_workers
+            .lock()
+            .map_err(|_| "managed worker registry unavailable")?
+            .get(&peer)
+            .cloned()
+            .ok_or("agent has no actual managed process custody")?;
+        let facts = process.facts()?;
+        if facts.binding.room != room
+            || facts.binding.agent != agent
+            || facts.binding.app != launcher::managed::WORKSPACE_AGENT_PACKAGE_ID
+            || !self.agent_is_active_member(room, agent)?
+        {
+            return Err("managed agent custody belongs to another current route".into());
+        }
+        Ok(facts)
     }
     fn connect_local_worker_registered(
         &self,
@@ -3162,6 +3310,7 @@ impl CapnpBrokerState {
                 route,
                 root: certificate.user_public_key,
                 device: certificate.device_public_key,
+                managed: None,
             },
         });
         drop(workers);
@@ -3620,7 +3769,10 @@ impl CapnpBrokerState {
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
+                enrolled_task_subscribers: Mutex::new(HashMap::new()),
+                managed_workers: Mutex::new(HashMap::new()),
                 task_delivery_order: AsyncMutex::new(()),
+                enrolled_report_order: AsyncMutex::new(()),
                 pending_task_runs: Mutex::new(HashMap::new()),
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(next_invocation),
@@ -5691,6 +5843,17 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.task_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
+        if let Ok(mut subscribers) = self.enrolled_task_subscribers.lock() {
+            subscribers.remove(&peer_id);
+        }
+        if let Ok(mut workers) = self.managed_workers.lock() {
+            workers.remove(&peer_id);
+        }
+        self.fail_disconnected_invocations(peer_id);
+        self.publish_action_catalogue();
+    }
+
+    fn fail_disconnected_invocations(&self, peer_id: u64) {
         if let Ok(mut pending) = self.pending_invocations.lock() {
             let ids = pending
                 .iter()
@@ -5747,7 +5910,6 @@ impl CapnpBrokerState {
                 }
             }
         }
-        self.publish_action_catalogue();
     }
 
     /// Stable authenticated actor id for native presence and interactions.
@@ -5773,7 +5935,7 @@ impl CapnpBrokerState {
                     || !cert.capabilities.can_act_as_host
                     || route != &scope.route
                     || cert != &scope.certificate
-                    || admitted.agent_id.is_some()
+                    || (admitted.agent_id.is_some() && admitted.managed_peer.is_none())
                 {
                     return Err(capnp::Error::failed(
                         "host worker scope no longer valid".into(),
@@ -5824,6 +5986,7 @@ impl CapnpBrokerState {
         current
             .worker_registration
             .clone_from(&admitted.worker_registration);
+        current.managed_peer = admitted.managed_peer;
         if let Some(agent_id) = &admitted.agent_id {
             admit_agent_delegation_at(
                 &membership.snapshot().map_err(capnp::Error::failed)?,
@@ -5837,6 +6000,20 @@ impl CapnpBrokerState {
                     "certified agent session is no longer admitted: {error}"
                 ))
             })?;
+            if let Some(peer) = admitted.managed_peer {
+                let facts = self
+                    .managed_agent_facts(peer, &route.cluster_id, agent_id)
+                    .map_err(capnp::Error::failed)?;
+                if !managed_process_route_matches(&facts.binding, route) {
+                    return Err(capnp::Error::failed(
+                        "managed process and current Agent route differ".into(),
+                    ));
+                }
+            } else if admitted.host_scope.is_some() {
+                return Err(capnp::Error::failed(
+                    "host worker cannot retain an Agent identity".into(),
+                ));
+            }
         } else {
             current.display_handle.clone_from(&admitted.display_handle);
         }
@@ -6602,6 +6779,24 @@ impl collab_service::Server for CapnpCollabService {
                 .to_owned();
             let identity = reader.get_identity()?;
             let route = CrdtRoute::from_channel_key(&channel_id);
+            let managed_process = self
+                .worker
+                .as_ref()
+                .and_then(|worker| worker.managed.as_ref());
+            let managed_facts = managed_process
+                .map(launcher::managed::VerifiedManagedProcess::facts)
+                .transpose()
+                .map_err(capnp::Error::failed)?;
+            let managed_route = managed_facts
+                .as_ref()
+                .is_some_and(|facts| managed_process_route_matches(&facts.binding, &route));
+            let mut host_scope = self
+                .worker
+                .as_ref()
+                .and_then(|worker| worker.host_scope.clone());
+            if managed_route && let Some(scope) = &mut host_scope {
+                scope.route.clone_from(&route);
+            }
             let mut verified_identity = verify_join_identity_with_host_scope(
                 &route,
                 identity,
@@ -6611,15 +6806,13 @@ impl collab_service::Server for CapnpCollabService {
                     .as_ref()
                     .map(|devices| devices.as_slice()),
                 state.certificate_authority.get().map(Arc::as_ref),
-                self.worker
-                    .as_ref()
-                    .and_then(|worker| worker.host_scope.as_ref()),
+                host_scope.as_ref(),
             )
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
             if let Some(worker) = &self.worker {
-                if route != worker.route
+                if (route != worker.route && !managed_route)
                     || verified_identity.verified.user_public_key != worker.root
                     || verified_identity.verified.device_public_key != worker.device
                 {
@@ -6653,6 +6846,7 @@ impl collab_service::Server for CapnpCollabService {
             if (verified_identity.host_scope.is_some()
                 || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
+                && managed_process.is_none()
             {
                 return Err(capnp::Error::failed(
                     "host worker cannot delegate an agent identity".into(),
@@ -6660,6 +6854,11 @@ impl collab_service::Server for CapnpCollabService {
             }
             match participant_kind {
                 "" | "person" => {
+                    if managed_process.is_some() {
+                        return Err(capnp::Error::failed(
+                            "managed agent process must join as its assigned agent".into(),
+                        ));
+                    }
                     // A Person handle is presentation, not its certified identity.
                     let participant_handle = participant_handle
                         .trim()
@@ -6702,12 +6901,45 @@ impl collab_service::Server for CapnpCollabService {
                     .map_err(|error| {
                         capnp::Error::failed(format!("agent collaboration join rejected: {error}"))
                     })?;
+                    if managed_process.is_some() {
+                        tracing::info!("managed Agent collaboration identity admitted");
+                    }
                 }
                 other => {
                     return Err(capnp::Error::failed(format!(
                         "unknown collaboration participant kind `{other}`"
                     )));
                 }
+            }
+            if let Some(process) = managed_process {
+                let facts = managed_facts.ok_or_else(|| {
+                    capnp::Error::failed("managed process facts unavailable".into())
+                })?;
+                if !managed_process_route_matches(&facts.binding, &route)
+                    || verified_identity.agent_id.as_deref() != Some(facts.binding.agent.as_str())
+                {
+                    return Err(capnp::Error::failed(
+                        "managed process and admitted agent route differ".into(),
+                    ));
+                }
+                let mut workers = state.managed_workers.lock().map_err(|_| {
+                    capnp::Error::failed("managed worker registry unavailable".into())
+                })?;
+                if let Some(existing) = workers.get(&peer_id) {
+                    if existing.facts().map_err(capnp::Error::failed)? != facts {
+                        return Err(capnp::Error::failed(
+                            "connection managed process custody changed".into(),
+                        ));
+                    }
+                } else {
+                    workers.insert(peer_id, process.clone());
+                }
+                drop(workers);
+                state
+                    .managed_agent_facts(peer_id, &route.cluster_id, &facts.binding.agent)
+                    .map_err(capnp::Error::failed)?;
+                verified_identity.managed_peer = Some(peer_id);
+                tracing::info!("managed Agent process route admitted");
             }
             tracing::info!(
                 target: "tilo_collab_probe",
@@ -8530,6 +8762,124 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
+    fn subscribe_enrolled_tasks(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeEnrolledTasksParams,
+        mut results: channel_handle::SubscribeEnrolledTasksResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let Some(agent) = current.agent_id else {
+            return Promise::err(capnp::Error::failed(
+                "only an admitted agent may subscribe to enrolled tasks".into(),
+            ));
+        };
+        let room = self.route().cluster_id;
+        let facts = match self.state.managed_agent_facts(self.peer_id, &room, &agent) {
+            Ok(facts) => facts,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let state = self.state.clone();
+        let peer = self.peer_id;
+        let host_guard = HostWorkerReadGuard::for_channel(&state, peer, &self.verified_identity);
+        Promise::from_future(async move {
+            let rx = state
+                .install_enrolled_task_subscription(peer, agent, facts)
+                .await
+                .map_err(capnp::Error::failed)?;
+            let client: enrolled_task_stream::Client =
+                capnp_rpc::new_client(EnrolledTaskStreamServer {
+                    state,
+                    peer,
+                    host_guard,
+                    rx: Rc::new(AsyncMutex::new(rx)),
+                });
+            results.get().set_stream(client);
+            Ok(())
+        })
+    }
+
+    fn accept_enrolled_task(
+        self: Rc<Self>,
+        params: channel_handle::AcceptEnrolledTaskParams,
+        _results: channel_handle::AcceptEnrolledTaskResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let acceptance = match params.get().and_then(|request| {
+            let json = request.get_acceptance_json()?.to_str()?;
+            if json.len() > 4096 {
+                return Err(capnp::Error::failed(
+                    "enrolled task acceptance too large".into(),
+                ));
+            }
+            serde_json::from_str(json)
+                .map_err(|error| capnp::Error::failed(format!("invalid acceptance: {error}")))
+        }) {
+            Ok(acceptance) => acceptance,
+            Err(error) => return Promise::err(error),
+        };
+        tracing::info!("managed Agent task acceptance received");
+        match self.state.accept_enrolled_task(self.peer_id, &acceptance) {
+            Ok(()) => {
+                tracing::info!("managed Agent task acceptance retained");
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
+
+    fn report_enrolled_task(
+        self: Rc<Self>,
+        params: channel_handle::ReportEnrolledTaskParams,
+        _results: channel_handle::ReportEnrolledTaskResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let (acceptance, sequence, update) = match params.get().and_then(|request| {
+            let acceptance = request.get_acceptance_json()?.to_str()?;
+            let update = request.get_update_json()?.to_str()?;
+            if acceptance.len() > 4096 || update.len() > 64 * 1024 {
+                return Err(capnp::Error::failed(
+                    "enrolled task report too large".into(),
+                ));
+            }
+            Ok((
+                serde_json::from_str(acceptance).map_err(|error| {
+                    capnp::Error::failed(format!("invalid acceptance: {error}"))
+                })?,
+                request.get_sequence(),
+                serde_json::from_str(update).map_err(|error| {
+                    capnp::Error::failed(format!("invalid enrolled update: {error}"))
+                })?,
+            ))
+        }) {
+            Ok(report) => report,
+            Err(error) => return Promise::err(error),
+        };
+        let state = self.state.clone();
+        let peer = self.peer_id;
+        Promise::from_future(async move {
+            state
+                .report_enrolled_task(peer, acceptance, sequence, update)
+                .await
+                .map_err(capnp::Error::failed)
+        })
+    }
+
     fn report_task_run(
         self: Rc<Self>,
         params: channel_handle::ReportTaskRunParams,
@@ -8910,23 +9260,43 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeActionCatalogueParams,
         mut results: channel_handle::SubscribeActionCatalogueResults,
     ) -> Promise<(), capnp::Error> {
+        let managed = self.verified_identity.managed_peer.is_some();
         if let Err(error) = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
         {
+            if managed {
+                tracing::warn!("managed Agent action catalogue revalidation refused");
+            }
             return Promise::err(error);
+        }
+        if managed {
+            tracing::info!("managed Agent action catalogue revalidated");
         }
         let cluster = self.route().cluster_id;
         let actor = self.verified_identity.broker_actor();
         let snapshot = self.state.action_catalogue_json_for(&cluster, &actor, None);
         let initial = match snapshot {
-            Ok(snapshot) => Arc::<str>::from(snapshot),
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
+            Ok(snapshot) => {
+                if managed {
+                    tracing::info!("managed Agent action catalogue snapshot prepared");
+                }
+                Arc::<str>::from(snapshot)
+            }
+            Err(error) => {
+                if managed {
+                    tracing::warn!("managed Agent action catalogue snapshot refused");
+                }
+                return Promise::err(capnp::Error::failed(error));
+            }
         };
         let (tx, rx) = watch::channel(Some(initial));
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
             subscribers.insert(self.peer_id, (cluster, actor, tx));
         } else {
+            if managed {
+                tracing::warn!("managed Agent action catalogue registry unavailable");
+            }
             return Promise::err(capnp::Error::failed(
                 "action catalogue subscriber registry unavailable".into(),
             ));
@@ -8941,6 +9311,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 reader: Rc::new(AsyncMutex::new(ActionCatalogueReader { rx, initial: true })),
             });
         results.get().set_stream(client);
+        if managed {
+            tracing::info!("managed Agent action catalogue stream created");
+        }
         Promise::ok(())
     }
 
@@ -10377,6 +10750,21 @@ impl HostWorkerReadGuard {
                 .host_scope
                 .as_ref()
                 .ok_or_else(|| capnp::Error::failed("host worker scope missing".into()))?;
+            if guard.identity.managed_peer.is_some() {
+                return match guard
+                    .state
+                    .revalidate_admission(&scope.route, &guard.identity)
+                {
+                    Ok(_) => {
+                        tracing::info!("managed Agent retained stream revalidated");
+                        Ok(())
+                    }
+                    Err(error) => {
+                        tracing::warn!("managed Agent retained stream revalidation refused");
+                        Err(error)
+                    }
+                };
+            }
             if !guard
                 .state
                 .is_current_host_worker(guard.peer_id, &scope.route, &scope.certificate)
@@ -10480,6 +10868,12 @@ struct InvocationStreamServer {
 struct TaskRunStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<TaskRunEnvelope>>>,
+}
+struct EnrolledTaskStreamServer {
+    state: Arc<CapnpBrokerState>,
+    peer: u64,
+    host_guard: Option<HostWorkerReadGuard>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<runtime_collab::EnrolledTaskEnvelope>>>,
 }
 
 struct ActionCatalogueStreamServer {
@@ -10591,6 +10985,53 @@ impl task_run_stream::Server for TaskRunStreamServer {
             };
             results.get().set_task_json(
                 &serde_json::to_string(&payload)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
+            );
+            Ok(())
+        })
+    }
+}
+
+impl enrolled_task_stream::Server for EnrolledTaskStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: enrolled_task_stream::ReadParams,
+        mut results: enrolled_task_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            let envelope = loop {
+                if let Err(error) = HostWorkerReadGuard::check(self.host_guard.as_ref()) {
+                    self.state.close_enrolled_subscription(self.peer);
+                    return Err(error);
+                }
+                if let Err(error) = self.state.revalidate_enrolled_peer(self.peer) {
+                    self.state.close_enrolled_subscription(self.peer);
+                    return Err(capnp::Error::failed(error));
+                }
+                let received = {
+                    let mut guard = rx.lock().await;
+                    tokio::time::timeout(Duration::from_millis(250), guard.recv()).await
+                };
+                match received {
+                    Ok(Some(envelope)) => {
+                        tracing::info!("managed Agent enrolled task stream delivered");
+                        break envelope;
+                    }
+                    Ok(None) => {
+                        return Err(capnp::Error::disconnected(
+                            "enrolled task stream closed".into(),
+                        ));
+                    }
+                    Err(_) => {}
+                }
+            };
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            self.state
+                .revalidate_enrolled_peer(self.peer)
+                .map_err(capnp::Error::failed)?;
+            results.get().set_task_json(
+                &serde_json::to_string(&envelope)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             );
             Ok(())
@@ -13062,6 +13503,7 @@ pub mod tests {
                     display_handle: None,
                     role: CapRole::Editor,
                     agent_id: None,
+                    managed_peer: None,
                 },
                 record_kind: None,
                 lease: None,
@@ -13956,6 +14398,34 @@ pub mod tests {
         assert!(!workspace_control_role_allowed(Role::Commenter));
         assert!(!workspace_control_role_allowed(Role::Viewer));
         assert!(!workspace_control_role_allowed(Role::Denied));
+    }
+
+    #[test]
+    fn managed_process_secondary_route_is_only_canonical_chat_in_the_exact_room() {
+        let room = uuid::Uuid::new_v4().to_string();
+        let binding = launcher::managed::ManagedBinding {
+            room: room.clone(),
+            app: launcher::managed::WORKSPACE_AGENT_PACKAGE_ID.into(),
+            agent: "scribe".into(),
+            scope: launcher::managed::ManagedLaunchScope::AgentSession,
+            launch: uuid::Uuid::new_v4().to_string(),
+            generation: 1,
+        };
+        assert!(managed_process_route_matches(
+            &binding,
+            &CrdtRoute::record(&binding.app, &room, "")
+        ));
+        assert!(managed_process_route_matches(
+            &binding,
+            &CrdtRoute::record("so.tilo.chat", &room, "")
+        ));
+        for refused in [
+            CrdtRoute::record("so.tilo.notes", &room, ""),
+            CrdtRoute::record("so.tilo.chat", &room, "thread"),
+            CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), ""),
+        ] {
+            assert!(!managed_process_route_matches(&binding, &refused));
+        }
     }
 
     #[cfg(test)]
@@ -17304,10 +17774,35 @@ mod host_worker_capacity_tests {
             display_handle: None,
             role: CapRole::Owner,
             agent_id: None,
+            managed_peer: None,
         }
     }
     fn retained(state: &CapnpBrokerState) -> usize {
         state.host_workers.lock().unwrap().len()
+    }
+
+    #[test]
+    fn retained_managed_stream_never_falls_back_to_an_ordinary_host_worker() {
+        let state = state();
+        let peer = 41;
+        let mut identity = host_worker(1);
+        identity.agent_id = Some("scribe".into());
+        identity.managed_peer = Some(peer);
+        state
+            .host_workers
+            .lock()
+            .unwrap()
+            .insert(peer, identity.clone());
+        let guard = HostWorkerReadGuard {
+            state,
+            peer_id: peer,
+            identity,
+        };
+
+        assert!(
+            HostWorkerReadGuard::check(Some(&guard)).is_err(),
+            "a retained managed stream must close when its managed process custody is gone, even if an ordinary host-worker entry still matches"
+        );
     }
 
     /// Repeated worker mounts (connect, then drop every connection) never

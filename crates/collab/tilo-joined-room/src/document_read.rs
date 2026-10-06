@@ -118,4 +118,68 @@ impl NativeCommittedView {
             bytes,
         }))
     }
+
+    /// Read an exact admitted document using the Agent's own current governed
+    /// permission. The outer broker remains responsible for authenticating and
+    /// revalidating the live managed process that named this Agent.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing Agent permission, invalid retained room state, an
+    /// unavailable exact plaintext document, or a document above `maximum`.
+    pub fn read_document_as_agent(
+        &self,
+        agent: &str,
+        app: &str,
+        record: &str,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+        now: SystemTime,
+    ) -> Result<DocumentRead, String> {
+        if let Some(known) = known_revision
+            && let Some(heads) = self.peer.plaintext_complete_heads(app, record)
+        {
+            let revision = revision_of(&heads);
+            if revision == known {
+                self.peer
+                    .check_agent_document_read(agent, app, record, now)?;
+                return Ok(DocumentRead::Unchanged(revision));
+            }
+        }
+        let limits = PeerLimits::default();
+        #[cfg(test)]
+        ROOM_RESTORES.with(|count| count.set(count.get().saturating_add(1)));
+        let restored = BoundedStatePeer::restore(
+            &self.record.peer,
+            &self.record.room.to_string(),
+            &self.record.governor,
+            std::slice::from_ref(&self.record.device),
+            &RevocationList::new(),
+            now,
+            &limits,
+        )
+        .map_err(|error| error.to_string())?;
+        let read = restored.read();
+        let document = read
+            .agent_document_read(agent, app, record, now)
+            .map_err(|error| match error {
+                PeerDocumentReadError::Denied => "the Agent may not read that document".into(),
+                PeerDocumentReadError::Missing => {
+                    format!("the room does not hold {app} record {record:?}")
+                }
+                other => other.to_string(),
+            })?;
+        let revision = revision_of(document.heads());
+        if known_revision == Some(revision) {
+            return Ok(DocumentRead::Unchanged(revision));
+        }
+        let bytes = document.document().clone().save();
+        if bytes.len() > maximum {
+            return Err("the document is larger than the reader can hold".into());
+        }
+        Ok(DocumentRead::Captured(CommittedDocument {
+            revision,
+            bytes,
+        }))
+    }
 }
