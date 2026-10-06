@@ -1903,6 +1903,85 @@ fn compact_styles_blocks_document_shortcuts_after_real_document_typing() {
     );
 }
 
+#[test]
+fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.settle();
+    let toolbar = t("a11y-group-formatting");
+    assert!(app.harness().a11y_node_named(&toolbar).is_some());
+    let bold = app
+        .harness()
+        .a11y_node_named(&tool_action_a11y_label(ToolAction::Bold))
+        .expect("the actual background formatting control is published before opening Styles");
+    let resources =
+        |app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>| {
+            app.harness()
+                .resources()
+                .into_iter()
+                .filter(|resource| resource.kind != "tilo.control")
+                .map(|resource| {
+                    (
+                        resource.id,
+                        resource
+                            .actions
+                            .into_iter()
+                            .map(|action| action.id)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+    let catalogue = resources(&mut app);
+    assert!(!catalogue.is_empty());
+    assert!(
+        app.harness()
+            .targets()
+            .keys()
+            .any(|path| path.contains("Toolbar"))
+    );
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    assert_eq!(resources(&mut app), catalogue);
+    assert!(app.harness().a11y_node_named(&toolbar).is_none());
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("a11y-document-editor"))
+            .is_none()
+    );
+    assert!(
+        !app.harness()
+            .targets()
+            .keys()
+            .any(|path| path.contains("Toolbar"))
+    );
+    let heads = app.peer_document().get_heads();
+    assert!(
+        app.harness()
+            .perform_a11y_action(bold, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    assert_eq!(app.peer_document().get_heads(), heads);
+    let close = app
+        .harness()
+        .a11y_node_named(&t("panel-close"))
+        .expect("the foreground page publishes its actual Close control");
+    app.harness()
+        .perform_a11y_action(close, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(close, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    assert!(
+        !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
+            .unwrap()
+    );
+    assert!(app.harness().a11y_node_named(&toolbar).is_some());
+    assert_eq!(app.peer_document().get_heads(), heads);
+}
+
 fn assert_styles_page_scrolls_to_its_last_real_action(
     app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
 ) {
