@@ -2329,7 +2329,7 @@ impl Default for ShortcutConfig {
             // Windows' emoji panel key; GNOME uses Super+. for the same.
             (ShortcutAction::EmojiPicker, super_chord(".")),
             (ShortcutAction::DictationToggle, super_shift_chord("d")),
-            (ShortcutAction::DictationFinish, super_shift_chord("enter")),
+            (ShortcutAction::DictationFinish, super_alt_chord("d")),
             (ShortcutAction::DictationCancel, super_shift_chord("escape")),
         ]
         .into_iter()

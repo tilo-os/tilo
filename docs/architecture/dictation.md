@@ -306,7 +306,7 @@ recognize speech and do not capture a microphone. The separately documented
 production-worker qualification uses public prerecorded JFK audio under the
 actual sandbox. The controller is reached through the shell's existing shortcut and overlay stack.
 `Super+Shift+D` toggles the request/finish operation; the rebindable finish and
-cancel defaults are `Super+Shift+Enter` and `Super+Shift+Escape`. Escape cancels an
+cancel defaults are `Super+Alt+D` and `Super+Shift+Escape`. Escape cancels an
 open dictation surface. The action provider registers `dictation.toggle`,
 `dictation.finish` and `dictation.cancel` through the same configured action path.
 A toggle never grants microphone access: it prepares the non-secret editable
