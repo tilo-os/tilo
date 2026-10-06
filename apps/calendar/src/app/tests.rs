@@ -1427,6 +1427,43 @@ fn the_editor_sheet_floats_over_the_calendar_at_every_width() {
 }
 
 #[test]
+fn mobile_event_editor_is_a_full_window_page_with_a_reachable_done_action() {
+    for theme in [Theme::dark(), Theme::light()] {
+        for (width, height) in [(360, 800), (800, 360)] {
+            let mut h = Harness::new(width, height);
+            Framed::harness_mut(&mut h.app)
+                .relayout_themed((width, height), theme.clone())
+                .expect("the real Calendar dialog lays out");
+            let geometry = h
+                .app
+                .modal
+                .clone()
+                .expect("the sample event editor is open");
+            assert_eq!(geometry.card, h.app.rect);
+            assert_eq!(h.app.detail_rect, h.app.rect);
+            assert!(
+                geometry.body.height() > 0.0,
+                "the mobile form retains a usable viewport"
+            );
+            if f64::from(height) < f64::from(theme.tokens.metrics.panel_width_sheet) {
+                assert!(
+                    h.app.detail_scroll_max > 0.0,
+                    "the event form scrolls in phone landscape"
+                );
+            }
+            let done = geometry.actions.first().copied().expect("Done is retained");
+            assert!(h.app.rect.contains_rect(done));
+            assert!(done.y0 >= geometry.body.y1);
+            h.click(done.center());
+            assert!(
+                !h.app.detail_open,
+                "the actual footer action dismisses the mobile editor"
+            );
+        }
+    }
+}
+
+#[test]
 fn view_switcher_lives_in_the_header_or_the_drawer_without_duplicates() {
     // Case `view_switcher_stays_in_the_header_until_it_does_not_fit`.
     {
@@ -3290,7 +3327,52 @@ fn restore_review(node: &ui::headless::InspectionNode) -> Option<&ui::headless::
 }
 
 #[test]
-fn standalone_history_restore_returns_the_calendar_to_a_chosen_version() {
+fn native_event_edits_record_the_actual_resource_title_in_platform_history() {
+    let app = CalendarApp::new_demo();
+    let mut doc = demo_document(&app);
+    doc.commit();
+    let event = app.model.events[0].clone();
+    assert!(!event.title.trim().is_empty());
+    for (label, action) in [
+        (
+            "Update event",
+            crate::actions::patch_event_action(
+                event.id,
+                crate::actions::EventPatch {
+                    location: Some("Meeting room".into()),
+                    ..Default::default()
+                },
+            ),
+        ),
+        (
+            "Delete event",
+            crate::actions::delete_event_action(event.id.to_string(), None),
+        ),
+    ] {
+        let before = doc.get_changes(&[]).len();
+        app.try_dispatch_action(&mut Edits::lend(&mut doc), &action)
+            .expect("the actual calendar dispatcher admits the edit");
+        assert_eq!(doc.get_changes(&[]).len(), before + 1);
+        let heads = doc.get_heads();
+        let context = doc
+            .get_change_by_hash(&heads[0])
+            .and_then(|change| {
+                change
+                    .message()
+                    .and_then(tilo_actions::ActionContext::from_change_message)
+            })
+            .expect("the committed edit carries platform History provenance");
+        assert_eq!(context.action_label, label);
+        let resource = context.resource.expect("the edit names its event resource");
+        assert_eq!(resource.id, crate::actions::event_resource_id(event.id));
+        assert_eq!(resource.kind, "calendar.event");
+        assert_eq!(resource.label, event.title);
+    }
+    assert!(CalDoc::read_model(&doc).event(event.id).is_none());
+}
+
+#[test]
+fn platform_history_restore_returns_the_calendar_to_a_chosen_version() {
     let mut app = CalendarApp::new_detached();
     let mut state = ui::State::new();
     let mut first = None;
@@ -3315,7 +3397,7 @@ fn standalone_history_restore_returns_the_calendar_to_a_chosen_version() {
     // second, read-only instance of it.
     harness.set_history_preview_root(|| Ok(Box::new(CalendarApp::new_detached())));
     harness.enable_document_history_chrome();
-    harness.click_named("standalone-history-open").unwrap();
+    open_platform_history(&mut harness);
 
     let session = harness
         .local_history_resources()
@@ -3378,4 +3460,26 @@ fn standalone_history_restore_returns_the_calendar_to_a_chosen_version() {
         "the calendar is back at the version after its first event"
     );
     assert_eq!(doc.get_changes(&[]).len(), changes + 1);
+}
+
+/// Open the actual published platform door without depending on app chrome.
+fn open_platform_history(harness: &mut ui::headless::FrameHarness) {
+    let resources = harness.local_history_resources().unwrap();
+    let history = resources
+        .iter()
+        .find(|resource| resource.id.0 == "tilo.host:history")
+        .expect("the platform publishes History independently of app chrome");
+    let open = history
+        .actions
+        .iter()
+        .find(|action| action.id == "open")
+        .expect("the platform History resource has its stable open action");
+    assert_eq!(open.kind, tilo_actions::OperationKind::View);
+    assert!(!open.label.trim().is_empty());
+    harness
+        .invoke_local_history_action(
+            &tilo_actions::ActionAddress::new(history.id.as_str(), "open"),
+            None,
+        )
+        .unwrap();
 }

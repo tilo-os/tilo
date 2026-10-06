@@ -2738,6 +2738,7 @@ impl FrameHarness {
                 if self.history.is_none() && self.history_chrome_enabled {
                     self.document_history
                         .place_in_app_header(self.root.as_mut());
+                    self.document_history.remove_fallback_bar();
                 }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
@@ -5849,6 +5850,7 @@ impl FrameHarness {
                 confirmed,
                 broker_admitted: false,
                 invocation,
+                source_invocation: None,
                 ambient,
                 scope: None,
             },
@@ -6051,6 +6053,7 @@ impl FrameHarness {
                 confirmed: false,
                 broker_admitted: false,
                 invocation,
+                source_invocation: None,
                 ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                 scope: None,
             },
@@ -6397,6 +6400,7 @@ impl FrameHarness {
                         confirmed,
                         broker_admitted: false,
                         invocation: invocation_id,
+                        source_invocation: None,
                         ambient: None,
                         scope: None,
                     },
@@ -6540,6 +6544,7 @@ impl FrameHarness {
                         local_author: &self.author.0,
                         broker_admitted: false,
                         invocation: invocation_id,
+                        source_invocation: None,
                         ambient: None,
                         scope: None,
                     },
@@ -6680,6 +6685,7 @@ impl FrameHarness {
                         local_author: &self.author.0,
                         broker_admitted: false,
                         invocation,
+                        source_invocation: None,
                         ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                         scope: None,
                     },
@@ -6784,6 +6790,7 @@ impl FrameHarness {
                 local_author: &self.author.0,
                 broker_admitted: false,
                 invocation,
+                source_invocation: None,
                 ambient: None,
                 scope: None,
             },
@@ -7690,6 +7697,7 @@ impl FrameHarness {
                 confirmed,
                 broker_admitted: false,
                 invocation,
+                source_invocation: None,
                 ambient: None,
                 scope: None,
             },

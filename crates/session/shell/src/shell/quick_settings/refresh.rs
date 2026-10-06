@@ -77,6 +77,7 @@ pub struct QsRefresh {
     /// values on screen until the next unrelated input event.
     wake: ui::WakeHandle,
     /// Which tiers currently have a worker outstanding.
+    host_wake: Option<crate::session_runtime::Wake>,
     in_flight: HashSet<Tier>,
     /// The latest follow-up requested for each busy tier. Repeated input while
     /// a daemon read is outstanding collapses to one rerun, but is never
@@ -115,6 +116,7 @@ impl QsRefresh {
             tx,
             rx,
             wake: ui::WakeHandle::new(),
+            host_wake: None,
             in_flight: HashSet::new(),
             rerun: HashMap::new(),
             enabled,
@@ -130,6 +132,11 @@ impl QsRefresh {
     /// readings and their chrome revision bump schedules the visible frame.
     pub fn is_in_flight(&self) -> bool {
         !self.in_flight.is_empty()
+    }
+
+    /// Native Shell owns a calloop wake rather than an App wake scope.
+    pub(crate) fn set_host_wake(&mut self, wake: crate::session_runtime::Wake) {
+        self.host_wake = Some(wake);
     }
 
     pub fn disable_os_reads(&mut self) {
@@ -158,11 +165,15 @@ impl QsRefresh {
         self.started.insert(tier, self.writes);
         let tx = self.tx.clone();
         let wake = self.wake.clone();
+        let host_wake = self.host_wake.clone();
         // Detached: bounded by `os_actions::DEFAULT_TIMEOUT`, and a
         // send into a dropped receiver is a no-op.
         std::thread::spawn(move || {
             if tx.send(work()).is_ok() {
                 wake.wake();
+                if let Some(host_wake) = host_wake {
+                    host_wake();
+                }
             }
         });
     }
@@ -289,6 +300,14 @@ impl QsRefresh {
         F: FnOnce() -> QsReading + Send + 'static,
     {
         self.spawn(Tier::Fast, work);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn kick_wifi_networks_with<F>(&mut self, work: F)
+    where
+        F: FnOnce() -> Result<Vec<qs::WifiNetworkInfo>, String> + Send + 'static,
+    {
+        self.spawn(Tier::Wifi, move || QsReading::WifiNetworks(work()));
     }
 
     #[cfg(test)]
