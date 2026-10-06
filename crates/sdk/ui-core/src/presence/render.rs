@@ -332,6 +332,50 @@ impl PresenceCtx {
         draw_name_chip_in(ctx, color, &name, chip);
     }
 
+    /// Semantic actions label the actual control beside it, not in the row
+    /// above it: that row often contains a notice explaining whether the action
+    /// is available. Ordinary peer selections retain their existing name chips.
+    pub(crate) fn draw_action_outline_labeled_within(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        user: &UserId,
+        label: &str,
+        rect: Rect,
+        radius: f64,
+        bounds: Rect,
+    ) {
+        self.draw_peer_outline(ctx.scene, ctx.theme, ctx.transform, user, rect, radius);
+        let gap = f64::from(ctx.theme.tokens.spacing.s1);
+        let right = (bounds.x1 - rect.x1 - gap).max(0.0);
+        let left = (rect.x0 - bounds.x0 - gap).max(0.0);
+        let (preferred_w, preferred_h) = chip_size(ctx.theme, ctx.text, label);
+        let (budget, x, y) = if right >= preferred_w {
+            (right, rect.x1 + gap, rect.y0)
+        } else if left >= preferred_w {
+            (left, rect.x0 - gap - preferred_w, rect.y0)
+        } else if rect.y1 + gap + preferred_h <= bounds.y1 {
+            (bounds.width(), rect.x0, rect.y1 + gap)
+        } else if right >= left && right > 0.0 {
+            (right, rect.x1 + gap, rect.y0)
+        } else if left > 0.0 {
+            (left, bounds.x0, rect.y0)
+        } else {
+            (bounds.width(), rect.x0, rect.y0)
+        };
+        let (label, w, h) = chip_fitting(ctx.theme, ctx.text, label, budget);
+        if w <= 0.0 || h > bounds.height() {
+            return;
+        }
+        let x = x.min(bounds.x1 - w).max(bounds.x0);
+        let y = y.min(bounds.y1 - h).max(bounds.y0);
+        draw_name_chip_in(
+            ctx,
+            color_for(self, user, ctx.theme),
+            &label,
+            Rect::new(x, y, x + w, y + h),
+        );
+    }
+
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
     /// they inserted. `spans` pairs each rect with its fade alpha.
     ///
@@ -1260,6 +1304,54 @@ mod tests {
     use super::*;
     use crate::offscreen::OffscreenRenderer;
     use crate::permissions::UserId;
+
+    #[test]
+    fn action_labels_preserve_the_notice_above_the_actual_control() {
+        let presence = PresenceCtx::empty();
+        let user = UserId("charlie".into());
+        let viewport = Rect::new(20.0, 20.0, 480.0, 180.0);
+        for theme in [Theme::default(), Theme::dark().with_text_scale(2.0)] {
+            for control in [
+                Rect::new(40.0, 60.0, 100.0, 90.0),
+                Rect::new(400.0, 60.0, 460.0, 90.0),
+                Rect::new(100.0, 60.0, 400.0, 90.0),
+            ] {
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                presence.draw_action_outline_labeled_within(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                    &user,
+                    "Rename (Applying) - Quill",
+                    control,
+                    f64::from(theme.tokens.radii.detail),
+                    viewport,
+                );
+                let rgba = OffscreenRenderer::new(500, 200).render(&scene, Color::BLACK);
+                let mut label_pixels = 0;
+                for y in 0..200 {
+                    for x in 0..500 {
+                        let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 500, x, y);
+                        if r == 0 && g == 0 && b == 0 {
+                            continue;
+                        }
+                        let point = Point::new(f64::from(x), f64::from(y));
+                        assert!(viewport.contains(point), "activity escaped its surface");
+                        assert!(
+                            y >= 59,
+                            "activity painted over the notice above the control"
+                        );
+                        if !control.inflate(2.0, 2.0).contains(point) {
+                            label_pixels += 1;
+                        }
+                    }
+                }
+                assert!(
+                    label_pixels > 100,
+                    "the action label must actually be painted"
+                );
+            }
+        }
+    }
 
     #[test]
     #[allow(
