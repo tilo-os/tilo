@@ -1567,6 +1567,13 @@ pub fn invalidate_app_cache() {
     *cache = None;
 }
 
+/// Cheap installed-store invalidation token for session-owned services.
+/// A changed token means callers must reread the canonical cached catalogue;
+/// it is not an authorization or a package identity.
+pub(crate) fn installed_apps_epoch() -> u64 {
+    APP_CACHE_EPOCH.load(Ordering::Acquire)
+}
+
 fn expire_watched_app_cache() {
     let mut cache = lock(&APP_CACHE);
     APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
