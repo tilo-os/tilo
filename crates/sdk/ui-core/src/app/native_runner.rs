@@ -1240,7 +1240,10 @@ impl AppHandler {
                     }
                     changed = true;
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
+                crate::floating_surface::FloatingSurfaceHostMessage::DeviceShellOperation {
+                    ..
+                }
+                | crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Appearance { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
