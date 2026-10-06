@@ -61,7 +61,7 @@ impl ShortcutCategory {
 
 impl ShortcutAction {
     /// Every rebindable desktop action, in the order it is listed.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 50] = [
         Self::Search,
         Self::WorkspaceOverview,
         Self::Lock,
@@ -71,6 +71,7 @@ impl ShortcutAction {
         Self::FocusNextWindow,
         Self::PreviousTab,
         Self::NextTab,
+        Self::TabMenu,
         Self::PreviousStrip,
         Self::NextStrip,
         Self::PreviousWorkspace,
@@ -108,6 +109,9 @@ impl ShortcutAction {
         Self::PowerMenu,
         Self::NextInputSource,
         Self::EmojiPicker,
+        Self::DictationToggle,
+        Self::DictationFinish,
+        Self::DictationCancel,
     ];
 
     /// Stable id, as the action door and the Fluent keys spell it.
@@ -123,6 +127,7 @@ impl ShortcutAction {
             Self::FocusNextWindow => "focus-next-window",
             Self::PreviousTab => "previous-tab",
             Self::NextTab => "next-tab",
+            Self::TabMenu => "tab-menu",
             Self::PreviousStrip => "previous-strip",
             Self::NextStrip => "next-strip",
             Self::PreviousWorkspace => "previous-workspace",
@@ -160,6 +165,9 @@ impl ShortcutAction {
             Self::PowerMenu => "power-menu",
             Self::NextInputSource => "next-input-source",
             Self::EmojiPicker => "emoji-picker",
+            Self::DictationToggle => "dictation-toggle",
+            Self::DictationFinish => "dictation-finish",
+            Self::DictationCancel => "dictation-cancel",
         }
     }
 
@@ -205,7 +213,8 @@ impl ShortcutAction {
             | Self::FocusGroup7
             | Self::FocusGroup8
             | Self::FocusGroup9 => ShortcutCategory::Navigation,
-            Self::ToggleMaximize
+            Self::TabMenu
+            | Self::ToggleMaximize
             | Self::ToggleFullscreen
             | Self::DetachTab
             | Self::AttachTabLeft
@@ -220,9 +229,12 @@ impl ShortcutAction {
             | Self::ResizeWider
             | Self::ReopenClosedTab => ShortcutCategory::Windows,
             Self::OpenFiles | Self::OpenTerminal => ShortcutCategory::Apps,
-            Self::ToggleMagnifier | Self::MagnifierZoomIn | Self::MagnifierZoomOut => {
-                ShortcutCategory::Accessibility
-            }
+            Self::ToggleMagnifier
+            | Self::MagnifierZoomIn
+            | Self::MagnifierZoomOut
+            | Self::DictationToggle
+            | Self::DictationFinish
+            | Self::DictationCancel => ShortcutCategory::Accessibility,
         }
     }
 }

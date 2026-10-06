@@ -141,9 +141,53 @@ mod tests {
     }
 
     #[test]
+    fn service_keyboard_uses_the_assigned_surface_in_both_orientations() {
+        use ui::widget::Widget;
+        for theme in [
+            ui::Theme::light(),
+            ui::Theme::dark(),
+            ui::Theme::high_contrast(),
+        ] {
+            let mut app = keyboard();
+            app.harness().set_theme(theme);
+            for viewport in [(800, 600), (600, 800)] {
+                app.harness().resize(viewport).unwrap();
+                let rect = app
+                    .with_surface::<OskSurface, _>(|surface| {
+                        let keyboard = surface.keyboard();
+                        assert!(keyboard.key_geometry().len() > 30);
+                        for (_, key) in keyboard.key_geometry() {
+                            assert!(key.width() > 0.0 && key.height() > 0.0);
+                            assert!(keyboard.get_rect().contains(key.center()));
+                        }
+                        keyboard.get_rect()
+                    })
+                    .expect("the real owner keyboard surface is mounted");
+                assert!(
+                    rect.height() >= f64::from(viewport.1) * 0.75,
+                    "keyboard must fill its assigned content area instead of scaling a short keyboard inside a tall buffer: {viewport:?} {rect:?}"
+                );
+                let pixels = app.harness().render_rgba();
+                assert_eq!(
+                    pixels.len(),
+                    usize::try_from(viewport.0 * viewport.1 * 4).unwrap()
+                );
+                let colours: std::collections::HashSet<_> = pixels
+                    .chunks_exact(4)
+                    .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+                    .collect();
+                assert!(
+                    colours.len() > 3,
+                    "the actual owner keyboard frame must be rendered"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_published_keyboard_offers_its_configuration_and_never_what_is_typed() {
         let mut app = keyboard();
-        for letter in ["s", "e", "c", "r", "e", "t", "space", "m", "a"] {
+        for letter in ["s", "e", "c", "r", "e", "t", "Space", "m", "a"] {
             tap(&mut app, letter);
         }
         app.settle();
@@ -263,7 +307,7 @@ mod tests {
     #[test]
     fn what_typing_teaches_is_the_persons_own_and_survives_a_relaunch() {
         let mut app = keyboard();
-        for key in ["h", "i", "space", "y", "o", "u", "space"] {
+        for key in ["h", "i", "Space", "y", "o", "u", "Space"] {
             tap(&mut app, key);
         }
         app.settle();
@@ -287,7 +331,7 @@ mod tests {
     #[test]
     fn clearing_learned_suggestions_forgets_the_saved_lessons() {
         let mut app = keyboard();
-        for key in ["h", "i", "space"] {
+        for key in ["h", "i", "Space"] {
             tap(&mut app, key);
         }
         app.settle();

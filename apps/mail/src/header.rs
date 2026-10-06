@@ -120,6 +120,11 @@ pub(crate) fn list_bar(state: &MailState) -> BarSpec {
         BarItem::icon(Icon::Square, "Select messages", Command::ToggleBulk),
         BarItem::icon(Icon::Refresh, "Refresh", Command::Refresh),
         BarItem::icon(Icon::Pencil, "New message", Command::Compose),
+        BarItem::icon(
+            Icon::Search,
+            crate::i18n::t("mail-contact-recipients"),
+            Command::ContactRecipients,
+        ),
     ]]
 }
 
@@ -256,7 +261,13 @@ mod tests {
         let list = list_bar(&state);
         assert_eq!(
             labels(&list),
-            ["Search Inbox", "Select messages", "Refresh", "New message"]
+            [
+                "Search Inbox",
+                "Select messages",
+                "Refresh",
+                "New message",
+                "Contacts recipients"
+            ]
         );
         let reader = reader_bar(&state);
         assert!(labels(&reader).contains(&"Reply all"));

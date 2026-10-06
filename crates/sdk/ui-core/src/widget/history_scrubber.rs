@@ -1387,6 +1387,23 @@ impl Widget for HistoryScrubber {
             .and_then(|(_, field)| field.ime_cursor_rect())
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let (kind, field) = self.naming.as_ref()?;
+        let scope = format!(
+            "{}:{}",
+            self.current_tick,
+            match kind {
+                NameKind::CurrentGroup => "group",
+                NameKind::NewVersion => "version",
+            }
+        );
+        Some(crate::ime::scoped_fingerprint(
+            scope.as_bytes(),
+            field.ime_edit_fingerprint(key)?,
+            key,
+        ))
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }

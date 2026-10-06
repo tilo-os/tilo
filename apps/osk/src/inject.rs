@@ -181,6 +181,11 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
 /// the first usable code is 8. We start our synthetic codes here.
 pub const KEYCODE_BASE: u32 = 8;
 
+/// Convert the generated XKB keycode to the evdev value carried by Wayland.
+fn wire_keycode(xkb_keycode: u32) -> u32 {
+    xkb_keycode.saturating_sub(KEYCODE_BASE)
+}
+
 /// A [`TextInjector`] that records everything it's asked to inject, for tests
 /// and headless runs. Never touches Wayland.
 #[derive(Default, Debug)]
@@ -424,8 +429,9 @@ mod wayland {
             self.flush()
         }
 
-        /// Press then release a single keycode with modifiers cleared.
+        /// Press then release a single XKB keycode with modifiers cleared.
         fn tap(&mut self, keycode: u32) {
+            let keycode = super::wire_keycode(keycode);
             // Clear modifiers — each keysym is encoded directly, no shift etc.
             self.keyboard.modifiers(0, 0, 0, 0);
             self.keyboard.key(self.time, keycode, KEY_PRESSED);
@@ -628,6 +634,36 @@ mod tests {
                     "keycode {code} resolved to {got:?}, expected {want:?} (for {sym:?})"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn editing_keys_resolve_after_the_wayland_keycode_round_trip() {
+        use xkbcommon::xkb;
+        let symbols = [
+            Symbol::BackSpace,
+            Symbol::Return,
+            Symbol::Left,
+            Symbol::Right,
+        ];
+        let (text, assigned) = build_keymap(&symbols);
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_string(
+            &context,
+            text,
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .expect("the actual injector keymap must compile");
+        let state = xkb::State::new(&keymap);
+        for (symbol, xkb_code) in assigned {
+            let received = wire_keycode(xkb_code);
+            let keysym = state.key_get_one_sym(xkb::Keycode::new(received + 8));
+            assert_eq!(
+                xkb::keysym_get_name(keysym),
+                symbol.keysym_name(),
+                "the native receiver must get the actual editing symbol"
+            );
         }
     }
 

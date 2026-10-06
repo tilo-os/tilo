@@ -463,6 +463,7 @@ pub struct ComposeWindow {
     /// re-layout doesn't recentre it after the user has moved it.
     placed: bool,
 
+    sender: Option<crate::model::DraftSender>,
     // header inputs
     to: TextInput,
     cc: TextInput,
@@ -531,6 +532,7 @@ impl ComposeWindow {
             bcc: recipients(),
             subject: TextInput::local(),
             show_cc_bcc: false,
+            sender: None,
             format,
             format_bar: FormatBar::new(),
             editor: body_editor(None),
@@ -888,6 +890,7 @@ impl ComposeWindow {
     /// the caller right after).
     pub fn open_blank(&mut self) {
         self.open = true;
+        self.sender = None;
         self.placed = false;
         self.to.set_text("");
         self.cc.set_text("");
@@ -939,6 +942,7 @@ impl ComposeWindow {
     /// Reopen an existing draft for editing (from the Drafts folder).
     pub fn open_with_draft(&mut self, draft: &Draft) {
         self.open_blank();
+        self.sender.clone_from(&draft.sender);
         self.to.set_text(&draft.to);
         self.cc.set_text(&draft.cc);
         self.bcc.set_text(&draft.bcc);
@@ -1055,6 +1059,7 @@ impl ComposeWindow {
             ComposeFormat::Text => (self.plain_body.value().to_string(), None),
         };
         Draft {
+            sender: self.sender.clone(),
             to: self.to.value().to_string(),
             cc: self.cc.value().to_string(),
             bcc: self.bcc.value().to_string(),

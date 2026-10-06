@@ -186,6 +186,7 @@ enum Action {
     CreatePlaylist,
     /// Begin editing a new-playlist name (opens the name input overlay).
     BeginNewPlaylist,
+    BeginNewSpotifyPlaylist,
     /// Begin a new playlist that the given track will be added to on create
     /// (the "Add to playlist… → New playlist…" flow).
     BeginNewPlaylistFor(String),
@@ -204,6 +205,12 @@ enum Action {
     },
     /// Open the "Add to playlist…" picker for the menu's target track.
     OpenAddToPlaylist(String),
+    SpotifyLibrary {
+        track: String,
+        save: bool,
+    },
+    SpotifyEffect(crate::actions::MusicEffect),
+    OpenSpotifyPlaylistMenu(String),
     /// Dismiss the inline name-input overlay without committing.
     CloseNamePrompt,
     /// Toggle the queue view from the now-playing bar: open it (remembering the
@@ -286,7 +293,21 @@ pub struct MusicApp {
     /// The header's two actions, real retained buttons: open an audio file,
     /// and open the platform search for this app.
     open_file_button: ui::widget::Button,
-    open_file_layout_visible: Option<(bool, bool)>,
+    source_buttons: Vec<ui::widget::Button>,
+    spotify_catalogue: bool,
+    source_invocation: Option<tilo_actions::InvocationId>,
+    source_disconnect_pending: bool,
+    spotify_jobs: HashMap<u64, spotify::PendingJob>,
+    spotify_devices: Vec<crate::backend::SpotifyDevice>,
+    spotify_device_buttons: Vec<ui::widget::Button>,
+    spotify_remote_state: serde_json::Value,
+    spotify_remote_queue: Option<(serde_json::Value, ui::time::Instant)>,
+    spotify_library_offset: u32,
+    spotify_library_more: bool,
+    spotify_menu_controls: Vec<ui::widget::ActionEmitter<()>>,
+    control_domain: Option<ui::ControlDomain>,
+    source_error: Option<String>,
+    open_file_layout_visible: Option<(bool, bool, u8)>,
     back_button: ui::widget::Button,
     back_requested: std::rc::Rc<std::cell::Cell<bool>>,
     search_button: ui::widget::Button,
@@ -638,6 +659,7 @@ enum ShotStage {
 enum NamePrompt {
     /// Creating a brand-new playlist.
     NewPlaylist,
+    NewSpotifyPlaylist,
     /// Renaming an existing playlist (by id).
     Rename(String),
 }
@@ -757,6 +779,20 @@ impl MusicApp {
             pending_catalogue_query: None,
             catalogue_invocation: None,
             open_file_button: Self::make_open_file_button(),
+            source_buttons: Self::make_source_buttons(),
+            spotify_catalogue: device_profile.spotify_catalogue,
+            source_invocation: None,
+            source_disconnect_pending: false,
+            spotify_jobs: HashMap::new(),
+            spotify_devices: Vec::new(),
+            spotify_device_buttons: Vec::new(),
+            spotify_remote_state: serde_json::Value::Null,
+            spotify_remote_queue: None,
+            spotify_library_offset: 50,
+            spotify_library_more: true,
+            spotify_menu_controls: Vec::new(),
+            control_domain: None,
+            source_error: None,
             open_file_layout_visible: None,
             back_button: {
                 let requested = std::rc::Rc::clone(&back_requested);
@@ -1059,6 +1095,7 @@ impl MusicApp {
         }
         self.pb.position_ms = self.playhead_ms as u64;
         self.bound_track = self.pb.current.clone();
+        self.prepare_spotify_queue();
         self.report_device_profile_error();
     }
 
@@ -1067,6 +1104,7 @@ impl MusicApp {
             return Ok(());
         }
         crate::storage::save_device_profile(&crate::storage::DeviceProfile {
+            spotify_catalogue: self.spotify_catalogue,
             local_file: self.local_file.clone(),
             playback: self.pb.clone(),
         })
@@ -1221,7 +1259,7 @@ impl MusicApp {
                 .map(|artist| crate::actions::CatalogArtistResource {
                     id: artist.id.clone(),
                     label: artist.name.clone(),
-                    followed: self.lib.is_artist_followed(&artist.id),
+                    followed: self.artist_followed(&artist.id),
                 })
                 .collect(),
             membership: None,
@@ -1270,6 +1308,14 @@ impl MusicApp {
             .into_iter()
             .map(live_row)
             .collect();
+        rows.push(self.source_row());
+        rows.extend(self.spotify_device_rows());
+        rows.extend(self.spotify_remote_rows());
+        rows.extend(
+            self.catalogue_rows()
+                .into_iter()
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT),
+        );
         rows.extend(
             self.device_cache
                 .iter()
@@ -1277,13 +1323,30 @@ impl MusicApp {
                 .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
                 .filter_map(|(id, _)| self.offline_row(id)),
         );
-        rows.extend(self.catalogue_resources().into_iter().map(live_row));
         rows
     }
 
     /// The row `id` this device shows, beyond the published page: a queue
     /// entry, the player, the open file, a track it keeps offline.
     pub(crate) fn device_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if id.starts_with("music.spotify-remote:") {
+            return self
+                .spotify_remote_rows()
+                .into_iter()
+                .find(|row| row.id() == id);
+        }
+        if id == "music.source:catalogue" {
+            return Some(self.source_row());
+        }
+        if id.starts_with("music.spotify-device:") {
+            return self
+                .spotify_device_rows()
+                .into_iter()
+                .find(|row| row.id() == id);
+        }
+        if let Some(row) = self.catalogue_rows().into_iter().find(|row| row.id() == id) {
+            return Some(row);
+        }
         if let Some(resource) = self
             .catalogue_resources()
             .into_iter()
@@ -1326,6 +1389,44 @@ impl MusicApp {
             return None;
         }
         self.publish_resource(id).map(live_row)
+    }
+
+    fn source_status(&self) -> String {
+        if self.source_invocation.is_some() {
+            ui::i18n!("music-source-connecting")
+        } else if !self.spotify_jobs.is_empty() {
+            ui::i18n!("music-spotify-updating")
+        } else {
+            self.source_error.clone().unwrap_or_else(|| {
+                self.spotify_remote_state
+                    .get("device")
+                    .and_then(|device| device.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map_or_else(
+                        || self.backend_name.clone(),
+                        |name| format!("{} {name}", ui::i18n!("music-spotify-output")),
+                    )
+            })
+        }
+    }
+
+    fn source_row(&self) -> ui::framework::LiveRow {
+        use crate::actions::MusicEffect;
+        ui::framework::LiveRow::new(
+            "music.source:catalogue",
+            "music.source",
+            self.source_status(),
+        )
+        .effect(&MusicEffect::Sources)
+        .effect(&MusicEffect::ConnectSpotify)
+        .effect(&MusicEffect::ConnectSpotifyPlayback)
+        .effect(&MusicEffect::SpotifyDevices)
+        .effect(&MusicEffect::SpotifyQueue)
+        .effect(&MusicEffect::SpotifyLibraryMore)
+        .effect(&MusicEffect::NewSpotifyPlaylist)
+        .effect(&MusicEffect::DisconnectSpotify)
+        .effect(&MusicEffect::BrowseSpotify)
+        .effect(&MusicEffect::BrowseYouTube)
     }
 
     /// A track this device keeps offline, offering to remove its copy.
@@ -1403,6 +1504,9 @@ impl MusicApp {
         let mut ctx = crate::actions::MusicResourceCtx::for_document_id(&self.lib, id)?;
         for track in &mut ctx.tracks {
             track.offline = matches!(self.cache_state(&track.id), CacheState::Cached);
+        }
+        for artist in &mut ctx.artists {
+            artist.followed = self.artist_followed(&artist.id);
         }
         Some(ctx)
     }
@@ -1529,6 +1633,15 @@ impl MusicApp {
     }
 
     fn publish_handoff(&self) {
+        if self
+            .pb
+            .current
+            .as_deref()
+            .is_some_and(|id| id.starts_with("spotify:"))
+        {
+            self.handoff.clear();
+            return;
+        }
         let Some(track_id) = self.pb.current.as_deref() else {
             self.handoff.clear();
             return;
@@ -1712,6 +1825,16 @@ impl MusicApp {
         let now = ui::time::now();
         self.last_tick = now;
         self.expire_resource_stream_if_due(now);
+        self.expire_spotify_jobs();
+        if let Some(track) = self.audio.take_spotify_transition() {
+            self.advance(true);
+            if self.pb.current.as_deref() != Some(track.as_str()) {
+                self.audio.stop();
+                self.pb.playing = false;
+                self.playback_error = Some(ui::i18n!("music-spotify-queue-changed"));
+            }
+        }
+        self.prepare_spotify_queue();
         if (!self.pb.playing || self.pb.current.is_none()) && !self.audio.needs_poll() {
             return;
         }
@@ -1767,7 +1890,7 @@ impl MusicApp {
             }
         }
         let dur = self.current_duration_ms();
-        if dur > 0 && self.playhead_ms >= dur as f64 {
+        if !self.audio.uses_spotify() && dur > 0 && self.playhead_ms >= dur as f64 {
             self.auto_advance();
         }
     }
@@ -2009,11 +2132,21 @@ impl MusicApp {
         let Some(kind) = self.name_prompt.clone() else {
             return;
         };
-        let (title, primary) = match kind {
-            NamePrompt::NewPlaylist => ("New playlist", "Create"),
-            NamePrompt::Rename(_) => ("Rename playlist", "Save"),
+        let (title, primary, guidance) = match kind {
+            NamePrompt::NewPlaylist => ("New playlist".into(), "Create".into(), String::new()),
+            NamePrompt::NewSpotifyPlaylist => (
+                ui::i18n!("music-spotify-create-playlist"),
+                ui::i18n!("music-spotify-create"),
+                ui::i18n!("music-spotify-private-help"),
+            ),
+            NamePrompt::Rename(ref id) if id.starts_with("spotify:") => (
+                ui::i18n!("music-spotify-rename-playlist"),
+                ui::i18n!("music-spotify-save-name"),
+                ui::i18n!("music-spotify-ownership-help"),
+            ),
+            NamePrompt::Rename(_) => ("Rename playlist".into(), "Save".into(), String::new()),
         };
-        let body = PromptBody::new("", "Playlist name").with_initial(&self.name_input);
+        let body = PromptBody::new(&guidance, "Playlist name").with_initial(&self.name_input);
         let submit = Rc::new(Cell::new(false));
         let cancel = Rc::new(Cell::new(false));
         let dialog = ModalDialog::new(title, body)
@@ -2156,6 +2289,11 @@ impl MusicApp {
         self.name_input = value;
         let commit = match self.name_prompt.clone() {
             Some(NamePrompt::NewPlaylist) => Action::CreatePlaylist,
+            Some(NamePrompt::NewSpotifyPlaylist) => {
+                Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyCreatePlaylist {
+                    name: self.name_input.trim().into(),
+                })
+            }
             Some(NamePrompt::Rename(id)) => Action::CommitRename(id),
             None => Action::None,
         };
@@ -2227,6 +2365,10 @@ impl MusicApp {
                 self.on_move_playlist_item(&playlist, from, to, state);
             }
             Action::BeginNewPlaylist => self.on_begin_new_playlist(None),
+            Action::BeginNewSpotifyPlaylist => {
+                self.on_begin_new_playlist(None);
+                self.name_prompt = Some(NamePrompt::NewSpotifyPlaylist);
+            }
             Action::BeginNewPlaylistFor(track) => self.on_begin_new_playlist(Some(track)),
             Action::CreatePlaylist => self.on_create_playlist(state),
             Action::BeginRenamePlaylist(id) => self.on_begin_rename_playlist(id),
@@ -2238,6 +2380,19 @@ impl MusicApp {
                 queue_index,
             } => self.open_track_menu(track, in_playlist.as_deref(), queue_index),
             Action::OpenAddToPlaylist(track) => self.open_add_to_playlist_menu(&track),
+            Action::SpotifyLibrary { track, save } => {
+                self.queue_spotify_library_control(&track, save);
+            }
+            Action::SpotifyEffect(effect) => {
+                self.queue_spotify_effect_control(&effect);
+                if matches!(
+                    effect,
+                    crate::actions::MusicEffect::SpotifyCreatePlaylist { .. }
+                ) {
+                    self.on_close_name_prompt();
+                }
+            }
+            Action::OpenSpotifyPlaylistMenu(playlist) => self.open_spotify_playlist_menu(&playlist),
             Action::ToggleQueue => self.on_toggle_queue(),
             Action::ToggleSidebar => self.toggle_sidebar(),
             Action::CloseSidebar => self.drawer.close(),
@@ -2527,6 +2682,16 @@ impl MusicApp {
     }
 
     fn on_toggle_follow(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
+        if id.starts_with("spotify:artist:") {
+            let effect = if self.artist_followed(id) {
+                crate::actions::MusicEffect::SpotifyUnsave { uri: id.into() }
+            } else {
+                crate::actions::MusicEffect::SpotifySave { uri: id.into() }
+            };
+            self.queue_spotify_effect_control(&effect);
+            self.dirty = true;
+            return;
+        }
         let followed = !self.lib.is_artist_followed(id);
         self.perform_action(
             state,
@@ -2625,6 +2790,7 @@ impl MusicApp {
             .lib
             .playlist(&id)
             .map(|p| p.name.clone())
+            .or_else(|| self.spotify_playlist_name(&id))
             .unwrap_or_default();
         self.name_prompt = Some(NamePrompt::Rename(id));
         self.name_dialog = None;
@@ -2633,8 +2799,17 @@ impl MusicApp {
     fn on_commit_rename(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         let name = self.name_input.trim().to_string();
         if !name.is_empty() {
-            self.perform_action(state, &crate::actions::rename_playlist_action(id, &name));
-            self.reload_library(state);
+            if id.starts_with("spotify:playlist:") {
+                self.queue_spotify_effect_control(
+                    &crate::actions::MusicEffect::SpotifyRenamePlaylist {
+                        playlist: id.into(),
+                        name,
+                    },
+                );
+            } else {
+                self.perform_action(state, &crate::actions::rename_playlist_action(id, &name));
+                self.reload_library(state);
+            }
         }
         self.name_prompt = None;
         self.name_input.clear();
@@ -2726,10 +2901,18 @@ impl MusicApp {
             // Stop the previous stream while the next one resolves so two
             // tracks never overlap on a fast skip.
             self.audio.pause();
-            w.request(StreamRequest::Resolve {
-                track_id: track_id.to_string(),
-                video_id: yt_id,
-                request_id,
+            w.request(if yt_id.starts_with("spotify:track:") {
+                StreamRequest::NativeSpotify {
+                    track_id: track_id.to_string(),
+                    source_id: yt_id,
+                    request_id,
+                }
+            } else {
+                StreamRequest::Resolve {
+                    track_id: track_id.to_string(),
+                    video_id: yt_id,
+                    request_id,
+                }
             })
         } else {
             Err("music worker is unavailable".to_string())
@@ -3242,6 +3425,83 @@ impl MusicApp {
         };
         for up in updates {
             match up {
+                StreamUpdate::Spotify { request_id, result } => {
+                    self.finish_spotify_operation(request_id, result);
+                }
+                StreamUpdate::SourceSelected { result } => {
+                    if let Some(invocation) = self.source_invocation.take() {
+                        let update = match result {
+                            Ok((name, live)) => {
+                                if self.source_disconnect_pending {
+                                    self.spotify_devices.clear();
+                                    self.spotify_device_buttons.clear();
+                                    self.open_file_layout_visible = None;
+                                    self.spotify_remote_state = serde_json::Value::Null;
+                                    self.spotify_remote_queue = None;
+                                }
+                                if self.source_disconnect_pending
+                                    && self
+                                        .pb
+                                        .current
+                                        .as_ref()
+                                        .is_some_and(|id| id.starts_with("spotify:"))
+                                {
+                                    self.audio.stop();
+                                    self.pb.playing = false;
+                                }
+                                self.source_disconnect_pending = false;
+                                self.source_error = None;
+                                self.spotify_catalogue = name.starts_with("Spotify");
+                                self.backend_name = name;
+                                self.backend_live = live;
+                                self.report_device_profile_error();
+                                self.playlist_pages
+                                    .retain(|id, _| !id.starts_with("spotify:"));
+                                self.playlist_requested
+                                    .retain(|id| !id.starts_with("spotify:"));
+                                self.artist_pages
+                                    .retain(|id, _| !id.starts_with("spotify:"));
+                                self.artist_requested
+                                    .retain(|id| !id.starts_with("spotify:"));
+                                self.album_pages.retain(|id, _| !id.starts_with("spotify:"));
+                                self.album_requested
+                                    .retain(|id| !id.starts_with("spotify:"));
+                                self.failed_pages.retain(|id| !id.starts_with("spotify:"));
+                                self.home = None;
+                                self.spotify_library_offset = 50;
+                                self.spotify_library_more = true;
+                                self.home_requested = false;
+                                self.home_failed = false;
+                                self.live_results = None;
+                                self.live_bundle = None;
+                                self.live_search_pending = None;
+                                self.active_search_request = None;
+                                self.live_query_sent = None;
+                                self.search_error = None;
+                                self.view = View::Home;
+                                self.set_scroll_y(0.0);
+                                tilo_actions::InvocationUpdate::Succeeded {
+                                    invocation,
+                                    output: tilo_actions::ActionOutput::default(),
+                                }
+                            }
+                            Err(message) => {
+                                self.source_error = Some(message.clone());
+                                self.notify(ToastKind::Error, message.clone());
+                                tilo_actions::InvocationUpdate::Failed {
+                                    invocation,
+                                    error: tilo_actions::ActionFailure {
+                                        code: "music.source_failed".into(),
+                                        message,
+                                        details: None,
+                                        retryable: true,
+                                    },
+                                }
+                            }
+                        };
+                        self.resource_stream_results.push(update);
+                    }
+                }
                 StreamUpdate::Backend { name, live } => {
                     self.backend_live = live;
                     self.backend_name = name;
@@ -3257,14 +3517,20 @@ impl MusicApp {
                     error,
                 } => self.apply_search_failure(&query, request_id, &error),
                 StreamUpdate::Home { content } => {
+                    self.spotify_library_offset = 50;
+                    self.spotify_library_more = content
+                        .sections
+                        .iter()
+                        .any(|section| section.items.len() == 50);
                     self.absorb_home(&content);
                     self.home = Some(*content);
                     self.home_failed = false;
                 }
-                StreamUpdate::HomeUnavailable => {
+                StreamUpdate::HomeUnavailable { error } => {
                     // No live Home (offline build / network error): stop the
                     // skeleton and let the honest empty Home settle.
                     self.home_failed = true;
+                    self.source_error = Some(error);
                 }
                 StreamUpdate::PageUnavailable { id } => {
                     // A live detail fetch failed: stop that page's skeleton so it
@@ -3282,6 +3548,39 @@ impl MusicApp {
                 StreamUpdate::Playlist { page } => {
                     self.absorb_playlist(&page);
                     self.playlist_pages.insert(page.id.clone(), *page);
+                }
+                StreamUpdate::NativeSpotify {
+                    track_id,
+                    source_id,
+                    account,
+                    request_id,
+                } => {
+                    if self.active_resolve_request != Some(request_id)
+                        || self.pb.current.as_deref() != Some(track_id.as_str())
+                    {
+                        continue;
+                    }
+                    self.active_resolve_request = None;
+                    self.resolve_in_flight = 0;
+                    match self.audio.load_spotify(&source_id, &account) {
+                        Ok(()) => {
+                            self.playback_error = None;
+                            self.audio.seek_ms(self.pb.position_ms);
+                            if self.pb.playing {
+                                self.audio.play();
+                            }
+                        }
+                        Err(error) => {
+                            self.playback_error = Some(error.clone());
+                            self.pb.playing = false;
+                            self.fail_resource_stream(
+                                "music.spotify_audio_unavailable",
+                                &error,
+                                None,
+                                true,
+                            );
+                        }
+                    }
                 }
                 StreamUpdate::Resolved {
                     track_id,
@@ -3678,7 +3977,7 @@ impl MusicApp {
         let ordered: Vec<String> = bundle
             .tracks
             .iter()
-            .map(|h| format!("{LIVE_TRACK_PREFIX}{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
         self.live_results = Some((query.to_string(), ordered));
         self.live_bundle = Some((query.to_string(), bundle));
@@ -3903,6 +4202,8 @@ impl MusicApp {
             "album-page" => self.snap_album_page(),
             "error" => self.snap_error_page(),
             "membership-open" => self.snap_membership_open(),
+            "spotify-home" | "spotify-devices" | "spotify-error" | "spotify-queue"
+            | "spotify-create" => self.snap_spotify(scenario),
             _ => {}
         }
     }
@@ -4016,6 +4317,7 @@ impl MusicApp {
             tracks: Self::snap_artist_page_tracks(),
             albums: Self::snap_artist_page_albums(),
             similar: Self::snap_artist_page_similar(),
+            provider_followed: None,
         };
         self.absorb_artist(&page);
         self.artist_pages.insert(page.id.clone(), page);
@@ -4335,6 +4637,34 @@ impl MusicApp {
         );
         self.push_menu("Play next", Action::PlayNext(track.clone()));
         self.push_menu("Add to queue", Action::AddToQueue(track.clone()));
+        if track.starts_with("spotify:track:") {
+            self.push_menu(
+                ui::i18n!("music-spotify-save"),
+                Action::SpotifyLibrary {
+                    track: track.clone(),
+                    save: true,
+                },
+            );
+            self.push_menu(
+                ui::i18n!("music-spotify-unsave"),
+                Action::SpotifyLibrary {
+                    track: track.clone(),
+                    save: false,
+                },
+            );
+            if let View::Playlist(playlist) = &self.view
+                && playlist.starts_with("spotify:playlist:")
+            {
+                let effect = crate::actions::MusicEffect::SpotifyPlaylistRemove {
+                    playlist: playlist.clone(),
+                    track: track.clone(),
+                };
+                self.push_menu(
+                    ui::i18n!("music-spotify-remove-playlist"),
+                    Action::SpotifyEffect(effect),
+                );
+            }
+        }
         if self.lib.tracks.contains_key(&track) {
             self.context.push(MenuItem::separator());
             self.menu_actions.push(Action::Back); // separator placeholder, never fired
@@ -4428,6 +4758,26 @@ impl MusicApp {
             Action::Nav(View::Lyrics),
         );
         self.push_checked_menu("Queue", self.view == View::Queue, Action::ToggleQueue);
+        if self.spotify_catalogue {
+            self.push_menu(
+                ui::i18n!("music-spotify-devices"),
+                Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyDevices),
+            );
+            let devices = self.spotify_devices.clone();
+            for device in devices.iter().filter(|device| !device.restricted).take(12) {
+                let label = ui::i18n::I18nManager::format(
+                    "music-spotify-select-device",
+                    &[("device", (&device.name).into())],
+                );
+                self.push_menu(
+                    label,
+                    Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyTransfer {
+                        device: device.id.clone(),
+                    }),
+                );
+            }
+        }
+
         self.context.set_text_scale(self.context_text_scale);
         self.context.open_anchored(anchor, self.rect);
         self.dirty = true;
@@ -4443,6 +4793,12 @@ impl MusicApp {
             "New playlist\u{2026}",
             Action::BeginNewPlaylistFor(track.to_string()),
         );
+        if track.starts_with("spotify:track:") {
+            self.push_menu(
+                ui::i18n!("music-spotify-create-playlist"),
+                Action::BeginNewSpotifyPlaylist,
+            );
+        }
         if !self.lib.playlists.is_empty() {
             self.context.push(MenuItem::separator());
             self.menu_actions.push(Action::Back);
@@ -4462,6 +4818,8 @@ impl MusicApp {
                 },
             );
         }
+
+        self.append_spotify_playlist_choices(track);
 
         self.open_context_menu_at_pointer();
     }
@@ -4676,19 +5034,27 @@ fn elide(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64) -> St
 /// tracks use `tk_…` ids and never match.
 pub(crate) const LIVE_TRACK_PREFIX: &str = "yt:";
 
+pub(crate) fn live_track_id(source_key: &str) -> String {
+    if source_key.starts_with("spotify:track:") {
+        source_key.to_owned()
+    } else {
+        format!("{LIVE_TRACK_PREFIX}{source_key}")
+    }
+}
+
 /// Whether a track id refers to a real (streamable) YouTube-Music track.
 fn is_live_track(track_id: &str) -> bool {
-    track_id.starts_with(LIVE_TRACK_PREFIX)
+    track_id.starts_with(LIVE_TRACK_PREFIX) || track_id.starts_with("spotify:track:")
 }
 
 /// Whether an id looks like a real `YouTube` channel id (artist page fetchable).
 fn is_live_id(id: &str) -> bool {
-    id.starts_with("UC")
+    id.starts_with("UC") || id.starts_with("spotify:artist:")
 }
 
 /// Whether an id looks like a real YouTube-Music album/playlist browse id.
 fn is_live_album_id(id: &str) -> bool {
-    id.starts_with("MPRE") || id.starts_with("OLAK")
+    id.starts_with("MPRE") || id.starts_with("OLAK") || id.starts_with("spotify:album:")
 }
 
 /// Whether a playlist id refers to a real (live YouTube-Music) playlist rather
@@ -4776,7 +5142,7 @@ fn hit_to_live(hit: &TrackHit) -> CatalogueTrack {
         .unwrap_or_else(|| format!("ytal:{}_{}", slug(&hit.artist), slug(&album_title)));
     CatalogueTrack {
         track: Track {
-            id: format!("{LIVE_TRACK_PREFIX}{}", hit.video_id),
+            id: live_track_id(&hit.video_id),
             title: hit.title.clone(),
             album_id: album_id.clone(),
             artist_id: artist_id.clone(),
@@ -4915,6 +5281,7 @@ mod local_files;
 mod media_grid;
 mod page_part;
 mod render;
+mod spotify;
 mod track_table;
 
 #[cfg(test)]
