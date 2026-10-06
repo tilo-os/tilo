@@ -1214,8 +1214,8 @@ pub struct WordProcessorWidget {
     /// when the host offers it.
     window_history: ui::widget::HistoryOpener,
     window_history_rect: Rect,
-    /// The History button was replaced since the tree was last built.
-    history_tree_stale: bool,
+    /// The retained toolbar or History button changed since the tree was built.
+    retained_tree_stale: bool,
     /// Crash-recovery persistence and its Restore/Discard surface.
     /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
     template_picker: TemplatePicker,
@@ -1494,7 +1494,7 @@ impl WordProcessorWidget {
             inspector_toggle: Rect::ZERO,
             window_history: ui::widget::HistoryOpener::new(),
             window_history_rect: Rect::ZERO,
-            history_tree_stale: false,
+            retained_tree_stale: false,
             template_picker: TemplatePicker::default(),
             portal_rx: None,
             pending_save: None,
@@ -9920,6 +9920,7 @@ impl Widget for WordProcessorWidget {
                 left: l,
             };
         }
+        self.sync_toolbar();
         self.lifecycle.dirty = true;
     }
 
@@ -9933,6 +9934,7 @@ impl Widget for WordProcessorWidget {
             self.run_staged_scenario(edits, &scenario);
         }
         self.refresh_blocks(edits.doc());
+        self.sync_toolbar();
     }
 
     fn build_layout(
@@ -9989,7 +9991,11 @@ impl Widget for WordProcessorWidget {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.history_tree_stale)
+        let mut changed = std::mem::take(&mut self.retained_tree_stale);
+        for child in self.children_mut() {
+            changed |= child.take_structure_dirty();
+        }
+        changed
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -10476,7 +10482,7 @@ impl ui::widget::WindowHeader for WordProcessorWidget {
             self.window_history.set_control(control);
             self.lifecycle.dirty = true;
         }
-        self.history_tree_stale |= self.window_history.take_rebuilt();
+        self.retained_tree_stale |= self.window_history.take_rebuilt();
     }
 }
 
@@ -12589,6 +12595,7 @@ impl WordProcessorWidget {
                 };
             }
             self.tool_bar = bar;
+            self.retained_tree_stale = true;
         }
         self.tool_entries = entries;
     }
