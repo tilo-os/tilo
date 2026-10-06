@@ -164,14 +164,19 @@ python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromiu
 
 `text_input` is a separate backend protocol; it does not activate page-agent
 logging. `prepare_text_input` leases the currently focused editable element and
-selection, returning only a random opaque `data.lease`. `commit_text_input`
+selection, returning only a random opaque `data.lease`. `check_text_input`
+validates that same lease without acquiring a replacement. `commit_text_input`
 requires that lease and at most 4096 UTF-8 bytes of `text`;
 `cancel_text_input` retires it. Each request has a positive `request_id` and
-answers with a private `text_input_result`, rather than `page_result`.
+answers with a private `text_input_result`, rather than `page_result`. The SDK
+adds a five-second admission expiry; late requests fail before editing. Private
+commands are never retried after an ambiguous renderer response.
 
 The isolated world retains the original contents locally for at most three
 minutes. Focus loss, navigation, input, composition and observed eligibility
-changes retire the lease; a stale cancel cannot retire a successor. Final
+changes retire the lease; composed shadow ancestors participate in eligibility,
+and transient style/class masking or read-only changes also retire it. A stale
+cancel cannot retire a successor. Final
 validation includes the current value and selection. Page `beforeinput` handlers
 may cancel the edit; their changes are revalidated before Chromium's synchronous
 `insertText` command. That path preserves native undo/redo. There is no fallback
@@ -185,12 +190,33 @@ focus/content/selection, cancellation, navigation and protected-field rejection:
 python3 apps/browser/chromium/tests/guarded_text_input.py target/chromium/tilo-chromium-host
 ```
 
-This is the backend boundary, not assembled OS browser dictation. The WebView
-still fails closed until the SDK/compositor bridge can retain the transcript
-through asynchronous commit acknowledgement and recover it on rejection. Frame
-selection, fields without a DOM selection API (including email/number inputs),
-closed shadow roots and an already-active composition at isolated-world startup
-need additional renderer lifecycle support before they can be admitted.
+The SDK now exposes a private deferred receipt to the compositor's native field
+bridge. A queued final waits for any outstanding check of its original lease;
+focus loss and canceled receipts prevent unadmitted insertion. The compositor
+keeps the complete private transcript until acknowledgement. Refusal or unknown
+delivery enters ten-minute recovery with explicit Copy/Discard; it never retries
+or retargets automatically. These fields are admitted for native-hosted voice
+sessions only: ordinary composition, OSK and standalone Wayland window runners
+remain closed until they can consume the same acknowledgement contract.
+
+The mounted `browser-text-input-qualification` example exercises the real
+retained `Framed<WebView>` host against a synthetic HTTP fixture. It requires an
+owned disposable profile and the actual CEF helper. Run it as a non-root user
+(the same Chromium sandbox policy as the backend suite):
+
+```sh
+python3 apps/browser/chromium/tests/mounted_text_input.py target/chromium/tilo-chromium-host target/debug/examples/browser-text-input-qualification
+```
+
+Build the SDK example in the same execution environment as the helper. Backend
+fixtures and mounted
+SDK fixtures prove distinct boundaries; they do not prove an assembled physical
+microphone journey. Chromium's one-batch rich-text insertion preserves inline
+bold markup and native undo but can convert an adjacent space to `&nbsp;`; the
+fixture asserts its exact HTML and exact undo/redo, alongside native typing.
+Frame selection, fields without a DOM selection API (including email/number
+inputs), closed shadow roots and an already-active composition at isolated-world
+startup need additional renderer lifecycle support before admission.
 
 What an agent host relies on — the process budget (the browser, its storage
 service and one renderer per site; Linux adds its sandbox zygotes), hidden

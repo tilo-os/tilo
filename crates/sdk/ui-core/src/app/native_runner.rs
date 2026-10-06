@@ -1309,7 +1309,9 @@ impl AppHandler {
         let next = if self.floating_windows.iter().any(|surface| surface.focused) {
             None
         } else {
-            self.app.ime_window_state()
+            self.app
+                .ime_window_state()
+                .filter(|_| !self.app.focused_ime_requires_deferred_ack())
         };
         #[cfg(target_os = "android")]
         if super::android_text_input::bridge::installed() {

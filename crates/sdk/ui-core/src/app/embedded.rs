@@ -369,6 +369,26 @@ impl Widget for EmbeddedApp {
         self.app.ime_window_state().map(|field| field.purpose)
     }
 
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.app
+            .focused_node
+            .and_then(|node| {
+                self.app
+                    .inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        self.app
+            .mutate_node(self.app.focused_node?, |widget| {
+                widget.commit_deferred_text(text)
+            })
+            .ok()
+            .flatten()
+    }
+
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         let node = self.app.focused_node?;
         let field = self

@@ -1203,14 +1203,15 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="text_input") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
-    if(action!="prepare_text_input" && action!="commit_text_input" && action!="cancel_text_input")return false;
+    if(action!="prepare_text_input" && action!="check_text_input" && action!="commit_text_input" && action!="cancel_text_input")return false;
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
-    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="action" && key!="lease" && key!="text")return false;
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="action" && key!="lease" && key!="text" && key!="expires_ms")return false;
     if(action!="prepare_text_input") {
       if(!type("lease",VTYPE_STRING))return false;
       const auto lease=d->GetString("lease").ToString();
       if(lease.size()!=32 || !std::all_of(lease.begin(),lease.end(),[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');}))return false;
     }
+    if(d->HasKey("expires_ms") && (!number("expires_ms") || Number(d,"expires_ms")<=0 || !std::isfinite(Number(d,"expires_ms"))))return false;
     return action!="commit_text_input" || (type("text",VTYPE_STRING) && !d->GetString("text").empty() && d->GetString("text").ToString().size()<=4096);
   }
   if(op=="page") {

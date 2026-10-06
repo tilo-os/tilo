@@ -2456,3 +2456,6 @@ search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled whi
 
 dictation-live-preview = Draft · { $text }
 dictation-open-settings = Set up
+
+dictation-edit-rejected = Microphone off · The original field refused the text or changed. Your transcript is kept privately for 10 minutes. Copy exports it to your clipboard; discard removes it.
+dictation-delivery-unknown = Microphone off · Text insertion was not confirmed. Check the original field before inserting again. Your transcript is kept privately for 10 minutes; copy exports it to your clipboard.

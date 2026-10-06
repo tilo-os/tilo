@@ -473,6 +473,7 @@ mod tests {
         assert!(matches!(
             fixture.state.dictation_status(),
             DictationStatus::Recovery {
+                reason: super::super::RecoveryReason::TooLong,
                 copied: true,
                 copy_failed: false
             }
@@ -607,6 +608,153 @@ mod tests {
         assert!(
             fixture.proxy.drain_dictation_commit().is_none(),
             "the final must not be delivered twice"
+        );
+    }
+    #[test]
+    fn native_dictation_rejection_keeps_the_complete_private_transcript() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "日本語 café".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert_eq!(fixture.state.dictation_status(), DictationStatus::Finishing);
+        assert_eq!(
+            fixture.state.prepare_dictation(Instant::now()),
+            Err(super::super::DictationError::Busy)
+        );
+        fixture
+            .state
+            .acknowledge_native_dictation(Some(ui::webview::text_input::Receipt::failed(
+                ui::webview::text_input::Failure::Rejected,
+            )));
+        fixture.state.poll_native_dictation_delivery(Instant::now());
+        let recovery = fixture
+            .state
+            .text_commit
+            .dictation
+            .recovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(&*recovery.text, "日本語 café");
+        assert_eq!(recovery.reason, super::super::RecoveryReason::Rejected);
+        assert_eq!(recovery.id, id);
+        assert!(!recovery.copied);
+        fixture.state.discard_dictation_recovery();
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+    }
+
+    #[test]
+    fn disappearing_deferred_owner_cannot_be_acknowledged_as_a_synchronous_edit() {
+        let mut fixture = Fixture::new();
+        fixture.state.shell_field_active = true;
+        fixture.state.set_native_dictation_deferred(true);
+        let id = fixture.consent();
+        fixture
+            .state
+            .update_dictation(id, "Original browser transcript".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        fixture.state.set_native_dictation_deferred(false);
+        assert!(
+            fixture.state.native_dictation_requires_ack(),
+            "the original session retains its delivery contract"
+        );
+        fixture.state.acknowledge_native_dictation(None);
+        fixture.state.poll_native_dictation_delivery(Instant::now());
+        let recovery = fixture
+            .state
+            .text_commit
+            .dictation
+            .recovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(&*recovery.text, "Original browser transcript");
+        assert_eq!(recovery.reason, super::super::RecoveryReason::Rejected);
+    }
+
+    #[test]
+    fn native_final_cancel_requires_its_original_session_and_drops_private_recovery() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "Private original".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert!(!fixture.state.cancel_dictation(super::super::SessionId(0)));
+        assert!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .native_delivery
+                .is_some()
+        );
+        assert!(fixture.state.cancel_dictation(id));
+        assert!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .native_delivery
+                .is_none()
+        );
+        fixture
+            .state
+            .poll_native_dictation_delivery(Instant::now() + std::time::Duration::from_secs(11));
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+    }
+
+    #[test]
+    fn unacknowledged_native_final_recovers_once_without_retargeting_or_retry() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "Original private transcript".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        fixture.state.poll_native_dictation_delivery(Instant::now());
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+        let expired = Instant::now() + std::time::Duration::from_secs(11);
+        fixture.state.poll_native_dictation_delivery(expired);
+        let recovery = fixture
+            .state
+            .text_commit
+            .dictation
+            .recovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(&*recovery.text, "Original private transcript");
+        assert_eq!(
+            recovery.reason,
+            super::super::RecoveryReason::UnknownDelivery
+        );
+        fixture.state.acknowledge_native_dictation(None);
+        fixture.state.poll_native_dictation_delivery(expired);
+        assert_eq!(
+            &*fixture
+                .state
+                .text_commit
+                .dictation
+                .recovery
+                .as_ref()
+                .unwrap()
+                .text,
+            "Original private transcript"
+        );
+        assert!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .native_delivery
+                .is_none()
         );
     }
 }

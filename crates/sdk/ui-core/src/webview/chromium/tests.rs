@@ -2137,3 +2137,53 @@ fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
         "cancellation failure must reap its owned helper"
     );
 }
+
+#[test]
+fn private_text_input_receipts_route_only_to_the_original_tab_without_public_events() {
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let (one, a) = first
+        .text_input
+        .lock()
+        .unwrap()
+        .admit(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let (two, b) = second
+        .text_input
+        .lock()
+        .unwrap()
+        .admit(super::super::text_input::Request::Prepare)
+        .unwrap();
+    assert_eq!(
+        a["request_id"], b["request_id"],
+        "tab owners have independent request spaces"
+    );
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let downloads = Mutex::default();
+    let (ready, _) = sync_channel(1);
+    let reply = json!({"event":"text_input_result","tab":2,"request_id":b["request_id"],"ok":true,"navigated":false,"url":"http://fixture.invalid/","message":"Prepared","data":{"lease":"0123456789abcdef0123456789abcdef"}});
+    route_native_event(&reply, &routes, &downloads, &ready).unwrap();
+    assert!(
+        one.poll().is_none(),
+        "another tab cannot acknowledge the original request"
+    );
+    assert!(matches!(two.poll(), Some(Ok(Some(_)))));
+    assert!(first.events.lock().unwrap().is_empty());
+    assert!(second.events.lock().unwrap().is_empty());
+    let mut stale = reply.clone();
+    stale["ok"] = json!(false);
+    stale["code"] = json!("text_input_changed");
+    route_native_event(&stale, &routes, &downloads, &ready).unwrap();
+    assert!(
+        matches!(two.poll(), Some(Ok(Some(_)))),
+        "replayed failures cannot alter a consumed receipt"
+    );
+    first.text_input.lock().unwrap().unavailable();
+    assert!(matches!(
+        one.poll(),
+        Some(Err(super::super::text_input::Failure::Unknown))
+    ));
+}

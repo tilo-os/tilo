@@ -74,6 +74,22 @@ impl DictationSurface {
     pub(crate) fn enqueue(&mut self, request: Request) {
         self.pending = Some(request);
     }
+    /// Receipt-only fields serve speech preparation/recording, never ordinary
+    /// IME composition. Recovery does not reopen the original editable field.
+    pub(crate) fn needs_original_field(&self) -> bool {
+        self.pending == Some(Request::Toggle)
+            || matches!(self.phase, Some(Phase::Preparing | Phase::Consent))
+            || matches!(
+                self.phase,
+                Some(Phase::Running(
+                    DictationStatus::Loading
+                        | DictationStatus::Listening
+                        | DictationStatus::StoppingRecording
+                        | DictationStatus::Finishing
+                ))
+            )
+    }
+
     pub(crate) fn take_request(&mut self) -> Option<Request> {
         self.pending.take()
     }
@@ -234,6 +250,7 @@ impl DictationSurface {
                 return;
             }
             DictationStatus::Recovery {
+                reason,
                 copied,
                 copy_failed,
             } => {
@@ -242,7 +259,17 @@ impl DictationSurface {
                 } else if copied {
                     "dictation-transcript-copied"
                 } else {
-                    "dictation-transcript-retained"
+                    match reason {
+                        crate::compositor::dictation::RecoveryReason::TooLong => {
+                            "dictation-transcript-retained"
+                        }
+                        crate::compositor::dictation::RecoveryReason::Rejected => {
+                            "dictation-edit-rejected"
+                        }
+                        crate::compositor::dictation::RecoveryReason::UnknownDelivery => {
+                            "dictation-delivery-unknown"
+                        }
+                    }
                 }
             }
             DictationStatus::Preparing => "dictation-preparing",
@@ -607,6 +634,7 @@ mod tests {
             Some(LayerIntent::Dictation(_))
         ));
         surface.status(DictationStatus::Recovery {
+            reason: crate::compositor::dictation::RecoveryReason::TooLong,
             copied: false,
             copy_failed: false,
         });

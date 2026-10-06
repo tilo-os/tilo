@@ -10422,7 +10422,15 @@ pub fn run() {
         frame_builder.with_chrome(|chrome| chrome.set_awake_holders(awake_holders));
         // A chrome field with the focus, while no client holds the keyboard,
         // is served to the seat's input method like an application field.
-        let shell_field = (!session.is_locked() && state.client_input.keyboard_focus().is_none())
+        let deferred_field =
+            frame_builder.focused_ime_requires_deferred_ack(test_control_ctx.focus);
+        let speech_field_needed = frame_builder
+            .host_mut()
+            .dictation_surface_mut()
+            .needs_original_field();
+        let shell_field = (!session.is_locked()
+            && state.client_input.keyboard_focus().is_none()
+            && (!deferred_field || speech_field_needed))
             .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
             .flatten();
         if shell_field.is_some() && shell_text_input.is_none() {
@@ -10466,8 +10474,9 @@ pub fn run() {
             state.osk_surface,
             state.client_input.keyboard_focus(),
             state.shell_field_active.then_some(shell_field).flatten(),
-            state.text_input_active() && input_methods.osk_shown(),
+            state.text_input_active() && input_methods.osk_shown() && !deferred_field,
         );
+        state.set_native_dictation_deferred(deferred_field && state.shell_field_active);
         let dictation_blocked =
             session.is_locked() || !frame_builder.host().dictation_input_available();
         let dictation_changed = {
@@ -10490,17 +10499,41 @@ pub fn run() {
                 )
             });
             if let Some(events) = events {
-                for event in &events {
-                    frame_builder.dispatch_event(
-                        event,
-                        &test_control_ctx.modifiers,
-                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
-                        &test_control_ctx.root_obj,
-                        &mut test_control_ctx.focus,
-                    );
+                let receipt = events.iter().find_map(|event| match event {
+                    WindowEvent::Ime(winit::event::Ime::Commit(text)) => frame_builder
+                        .commit_deferred_text(
+                            test_control_ctx.focus,
+                            text,
+                            &mut test_control_ctx.doc,
+                            &test_control_ctx.root_obj,
+                        ),
+                    _ => None,
+                });
+                let receipt = receipt.or_else(|| {
+                    state.native_dictation_requires_ack().then(|| {
+                        ui::webview::text_input::Receipt::failed(
+                            ui::webview::text_input::Failure::Rejected,
+                        )
+                    })
+                });
+                if receipt.is_none() {
+                    for event in &events {
+                        frame_builder.dispatch_event(
+                            event,
+                            &test_control_ctx.modifiers,
+                            &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                            &test_control_ctx.root_obj,
+                            &mut test_control_ctx.focus,
+                        );
+                    }
                 }
+                state.acknowledge_native_dictation(receipt);
                 injected_redraw_pending = true;
             } else {
+                state.acknowledge_native_dictation(Some(ui::webview::text_input::Receipt::failed(
+                    ui::webview::text_input::Failure::Unknown,
+                )));
+                state.poll_native_dictation_delivery(Instant::now());
                 // Disconnect the old bridge so an incomplete result cannot
                 // arrive next turn after the target's selection has changed.
                 shell_text_input = None;

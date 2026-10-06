@@ -651,6 +651,16 @@ impl App {
     }
 
     #[cfg(feature = "native")]
+    fn focused_ime_requires_deferred_ack(&self) -> bool {
+        self.focused_node
+            .and_then(|node| {
+                self.inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(feature = "native")]
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
         self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
