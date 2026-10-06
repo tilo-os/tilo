@@ -10,7 +10,7 @@
 //!    refusing connections, which is what a session that died without
 //!    unlinking leaves behind → log a warning, continue.
 //! 4. For sockets that exist → open the socket as a `UnixStream` and
-//!    keep it, owned, for the length of the launch. `run::place_service_fds`
+//!    keep it, owned, for the length of the launch. `run::place_child_fds`
 //!    dup2s it onto the agreed `child_fd` in the forked child, and `dup2`
 //!    leaves that copy without CLOEXEC, so it survives bwrap's exec and
 //!    the `__sandbox-exec` re-exec at that number. The app reads the
@@ -92,14 +92,17 @@ const CHOOSER_CHILD_FD: i32 = 32;
 /// services are handed on, so no service can replace a filter.
 pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
 pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;
+/// Synthetic sandbox account file, consumed by bwrap before app execution.
+pub(crate) const ACCOUNT_CHILD_FD: i32 = 42;
 /// Every fixed child slot; declared services are numbered around them.
-pub(crate) const RESERVED_CHILD_FDS: [i32; 6] = [
+pub(crate) const RESERVED_CHILD_FDS: [i32; 7] = [
     runtime_identity::broker::BROKER_CHILD_FD,
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
     BASELINE_SECCOMP_CHILD_FD,
+    ACCOUNT_CHILD_FD,
 ];
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
@@ -1335,7 +1338,7 @@ mod tests {
             let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
             let (mut served, _) = listener.accept().expect("the connection has to arrive");
 
-            // What `place_service_fds` makes on the other side of the fork:
+            // What `place_child_fds` makes on the other side of the fork:
             // another descriptor on the same socket. It stands in for the app.
             let app_copy = unsafe {
                 let raw = libc::dup(resolved[0].host_fd());

@@ -2271,6 +2271,14 @@ impl ControlState for FrameBuilderControlState<'_> {
             // The input hardware and last-used modality the chrome adapts
             // to, and the language the desktop help overlay is written in.
             "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
+            "input_capture": {
+                "onboarding": self.fb.host().onboarding_active(),
+                "chrome": client_input::chrome_captures_input(self.fb),
+                "inner_surface": self.fb.host().inner_surface_captures_input(),
+                "maximized_controls": self.fb.host().maximized_chrome_captures_pointer(),
+                "shortcut_help": overlays.shortcut_help,
+                "projection": overlays.projection,
+            },
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
