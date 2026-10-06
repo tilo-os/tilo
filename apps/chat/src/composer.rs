@@ -362,6 +362,7 @@ impl DraftComposer {
         self.host.widget().source().private_plain()
     }
 
+    #[cfg(test)]
     pub(crate) fn private_plain_for(&self, workspace: &str, agent: &str) -> Option<String> {
         let key = agent_draft_key(workspace, agent);
         self.host
@@ -369,6 +370,15 @@ impl DraftComposer {
             .source()
             .private
             .with(|drafts| drafts.get(&key).map(Draft::plain_text))
+    }
+
+    pub(crate) fn private_revision_for(&self, workspace: &str, agent: &str) -> Option<u64> {
+        let key = agent_draft_key(workspace, agent);
+        self.host.widget().source().private.with(|drafts| {
+            drafts
+                .get(&key)
+                .and_then(tilo_rich_text::RichTextSource::revision)
+        })
     }
 
     /// Clear only the currently attached direct-agent draft.
@@ -380,9 +390,15 @@ impl DraftComposer {
         cleared
     }
 
-    /// Clear one exact direct-agent draft after its asynchronous owner action
-    /// succeeds, even when another conversation is currently attached.
-    pub(crate) fn clear_private_for(&mut self, workspace: &str, agent: &str) -> bool {
+    /// Clear an exact private draft only when it is still the editor version
+    /// whose owner-backed action succeeded. Text equality is insufficient:
+    /// edit-away-and-back and formatting-only changes are both newer work.
+    pub(crate) fn clear_private_for_revision(
+        &mut self,
+        workspace: &str,
+        agent: &str,
+        expected: u64,
+    ) -> bool {
         let key = agent_draft_key(workspace, agent);
         let mut cleared = false;
         self.host
@@ -390,7 +406,10 @@ impl DraftComposer {
             .source_mut()
             .private
             .update(|drafts| {
-                if let Some(draft) = drafts.get_mut(&key) {
+                let Some(draft) = drafts.get_mut(&key) else {
+                    return;
+                };
+                if tilo_rich_text::RichTextSource::revision(draft) == Some(expected) {
                     draft.clear();
                     cleared = true;
                 }

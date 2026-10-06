@@ -47,6 +47,17 @@ fn now_secs() -> i64 {
         .map_or(NOW, |d| d.as_secs() as i64)
 }
 
+fn agent_message_is_plain(clips: &[tilo_document::ClipBlock]) -> bool {
+    clips.iter().all(|block| {
+        block.kind == "paragraph"
+            && block.marks.is_empty()
+            && block.level.is_none()
+            && block.ordered.is_none()
+            && block.align.is_none()
+            && block.attrs.is_empty()
+    })
+}
+
 struct EventDispatch<'a, 'doc> {
     event: &'a WindowEvent,
     scale: f64,
@@ -911,7 +922,9 @@ impl ChatApp {
                     let _ = self.float_agent_conversation(&workspace, &agent);
                 }
             }
-            Hit::AgentIntent(intent) if self.direct_agent.is_some() => {
+            Hit::AgentIntent(intent)
+                if self.direct_agent.is_some() && self.direct_agent_is_available() =>
+            {
                 if intent != crate::app::AgentComposerIntent::Steer
                     || self
                         .direct_agent
@@ -1597,6 +1610,87 @@ impl ChatApp {
         self.set_composer_focus();
     }
 
+    fn send_agent_focused(&mut self, agent: Id) {
+        let text = self.composer_main.private_plain().unwrap_or_default();
+        if text.trim().is_empty() || !self.room_agents.iter().any(|known| known == &agent) {
+            return;
+        }
+        let workspace = self.active_ws.clone();
+        let intent = self.direct_agent_intent();
+        let Some(draft_revision) = self.composer_main.private_revision_for(&workspace, &agent)
+        else {
+            return;
+        };
+        if intent == crate::app::AgentComposerIntent::Message {
+            if !agent_message_is_plain(&self.composer_main.clips()) {
+                self.agent_submission_errors.update(|errors| {
+                    errors.insert(
+                        (workspace, agent),
+                        crate::i18n::t("chat-agent-message-plain-only"),
+                    );
+                });
+                return;
+            }
+            let key = (workspace, agent);
+            if self.agent_submissions.get().contains_key(&key) {
+                return;
+            }
+            let call = self
+                .agent_task_actions
+                .catalogue(tilo_actions::remote::CatalogueQuery {
+                    max_results: 0,
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                });
+            self.agent_submission_errors
+                .update(|errors| _ = errors.remove(&key));
+            self.agent_submissions.update(|pending| {
+                pending.insert(
+                    key,
+                    crate::app::AgentSubmission {
+                        text,
+                        draft_revision,
+                        intent,
+                        message: Some(crate::app::AgentMessageSubmission::Providers(call)),
+                        give_up_at: std::time::Instant::now()
+                            .checked_add(crate::app::AGENT_MESSAGE_RESOLVE_WINDOW)
+                            .unwrap_or_else(std::time::Instant::now),
+                        pages_remaining: crate::app::AGENT_MESSAGE_MAX_PAGES,
+                    },
+                );
+            });
+            self.poll_agent_tasks();
+            return;
+        }
+        let tasks = self.agent_task_context(&workspace, &agent);
+        let submitted = match intent {
+            crate::app::AgentComposerIntent::Queue => tasks.borrow_mut().queue(&text, None).is_ok(),
+            crate::app::AgentComposerIntent::Steer => tasks.borrow_mut().steer(&text).is_ok(),
+            crate::app::AgentComposerIntent::Message => false,
+        };
+        if submitted {
+            self.agent_submissions.update(|pending| {
+                pending.insert(
+                    (workspace, agent),
+                    crate::app::AgentSubmission {
+                        text,
+                        draft_revision,
+                        intent,
+                        message: None,
+                        give_up_at: std::time::Instant::now()
+                            .checked_add(crate::app::AGENT_MESSAGE_RESOLVE_WINDOW)
+                            .unwrap_or_else(std::time::Instant::now),
+                        pages_remaining: crate::app::AGENT_MESSAGE_MAX_PAGES,
+                    },
+                );
+            });
+            // A local test host, or an already-warm broker connection, may
+            // settle synchronously. The same poll is harmless while the
+            // durable owner receipt is still pending and never clears the
+            // private draft before that receipt.
+            self.poll_agent_tasks();
+        }
+    }
+
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // Posting is a write into the workspace: gated by the OS permission
         // context (a View-only / ungranted peer can read but not send).
@@ -1606,61 +1700,7 @@ impl ChatApp {
         if matches!(self.focus, Focus::Main)
             && let Some(agent) = self.direct_agent.clone()
         {
-            let text = self.composer_main.private_plain().unwrap_or_default();
-            if text.trim().is_empty() || !self.room_agents.iter().any(|known| known == &agent) {
-                return;
-            }
-            let workspace = self.active_ws.clone();
-            let intent = self.direct_agent_intent();
-            if intent == crate::app::AgentComposerIntent::Message {
-                let key = (workspace, agent);
-                if self.agent_submissions.get().contains_key(&key) {
-                    return;
-                }
-                let call =
-                    self.agent_task_actions
-                        .catalogue(tilo_actions::remote::CatalogueQuery {
-                            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
-                            ..tilo_actions::remote::CatalogueQuery::default()
-                        });
-                self.agent_submissions.update(|pending| {
-                    pending.insert(
-                        key,
-                        crate::app::AgentSubmission {
-                            text,
-                            intent,
-                            message: Some(crate::app::AgentMessageSubmission::Discover(call)),
-                        },
-                    );
-                });
-                self.poll_agent_tasks();
-                return;
-            }
-            let tasks = self.agent_task_context(&workspace, &agent);
-            let submitted = match intent {
-                crate::app::AgentComposerIntent::Queue => {
-                    tasks.borrow_mut().queue(&text, None).is_ok()
-                }
-                crate::app::AgentComposerIntent::Steer => tasks.borrow_mut().steer(&text).is_ok(),
-                crate::app::AgentComposerIntent::Message => false,
-            };
-            if submitted {
-                self.agent_submissions.update(|pending| {
-                    pending.insert(
-                        (workspace, agent),
-                        crate::app::AgentSubmission {
-                            text,
-                            intent,
-                            message: None,
-                        },
-                    );
-                });
-                // A local test host, or an already-warm broker connection, may
-                // settle synchronously. The same poll is harmless while the
-                // durable owner receipt is still pending and never clears the
-                // private draft before that receipt.
-                self.poll_agent_tasks();
-            }
+            self.send_agent_focused(agent);
             return;
         }
         let (key, parent) = match self.focus {
@@ -2011,29 +2051,42 @@ fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Opti
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::app::{
+        AgentComposerIntent, AgentMessagePoll, AgentMessageSubmission, AgentSubmission,
+    };
     use crate::doc::{ChatDoc, NewMessage};
     use crate::model;
     use tilo_actions::remote::{
-        ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-        InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+        ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
+        CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+        ReceiptStatus,
     };
-    use tilo_actions::{ActionOutput, InvocationId};
+    use tilo_actions::{
+        ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ExecutionLocus, InputSpec,
+        InvocationId, OperationKind, ResourceSemanticIdentity,
+    };
     use tilo_automerge::ApplyIncoming;
 
     #[derive(Default)]
     struct TaskControlHost {
         requests: Mutex<Vec<InvokeRequest>>,
+        query_parents: Mutex<Vec<Option<String>>>,
         current_unavailable: AtomicBool,
         message_refused: AtomicBool,
+        message_catalogue_mode: AtomicU8,
     }
 
     impl TaskControlHost {
         fn requests(&self) -> Vec<InvokeRequest> {
             self.requests.lock().unwrap().clone()
+        }
+
+        fn query_parents(&self) -> Vec<Option<String>> {
+            self.query_parents.lock().unwrap().clone()
         }
 
         fn make_current_unavailable(&self) {
@@ -2043,6 +2096,152 @@ mod tests {
         fn refuse_message(&self) {
             self.message_refused.store(true, Ordering::Release);
         }
+
+        fn message_catalogue_mode(&self, mode: u8) {
+            self.message_catalogue_mode.store(mode, Ordering::Release);
+        }
+
+        fn message_catalogue_page(&self, query: &CatalogueQuery) -> CataloguePage {
+            let row = agent_message_row();
+            let mode = self.message_catalogue_mode.load(Ordering::Acquire);
+            if let Some(target) = query.target.as_ref() {
+                let rows = row
+                    .action
+                    .as_ref()
+                    .is_some_and(|action| &action.address == target)
+                    .then_some(row)
+                    .into_iter()
+                    .collect();
+                let mut page = CataloguePage {
+                    revision: "chat-task-controls-1".into(),
+                    rows,
+                    exhausted: true,
+                    ..CataloguePage::default()
+                };
+                match mode {
+                    4 => page.stale_cursor = true,
+                    5 => page.budget_exhausted = true,
+                    _ => {}
+                }
+                return page;
+            }
+            if mode == 7 {
+                return cycle_catalogue_page(query);
+            }
+            let unrelated = catalogue_resource_row(
+                "opaque-unrelated-row",
+                "chat.channel",
+                "General",
+                "",
+                false,
+            );
+            match (mode, query.cursor.as_slice()) {
+                (2, _) => CataloguePage {
+                    revision: "chat-task-controls-1".into(),
+                    rows: vec![unrelated],
+                    next_cursor: vec![1],
+                    stale_cursor: true,
+                    ..CataloguePage::default()
+                },
+                (3, _) => CataloguePage {
+                    revision: "chat-task-controls-1".into(),
+                    rows: vec![row.clone(), row],
+                    exhausted: true,
+                    ..CataloguePage::default()
+                },
+                (1, [] | [1]) => CataloguePage {
+                    revision: "chat-task-controls-1".into(),
+                    rows: vec![unrelated],
+                    next_cursor: vec![1],
+                    ..CataloguePage::default()
+                },
+                _ => CataloguePage::from_rows(
+                    if mode == 6 && query.parent_resource.is_some() {
+                        "chat-task-controls-2".into()
+                    } else {
+                        "chat-task-controls-1".into()
+                    },
+                    vec![
+                        catalogue_resource_row(
+                            "workspace-chat",
+                            "chat.workspace",
+                            "Chat",
+                            "",
+                            true,
+                        ),
+                        row,
+                    ],
+                    query,
+                ),
+            }
+        }
+    }
+
+    fn catalogue_resource_row(
+        id: &str,
+        kind: &str,
+        label: &str,
+        parent: &str,
+        has_children: bool,
+    ) -> CatalogueRow {
+        CatalogueRow {
+            provider: "chat-peer".into(),
+            app_id: "so.tilo.chat".into(),
+            parent_resource: parent.into(),
+            resource: CatalogueResource {
+                id: id.into(),
+                kind: kind.into(),
+                label: label.into(),
+                presentation: None,
+            },
+            action: None,
+            has_children,
+            visibility: None,
+        }
+    }
+
+    fn agent_message_row() -> CatalogueRow {
+        let mut row = catalogue_resource_row(
+            "opaque-agent-row",
+            "chat.agent",
+            "Scribe",
+            "workspace-chat",
+            false,
+        );
+        row.action = Some(ActionDescriptor {
+            address: ActionAddress::new("opaque-agent-row", "message"),
+            semantic_identity: ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe"),
+            resource_kind: "chat.agent".into(),
+            resource_label: "Scribe".into(),
+            action_label: "Message".into(),
+            description: None,
+            locus: ExecutionLocus::ClientLocal,
+            kind: OperationKind::Document,
+            contract: ActionContract::default(),
+            input: InputSpec::Text {
+                prompt: "Message".into(),
+                placeholder: "Message Scribe".into(),
+                collects: tilo_actions::Collects::Words,
+            },
+            params: Vec::new(),
+            view: None,
+        });
+        row
+    }
+
+    fn cycle_catalogue_page(query: &CatalogueQuery) -> CataloguePage {
+        CataloguePage {
+            revision: "chat-task-controls-1".into(),
+            rows: vec![catalogue_resource_row(
+                "cycle",
+                "chat.directory",
+                "Cycle",
+                query.parent_resource.as_deref().unwrap_or_default(),
+                true,
+            )],
+            exhausted: true,
+            ..CataloguePage::default()
+        }
     }
 
     impl ActionHost for TaskControlHost {
@@ -2051,64 +2250,25 @@ mod tests {
             _caller: &Caller,
             query: CatalogueQuery,
         ) -> Pending<Result<CataloguePage, ActionHostError>> {
-            use tilo_actions::remote::{CatalogueResource, CatalogueRow};
-            use tilo_actions::{
-                ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec,
-                OperationKind, ResourceSemanticIdentity,
-            };
+            use tilo_actions::remote::CatalogueProvider;
 
-            let action = ActionDescriptor {
-                address: ActionAddress::new("opaque-agent-row", "message"),
-                semantic_identity: ResourceSemanticIdentity::new(
-                    "chat.agent",
-                    "chat.person:scribe",
-                ),
-                resource_kind: "chat.agent".into(),
-                resource_label: "Scribe".into(),
-                action_label: "Message".into(),
-                description: None,
-                locus: ExecutionLocus::ClientLocal,
-                kind: OperationKind::Document,
-                contract: ActionContract::default(),
-                input: InputSpec::Text {
-                    prompt: "Message".into(),
-                    placeholder: "Message Scribe".into(),
-                    collects: tilo_actions::Collects::Words,
-                },
-                params: Vec::new(),
-                view: None,
-            };
-            let row = CatalogueRow {
-                provider: "chat-peer".into(),
-                app_id: "so.tilo.chat".into(),
-                parent_resource: String::new(),
-                resource: CatalogueResource {
-                    id: "opaque-agent-row".into(),
-                    kind: "chat.agent".into(),
-                    label: "Scribe".into(),
-                    presentation: None,
-                },
-                action: Some(action),
-                has_children: false,
-                visibility: None,
-            };
-            let rows = query
-                .target
-                .as_ref()
-                .is_none_or(|target| {
-                    row.action
-                        .as_ref()
-                        .is_some_and(|action| &action.address == target)
-                })
-                .then_some(row)
-                .into_iter()
-                .collect();
-            Pending::ready(Ok(CataloguePage {
-                revision: "chat-task-controls-1".into(),
-                rows,
-                exhausted: true,
-                ..CataloguePage::default()
-            }))
+            if query.max_results == 0 && query.target.is_none() {
+                return Pending::ready(Ok(CataloguePage {
+                    providers: vec![CatalogueProvider {
+                        provider: "chat-peer".into(),
+                        app_id: "so.tilo.chat".into(),
+                        room: "ws_home".into(),
+                        record_id: "discussion".into(),
+                        browsable: true,
+                    }],
+                    ..CataloguePage::default()
+                }));
+            }
+            self.query_parents
+                .lock()
+                .unwrap()
+                .push(query.parent_resource.clone());
+            Pending::ready(Ok(self.message_catalogue_page(&query)))
         }
 
         fn invoke(
@@ -2264,6 +2424,51 @@ mod tests {
         (app, doc)
     }
 
+    fn settle_agent_submissions(app: &mut ChatApp) {
+        for _ in 0..16 {
+            app.poll_agent_tasks();
+            if app.agent_submissions.get().is_empty() {
+                return;
+            }
+        }
+        panic!("the bounded Agent submission did not settle");
+    }
+
+    fn assert_one_agent_message(host: &TaskControlHost, expected: &str) {
+        let messages = host
+            .requests()
+            .into_iter()
+            .filter(|request| request.target.address.action == "message")
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].argument, InvokeArgument::Text(expected.into()));
+    }
+
+    fn assert_message_hierarchy_was_queried(host: &TaskControlHost) {
+        assert!(
+            host.query_parents()
+                .iter()
+                .any(|parent| parent.as_deref() == Some("workspace-chat")),
+            "the Message action was discovered through its real resource parent"
+        );
+    }
+
+    fn assert_hit_in_view(app: &ChatApp, name: &str, matches: impl Fn(&Hit) -> bool) {
+        let rect = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches(hit).then_some(*rect))
+            .unwrap_or_else(|| panic!("the painted {name} target is missing"));
+        assert!(
+            rect.width() > 1.0 && rect.height() > 1.0,
+            "the painted {name} target has no area: {rect:?}"
+        );
+        assert!(
+            app.rect.contains(rect.center()),
+            "the painted {name} target is outside the viewport: {rect:?}"
+        );
+    }
+
     #[test]
     fn authenticated_agent_route_keeps_private_draft_until_message_terminal_success() {
         let mut doc = AutoCommit::new();
@@ -2314,8 +2519,30 @@ mod tests {
             app.composer_main.private_plain().as_deref(),
             Some("Keep this private")
         );
+        assert!(
+            agent_message_is_plain(&app.composer_main.clips()),
+            "plain typed text was misclassified as rich: {:?}",
+            app.composer_main.clips()
+        );
+        assert!(
+            app.composer_main
+                .private_revision_for("ws_home", "scribe")
+                .is_some(),
+            "the peer-private editor must expose a submission revision"
+        );
 
         app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        let pending = app.agent_submissions.get();
+        let submitted_revision = pending
+            .get(&("ws_home".into(), "scribe".into()))
+            .map(|submission| submission.draft_revision);
+        assert!(
+            submitted_revision.is_some(),
+            "the Message did not retain its exact private draft revision; errors {:?}, requests {:?}",
+            app.agent_submission_errors.get(),
+            host.requests()
+        );
+        let submitted_revision = submitted_revision.unwrap();
         assert_eq!(
             app.composer_main.private_plain().as_deref(),
             Some("Keep this private"),
@@ -2327,18 +2554,16 @@ mod tests {
             Some("Keep this private"),
             "starting the public action is not its terminal owner receipt"
         );
-        app.poll_agent_tasks();
-        assert_eq!(app.composer_main.private_plain().as_deref(), Some(""));
-        let messages = host
-            .requests()
-            .into_iter()
-            .filter(|request| request.target.address.action == "message")
-            .collect::<Vec<_>>();
-        assert_eq!(messages.len(), 1);
+        settle_agent_submissions(&mut app);
         assert_eq!(
-            messages[0].argument,
-            InvokeArgument::Text("Keep this private".into())
+            app.composer_main.private_plain().as_deref(),
+            Some(""),
+            "successful owner receipt did not clear revision {submitted_revision}; current {:?}, errors {:?}",
+            app.composer_main.private_revision_for("ws_home", "scribe"),
+            app.agent_submission_errors.get()
         );
+        assert_one_agent_message(&host, "Keep this private");
+        assert_message_hierarchy_was_queried(&host);
         assert!(
             ChatDoc::list_messages(
                 &doc,
@@ -2370,13 +2595,26 @@ mod tests {
         );
         type_str(&mut app, &mut doc, "Keep after refusal");
         app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
-        app.poll_agent_tasks();
-        app.poll_agent_tasks();
+        settle_agent_submissions(&mut app);
         assert_eq!(
             app.composer_main.private_plain().as_deref(),
             Some("Keep after refusal")
         );
         assert!(app.agent_submissions.get().is_empty());
+        assert_eq!(
+            app.agent_submission_errors
+                .get()
+                .get(&("ws_home".into(), "scribe".into()))
+                .map(String::as_str),
+            Some("Message was not sent. Your draft is still here."),
+            "a terminal refusal is visible beside the retained draft"
+        );
+        render_frame(&mut app, 800.0, 600.0);
+        let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
+        assert!(accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText
+                && node.name.as_deref() == Some("Message was not sent. Your draft is still here.")
+        }));
     }
 
     #[test]
@@ -2401,7 +2639,7 @@ mod tests {
         app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
         app.poll_agent_tasks();
         type_str(&mut app, &mut doc, " plus a correction");
-        app.poll_agent_tasks();
+        settle_agent_submissions(&mut app);
 
         assert_eq!(
             app.composer_main.private_plain().as_deref(),
@@ -2409,6 +2647,237 @@ mod tests {
             "an older success acknowledges only its exact submitted text"
         );
         assert!(app.agent_submissions.get().is_empty());
+    }
+
+    #[test]
+    fn an_admitted_message_waits_for_its_terminal_receipt_past_discovery_expiry() {
+        let (app, _doc) = app_with_doc();
+        let invocation = InvocationId::new();
+        let call = ui::LocalState::new(ui::remote_actions::RemoteCall::Pending);
+        let writer = call.writer();
+        let submission = AgentSubmission {
+            text: "Still pending".into(),
+            draft_revision: 1,
+            intent: AgentComposerIntent::Message,
+            message: None,
+            give_up_at: std::time::Instant::now(),
+            pages_remaining: 0,
+        };
+        let message = AgentMessageSubmission::Invoke(call);
+
+        assert!(matches!(
+            app.poll_agent_message_submission("ws_home", "scribe", &submission, &message),
+            AgentMessagePoll::Waiting
+        ));
+        writer.set(ui::remote_actions::RemoteCall::Done(
+            tilo_actions::InvocationUpdate::Accepted { invocation },
+        ));
+        assert!(matches!(
+            app.poll_agent_message_submission("ws_home", "scribe", &submission, &message),
+            AgentMessagePoll::Waiting
+        ));
+        writer.set(ui::remote_actions::RemoteCall::Done(
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput::default(),
+            },
+        ));
+        assert!(matches!(
+            app.poll_agent_message_submission("ws_home", "scribe", &submission, &message),
+            AgentMessagePoll::Succeeded
+        ));
+    }
+
+    #[test]
+    fn terminal_success_does_not_clear_edit_away_and_back_or_formatting_changes() {
+        let prepare = || {
+            let mut doc = AutoCommit::new();
+            ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+            let mut app = peer("u_alice", "Alice", "AL", 0);
+            app.room_agents.push("scribe".into());
+            app.room_names
+                .insert("agent:scribe".into(), "Scribe".into());
+            app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+                Arc::new(TaskControlHost::default()) as Arc<dyn ActionHost + Send + Sync>,
+                Caller::local_app("so.tilo.chat").in_room("ws_home"),
+            );
+            app.reload(&doc);
+            app.on_hit(
+                Hit::Agent("scribe".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            type_str(&mut app, &mut doc, "Same visible text");
+            app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+            (app, doc)
+        };
+
+        let (mut edited, mut edited_doc) = prepare();
+        type_str(&mut edited, &mut edited_doc, "x");
+        feed(
+            &mut edited,
+            &mut edited_doc,
+            &key_named(NamedKey::Backspace),
+        );
+        assert_eq!(edited.composer_main.value(), "Same visible text");
+        settle_agent_submissions(&mut edited);
+        assert_eq!(
+            edited.composer_main.private_plain().as_deref(),
+            Some("Same visible text"),
+            "edit-away-and-back is a newer private draft version"
+        );
+
+        let (mut formatted, mut formatted_doc) = prepare();
+        feed_mods(
+            &mut formatted,
+            &mut formatted_doc,
+            &key_char("a"),
+            mods(true, false),
+        );
+        feed_mods(
+            &mut formatted,
+            &mut formatted_doc,
+            &key_char("b"),
+            mods(true, false),
+        );
+        assert_eq!(formatted.composer_main.value(), "Same visible text");
+        assert!(
+            !agent_message_is_plain(&formatted.composer_main.clips()),
+            "the editor retained the formatting-only change"
+        );
+        settle_agent_submissions(&mut formatted);
+        assert_eq!(
+            formatted.composer_main.private_plain().as_deref(),
+            Some("Same visible text"),
+            "formatting-only edits are not cleared by an older terminal receipt"
+        );
+    }
+
+    #[test]
+    fn formatted_agent_message_is_refused_without_losing_the_private_draft() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        feed_mods(&mut app, &mut doc, &key_char("b"), mods(true, false));
+        type_str(&mut app, &mut doc, "Formatted draft");
+        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+
+        assert!(app.agent_submissions.get().is_empty());
+        assert!(
+            host.requests()
+                .iter()
+                .all(|request| request.target.address.action != "message"),
+            "unsupported rich content never silently degrades into a text-only owner action"
+        );
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Formatted draft")
+        );
+        assert_eq!(
+            app.agent_submission_errors
+                .get()
+                .get(&("ws_home".into(), "scribe".into()))
+                .map(String::as_str),
+            Some(
+                "Agent messages currently support plain text only. Remove formatting or attachments to send."
+            )
+        );
+    }
+
+    #[test]
+    fn malformed_or_expired_message_catalogues_fail_closed_with_the_draft_visible() {
+        for (case, mode) in [
+            ("repeated cursor", 1),
+            ("stale page", 2),
+            ("duplicate row", 3),
+            ("stale confirmation", 4),
+            ("confirmation budget", 5),
+            ("revision drift", 6),
+            ("resource cycle", 7),
+        ] {
+            let mut doc = AutoCommit::new();
+            ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+            let mut app = peer("u_alice", "Alice", "AL", 0);
+            app.room_agents.push("scribe".into());
+            app.room_names
+                .insert("agent:scribe".into(), "Scribe".into());
+            let host = Arc::new(TaskControlHost::default());
+            host.message_catalogue_mode(mode);
+            app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+                Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+                Caller::local_app("so.tilo.chat").in_room("ws_home"),
+            );
+            app.reload(&doc);
+            app.on_hit(
+                Hit::Agent("scribe".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            type_str(&mut app, &mut doc, case);
+            app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+            settle_agent_submissions(&mut app);
+
+            assert_eq!(app.composer_main.private_plain().as_deref(), Some(case));
+            assert!(
+                host.requests()
+                    .iter()
+                    .all(|request| request.target.address.action != "message"),
+                "{case}: ambiguous catalogue data cannot invoke Message"
+            );
+            assert!(
+                app.agent_submission_errors
+                    .get()
+                    .contains_key(&("ws_home".into(), "scribe".into())),
+                "{case}: the refusal is visible"
+            );
+        }
+
+        for case in ["page budget", "expired lookup"] {
+            let mut doc = AutoCommit::new();
+            ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+            let mut app = peer("u_alice", "Alice", "AL", 0);
+            app.room_agents.push("scribe".into());
+            app.room_names
+                .insert("agent:scribe".into(), "Scribe".into());
+            let host = Arc::new(TaskControlHost::default());
+            app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+                Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+                Caller::local_app("so.tilo.chat").in_room("ws_home"),
+            );
+            app.reload(&doc);
+            app.on_hit(
+                Hit::Agent("scribe".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            type_str(&mut app, &mut doc, case);
+            app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+            app.agent_submissions.update(|pending| {
+                let submission = pending.values_mut().next().expect("pending Message");
+                if case == "page budget" {
+                    submission.pages_remaining = 0;
+                } else {
+                    submission.give_up_at = std::time::Instant::now();
+                }
+            });
+            settle_agent_submissions(&mut app);
+            assert_eq!(app.composer_main.private_plain().as_deref(), Some(case));
+            assert!(
+                host.requests()
+                    .iter()
+                    .all(|request| request.target.address.action != "message")
+            );
+        }
     }
 
     #[test]
@@ -2572,6 +3041,26 @@ mod tests {
     }
 
     #[test]
+    fn compact_large_text_agent_controls_keep_header_editor_and_send_in_view() {
+        let (mut app, mut doc) = app_with_doc();
+        app.stage_scenario("agent-direction-saved-compact");
+        type_str(&mut app, &mut doc, "Keep the evidence concise");
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+
+        assert_hit_in_view(&app, "header Float", |hit| matches!(hit, Hit::AgentWindow));
+        assert_hit_in_view(&app, "composer editor", |hit| matches!(hit, Hit::FocusMain));
+        assert_hit_in_view(&app, "Save direction", |hit| matches!(hit, Hit::Send));
+        let send = app
+            .semantic_hits()
+            .into_iter()
+            .find(|(_, hit, ..)| matches!(hit, Hit::Send))
+            .expect("Save direction is exported through the semantic action door");
+        assert_eq!(send.2, "Save direction");
+    }
+
+    #[test]
     fn agent_conversation_drag_uses_the_shared_surface_handoff() {
         use ui::Widget;
 
@@ -2725,6 +3214,151 @@ mod tests {
         assert_eq!(app.composer_main.value(), "Private direction");
         assert_eq!(app.composer_main.selection(), (2, 9));
         assert!(ChatDoc::draft_text(&doc, &channel).is_empty());
+    }
+
+    #[test]
+    fn removed_agent_surface_keeps_its_private_draft_and_returns_without_send_authority() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Private draft after removal");
+        app.composer_main.select(4, 12);
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes one shared-host request");
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        let rect = request.initial_rect.expect("the source geometry is exact");
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: request.id.clone(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+                content_rect: ui::floating_surface::protocol_rect_array(rect),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: request.id.clone(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+            },
+        );
+
+        app.room_agents.clear();
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+            &mut app,
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+        let surface = &app.agent_surfaces[&channel];
+        assert_eq!(
+            surface.view.composer_main.private_plain().as_deref(),
+            Some("Private draft after removal")
+        );
+        assert_eq!(surface.view.composer_main.selection(), (4, 12));
+        assert!(
+            surface
+                .view
+                .hits
+                .iter()
+                .all(|(_, hit)| { !matches!(hit, Hit::AgentIntent(_) | Hit::Send) }),
+            "membership withdrawal must remove every Message, Queue, Steer and send target: {:?}",
+            surface.view.hits
+        );
+
+        app.agent_surfaces
+            .get_mut(&channel)
+            .unwrap()
+            .view
+            .on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        app.settle_agent_surface_commands();
+        assert!(
+            app.agent_surfaces[&channel].placement.is_return_pending(),
+            "Return is a local editor recovery action, not new send authority"
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request.id },
+        );
+        assert_eq!(app.active_ws, "ws_home");
+        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
+        assert_eq!(app.composer_main.value(), "Private draft after removal");
+        assert_eq!(app.composer_main.selection(), (4, 12));
+        render_frame(&mut app, 1200.0, 800.0);
+        assert!(
+            app.hits
+                .iter()
+                .all(|(_, hit)| { !matches!(hit, Hit::AgentIntent(_) | Hit::Send) })
+        );
+        let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
+        assert!(accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText
+                && node.name.as_deref()
+                    == Some(
+                        "This agent is no longer available here. Your draft is kept on this device.",
+                    )
+        }));
+    }
+
+    #[test]
+    fn permission_loss_reaches_the_detached_editor_without_losing_its_draft() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Keep this view-only draft");
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
+                vec![],
+            ),
+        );
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+            &mut app,
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+        let surface = &app.agent_surfaces[&channel];
+        assert!(!surface.view.can_participate());
+        assert_eq!(
+            surface.view.composer_main.private_plain().as_deref(),
+            Some("Keep this view-only draft")
+        );
+        assert!(
+            surface.view.hits.iter().all(|(_, hit)| {
+                !matches!(hit, Hit::AgentIntent(_) | Hit::FocusMain | Hit::Send)
+            })
+        );
     }
 
     #[test]
@@ -4331,18 +4965,20 @@ mod tests {
     // path). These helpers drive that and the raw winit input path.
 
     fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
+        render_frame_with_theme(app, w, h, &ui::theme::Theme::dark());
+    }
+
+    fn render_frame_with_theme(app: &mut ChatApp, w: f64, h: f64, theme: &ui::theme::Theme) {
         use ui::Widget;
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
-        use ui::theme::Theme;
         use vello::Scene;
         use vello::kurbo::Affine;
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, w, h);
-        let theme = Theme::dark();
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
 
     fn stage_agent_work(app: &mut ChatApp, doc: &mut AutoCommit) {

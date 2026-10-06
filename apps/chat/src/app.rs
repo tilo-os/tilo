@@ -74,13 +74,17 @@ pub(crate) enum AgentComposerIntent {
 #[derive(Clone)]
 pub(crate) struct AgentSubmission {
     pub(crate) text: String,
+    pub(crate) draft_revision: u64,
     pub(crate) intent: AgentComposerIntent,
     pub(crate) message: Option<AgentMessageSubmission>,
+    pub(crate) give_up_at: std::time::Instant,
+    pub(crate) pages_remaining: u16,
 }
 
 #[derive(Clone)]
 pub(crate) enum AgentMessageSubmission {
-    Discover(ui::LocalState<ui::remote_actions::CatalogueCall>),
+    Providers(ui::LocalState<ui::remote_actions::CatalogueCall>),
+    Rows(Box<AgentMessageRows>),
     Confirm {
         target: tilo_actions::remote::RemoteActionTarget,
         revision: String,
@@ -89,9 +93,30 @@ pub(crate) enum AgentMessageSubmission {
     Invoke(ui::LocalState<ui::remote_actions::InvocationCall>),
 }
 
-enum AgentMessagePoll {
+#[derive(Clone)]
+pub(crate) struct AgentMessageRows {
+    providers: VecDeque<String>,
+    provider: Option<String>,
+    parents: VecDeque<String>,
+    parent: Option<String>,
+    revision: Option<String>,
+    cursor: Vec<u8>,
+    call: Option<ui::LocalState<ui::remote_actions::CatalogueCall>>,
+    matches: Vec<(tilo_actions::remote::RemoteActionTarget, String)>,
+    seen_requests: HashSet<(String, String, Vec<u8>)>,
+    seen_resources: HashSet<(String, String)>,
+}
+
+pub(crate) const AGENT_MESSAGE_RESOLVE_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(5);
+pub(crate) const AGENT_MESSAGE_MAX_PAGES: u16 = 64;
+
+pub(crate) enum AgentMessagePoll {
     Waiting,
-    Advance(AgentMessageSubmission),
+    Advance {
+        message: Box<AgentMessageSubmission>,
+        pages_remaining: u16,
+    },
     Succeeded,
     Failed,
 }
@@ -100,18 +125,65 @@ fn unique_agent_message_target(
     page: &tilo_actions::remote::CataloguePage,
     agent: &str,
 ) -> Option<tilo_actions::remote::RemoteActionTarget> {
-    let key = format!("chat.person:{agent}");
-    let mut matching = page.rows.iter().filter(|row| {
-        row.app_id == "so.tilo.chat"
-            && row.action.as_ref().is_some_and(|action| {
-                action.address.action == "message"
-                    && action.semantic_identity.as_ref().is_some_and(|identity| {
-                        identity.kind == "chat.agent" && identity.key == key
-                    })
-            })
-    });
+    let mut matching = page
+        .rows
+        .iter()
+        .filter(|row| is_agent_message_row(row, agent));
     let target = matching.next()?.target()?;
     matching.next().is_none().then_some(target)
+}
+
+fn is_agent_message_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool {
+    let key = format!("chat.person:{agent}");
+    row.app_id == "so.tilo.chat"
+        && row.action.as_ref().is_some_and(|action| {
+            action.address.action == "message"
+                && action
+                    .semantic_identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.kind == "chat.agent" && identity.key == key)
+        })
+}
+
+fn ingest_agent_message_page(
+    state: &mut AgentMessageRows,
+    page: tilo_actions::remote::CataloguePage,
+    agent: &str,
+) -> Result<(), ()> {
+    if page.stale_cursor
+        || page.budget_exhausted
+        || state
+            .revision
+            .as_ref()
+            .is_some_and(|expected| expected != &page.revision)
+    {
+        return Err(());
+    }
+    state.revision.get_or_insert_with(|| page.revision.clone());
+    for row in &page.rows {
+        if row.has_children
+            && state
+                .seen_resources
+                .insert((row.provider.clone(), row.resource.id.clone()))
+        {
+            state.parents.push_back(row.resource.id.clone());
+        }
+        if is_agent_message_row(row, agent) {
+            let target = row.target().ok_or(())?;
+            state.matches.push((target, page.revision.clone()));
+            if state.matches.len() > 1 {
+                return Err(());
+            }
+        }
+    }
+    if page.next_cursor.is_empty() {
+        state.parent = None;
+        state.cursor.clear();
+    } else {
+        state.cursor = page.next_cursor;
+    }
+    state.call = None;
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -787,6 +859,7 @@ pub struct ChatApp {
     /// the private rich draft. They never enter the Chat CRDT.
     pub(crate) agent_intents: ui::LocalState<HashMap<(Id, Id), AgentComposerIntent>>,
     pub(crate) agent_submissions: ui::LocalState<HashMap<(Id, Id), AgentSubmission>>,
+    pub(crate) agent_submission_errors: ui::LocalState<HashMap<(Id, Id), String>>,
     /// Peer-local disclosure state for durable Agent action records.
     pub(crate) agent_work_expanded: ui::LocalState<HashSet<Id>>,
 
@@ -1056,6 +1129,7 @@ impl ChatApp {
             agent_task_actions: ui::remote_actions::RemoteActions::current(),
             agent_intents: ui::LocalState::new(HashMap::new()),
             agent_submissions: ui::LocalState::new(HashMap::new()),
+            agent_submission_errors: ui::LocalState::new(HashMap::new()),
             agent_work_expanded: ui::LocalState::new(HashSet::new()),
             agent_authors: HashMap::new(),
             body_views: std::cell::RefCell::new(HashMap::new()),
@@ -2026,6 +2100,24 @@ impl ChatApp {
             .cloned()
     }
 
+    pub(crate) fn agent_message_awaiting_confirmation(&self, agent: &str) -> bool {
+        self.agent_submissions
+            .get()
+            .get(&(self.active_ws.clone(), agent.to_owned()))
+            .is_some_and(|submission| {
+                matches!(
+                    submission.message.as_ref(),
+                    Some(AgentMessageSubmission::Invoke(_))
+                )
+            })
+    }
+
+    pub(crate) fn direct_agent_is_available(&self) -> bool {
+        self.direct_agent
+            .as_ref()
+            .is_some_and(|agent| self.room_agents.iter().any(|known| known == agent))
+    }
+
     pub(crate) fn set_direct_agent_intent(&self, intent: AgentComposerIntent) {
         let Some(agent) = self.direct_agent.clone() else {
             return;
@@ -2041,65 +2133,213 @@ impl ChatApp {
         self.settle_agent_submissions();
     }
 
-    fn poll_agent_message_submission(
+    pub(crate) fn poll_agent_message_submission(
         &self,
+        workspace: &str,
         agent: &str,
         submission: &AgentSubmission,
         message: &AgentMessageSubmission,
     ) -> AgentMessagePoll {
-        use ui::remote_actions::RemoteCall;
+        if !matches!(message, AgentMessageSubmission::Invoke(_))
+            && (std::time::Instant::now() >= submission.give_up_at
+                || submission.pages_remaining == 0)
+        {
+            return AgentMessagePoll::Failed;
+        }
 
         match message {
-            AgentMessageSubmission::Discover(call) => match call.get() {
-                RemoteCall::Pending => AgentMessagePoll::Waiting,
-                RemoteCall::Refused(_) => AgentMessagePoll::Failed,
-                RemoteCall::Done(page) => {
-                    let Some(target) = unique_agent_message_target(&page, agent) else {
-                        return AgentMessagePoll::Failed;
-                    };
-                    let revision = page.revision;
-                    let call = self.agent_task_actions.catalogue(
-                        tilo_actions::remote::CatalogueQuery::resolve(&target, revision.clone()),
-                    );
-                    AgentMessagePoll::Advance(AgentMessageSubmission::Confirm {
-                        target,
-                        revision,
-                        call,
-                    })
-                }
-            },
+            AgentMessageSubmission::Providers(call) => {
+                Self::poll_agent_message_providers(workspace, submission, call)
+            }
+            AgentMessageSubmission::Rows(state) => {
+                self.poll_agent_message_rows(agent, submission, state)
+            }
             AgentMessageSubmission::Confirm {
                 target,
                 revision,
                 call,
-            } => match call.get() {
-                RemoteCall::Pending => AgentMessagePoll::Waiting,
-                RemoteCall::Refused(_) => AgentMessagePoll::Failed,
-                RemoteCall::Done(page) => {
-                    if page.revision != *revision
-                        || unique_agent_message_target(&page, agent).as_ref() != Some(target)
-                    {
-                        return AgentMessagePoll::Failed;
-                    }
-                    let call = self.agent_task_actions.invoke(
-                        target.clone(),
-                        tilo_actions::remote::InvokeArgument::Text(submission.text.clone()),
-                        None,
-                    );
-                    AgentMessagePoll::Advance(AgentMessageSubmission::Invoke(call))
-                }
+            } => self.poll_agent_message_confirmation(agent, submission, target, revision, call),
+            AgentMessageSubmission::Invoke(call) => Self::poll_agent_message_invocation(call),
+        }
+    }
+
+    fn poll_agent_message_providers(
+        workspace: &str,
+        submission: &AgentSubmission,
+        call: &ui::LocalState<ui::remote_actions::CatalogueCall>,
+    ) -> AgentMessagePoll {
+        use ui::remote_actions::RemoteCall;
+        let RemoteCall::Done(page) = call.get() else {
+            return if call.get().is_pending() {
+                AgentMessagePoll::Waiting
+            } else {
+                AgentMessagePoll::Failed
+            };
+        };
+        if page.stale_cursor || page.budget_exhausted {
+            return AgentMessagePoll::Failed;
+        }
+        let mut providers = page
+            .providers
+            .into_iter()
+            .filter(|provider| provider.app_id == "so.tilo.chat" && provider.room == workspace)
+            .map(|provider| provider.provider)
+            .collect::<Vec<_>>();
+        providers.sort();
+        providers.dedup();
+        if providers.is_empty() {
+            return AgentMessagePoll::Failed;
+        }
+        AgentMessagePoll::Advance {
+            message: Box::new(AgentMessageSubmission::Rows(Box::new(AgentMessageRows {
+                providers: providers.into(),
+                provider: None,
+                parents: VecDeque::new(),
+                parent: None,
+                revision: None,
+                cursor: Vec::new(),
+                call: None,
+                matches: Vec::new(),
+                seen_requests: HashSet::new(),
+                seen_resources: HashSet::new(),
+            }))),
+            pages_remaining: submission.pages_remaining.saturating_sub(1),
+        }
+    }
+
+    fn poll_agent_message_rows(
+        &self,
+        agent: &str,
+        submission: &AgentSubmission,
+        state: &AgentMessageRows,
+    ) -> AgentMessagePoll {
+        use ui::remote_actions::RemoteCall;
+        let mut state = state.clone();
+        let mut pages_remaining = submission.pages_remaining;
+        if let Some(answer) = state.call.as_ref() {
+            let page = match answer.get() {
+                RemoteCall::Pending => return AgentMessagePoll::Waiting,
+                RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
+                RemoteCall::Done(page) => page,
+            };
+            pages_remaining = pages_remaining.saturating_sub(1);
+            if ingest_agent_message_page(&mut state, page, agent).is_err() {
+                return AgentMessagePoll::Failed;
+            }
+        }
+        if state.provider.is_some() && state.parent.is_none() {
+            state.parent = state.parents.pop_front();
+            state.cursor.clear();
+            if state.parent.is_none() {
+                state.provider = None;
+                state.revision = None;
+            }
+        }
+        if state.provider.is_none() {
+            state.provider = state.providers.pop_front();
+            state.revision = None;
+            state.cursor.clear();
+            state.parents = VecDeque::from([String::new()]);
+            state.parent = state.parents.pop_front();
+        }
+        let Some(provider) = state.provider.clone() else {
+            return self.confirm_unique_agent_message(state, pages_remaining);
+        };
+        let Some(parent) = state.parent.clone() else {
+            return AgentMessagePoll::Failed;
+        };
+        if !state
+            .seen_requests
+            .insert((provider.clone(), parent.clone(), state.cursor.clone()))
+        {
+            return AgentMessagePoll::Failed;
+        }
+        state.call = Some(self.agent_task_actions.catalogue_page(
+            tilo_actions::remote::CatalogueQuery {
+                provider: Some(provider),
+                parent_resource: (!parent.is_empty()).then_some(parent),
+                revision: state.revision.clone(),
+                cursor: state.cursor.clone(),
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..tilo_actions::remote::CatalogueQuery::default()
             },
-            AgentMessageSubmission::Invoke(call) => match call.get() {
-                RemoteCall::Refused(_) => AgentMessagePoll::Failed,
-                RemoteCall::Done(update) if update.is_terminal() => {
-                    if matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
-                        AgentMessagePoll::Succeeded
-                    } else {
-                        AgentMessagePoll::Failed
-                    }
+        ));
+        AgentMessagePoll::Advance {
+            message: Box::new(AgentMessageSubmission::Rows(Box::new(state))),
+            pages_remaining,
+        }
+    }
+
+    fn confirm_unique_agent_message(
+        &self,
+        mut state: AgentMessageRows,
+        pages_remaining: u16,
+    ) -> AgentMessagePoll {
+        let Some((target, revision)) = state.matches.pop() else {
+            return AgentMessagePoll::Failed;
+        };
+        let call =
+            self.agent_task_actions
+                .catalogue(tilo_actions::remote::CatalogueQuery::resolve(
+                    &target,
+                    revision.clone(),
+                ));
+        AgentMessagePoll::Advance {
+            message: Box::new(AgentMessageSubmission::Confirm {
+                target,
+                revision,
+                call,
+            }),
+            pages_remaining,
+        }
+    }
+
+    fn poll_agent_message_confirmation(
+        &self,
+        agent: &str,
+        submission: &AgentSubmission,
+        target: &tilo_actions::remote::RemoteActionTarget,
+        revision: &str,
+        call: &ui::LocalState<ui::remote_actions::CatalogueCall>,
+    ) -> AgentMessagePoll {
+        use ui::remote_actions::RemoteCall;
+        let page = match call.get() {
+            RemoteCall::Pending => return AgentMessagePoll::Waiting,
+            RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
+            RemoteCall::Done(page) => page,
+        };
+        if page.stale_cursor
+            || page.budget_exhausted
+            || page.revision != revision
+            || unique_agent_message_target(&page, agent).as_ref() != Some(target)
+        {
+            return AgentMessagePoll::Failed;
+        }
+        let call = self.agent_task_actions.invoke(
+            target.clone(),
+            tilo_actions::remote::InvokeArgument::Text(submission.text.clone()),
+            None,
+        );
+        AgentMessagePoll::Advance {
+            message: Box::new(AgentMessageSubmission::Invoke(call)),
+            pages_remaining: submission.pages_remaining.saturating_sub(1),
+        }
+    }
+
+    fn poll_agent_message_invocation(
+        call: &ui::LocalState<ui::remote_actions::InvocationCall>,
+    ) -> AgentMessagePoll {
+        use ui::remote_actions::RemoteCall;
+        match call.get() {
+            RemoteCall::Refused(_) => AgentMessagePoll::Failed,
+            RemoteCall::Done(update) if update.is_terminal() => {
+                if matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
+                    AgentMessagePoll::Succeeded
+                } else {
+                    AgentMessagePoll::Failed
                 }
-                RemoteCall::Pending | RemoteCall::Done(_) => AgentMessagePoll::Waiting,
-            },
+            }
+            RemoteCall::Pending | RemoteCall::Done(_) => AgentMessagePoll::Waiting,
         }
     }
 
@@ -2115,23 +2355,33 @@ impl ChatApp {
                     settled.push(key.clone());
                     continue;
                 };
-                match self.poll_agent_message_submission(&key.1, submission, message) {
+                match self.poll_agent_message_submission(&key.0, &key.1, submission, message) {
                     AgentMessagePoll::Waiting => {}
-                    AgentMessagePoll::Advance(message) => {
-                        message_updates.push((key.clone(), message));
+                    AgentMessagePoll::Advance {
+                        message,
+                        pages_remaining,
+                    } => {
+                        message_updates.push((key.clone(), message, pages_remaining));
                     }
                     AgentMessagePoll::Succeeded => {
-                        if self
-                            .composer_main
-                            .private_plain_for(&key.0, &key.1)
-                            .as_deref()
-                            == Some(submission.text.as_str())
-                        {
-                            self.composer_main.clear_private_for(&key.0, &key.1);
-                        }
+                        self.composer_main.clear_private_for_revision(
+                            &key.0,
+                            &key.1,
+                            submission.draft_revision,
+                        );
+                        self.agent_submission_errors
+                            .update(|errors| _ = errors.remove(key));
                         settled.push(key.clone());
                     }
-                    AgentMessagePoll::Failed => settled.push(key.clone()),
+                    AgentMessagePoll::Failed => {
+                        self.agent_submission_errors.update(|errors| {
+                            errors.insert(
+                                key.clone(),
+                                crate::i18n::t("chat-agent-message-send-failed"),
+                            );
+                        });
+                        settled.push(key.clone());
+                    }
                 }
                 continue;
             }
@@ -2163,14 +2413,11 @@ impl ChatApp {
             };
             if succeeded {
                 let (workspace, agent) = key;
-                if self
-                    .composer_main
-                    .private_plain_for(workspace, agent)
-                    .as_deref()
-                    == Some(submission.text.as_str())
-                {
-                    self.composer_main.clear_private_for(workspace, agent);
-                }
+                self.composer_main.clear_private_for_revision(
+                    workspace,
+                    agent,
+                    submission.draft_revision,
+                );
                 settled.push(key.clone());
             } else if failed {
                 settled.push(key.clone());
@@ -2178,9 +2425,10 @@ impl ChatApp {
         }
         if !message_updates.is_empty() {
             self.agent_submissions.update(|pending| {
-                for (key, message) in message_updates {
+                for (key, message, pages_remaining) in message_updates {
                     if let Some(submission) = pending.get_mut(&key) {
-                        submission.message = Some(message);
+                        submission.message = Some(*message);
+                        submission.pages_remaining = pages_remaining;
                     }
                 }
             });
@@ -2395,9 +2643,11 @@ impl ChatApp {
         let Some((channel, workspace, Some(agent))) = requested else {
             return;
         };
-        if self.open_agent_conversation(&workspace, &agent).is_ok()
-            && let Some(surface) = self.agent_surfaces.get_mut(&channel)
-        {
+        let retained_matches = self.agent_surfaces.get(&channel).is_some_and(|surface| {
+            workspace == surface.view.active_ws
+                && surface.view.direct_agent.as_deref() == Some(agent.as_str())
+        });
+        if retained_matches && let Some(surface) = self.agent_surfaces.get_mut(&channel) {
             surface.placement.request_app_return();
         }
     }
@@ -3169,6 +3419,11 @@ impl ChatApp {
         if self.direct_agent.is_none() {
             return field;
         }
+        let submission_error = self.direct_agent.as_ref().is_some_and(|agent| {
+            self.agent_submission_errors
+                .get()
+                .contains_key(&(self.active_ws.clone(), agent.clone()))
+        });
         let rows = self.direct_agent_tasks().map_or(2.0, |tasks| {
             let tasks = tasks.borrow();
             let stopping = matches!(
@@ -3184,8 +3439,15 @@ impl ChatApp {
                 tasks.choice(),
                 ui::agent_task_frontier::AgentTaskChoice::Choose(_)
             ));
-            (choice + crate::render_chat::agent_task_status_lines(&tasks, stopping).count() + 1)
-                as f64
+            let mut status = crate::render_chat::agent_task_status_lines(&tasks, stopping);
+            let pending_confirmation = self
+                .direct_agent
+                .as_ref()
+                .is_some_and(|agent| self.agent_message_awaiting_confirmation(agent));
+            if submission_error || !self.direct_agent_is_available() || pending_confirmation {
+                status.receipt.get_or_insert_with(String::new);
+            }
+            (choice + status.count() + 1) as f64
         });
         field + rows * self.chrome.composer_min_h + rows * self.chrome.composer_pad
     }
@@ -3960,6 +4222,7 @@ impl FloatingSurfaceProvider for ChatApp {
     ) {
         let desktop = self.desktop_floating_bounds();
         for surface in self.agent_surfaces.values_mut() {
+            surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
             surface.view.room_colors.clone_from(&self.room_colors);
@@ -4139,6 +4402,42 @@ impl ui::widget::controls::ActionControls for ChatApp {
                 .into_iter()
                 .find_map(ui::widget::controls::take_control_invocation)
         })
+    }
+}
+
+impl ChatApp {
+    fn agent_accessibility_nodes(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let Some(agent) = self.direct_agent.as_deref() else {
+            return Vec::new();
+        };
+        let mut nodes = vec![
+            AccessNode::new(Role::Heading { level: 1 })
+                .with_name(format!("{}, agent", self.agent_display_name(agent)))
+                .with_bounds(self.header_rect())
+                .with_hashed_key(("agent-conversation-heading", agent)),
+        ];
+        let status = self
+            .agent_submission_errors
+            .get()
+            .get(&(self.active_ws.clone(), agent.to_owned()))
+            .cloned()
+            .or_else(|| {
+                (!self.direct_agent_is_available())
+                    .then(|| crate::i18n::t("chat-agent-unavailable"))
+            })
+            .or_else(|| {
+                self.agent_message_awaiting_confirmation(agent)
+                    .then(|| crate::i18n::t("chat-agent-message-awaiting-confirmation"))
+            });
+        if let Some(status) = status {
+            nodes.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(status)
+                    .with_hashed_key(("agent-submission-status", &self.active_ws, agent)),
+            );
+        }
+        nodes
     }
 }
 
@@ -4694,13 +4993,8 @@ impl Widget for ChatApp {
             .with_hashed_key("message-list");
 
         let mut children: Vec<AccessNode> = controls;
-        if let Some(agent) = self.direct_agent.as_deref() {
-            children.push(
-                AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(format!("{}, agent", self.agent_display_name(agent)))
-                    .with_bounds(self.header_rect())
-                    .with_hashed_key(("agent-conversation-heading", agent)),
-            );
+        if self.direct_agent.is_some() {
+            children.extend(self.agent_accessibility_nodes());
         } else if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
                 .with_name(channel.kind.label(&channel.name))

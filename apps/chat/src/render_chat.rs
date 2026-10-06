@@ -2459,6 +2459,7 @@ impl ChatApp {
             self.composer_main.set_placeholder(&placeholder);
         }
         let send_enabled = !draft.trim().is_empty()
+            && (self.direct_agent.is_none() || self.direct_agent_is_available())
             && (self.direct_agent_intent() != crate::app::AgentComposerIntent::Steer
                 || self
                     .direct_agent_tasks()
@@ -2567,7 +2568,23 @@ impl ChatApp {
             .is_some_and(|task| task.cancellation_requested)
             || matches!(tasks.stop_state(), AgentStopState::Stopping { .. });
         let can_stop = current.is_some() && !stopping;
-        let lines = agent_task_status_lines(tasks, stopping);
+        let mut lines = agent_task_status_lines(tasks, stopping);
+        if !self.direct_agent_is_available() {
+            lines.receipt = Some(crate::i18n::t("chat-agent-unavailable"));
+        } else if let Some(agent) = self.direct_agent.as_ref()
+            && let Some(error) = self
+                .agent_submission_errors
+                .get()
+                .get(&(self.active_ws.clone(), agent.clone()))
+        {
+            lines.receipt = Some(error.clone());
+        } else if self
+            .direct_agent
+            .as_ref()
+            .is_some_and(|agent| self.agent_message_awaiting_confirmation(agent))
+        {
+            lines.receipt = Some(crate::i18n::t("chat-agent-message-awaiting-confirmation"));
+        }
         let stop_label = crate::i18n::t("chat-agent-stop");
         let stop_w = if can_stop {
             ButtonFace::new(Rect::ZERO, &stop_label)
@@ -2621,14 +2638,16 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let segments = vec![
-            Segment::new(crate::i18n::t("chat-agent-mode-message")),
-            Segment::new(crate::i18n::t("chat-agent-mode-queue")),
+            Segment::new(crate::i18n::t("chat-agent-mode-message"))
+                .with_enabled(self.direct_agent_is_available()),
+            Segment::new(crate::i18n::t("chat-agent-mode-queue"))
+                .with_enabled(self.direct_agent_is_available()),
             Segment::new(crate::i18n::t(if tasks.can_steer() {
                 "chat-agent-mode-steer"
             } else {
                 "chat-agent-mode-steer-unavailable"
             }))
-            .with_enabled(tasks.can_steer()),
+            .with_enabled(tasks.can_steer() && self.direct_agent_is_available()),
         ];
         let parts = SegmentedFace::partition_segments(
             rect,
@@ -2652,7 +2671,7 @@ impl ChatApp {
                 .control_size(ControlSize::Small),
         );
         for (index, part) in parts.into_iter().enumerate() {
-            if index != 2 || tasks.can_steer() {
+            if self.direct_agent_is_available() && (index != 2 || tasks.can_steer()) {
                 let intent = match index {
                     0 => crate::app::AgentComposerIntent::Message,
                     1 => crate::app::AgentComposerIntent::Queue,
@@ -2800,7 +2819,9 @@ impl ChatApp {
                 send_face.disabled(true)
             },
         );
-        ChatApp::push_hit(hits, send, Hit::Send);
+        if send_enabled {
+            ChatApp::push_hit(hits, send, Hit::Send);
+        }
 
         let emoji_face = ButtonFace::icon_only(Rect::ZERO, Icon::Smile, "Emoji");
         let emoji_w = emoji_face.intrinsic_width(tr, theme);
