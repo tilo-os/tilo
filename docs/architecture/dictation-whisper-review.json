@@ -65,12 +65,18 @@
       "English auto-language",
       "independent repeated decode",
       "silence",
-      "language vocabulary bounds"
+      "language vocabulary bounds",
+      "production handler in owned child",
+      "signed installed-object fixture",
+      "private Ready/draft/final pipes",
+      "busy cancellation and reaping",
+      "new session after cancellation"
     ],
     "limits": [
       "Builder timings do not establish older-device performance.",
       "Non-English quality and microphone latency are unmeasured.",
-      "The worker subprocess journey needs an unprivileged remote runtime; this build container rejects privileged fixture overrides and cannot drop UID."
-    ]
+      "The installed CLI correctly refuses elevated developer overrides. Its positive --worker fixture journey still needs an unprivileged runtime; --worker-core validates the same production handler and process limits in an uninstalled qualification child."
+    ],
+    "worker_core_command": "rcargo --no-fallback --on-builder run --locked -p local-model-service --example speech_qualify -- --worker-core"
   }
 }

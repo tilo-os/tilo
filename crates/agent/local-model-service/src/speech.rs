@@ -17,6 +17,8 @@ use zeroize::Zeroizing;
 use crate::catalog::VerifiedCatalog;
 use crate::{InProcessCapability, installed_in_process_model};
 
+pub mod worker;
+
 pub const SAMPLE_RATE: usize = 16_000;
 pub const MAX_SAMPLES: usize = SAMPLE_RATE * 120;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;

@@ -174,28 +174,38 @@ mod qualification {
         })
     }
 
-    fn worker_journey(model: &[u8], samples: &[i16]) -> Result<(), Box<dyn std::error::Error>> {
+    fn worker_journey(
+        model: &[u8],
+        samples: &[i16],
+        core: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let Fixture {
             _directory,
             root,
             catalog,
             keys,
         } = fixture(model)?;
+        let current = std::env::current_exe()?;
         let executable = std::env::current_exe()?
             .parent()
             .and_then(std::path::Path::parent)
             .ok_or("worker directory")?
             .join("tilo-speech-worker");
-        for cancel in [false, true] {
-            let mut command = Command::new(&executable);
+        for cancel in [false, true, false] {
+            let mut command = Command::new(if core { &current } else { &executable });
+            command.env_clear();
+            if core {
+                command.arg("--fixture").arg(&root).arg(&catalog).arg(&keys);
+            } else {
+                command
+                    .arg("--root")
+                    .arg(&root)
+                    .arg("--catalog")
+                    .arg(&catalog)
+                    .arg("--keys")
+                    .arg(&keys);
+            }
             command
-                .env_clear()
-                .arg("--root")
-                .arg(&root)
-                .arg("--catalog")
-                .arg(&catalog)
-                .arg("--keys")
-                .arg(&keys)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -286,7 +296,30 @@ mod qualification {
         Ok(())
     }
 
+    fn child_fixture(paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+        // SAFETY: this fresh qualification child has only standard pipes and
+        // owns no ambient descriptor. It is never part of the installed image.
+        unsafe { local_model_service::speech::worker::prepare() }
+            .map_err(|_| "child preparation failed")?;
+        let root = std::path::Path::new(paths.first().ok_or("fixture store")?);
+        let catalog = std::path::Path::new(paths.get(1).ok_or("fixture catalogue")?);
+        let keys = std::path::Path::new(paths.get(2).ok_or("fixture keys")?);
+        let verified = local_model_service::catalog::VerifiedCatalog::load(catalog, keys)?;
+        local_model_service::speech::worker::serve(
+            root,
+            &verified,
+            &mut std::io::stdin().lock(),
+            &mut std::io::stdout().lock(),
+        )
+        .map_err(|_| "production worker handler failed")?;
+        Ok(())
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+        let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+        if arguments.first().is_some_and(|arg| arg == "--fixture") && arguments.len() == 4 {
+            return child_fixture(arguments.get(1..).ok_or("fixture arguments")?);
+        }
         let mut model = fetch(
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
             77_691_713,
@@ -304,11 +337,10 @@ mod qualification {
                 .collect::<Vec<_>>(),
         );
         drop(wave);
-        let worker = std::env::args().skip(1).collect::<Vec<_>>();
-        if worker == ["--worker"] {
-            worker_journey(&model, &pcm)?;
-        } else if !worker.is_empty() {
-            return Err("expected no arguments or --worker".into());
+        if arguments == ["--worker"] || arguments == ["--worker-core"] {
+            worker_journey(&model, &pcm, arguments == ["--worker-core"])?;
+        } else if !arguments.is_empty() {
+            return Err("expected no arguments, --worker or --worker-core".into());
         }
         drop(pcm);
         local_model_service::speech::confine_worker().map_err(|_| "worker confinement failed")?;
