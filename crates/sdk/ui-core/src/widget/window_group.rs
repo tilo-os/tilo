@@ -1981,6 +1981,45 @@ impl WindowGroup {
 }
 
 impl FloatingSurfaceProvider for WindowGroup {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_focus_changed(host, id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_event_source(host, id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        self.hosts
+            .iter()
+            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_accessibility(host, id))
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        self.hosts.iter_mut().any(|(_, host)| {
+            FloatingSurfaceProvider::perform_floating_surface_accessibility_action(
+                host, id, target, action, state, path,
+            )
+        })
+    }
+
+    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+        self.hosts
+            .iter()
+            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(host, id))
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
