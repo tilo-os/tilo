@@ -1303,7 +1303,7 @@ impl UpdatesModel {
                 0,
                 card(
                     &t("upd-notice-title"),
-                    rows(vec![Box::new(Text::new(msg).with_size(13.0))]),
+                    rows(vec![Box::new(Text::new(msg).with_role(ui::TextRole::Body))]),
                 ),
             );
         }
@@ -1328,10 +1328,12 @@ impl UpdatesModel {
                     .with_intrinsic_height()
                     .push(Box::new(
                         Text::new(&t_args("upd-ready", &[("version", staged.as_str().into())]))
-                            .with_size(13.0),
+                            .with_role(ui::TextRole::Body),
                     ))
                     .push(Box::new(
-                        Text::new(&t("upd-restart-apply")).with_size(11.0).dimmed(),
+                        Text::new(&t("upd-restart-apply"))
+                            .with_role(ui::TextRole::Caption)
+                            .dimmed(),
                     ))
                     .push(Box::new(
                         Row::new()
@@ -1343,7 +1345,7 @@ impl UpdatesModel {
                             .push(Box::new(Spacer::new())),
                     )),
             ),
-            None => Box::new(Text::new(&t("upd-up-to-date")).with_size(13.0)),
+            None => Box::new(Text::new(&t("upd-up-to-date")).with_role(ui::TextRole::Body)),
         };
         card(&t("upd-software"), action)
     }
@@ -1607,8 +1609,8 @@ impl UpdatesModel {
                 let mut entries = Vec::new();
                 for item in history.iter().take(8) {
                     let versions = match (&item.from_version, &item.to_version) {
-                        (Some(from), Some(to)) => format!("{from} → {to} · {}", item.state),
-                        (_, Some(to)) => format!("{to} · {}", item.state),
+                        (Some(from), Some(to)) => format!("{from} → {to}\n{}", item.state),
+                        (_, Some(to)) => format!("{to}\n{}", item.state),
                         _ => item.state.clone(),
                     };
                     entries.push(value_row(&item.device, &versions));
@@ -1649,14 +1651,16 @@ impl UpdatesModel {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(no_previous).with_size(13.0)))
+                    .push(Box::new(
+                        Text::new(no_previous).with_role(ui::TextRole::Body),
+                    ))
                     .push(caption(no_previous_caption)),
             ),
             (Ok(Some(_)), false, [_, previous, intro, button_label, ..]) => Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(previous).with_size(13.0)))
+                    .push(Box::new(Text::new(previous).with_role(ui::TextRole::Body)))
                     .push(caption(intro))
                     .push(Box::new(
                         Row::new()
@@ -1673,7 +1677,7 @@ impl UpdatesModel {
                 let mut col = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(prompt).with_size(13.0)));
+                    .push(Box::new(Text::new(prompt).with_role(ui::TextRole::Body)));
                 for c in caveats {
                     col = col.push(caption(c));
                 }
@@ -2284,7 +2288,7 @@ impl UpdatesModel {
     /// A button running `effect`.
     fn button(&self, control_id: &str, label: &str, effect: UpdatesEffect) -> Button {
         self.cx
-            .bind_invocation(Button::new(control_id, label).content_sized(), effect)
+            .bind_invocation(Button::new(control_id, label), effect)
     }
 }
 

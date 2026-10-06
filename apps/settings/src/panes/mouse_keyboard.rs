@@ -651,7 +651,7 @@ pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonC
     }
 }
 
-/// "Ring 1", or "Ring 1 · Mode 2" when its group has several modes.
+/// "Ring 1", or "Ring 1, mode 2" when its group has several modes.
 fn dial_label(dial: PadDial, mode: u32, modes: u32) -> String {
     let (key, index) = match dial {
         PadDial::Ring(index) => ("input-pad-ring", index),
@@ -1836,16 +1836,20 @@ impl MouseKeyboardPane {
         let mut source_rows = Vec::new();
         for (index, id) in self.last.keyboard_layouts.iter().enumerate() {
             let mut row = Row::new()
-                .push(Box::new(Text::new(&self.source_label(id)).with_size(13.0)))
+                .push(Box::new(
+                    Text::new(&self.source_label(id)).with_role(ui::TextRole::Body),
+                ))
                 .push(Box::new(Spacer::new()));
             if id == &self.last.keyboard_layout {
-                row = row.push(Box::new(Text::new(&active_label).with_size(12.0)));
+                row = row.push(Box::new(
+                    Text::new(&active_label).with_role(ui::TextRole::Caption),
+                ));
             }
             let up = format!("input.source.{index}.up");
             let down = format!("input.source.{index}.down");
             let remove = format!("input.source.{index}.remove");
             let mut up_button = Button::new(&up, "↑")
-                .with_size(36.0, 34.0)
+                .control_size(ui::widget::ControlSize::Regular)
                 .with_accessible_name(&move_up)
                 .with_enabled(index > 0);
             if index > 0 {
@@ -1854,7 +1858,7 @@ impl MouseKeyboardPane {
                     .bind_invocation(up_button, InputEffect::MoveSourceUp { source: id.clone() });
             }
             let mut down_button = Button::new(&down, "↓")
-                .with_size(36.0, 34.0)
+                .control_size(ui::widget::ControlSize::Regular)
                 .with_accessible_name(&move_down)
                 .with_enabled(index + 1 < self.last.keyboard_layouts.len());
             if index + 1 < self.last.keyboard_layouts.len() {
@@ -1864,7 +1868,6 @@ impl MouseKeyboardPane {
                 );
             }
             let mut remove_button = Button::new(&remove, &remove_label)
-                .content_sized()
                 .with_enabled(self.last.keyboard_layouts.len() > 1);
             if self.last.keyboard_layouts.len() > 1 {
                 remove_button = self.cx.bind_invocation(
@@ -2306,7 +2309,7 @@ mod tests {
             assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
             assert_eq!(
                 exact.key_repeat_description(),
-                "37 keys per second · starts after 275 ms"
+                "37 keys per second, starts after 275 ms"
             );
 
             let partial = pane_with(
@@ -2479,7 +2482,7 @@ mod tests {
             ],
             "a row per ring mode and per strip"
         );
-        assert_eq!(dial_label(PadDial::Ring(0), 1, 4), "Ring 1 · Mode 2");
+        assert_eq!(dial_label(PadDial::Ring(0), 1, 4), "Ring 1, mode 2");
         assert_eq!(dial_label(PadDial::Strip(1), 0, 1), "Strip 2");
         pane.observe_devices(Some(&snapshot));
         assert!(

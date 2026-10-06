@@ -13,7 +13,7 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Shape as _, Stroke};
+use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape as _};
 use ui::vello::peniko::{ColorStop, Extend, Fill, Gradient as Brush};
 use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
@@ -137,11 +137,11 @@ pub struct GradientBar {
     dragging: Option<(usize, f64, bool)>,
     cursor: Point,
     commit: Rc<dyn Fn(Gradient)>,
+    /// The strip's height, a small control's, and a grip's half side, from
+    /// the theme the bar was laid out in.
+    bar: f64,
+    grip: f64,
 }
-
-/// The bar's height and a grip's radius.
-const BAR: f64 = 22.0; // the gradient strip's height: a control size, not spacing
-const GRIP: f64 = 8.0; // a stop grip's radius: half a small pointer target, not spacing
 
 impl GradientBar {
     pub fn new(
@@ -156,16 +156,19 @@ impl GradientBar {
             dragging: None,
             cursor: Point::ZERO,
             commit,
+            bar: f64::from(ui::tokens::Metrics::BASE.bar_control_height),
+            grip: f64::from(ui::tokens::Spacing::BASE.s2),
         }
     }
 
+    /// The strip, inset by a grip on either side so the end grips stay
+    /// inside the bar.
     fn strip(&self) -> Rect {
-        let inset = GRIP + 1.0;
         Rect::new(
-            self.rect.x0 + inset,
-            self.rect.y0 + 2.0,
-            self.rect.x1 - inset,
-            self.rect.y0 + 2.0 + BAR,
+            self.rect.x0 + self.grip,
+            self.rect.y0,
+            self.rect.x1 - self.grip,
+            self.rect.y0 + self.bar,
         )
     }
 
@@ -192,7 +195,7 @@ impl GradientBar {
     fn grip_at(&self, point: Point) -> Option<usize> {
         (0..self.gradient.stops.len())
             .rev()
-            .find(|index| self.grip(*index).distance(point) <= GRIP + 3.0)
+            .find(|index| self.grip(*index).distance(point) <= self.grip * 1.5)
     }
 
     /// The gradient with its stops in order, and where `active` went.
@@ -213,15 +216,14 @@ impl Widget for GradientBar {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::widget::TaffyTreeExt as _;
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a small fixed control height"
-        )]
-        let height = (BAR + GRIP + 6.0) as f32;
+        self.bar = f64::from(theme.tokens.metrics.bar_control_height);
+        self.grip = f64::from(theme.tokens.spacing.s2);
+        // The strip, and below it the lower half of the grips on its edge.
+        let height = theme.tokens.metrics.bar_control_height + theme.tokens.spacing.s2;
         let node = taffy.leaf_node(Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
@@ -250,7 +252,7 @@ impl Widget for GradientBar {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
@@ -258,11 +260,17 @@ impl Widget for GradientBar {
         if strip.width() < 2.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.sm);
-        let shape = RoundedRect::from_rect(strip, radius);
-        // A checker under the strip, so a stop that fades out reads as
-        // see-through.
-        scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &shape);
+        let radius = f64::from(theme.tokens.radii.item);
+        // A lifted well under the strip with its edge, so a stop that fades
+        // out reads as see-through.
+        let colors = &theme.tokens.colors;
+        ui::surface::card(
+            scene,
+            transform,
+            strip,
+            radius,
+            colors.lift_on(colors.surfaces.content, 0.5),
+        );
         let mut stops: Vec<(f64, ui::vello::peniko::Color)> = self
             .gradient
             .stops
@@ -292,53 +300,24 @@ impl Widget for GradientBar {
             )
             .with_extend(Extend::Pad)
             .with_stops(&colour_stops[..]);
-            scene.fill(Fill::NonZero, transform, &brush, None, &shape);
+            // The gradient itself: the artwork's own paint, inside the
+            // well's edge.
+            let inside = RoundedRect::from_rect(strip.inset(-1.0), (radius - 1.0).max(0.0));
+            scene.fill(Fill::NonZero, transform, &brush, None, &inside);
         }
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::surface::edge_on(theme.bg_primary),
-            None,
-            &shape,
-        );
+        // Each stop is a swatch of its colour on the strip's lower edge,
+        // ringed in your colour while the swatches recolour it.
         let active = self.active.with(|active| *active);
         for (index, stop) in self.gradient.stops.iter().enumerate() {
             let at = self.grip(index);
-            let colour = crate::render::colour(&stop.1, &[]).unwrap_or(theme.text_dim);
-            let chosen = index == active;
-            // A tick from the strip into the grip says where the stop is.
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.text_primary,
-                None,
-                &ui::vello::kurbo::Line::new((at.x, strip.y0), (at.x, at.y)),
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.bg_primary,
-                None,
-                &Circle::new(at, GRIP),
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
+            let colour = crate::render::colour(&stop.1, &[]).unwrap_or(colors.text_dim);
+            ui::widget::ColorSwatchFace::new(
+                Rect::from_center_size(at, (self.grip * 2.0, self.grip * 2.0)),
                 colour,
-                None,
-                &Circle::new(at, GRIP - 2.5),
-            );
-            scene.stroke(
-                &Stroke::new(if chosen { 2.0 } else { 1.0 }),
-                transform,
-                if chosen {
-                    theme.accent_primary
-                } else {
-                    theme.text_dim
-                },
-                None,
-                &Circle::new(at, GRIP),
-            );
+                stop.1.clone(),
+            )
+            .selected(index == active)
+            .paint(scene, transform, text_renderer, theme);
         }
     }
 
@@ -442,7 +421,7 @@ pub fn editor(
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(8.0)
+        .with_gap(ui::tokens::Spacing::BASE.s2)
         .push(kind_picker(cx, ids, mark, area, &commit));
     if let Some(gradient) = gradient {
         column = column
@@ -495,8 +474,8 @@ fn kind_picker(
             ],
             kinds.iter().position(|k| *k == kind).unwrap_or(0),
         )
-        .with_flexible_width()
-        .with_style(ui::widget::toggle_group::SegmentedStyle::Underline)
+        .fill()
+        .with_style(ui::widget::toggle_group::SegmentedStyle::Tabs)
         .with_id("canvas-fill-kind")
         .on_change(move |index| {
             let Some(chosen) = kinds.get(index).copied() else {
@@ -533,7 +512,7 @@ fn direction_and_stops(
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut row = Row::new()
         .no_wrap()
-        .with_gap(6.0)
+        .with_gap(ui::tokens::Spacing::BASE.s2)
         .with_align_items(taffy::AlignItems::Center);
     if kind == Kind::Linear {
         let turned = LocalState::new(angle(&gradient) / 360.0);

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{ActionEmitter, Widget};
 use vello::Scene;
@@ -27,15 +27,6 @@ use winit::keyboard::{Key, NamedKey};
 use placement::Placement;
 
 use crate::i18n::{t, t_args};
-
-/// Canvas height; the desktop is scaled to fit inside it. A drawing area
-/// sized for a desk of monitors, not a spacing step, so no token names it.
-const CANVAS_HEIGHT: f32 = 220.0;
-/// Inner margin between the canvas edge and the desktop's bounding box.
-const CANVAS_PAD: f64 = ui::tokens::Spacing::BASE.s6 as f64;
-/// Snap distance on screen, converted to desktop units at the canvas scale.
-/// A pointer tolerance rather than layout spacing, so no token names it.
-const SNAP_SCREEN_PX: f64 = 12.0;
 
 /// One display as the canvas draws it.
 #[derive(Clone, Debug, PartialEq)]
@@ -72,10 +63,11 @@ struct Mapping {
     origin: Point,
     desktop_x: i32,
     desktop_y: i32,
+    snap_radius: f64,
 }
 
 impl Mapping {
-    fn fit(canvas: Rect, displays: &[ArrangedDisplay]) -> Self {
+    fn fit(canvas: Rect, displays: &[ArrangedDisplay], padding: f64, snap_radius: f64) -> Self {
         let min_x = displays.iter().map(|d| d.placement.x).min().unwrap_or(0);
         let min_y = displays.iter().map(|d| d.placement.y).min().unwrap_or(0);
         let max_x = displays
@@ -90,7 +82,7 @@ impl Mapping {
             .unwrap_or(1080);
         let width = f64::from(max_x.saturating_sub(min_x).max(1));
         let height = f64::from(max_y.saturating_sub(min_y).max(1));
-        let inner = canvas.inset(-CANVAS_PAD);
+        let inner = canvas.inset(-padding);
         let scale = (inner.width() / width)
             .min(inner.height() / height)
             .max(f64::EPSILON);
@@ -103,6 +95,7 @@ impl Mapping {
             origin,
             desktop_x: min_x,
             desktop_y: min_y,
+            snap_radius,
         }
     }
 
@@ -125,7 +118,7 @@ impl Mapping {
     }
 
     fn snap_threshold(self) -> i32 {
-        round_to_i32(SNAP_SCREEN_PX / self.scale)
+        round_to_i32(self.snap_radius / self.scale)
     }
 }
 
@@ -149,6 +142,8 @@ pub struct DisplayArrangement {
     moves: Vec<(String, ActionEmitter<(i32, i32)>)>,
     drag: ui::LocalState<Option<ArrangementDrag>>,
     cursor: Option<Point>,
+    padding: f64,
+    snap_radius: f64,
     rect: Rect,
 }
 
@@ -166,6 +161,8 @@ impl DisplayArrangement {
                 .collect(),
             drag,
             cursor: None,
+            padding: f64::from(ui::tokens::Spacing::BASE.s6),
+            snap_radius: f64::from(ui::tokens::Metrics::BASE.icon_sm),
             rect: Rect::ZERO,
         }
     }
@@ -173,7 +170,9 @@ impl DisplayArrangement {
     fn mapping(&self) -> Mapping {
         self.drag
             .with(|drag| drag.as_ref().map(|drag| drag.mapping))
-            .unwrap_or_else(|| Mapping::fit(self.rect, &self.displays))
+            .unwrap_or_else(|| {
+                Mapping::fit(self.rect, &self.displays, self.padding, self.snap_radius)
+            })
     }
 
     /// Where each display is drawn this frame: the live preview for the one
@@ -299,8 +298,8 @@ impl DisplayArrangement {
         dragging: bool,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        let radius = f64::from(theme.tokens.radii.sm);
+
+        let radius = f64::from(theme.tokens.radii.control);
         let shape = RoundedRect::from_rect(rect, radius);
         let tier = ui::chrome::selection_tier(
             theme,
@@ -324,34 +323,32 @@ impl DisplayArrangement {
             &ui::surface::edge_outline(rect, radius),
         );
         let number = display.number.to_string();
-        let number_size = type_scale
-            .x2l
-            .min(px(rect.height() * 0.45))
-            .max(type_scale.sm);
-        let (nw, nh) =
-            text_renderer.measure_weighted(&number, number_size, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
+        let number_style = theme.text(ui::TextRole::Title).strong().numeric();
+        let (nw, nh) = text_renderer.measure_style(&number, None, &number_style);
+        text_renderer.draw_style(
             scene,
             &number,
-            number_size,
             colors.text_primary,
             transform.pre_translate(
                 (
                     rect.center().x - f64::from(nw) / 2.0,
-                    rect.center().y - f64::from(nh) / 2.0 - 6.0,
+                    rect.center().y - f64::from(nh) / 2.0 - f64::from(theme.tokens.spacing.s1),
                 )
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &number_style,
         );
-        let label =
-            text_renderer.elide_to_width(&display.label, type_scale.xs, px(rect.width() - 12.0));
-        let (lw, _) = text_renderer.measure(&label, type_scale.xs, None);
-        text_renderer.draw_text(
+        let caption_style = theme.text(ui::TextRole::Caption);
+        let label = text_renderer.elide_to_width_style(
+            &display.label,
+            px(rect.width() - f64::from(theme.tokens.spacing.s3)),
+            &caption_style,
+        );
+        let (lw, _) = text_renderer.measure_style(&label, None, &caption_style);
+        text_renderer.draw_style(
             scene,
             &label,
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -361,6 +358,7 @@ impl DisplayArrangement {
                     .into(),
             ),
             None,
+            &caption_style,
         );
         if display.primary {
             // Primary marker: a small bar along the top edge, the place the
@@ -369,9 +367,9 @@ impl DisplayArrangement {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.text_primary,
                 None,
-                &RoundedRect::from_rect(bar, 1.5),
+                &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.control)),
             );
         }
     }
@@ -383,9 +381,11 @@ impl Widget for DisplayArrangement {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.padding = f64::from(theme.tokens.spacing.s6);
+        self.snap_radius = f64::from(theme.tokens.metrics.icon_sm);
         #[allow(
             clippy::unwrap_used,
             reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
@@ -394,7 +394,9 @@ impl Widget for DisplayArrangement {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(CANVAS_HEIGHT),
+                    height: Dimension::length(
+                        theme.tokens.metrics.panel_width_utility * 11.0 / 16.0,
+                    ),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -423,15 +425,9 @@ impl Widget for DisplayArrangement {
         _presence: &PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.panel);
         let ground = colors.lift(0.1);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ground,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
+        ui::surface::card(scene, transform, self.rect, radius, ground);
         let mapping = self.mapping();
         let mut drawn = self.drawn();
         // The dragged display paints last so it rides above the others.
@@ -450,11 +446,11 @@ impl Widget for DisplayArrangement {
         }
         if drawn.is_empty() {
             let message = t("display-arrangement-empty");
-            let (w, h) = text_renderer.measure(&message, theme.tokens.typography.scale.sm, None);
-            text_renderer.draw_text(
+            let style = theme.text(ui::TextRole::Body);
+            let (w, h) = text_renderer.measure_style(&message, None, &style);
+            text_renderer.draw_style(
                 scene,
                 &message,
-                theme.tokens.typography.scale.sm,
                 colors.text_dim,
                 transform.pre_translate(
                     (
@@ -464,6 +460,7 @@ impl Widget for DisplayArrangement {
                         .into(),
                 ),
                 None,
+                &style,
             );
         }
     }

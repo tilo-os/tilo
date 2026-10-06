@@ -8,8 +8,8 @@
 //! * **History** — a commit graph with branch and merge lanes, author and
 //!   date, plus a detail panel showing each commit's message, refs and
 //!   changed files.
-//! * **Branches & Remotes** — cards for branches, tags, stashes and
-//!   remotes, with fetch / pull / push actions and ahead/behind tracking.
+//! * **Branches** — sections for local and remote branches, tags, stashes
+//!   and remotes, with fetch / pull / push and ahead/behind tracking.
 //!
 //! The live binary reads a real repository through [`repo`] (libgit2 via
 //! `git2`): the one the record opens, a path on the command line, else the
@@ -52,10 +52,10 @@ pub mod changes;
 pub mod diff;
 pub mod diffview;
 mod doc;
-pub mod draw;
 pub mod graph;
 pub mod history;
 mod http_transport;
+pub mod i18n;
 pub mod model;
 pub mod panels;
 pub mod repo;

@@ -10,10 +10,20 @@ pub const GENERIC: [(&str, &str); 3] = [
     ("mono", ui::UI_MONOSPACE_FAMILY),
 ];
 
-/// The families Tilo ships, in catalog order.
+/// The families Tilo ships, in catalog order, each generic family under
+/// the name text uses for it (the catalog may list a family by the name its
+/// files carry, as `NewComputerModern` for New Computer Modern).
 pub fn families() -> &'static [String] {
     static FAMILIES: OnceLock<Vec<String>> = OnceLock::new();
-    FAMILIES.get_or_init(ui::font_catalog::shipped_families)
+    FAMILIES.get_or_init(|| {
+        let mut families = ui::font_catalog::shipped_families();
+        for (_, family) in GENERIC.iter().rev() {
+            if !families.iter().any(|known| known == family) {
+                families.insert(0, (*family).to_owned());
+            }
+        }
+        families
+    })
 }
 
 /// The shipped family `font` names (a generic name or a family, any case).

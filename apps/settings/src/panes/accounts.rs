@@ -241,7 +241,7 @@ fn account_status(
     } else {
         match health {
             Some(accounts::AccountSyncHealth::Syncing) => {
-                (t("accounts-status-syncing"), StatusTone::Accent)
+                (t("accounts-status-syncing"), StatusTone::Info)
             }
             Some(accounts::AccountSyncHealth::Healthy) => {
                 (t("accounts-status-healthy"), StatusTone::Success)
@@ -827,7 +827,9 @@ impl AccountsPane {
         let mut panel: Vec<El> = Vec::new();
 
         let mut intro: Vec<El> = Vec::new();
-        intro.push(Box::new(Text::new(&t("accounts-intro")).with_size(12.0)));
+        intro.push(Box::new(
+            Text::new(&t("accounts-intro")).with_role(ui::TextRole::Caption),
+        ));
         if self.vault.custody() == accounts::SecretCustody::LocalFile {
             intro.push(caption(&t("accounts-vault-local")));
         }
@@ -842,7 +844,7 @@ impl AccountsPane {
         let mut introduction = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(8.0);
+            .with_gap(ui::tokens::Spacing::BASE.s2);
         for line in intro {
             introduction = introduction.push(line);
         }
@@ -876,7 +878,7 @@ impl AccountsPane {
         let title = kind_shown(AccountKind::Mail);
         let add = t("accounts-add");
         let add_btn: El = Box::new(self.bound(
-            Button::new("settings.accounts.add.mail", &add).content_sized(),
+            Button::new("settings.accounts.add.mail", &add),
             AccountsEffect::AddAccount {
                 kind: "mail".into(),
             },
@@ -891,15 +893,12 @@ impl AccountsPane {
         let add = t("accounts-add");
         card_with_action(
             &kind_shown(kind),
-            Box::new(
-                self.bound(
-                    Button::new(&format!("settings.accounts.add.{}", kind.slug()), &add)
-                        .content_sized(),
-                    AccountsEffect::AddAccount {
-                        kind: kind.slug().into(),
-                    },
-                ),
-            ),
+            Box::new(self.bound(
+                Button::new(&format!("settings.accounts.add.{}", kind.slug()), &add),
+                AccountsEffect::AddAccount {
+                    kind: kind.slug().into(),
+                },
+            )),
             self.kind_body(kind, &views),
         )
     }
@@ -945,7 +944,9 @@ impl AccountsPane {
         // row so narrow layouts remain legible and touch targets never crush
         // the connection summary.
         let mut top = Row::new()
-            .push(Box::new(Text::new(&view.label).with_size(13.0)))
+            .push(Box::new(
+                Text::new(&view.label).with_role(ui::TextRole::Body),
+            ))
             .push(Box::new(Spacer::new()));
         if view.kind.best_effort() {
             top = top.push(semantic_status_pill(
@@ -959,7 +960,11 @@ impl AccountsPane {
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(top))
-            .push(Box::new(Text::new(&view.summary).with_size(11.0).dimmed()));
+            .push(Box::new(
+                Text::new(&view.summary)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            ));
         if !self.is_sample {
             let sync_line = runtime.map_or_else(
                 || t("accounts-sync-none"),
@@ -976,7 +981,11 @@ impl AccountsPane {
                     }
                 },
             );
-            column = column.push(Box::new(Text::new(&sync_line).with_size(11.0).dimmed()));
+            column = column.push(Box::new(
+                Text::new(&sync_line)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            ));
             let needs_sign_in = runtime.is_some_and(|status| {
                 status.health == accounts::AccountSyncHealth::NeedsAuthentication
             });
@@ -994,51 +1003,40 @@ impl AccountsPane {
             let remove = t("accounts-remove");
             let mut primary_actions = Row::new();
             if !view.kind.is_cloud_storage() {
-                primary_actions = primary_actions.push(Box::new(
-                    self.bound(
-                        Button::new(&format!("settings.accounts.edit.{}", view.id), &edit)
-                            .content_sized(),
-                        AccountsEffect::EditAccount {
-                            account: view.id.clone(),
-                        },
-                    ),
-                ));
+                primary_actions = primary_actions.push(Box::new(self.bound(
+                    Button::new(&format!("settings.accounts.edit.{}", view.id), &edit),
+                    AccountsEffect::EditAccount {
+                        account: view.id.clone(),
+                    },
+                )));
             }
             let primary_actions = primary_actions
-                .push(Box::new(
-                    self.bound(
-                        Button::new(
-                            &format!("settings.accounts.reauth.{}", view.id),
-                            &reauth_label,
-                        )
-                        .content_sized(),
-                        AccountsEffect::SignInAgain {
-                            account: view.id.clone(),
-                        },
+                .push(Box::new(self.bound(
+                    Button::new(
+                        &format!("settings.accounts.reauth.{}", view.id),
+                        &reauth_label,
                     ),
-                ))
+                    AccountsEffect::SignInAgain {
+                        account: view.id.clone(),
+                    },
+                )))
                 .push(Box::new(Spacer::new()));
             let secondary_actions = Row::new()
-                .push(Box::new(
-                    self.bound(
-                        Button::new(&format!("settings.accounts.test.{}", view.id), &check)
-                            .content_sized(),
-                        AccountsEffect::TestAccount {
-                            account: view.id.clone(),
-                        },
-                    ),
-                ))
+                .push(Box::new(self.bound(
+                    Button::new(&format!("settings.accounts.test.{}", view.id), &check),
+                    AccountsEffect::TestAccount {
+                        account: view.id.clone(),
+                    },
+                )))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
                     self.bound(
                         Button::new(&format!("settings.accounts.remove.{}", view.id), &remove)
-                            .danger()
-                            .content_sized(),
+                            .role(ui::widget::ButtonRole::Destructive),
                         AccountsEffect::RemoveAccount {
                             account: view.id.clone(),
                         },
-                    )
-                    .content_sized(),
+                    ),
                 ));
             column = column
                 .push(Box::new(primary_actions))
@@ -1088,8 +1086,7 @@ impl AccountsPane {
             .with_kind(TextInputKind::Name)
             .with_id("accounts.form.name")
             .with_accessible_name(&display_name)
-            .with_placeholder(&display_name)
-            .with_font_size(13.0);
+            .with_placeholder(&display_name);
         let identity = TextInput::from_state(if kind == AccountKind::Mail {
             &self.form_email
         } else {
@@ -1102,34 +1099,30 @@ impl AccountsPane {
         })
         .with_id("accounts.form.identity")
         .with_accessible_name(&identity_name)
-        .with_placeholder(&identity_placeholder)
-        .with_font_size(13.0);
+        .with_placeholder(&identity_placeholder);
         let user = TextInput::from_state(&self.form_user)
             .with_kind(TextInputKind::Username)
             .with_id("accounts.form.username")
             .with_accessible_name(&login_name)
-            .with_placeholder(&login_placeholder)
-            .with_font_size(13.0);
+            .with_placeholder(&login_placeholder);
         let password = TextInput::from_state(&self.form_password)
             .with_kind(TextInputKind::Password)
             .with_id("accounts.form.password")
             .with_accessible_name(&password_label)
             .with_secret(true)
-            .with_placeholder(&password_short)
-            .with_font_size(13.0);
+            .with_placeholder(&password_short);
         let server = TextInput::from_state(&self.form_server)
             .with_kind(TextInputKind::Url)
             .with_id("accounts.form.server")
             .with_accessible_name(&server_url)
-            .with_placeholder(&server_placeholder)
-            .with_font_size(13.0);
+            .with_placeholder(&server_placeholder);
         let buttons = Row::new()
             .push(Box::new(self.bound(
-                Button::new("settings.accounts.form.save", &save).content_sized(),
+                Button::new("settings.accounts.form.save", &save),
                 AccountsEffect::SaveAccountForm,
             )))
             .push(Box::new(self.bound(
-                Button::new("settings.accounts.form.cancel", &cancel).content_sized(),
+                Button::new("settings.accounts.form.cancel", &cancel),
                 AccountsEffect::CancelAccountForm,
             )))
             .push(Box::new(Spacer::new()));
@@ -1178,8 +1171,7 @@ impl AccountsPane {
             .with_id("accounts.reauth.password")
             .with_accessible_name(&password_label)
             .with_secret(true)
-            .with_placeholder(&password_label)
-            .with_font_size(13.0);
+            .with_placeholder(&password_label);
         let mut fields = vec![
             value_row(&t("accounts-reauth-account"), id),
             setting_row(&t("accounts-reauth-credential"), Box::new(password)),
@@ -1194,11 +1186,11 @@ impl AccountsPane {
         fields.push(Box::new(
             Row::new()
                 .push(Box::new(self.bound(
-                    Button::new("settings.accounts.reauth.save", &save).content_sized(),
+                    Button::new("settings.accounts.reauth.save", &save),
                     AccountsEffect::SaveNewPassword,
                 )))
                 .push(Box::new(self.bound(
-                    Button::new("settings.accounts.reauth.cancel", &cancel).content_sized(),
+                    Button::new("settings.accounts.reauth.cancel", &cancel),
                     AccountsEffect::CancelNewPassword,
                 )))
                 .push(Box::new(Spacer::new())),

@@ -1,10 +1,10 @@
 //! Containers — a rootless-podman container & distrobox manager for Tilo.
 //!
 //! The app projects the local container engine (containers, images,
-//! distroboxes) into a surface built on the `ui` toolkit: a navigation rail,
-//! a master list with inline lifecycle actions, a tabbed detail view (Logs /
-//! Stats / Inspect / Terminal), a create-container flow, and a distrobox
-//! section. The new-container draft is the app's resource document; the
+//! volumes, distroboxes) into a window built from the `ui` toolkit: the
+//! sections in a sidebar, the container list beside a tabbed detail (logs,
+//! usage, settings, shell), a new-container form, and a page per section.
+//! The new-container draft is the app's resource document; the
 //! engine snapshot is transient host data mirrored from `podman`, published
 //! as live rows.
 //!
@@ -37,16 +37,14 @@
 
 pub mod actions;
 pub mod app;
-pub mod combobox;
+mod create_form;
 pub mod doc;
-pub mod draw;
 pub mod model;
-pub mod panels;
 pub mod podman;
-pub mod presentation;
 pub mod resource;
 pub mod search;
 pub mod terminal;
+mod view;
 
 pub use app::ContainersApp;
 pub use resource::{Containers, ContainersShell};

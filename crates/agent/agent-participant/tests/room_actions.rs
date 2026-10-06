@@ -343,11 +343,19 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         listed
             .iter()
             .all(|action| action.kind == tilo_actions::OperationKind::Document),
-        "{:?}",
+        "the record catalogue must offer only document operations: {:?}",
         listed
             .iter()
             .map(|action| &action.address)
             .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        listed
+            .iter()
+            .filter(|action| action.address.action == "new-theme")
+            .count(),
+        1,
+        "creating a theme within the open Studio is one canonical document action"
     );
     for action in page.rows.iter().filter_map(|row| row.action.as_ref()) {
         let mut arguments = serde_json::Map::new();

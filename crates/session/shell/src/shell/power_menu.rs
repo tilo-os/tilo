@@ -6,7 +6,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
@@ -14,6 +14,7 @@ use crate::shell::i18n::t;
 use crate::shell::overlay_host::layers::{
     LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
 };
+use ui::TextRole;
 
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
 /// default token: `open`/`close` have no theme in hand, and the menu is
@@ -83,14 +84,16 @@ impl PowerMenuMetrics {
     pub(crate) fn for_text_scale(text_scale: f32) -> Self {
         let spacing = ui::tokens::Spacing::BASE;
         let metrics = ui::tokens::Metrics::BASE;
-        let type_scale = ui::tokens::TypeScale::default();
-        let line =
-            |px: f32| f64::from(ui::text_render::TextStyle::new(px * text_scale).line_height_px());
+        let typography = ui::tokens::Typography::default();
+        let line = |role: ui::TextRole| {
+            f64::from(typography.style(role).line_height_px()) * f64::from(text_scale)
+        };
         let pad = f64::from(spacing.s4);
-        let title_h = line(type_scale.lg);
-        let label_h = line(type_scale.sm);
-        let detail_h = line(type_scale.xs);
-        let inner = f64::from(spacing.s2);
+        let title_h = line(ui::TextRole::Heading);
+        let label_h = line(ui::TextRole::Label);
+        let detail_h = line(ui::TextRole::Caption);
+        // A row's two lines keep at least `s1` above and below them.
+        let inner = f64::from(spacing.s1);
         Self {
             pad,
             row_h: f64::from(metrics.panel_row_height).max(inner + label_h + detail_h + inner),
@@ -455,19 +458,17 @@ impl PowerMenu {
         );
         // Theme-resolved sizes, painted once: `draw` has reset the renderer
         // for this pass.
-        let title_size = theme.tokens.typography.scale.lg;
-        let label_size = theme.tokens.typography.scale.sm;
-        let detail_size = theme.tokens.typography.scale.xs;
+        let title_style = theme.text(TextRole::Heading);
+        let label_style = theme.text(TextRole::Label);
+        let detail_style = theme.text(TextRole::Caption);
         // Panel title on the padding line (HIG §9.6), centred on the band
         // the metrics reserved for it.
         let title = t("power-menu-title");
-        let (_, title_h) =
-            text_renderer.measure_weighted(&title, title_size, None, TextWeight::Semibold);
+        let (_, title_h) = text_renderer.measure_style(&title, None, &title_style);
         let title_band_h = m.rows_top - 2.0 * m.pad;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             colors.text_primary,
             at(
                 transform,
@@ -477,7 +478,7 @@ impl PowerMenu {
                 ),
             ),
             None,
-            TextWeight::Semibold,
+            &title_style,
         );
         let inset = f64::from(theme.tokens.spacing.s3);
         let icon_px = f64::from(theme.tokens.metrics.icon_md);
@@ -530,16 +531,11 @@ impl PowerMenu {
             // grows the row rather than painting through its neighbour.
             let text_x = icon_rect.x1 + inset;
             let avail = (row.x1 - inset - text_x).max(1.0);
-            let label = text_renderer.elide_to_width_weighted(
-                &label,
-                label_size,
-                text_width(avail),
-                TextWeight::Semibold,
-            );
-            let detail = text_renderer.elide_to_width(&detail, detail_size, text_width(avail));
-            let (_, label_h) =
-                text_renderer.measure_weighted(&label, label_size, None, TextWeight::Semibold);
-            let (_, detail_h) = text_renderer.measure(&detail, detail_size, None);
+            let label = text_renderer.elide_to_width_style(&label, text_width(avail), &label_style);
+            let detail =
+                text_renderer.elide_to_width_style(&detail, text_width(avail), &detail_style);
+            let (_, label_h) = text_renderer.measure_style(&label, None, &label_style);
+            let (_, detail_h) = text_renderer.measure_style(&detail, None, &detail_style);
             // A row the viewport squeezed below its two lines keeps the
             // label and drops the detail, rather than painting the detail
             // through the next row.
@@ -551,23 +547,22 @@ impl PowerMenu {
                     0.0
                 };
             let label_y = row.y0 + ((row.height() - stack_h) / 2.0).max(0.0);
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                label_size,
                 colors.text_primary,
                 at(transform, (text_x, label_y)),
                 None,
-                TextWeight::Semibold,
+                &label_style,
             );
             if show_detail {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &detail,
-                    detail_size,
                     colors.text_dim,
                     at(transform, (text_x, label_y + f64::from(label_h))),
                     None,
+                    &detail_style,
                 );
             }
         }
@@ -1264,7 +1259,7 @@ mod tests {
         fn large_text_grows_the_rows_and_the_panel_holds_them() {
             let one = PowerMenuMetrics::for_text_scale(1.0);
             let two = PowerMenuMetrics::for_text_scale(2.0);
-            let inner = f64::from(ui::tokens::Spacing::BASE.s2);
+            let inner = f64::from(ui::tokens::Spacing::BASE.s1);
             assert!(two.row_h >= two.label_h + two.detail_h + 2.0 * inner);
             assert!(two.row_h > one.row_h);
             for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 800.0, 700.0)] {

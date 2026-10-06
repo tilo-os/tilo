@@ -10,17 +10,20 @@ use taffy::{NodeId, TaffyTree};
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ColorSwatchPicker, Widget};
+use ui::tokens::TextRole;
+use ui::widget::{
+    Button, ButtonFace, ButtonRole, ColorSwatch, ColorSwatchPicker, ControlSize, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::num;
 
-const WIDTH: f64 = 190.0;
-const HEADER_H: f64 = 31.0;
-const FOOTER_H: f64 = 29.0;
+/// Swatches per row of the grid.
+const COLUMNS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PaletteKind {
@@ -36,12 +39,16 @@ pub(super) enum PaletteChoice {
 
 pub(super) struct PaletteRequest<'a> {
     pub(super) kind: PaletteKind,
+    /// The swatch of the colour in use, shown selected.
+    pub(super) selected: Option<usize>,
     pub(super) colors: &'a [[u8; 3]],
     pub(super) labels: Vec<String>,
     pub(super) title: String,
     pub(super) clear_label: String,
     pub(super) anchor: Point,
     pub(super) host: Rect,
+    /// The theme the panel is laid out in until it is next drawn.
+    pub(super) theme: &'a Theme,
 }
 
 pub(super) struct CompactSwatchPalette {
@@ -53,6 +60,9 @@ pub(super) struct CompactSwatchPalette {
     title: String,
     clear_label: String,
     clear_focused: bool,
+    clear_hovered: bool,
+    anchor: Point,
+    host: Rect,
 }
 
 impl Default for CompactSwatchPalette {
@@ -66,6 +76,9 @@ impl Default for CompactSwatchPalette {
             title: String::new(),
             clear_label: String::new(),
             clear_focused: false,
+            clear_hovered: false,
+            anchor: Point::ZERO,
+            host: Rect::ZERO,
         }
     }
 }
@@ -76,22 +89,27 @@ impl CompactSwatchPalette {
     }
 
     pub(super) fn open(&mut self, request: PaletteRequest<'_>) {
-        let colors = request
+        let swatches = request
             .colors
             .iter()
-            .map(|rgb| u32::from(rgb[0]) << 16 | u32::from(rgb[1]) << 8 | u32::from(rgb[2]))
-            .collect();
+            .zip(request.labels)
+            .map(|(rgb, name)| ColorSwatch::named(Color::from_rgb8(rgb[0], rgb[1], rgb[2]), name));
         self.kind = Some(request.kind);
         self.title = request.title;
         self.clear_label = request.clear_label;
         self.clear_focused = false;
-        self.picker =
-            Some(ColorSwatchPicker::with_palette(colors, 4).with_accessible_labels(request.labels));
+        let picker = ColorSwatchPicker::new(swatches, COLUMNS);
+        self.picker = Some(match request.selected {
+            Some(index) => picker.with_selected(index),
+            None => picker,
+        });
         if let Some(picker) = self.picker.as_mut() {
             Widget::set_focus(picker, true);
         }
         self.pointer = request.anchor;
-        self.layout(request.anchor, request.host);
+        self.anchor = request.anchor;
+        self.host = request.host;
+        self.layout(request.anchor, request.host, request.theme);
     }
 
     pub(super) fn close(&mut self) {
@@ -143,17 +161,10 @@ impl CompactSwatchPalette {
         let picker = self.picker.as_mut()?;
         if Widget::perform_semantic_action(picker, target, action, state, root)
             && let Some(index) = picker.take_choice()
-            && let Some(rgb) = picker.color_at(index)
+            && let Some(rgb) = swatch_rgb(picker, index)
         {
             self.close();
-            return Some((
-                kind,
-                PaletteChoice::Color([
-                    ((rgb >> 16) & 0xff) as u8,
-                    ((rgb >> 8) & 0xff) as u8,
-                    (rgb & 0xff) as u8,
-                ]),
-            ));
+            return Some((kind, PaletteChoice::Color(rgb)));
         }
         None
     }
@@ -184,41 +195,44 @@ impl CompactSwatchPalette {
         false
     }
 
-    fn layout(&mut self, anchor: Point, host: Rect) {
+    /// Size and place the panel: a title line, the shared swatch grid and
+    /// the clear action, each separated by the panel's sibling rhythm, kept
+    /// inside `host` next to `anchor`.
+    fn layout(&mut self, anchor: Point, host: Rect, theme: &Theme) {
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
-        let theme = Theme::dark();
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let gap = f64::from(theme.tokens.spacing.s2);
         let mut taffy = TaffyTree::new();
         let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = picker.build_layout(&mut taffy, &theme, &mut nodes);
+        let node = picker.build_layout(&mut taffy, theme, &mut nodes);
         let _ = taffy.compute_layout(
             node,
             taffy::Size {
-                width: taffy::AvailableSpace::Definite(num::f32_of_f64(WIDTH - 16.0)),
+                width: taffy::AvailableSpace::MaxContent,
                 height: taffy::AvailableSpace::MaxContent,
             },
         );
-        let grid_h = taffy
+        let grid = taffy
             .layout(node)
-            .map_or(0.0, |layout| f64::from(layout.size.height));
-        // Keep a visual gutter between the shared grid's own card and the
-        // explicit clear action below it.
-        let height = HEADER_H + grid_h + FOOTER_H + 8.0;
+            .map_or(taffy::Size::ZERO, |layout| layout.size);
+        let grid_w = f64::from(grid.width);
+        let grid_h = f64::from(grid.height);
+        let title_h = f64::from(theme.text(TextRole::Label).line_height_px());
+        let clear_h = ButtonFace::height(ControlSize::Small, theme);
+        let width = grid_w + 2.0 * pad;
+        let height = pad + title_h + gap + grid_h + gap + clear_h + pad;
         let x = anchor
             .x
-            .clamp(host.x0 + 8.0, (host.x1 - WIDTH - 8.0).max(host.x0 + 8.0));
+            .clamp(host.x0 + gap, (host.x1 - width - gap).max(host.x0 + gap));
         let y = anchor
             .y
-            .clamp(host.y0 + 8.0, (host.y1 - height - 40.0).max(host.y0 + 8.0));
-        self.rect = Rect::new(x, y, x + WIDTH, y + height);
-        picker.apply_layout(&taffy, node, Point::new(x + 8.0, y + HEADER_H));
-        self.clear_rect = Rect::new(
-            x + 8.0,
-            self.rect.y1 - FOOTER_H + 3.0,
-            x + WIDTH - 8.0,
-            self.rect.y1 - 4.0,
-        );
+            .clamp(host.y0 + gap, (host.y1 - height - gap).max(host.y0 + gap));
+        self.rect = Rect::new(x, y, x + width, y + height);
+        picker.apply_layout(&taffy, node, Point::new(x + pad, y + pad + title_h + gap));
+        let clear_y = self.rect.y1 - pad - clear_h;
+        self.clear_rect = Rect::new(x + pad, clear_y, x + pad + grid_w, clear_y + clear_h);
     }
 
     pub(super) fn draw(
@@ -229,47 +243,28 @@ impl CompactSwatchPalette {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.layout(self.anchor, self.host, theme);
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
-        // A floating panel: panel ground + panel border + elevation (HIG
-        // §9.1), never a raised fill with the declared `border_standard`.
-        let radius = f64::from(theme.tokens.radii.md);
-        crate::widget::paint_panel(scene, transform, theme, self.rect, radius);
-        text.draw_text(
+        ui::widget::floating_surface::paint(scene, transform, self.rect, theme);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        let pad = f64::from(theme.tokens.spacing.s3);
+        text.draw_style(
             scene,
             &self.title,
-            12.5,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y0 + 8.0)),
-            None,
+            ink.tokens.colors.text_primary,
+            transform * Affine::translate((self.rect.x0 + pad, self.rect.y0 + pad)),
+            Some(num::f32_of_f64(self.rect.width() - 2.0 * pad)),
+            &theme.text(TextRole::Label),
         );
-        let clear = vello::kurbo::RoundedRect::from_rect(self.clear_rect, 5.0);
-        ui::surface::card(
-            scene,
-            transform,
-            self.clear_rect,
-            5.0,
-            theme.tokens.colors.surfaces.base,
-        );
-        if self.clear_focused {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
-                transform,
-                theme.tokens.colors.border_focus,
-                None,
-                &clear,
-            );
-        }
-        text.draw_text(
-            scene,
-            &self.clear_label,
-            11.5,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.clear_rect.x0 + 8.0, self.clear_rect.y0 + 3.5)),
-            Some(num::f32_of_f64(self.clear_rect.width() - 16.0)),
-        );
-        picker.draw(scene, transform, text, theme, presence);
+        let face = ButtonFace::new(self.clear_rect, &self.clear_label)
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .hovered(self.clear_hovered)
+            .focused(self.clear_focused);
+        Button::paint(scene, transform, text, &ink, &face);
+        picker.draw(scene, transform, text, &ink, presence);
     }
 
     pub(super) fn handle_event(
@@ -283,6 +278,7 @@ impl CompactSwatchPalette {
         let kind = self.kind?;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / scale, position.y / scale);
+            self.clear_hovered = self.clear_rect.contains(self.pointer);
         }
         if matches!(
             event,
@@ -365,17 +361,10 @@ impl CompactSwatchPalette {
                 },
             );
             if let Some(index) = picker.take_choice()
-                && let Some(rgb) = picker.color_at(index)
+                && let Some(rgb) = swatch_rgb(picker, index)
             {
                 self.close();
-                return Some((
-                    kind,
-                    PaletteChoice::Color([
-                        ((rgb >> 16) & 0xff) as u8,
-                        ((rgb >> 8) & 0xff) as u8,
-                        (rgb & 0xff) as u8,
-                    ]),
-                ));
+                return Some((kind, PaletteChoice::Color(rgb)));
             }
         }
         None
@@ -397,4 +386,10 @@ impl CompactSwatchPalette {
     pub(super) fn clear_rect(&self) -> Rect {
         self.clear_rect
     }
+}
+
+/// The document colour of swatch `index`, as the RGB triple a mark stores.
+fn swatch_rgb(picker: &ColorSwatchPicker, index: usize) -> Option<[u8; 3]> {
+    let rgba = picker.swatch(index)?.color.to_rgba8();
+    Some([rgba.r, rgba.g, rgba.b])
 }

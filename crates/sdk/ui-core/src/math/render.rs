@@ -4,7 +4,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Stroke};
 use vello::peniko::Color;
 
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, UI_MATH_FAMILY};
+use crate::text_render::TextRenderer;
 
 use super::layout::{Box2d, BoxKind, Layout};
 
@@ -62,7 +62,7 @@ fn draw_box(
                 color,
                 translated(transform, origin_x + math_box.x, origin_y + math_box.y),
                 None,
-                &TextStyle::new(*size).with_family(FontChoice::Named(UI_MATH_FAMILY.into())),
+                &super::layout::math_style(*size),
             );
         }
         BoxKind::Name { text, size } => {
@@ -72,7 +72,7 @@ fn draw_box(
                 color,
                 translated(transform, origin_x + math_box.x, origin_y + math_box.y),
                 None,
-                &TextStyle::new(*size).with_family(FontChoice::Named(UI_MATH_FAMILY.into())),
+                &super::layout::math_style(*size),
             );
         }
         BoxKind::Paren { open, size } => {

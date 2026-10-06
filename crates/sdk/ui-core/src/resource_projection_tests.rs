@@ -246,10 +246,11 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0 => root,
                 1 => Box::new(crate::widget::Column::new().push(root)),
                 2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(root)),
-                _ => Box::new(crate::widget::NavShell::sidebar_over_content(
-                    Box::new(crate::widget::Text::new("sidebar")),
-                    root,
-                )),
+                _ => Box::new(
+                    crate::widget::NavShell::new()
+                        .sidebar(Box::new(crate::widget::Text::new("sidebar")))
+                        .content(root),
+                ),
             };
             assert!(crate::widget::controls::has_action_control_bindings(
                 root.as_ref()
@@ -310,10 +311,11 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0 => Box::new(root),
                 1 => Box::new(crate::widget::Column::new().push(Box::new(root))),
                 2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(root))),
-                _ => Box::new(crate::widget::NavShell::sidebar_over_content(
-                    Box::new(crate::widget::Text::new("sidebar")),
-                    Box::new(root),
-                )),
+                _ => Box::new(
+                    crate::widget::NavShell::new()
+                        .sidebar(Box::new(crate::widget::Text::new("sidebar")))
+                        .content(Box::new(root)),
+                ),
             };
             let mut app = App::new_with_controlled_inputs(State::new(), root);
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
@@ -324,7 +326,10 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0,
                 "presence refresh must not inventory controls"
             );
-            assert_eq!(app.control_action_coverage().len(), 1);
+            // A shell with a sidebar adds its own action control: the
+            // sidebar toggle.
+            let expected = if wrapper == 3 { 2 } else { 1 };
+            assert_eq!(app.control_action_coverage().len(), expected);
             assert!(
                 counts[1].get() > 0,
                 "explicit coverage still inventories controls"

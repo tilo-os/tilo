@@ -40,6 +40,9 @@ const NARROW_SCENARIOS: &[&str] = &[
 
 #[test]
 fn every_scenario_reaches_its_state() {
+    // Match --shots before starting capture workers: transient notifications
+    // belong to the captured scene and must not expire while it is prepared.
+    ui::clock::freeze_for_capture();
     let mut captures = NotesShell::scenarios()
         .iter()
         .map(|scenario| (Some(*scenario), NotesShell::shot_viewport(Some(scenario))))
@@ -80,6 +83,11 @@ fn every_scenario_reaches_its_state() {
         "scenarios failed:\n{}",
         failures.join("\n")
     );
+}
+
+#[test]
+fn rename_scenario_keeps_its_real_inline_editor_focused() {
+    check(Some("rename"), (1280, 720)).expect("the real double-click rename remains focused");
 }
 
 fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
@@ -226,7 +234,7 @@ fn reached(
             let heights = blocks.iter().zip(rects).all(|(block, rect)| {
                 let (_, text_height) = renderer.measure(
                     block.text(),
-                    block.kind.font_size(),
+                    ui::Theme::dark().tokens.typography.size(block.kind.text_role()),
                     Some(ui::num::f32_of_f64(rect.width())),
                 );
                 rect.height() + 0.5 >= f64::from(text_height)
@@ -331,9 +339,24 @@ fn reached(
                 .is_some_and(|target| target.starts_with("notes.image-edit:"))
         }),
         Some("scrolled") => blocks.len() > 20,
-        Some("drawer") => observed(driver, |node| {
-            node.action_target.as_deref() == Some("notes.drawer") && node.state.checked == Some(true)
-        }),
+        Some("drawer") => {
+            // The retained shell publishes its real toggle rather than the
+            // former manually painted notes.drawer synthetic checkbox.
+            observed(driver, |node| {
+                node.name.as_deref() == Some("Hide sidebar") && !node.state.hidden
+            }) && observed(driver, |node| {
+                node.role == ui::a11y::Role::Tree && !node.state.hidden
+            }) && observed(driver, |node| {
+                // TreeView publishes geometry on the visible rows, not on
+                // its semantic Tree container. Require a genuinely laid-out
+                // row as well as the opened shell's dismiss control.
+                node.role == ui::a11y::Role::TreeItem && !node.state.hidden
+                    && node.bounds.is_some_and(|bounds| {
+                        let rect = bounds.to_rect();
+                        rect.width() > 0.0 && rect.height() > 0.0
+                    })
+            })
+        },
         Some("menu" | "note_menu") => observed(driver, |node| {
             node.role == ui::a11y::Role::Menu && !node.state.hidden
         }),

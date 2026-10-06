@@ -964,7 +964,7 @@ fn message_label(m: &MessageRow) -> String {
     let s = m.subject.trim();
     let base = if s.is_empty() { "(no subject)" } else { s };
     if m.starred {
-        format!("★ {base}")
+        format!("{base} (starred)")
     } else {
         base.to_string()
     }
@@ -1043,7 +1043,7 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
         format!("mail.attachment:{message_id}:{index}"),
         "mail.attachment",
         format!(
-            "{} · {}",
+            "{} ({})",
             attachment.filename,
             ui::format::bytes(attachment.size)
         ),
@@ -1098,7 +1098,7 @@ pub(crate) fn accounts_collection(accounts: &[(String, String, bool)]) -> Resour
                 format!("mail.account:{id}"),
                 "mail.account",
                 if *active {
-                    format!("{label} · Active")
+                    format!("{label} (open)")
                 } else {
                     label.clone()
                 },

@@ -229,13 +229,21 @@ impl ui::search::SearchProvider for TestSearch {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &ui::search::SearchQuery,
         cursor: Option<&ui::search::SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> ui::search::SearchPage {
         self.source
             .search_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn search_scopes(&self) -> Vec<ui::search::ScopeDecl> {
+        vec![
+            ui::search::ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
+            ui::search::ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
+            ui::search::ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+        ]
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
@@ -252,6 +260,7 @@ impl ui::search::SearchProvider for TestSearch {
 mod tests {
     use super::*;
     use ui::search::SearchProvider;
+    use ui::search::SearchQuery;
 
     /// Cursor paging, stale addresses, identity and downloads.
     #[test]
@@ -278,11 +287,12 @@ mod tests {
             let address = hits[0].action_address().unwrap();
             assert!(provider.resolve_action_resource(&address).is_some());
 
-            let first = provider.search_page("Page", None, 7, 3);
+            let query = SearchQuery::new("Page");
+            let first = provider.search_page(&query, None, 7, 3);
             assert!(first.inspected <= 7);
             assert!(first.results.len() <= 3);
             assert!(first.next.is_some());
-            let second = provider.search_page("Page", first.next.as_ref(), 7, 3);
+            let second = provider.search_page(&query, first.next.as_ref(), 7, 3);
             assert!(second.inspected <= 7);
             assert!(second.results.len() <= 3);
         }
@@ -305,6 +315,48 @@ mod tests {
             assert!(provider.resolve_action_resource(&address).is_none());
         }
 
+        // Phase `library_sections_are_scopes_that_admit_only_their_own_hits`.
+        {
+            use ui::tilo_resource::Resource as _;
+
+            let mut history = crate::history::History::new();
+            history.record_at("https://rust.example.test", "Rust notes", 1);
+            let mut document = automerge::AutoCommit::new();
+            crate::resource::Browser::initialize(&mut document).unwrap();
+            tilo_actions::Action::apply(
+                &crate::actions::BrowserAction::AddBookmark {
+                    url: "https://rust.example.test/book".into(),
+                    title: "Rust book".into(),
+                    tag: "test-search-bookmark".into(),
+                },
+                &mut document,
+            )
+            .unwrap();
+            let state = crate::resource::Browser::read(&document).unwrap();
+            let index = BrowserSearchIndex::default();
+            index.sync(&history);
+            let mut entries = index.entries();
+            entries.extend(crate::resource::Browser::search(&state));
+            let mut provider = index.provider();
+            provider.source = Box::new(ui::framework::testing::search_source::<
+                crate::resource::Browser,
+            >(entries));
+            let scopes = provider.search_scopes();
+            assert_eq!(
+                scopes
+                    .iter()
+                    .map(|scope| scope.label.as_str())
+                    .collect::<Vec<_>>(),
+                ["History", "Bookmarks", "Downloads"]
+            );
+            let everywhere = provider.search_page(&SearchQuery::new("rust"), None, 50, 10);
+            assert_eq!(everywhere.results.len(), 2);
+            let only_bookmarks = SearchQuery::new("rust").within(crate::actions::BOOKMARKS_SCOPE);
+            let narrowed = provider.search_page(&only_bookmarks, None, 50, 10);
+            assert_eq!(narrowed.results.len(), 1);
+            assert_eq!(narrowed.results[0].title, "Rust book");
+        }
+
         // Phase `completed_downloads_are_searchable_by_name_source_and_destination`.
         {
             let mut downloads = crate::downloads::Downloads::default();
@@ -322,7 +374,10 @@ mod tests {
             let provider = index.provider();
             let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
             let address = hit.action_address().unwrap();
-            assert_eq!(address.resource, "browser.download.stable-download");
+            assert_eq!(
+                address.resource,
+                format!("{}/stable-download", crate::actions::DOWNLOADS_SCOPE)
+            );
             assert_eq!(address.action, "show-download");
             let resource = provider.resolve_action_resource(&address).unwrap();
             assert_eq!(resource.kind, "browser.download");

@@ -611,6 +611,8 @@ mod tests {
             });
             assert_eq!(name.as_deref(), Some("main.rs"), "{scenario:?}");
             assert!(!staging, "{scenario:?} staged");
+            let audit = app.harness().native_app_audit();
+            assert!(audit.is_certified(), "{scenario:?}: {audit:#?}");
         }
     }
 

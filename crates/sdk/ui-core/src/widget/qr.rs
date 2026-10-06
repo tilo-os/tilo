@@ -23,9 +23,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -207,13 +207,13 @@ impl Widget for QrWidget {
             )]
             let text_transform =
                 transform * Affine::translate((self.rect.x0 + inset, self.rect.y0 + inset));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &msg,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 text_transform,
                 None,
+                &theme.text(TextRole::Caption),
             );
             return;
         }

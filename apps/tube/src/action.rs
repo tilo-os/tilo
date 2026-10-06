@@ -9,6 +9,7 @@
 //! the rest changes what this window shows.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::actions::{TubeAction, TubeEffect};
@@ -184,4 +185,20 @@ pub fn push(bus: &ActionBus, action: Action) {
 
 pub fn drain(bus: &ActionBus) -> Vec<Action> {
     std::mem::take(&mut *bus.borrow_mut())
+}
+
+/// Resource invocations raised by controls that report through a closure
+/// (the navigation list, the watch toolbar). The root hands them to the host,
+/// which resolves each against the published resources before it runs.
+pub type Invocations = Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>;
+
+pub fn new_invocations() -> Invocations {
+    Rc::new(RefCell::new(VecDeque::new()))
+}
+
+/// Queue an invocation of `binding`, when the control has one.
+pub fn invoke(queue: &Invocations, binding: Option<tilo_actions::ActionBinding<()>>) {
+    if let Some(invocation) = binding.and_then(|binding| binding.invoke(()).ok()) {
+        queue.borrow_mut().push_back(invocation);
+    }
 }

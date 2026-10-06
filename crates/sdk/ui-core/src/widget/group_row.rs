@@ -2210,6 +2210,18 @@ impl GroupRow {
         self.tab_drop_target
     }
 
+    /// Cancel owned tab gestures and their in-strip drop feedback.
+    pub fn cancel_tab_drag(&mut self) -> bool {
+        let mut cancelled = false;
+        for group in &mut self.groups {
+            cancelled |= group.cancel_tab_drag();
+        }
+        if cancelled {
+            self.clear_tab_drop_preview();
+        }
+        cancelled
+    }
+
     /// Whether one of this row's own tab bars currently owns a drag.
     pub fn tab_drag_active(&self) -> bool {
         self.groups.iter().any(WindowGroup::drag_in_flight)
@@ -4122,7 +4134,7 @@ impl GroupRow {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.accent[6],
+            theme.tokens.colors.intent.you,
             None,
             &capsule,
         );

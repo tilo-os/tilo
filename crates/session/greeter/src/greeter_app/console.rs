@@ -78,6 +78,28 @@ impl GreeterApp {
         args: &mut serde_json::Map<String, Value>,
     ) -> String {
         match action {
+            "configure-session-diagnostics" => {
+                let mut flags = [false; 4];
+                for (flag, (param, _)) in flags.iter_mut().zip(&super::SESSION_DIAGNOSTICS) {
+                    let Some(enabled) = args.get(*param).and_then(Value::as_bool) else {
+                        return wire::error(
+                            "invalid_arguments",
+                            "Diagnostic options must be booleans",
+                        );
+                    };
+                    *flag = enabled;
+                }
+                if flags[3] && !flags[2] {
+                    return wire::error(
+                        "invalid_arguments",
+                        "GPU dispatch timing requires GPU timestamps",
+                    );
+                }
+                self.next_sign_in_diagnostics = Some(flags);
+            }
+
+            "respond-challenge" => return self.respond_console_challenge(args),
+            "cancel-authentication" => return self.cancel_console_authentication(),
             "sign-in" => {
                 let Some(Value::String(secret)) = args.remove("password") else {
                     return wire::error("invalid_arguments", "A passcode is required");
@@ -144,6 +166,59 @@ impl GreeterApp {
         wire::answer(&json!({"status":"accepted","state":self.console_state()}))
     }
 
+    fn respond_console_challenge(&mut self, args: &mut serde_json::Map<String, Value>) -> String {
+        let Some(id) = args
+            .get("challenge")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<u64>().ok())
+        else {
+            return wire::error(
+                "invalid_arguments",
+                "Choose the current authentication challenge",
+            );
+        };
+        let Some(Value::String(response)) = args.remove("response") else {
+            return wire::error(
+                "invalid_arguments",
+                "An authentication response is required",
+            );
+        };
+        let response = Zeroizing::new(response);
+        if response.len() > 4096 {
+            return wire::error(
+                "invalid_arguments",
+                "The authentication response exceeds its limit",
+            );
+        }
+        let Some(session) = &self.auth_session else {
+            return wire::error(
+                "action_unavailable",
+                "There is no authentication challenge to answer",
+            );
+        };
+        if let Err(reason) = session.respond(id, response) {
+            return wire::error("action_unavailable", reason);
+        }
+        self.clear_password();
+        self.dirty_structure = true;
+        wire::answer(&json!({"status":"accepted","state":self.console_state()}))
+    }
+
+    fn cancel_console_authentication(&mut self) -> String {
+        let Some(session) = &self.auth_session else {
+            return wire::error(
+                "action_unavailable",
+                "There is no authentication attempt to cancel",
+            );
+        };
+        if let Err(reason) = session.cancel() {
+            return wire::error("action_unavailable", reason);
+        }
+        self.clear_password();
+        self.dirty_structure = true;
+        wire::answer(&json!({"status":"accepted","state":self.console_state()}))
+    }
+
     /// What the greeter shows, as data.
     pub fn console_state(&self) -> Value {
         json!({
@@ -160,8 +235,19 @@ impl GreeterApp {
             "session": self.sessions.get(self.selected_session).map(|session| session.name.clone()),
             "sessions": self.sessions.iter().map(|session| session.name.clone()).collect::<Vec<_>>(),
             "session_choice": self.offers_session_choice(),
+            "session_diagnostics": self.next_sign_in_diagnostics.map(|flags| {
+                super::SESSION_DIAGNOSTICS.iter().zip(flags).map(|((param, _), enabled)| {
+                    ((*param).to_owned(), json!(enabled))
+                }).collect::<serde_json::Map<String, Value>>()
+            }),
             "status": if self.phase == AuthPhase::Authenticating { super::t("greeter-signing-in") } else { self.status_text() },
             "username": self.attempt_username(),
+            "challenge": self.auth_session.as_ref().and_then(crate::auth::AuthSession::question).map(|(challenge, question)| json!({
+                "id": challenge.id.to_string(),
+                "response_kind": if challenge.secret { "secret" } else { "visible" },
+                "question": question,
+            })),
+            "cancellation_requested": self.auth_session.as_ref().is_some_and(crate::auth::AuthSession::is_cancelling),
             "accounts": self.users.iter().map(|user| json!({"username":user.username,"display_name":user.display_name})).collect::<Vec<_>>(),
             "notice": match self.notice {
                 super::Notice::None => Value::Null,
@@ -174,10 +260,58 @@ impl GreeterApp {
     }
 }
 
+fn conversation_actions(challenge: Option<crate::auth::Challenge>) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
+    let mut response_param = ActionParam::required(
+        "challenge",
+        ParamType::Text,
+        "Current authentication challenge identity",
+    );
+    if let Some(challenge) = challenge {
+        response_param = response_param.with_choices([challenge.id.to_string()]);
+    }
+    specs.push(console_action(
+        "respond-challenge",
+        "greeter-auth-respond",
+        vec![
+            response_param,
+            ActionParam::required(
+                "response",
+                ParamType::Secret,
+                "Private transient authentication response",
+            ),
+        ],
+    ));
+    specs.push(console_action(
+        "cancel-authentication",
+        "greeter-auth-cancel",
+        Vec::new(),
+    ));
+    specs
+}
+
+fn diagnostics_action() -> ActionSpec {
+    console_action(
+        "configure-session-diagnostics",
+        "greeter-session-diagnostics",
+        super::SESSION_DIAGNOSTICS
+            .iter()
+            .map(|(param, _)| {
+                ActionParam::required(
+                    param,
+                    ParamType::Boolean,
+                    "Content-free timing for this sign-in",
+                )
+            })
+            .collect(),
+    )
+}
+
 impl ui::resources::PublishesResources for GreeterApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut resource = Resource::new(PROVIDER, "greeter.sign-in", super::t("greeter-sign-in"));
         let mut specs = vec![
+            diagnostics_action(),
             console_action(
                 "sign-in",
                 "greeter-sign-in",
@@ -196,6 +330,11 @@ impl ui::resources::PublishesResources for GreeterApp {
                 ],
             ),
         ];
+        let challenge = self
+            .auth_session
+            .as_ref()
+            .and_then(crate::auth::AuthSession::challenge);
+        specs.extend(conversation_actions(challenge));
         if self.users.len() > 1 {
             specs.push(console_action(
                 "choose-account",
@@ -225,7 +364,26 @@ impl ui::resources::PublishesResources for GreeterApp {
             ));
         }
         for mut spec in specs {
-            if self.phase != AuthPhase::Idle {
+            if spec.id == "respond-challenge" {
+                if self.phase != AuthPhase::Authenticating || challenge.is_none() {
+                    spec.contract.availability = Availability::Unavailable {
+                        code: "no_authentication_challenge".into(),
+                        reason: "No authentication challenge is waiting for a response".into(),
+                    };
+                }
+            } else if spec.id == "cancel-authentication" {
+                if self.phase != AuthPhase::Authenticating
+                    || self
+                        .auth_session
+                        .as_ref()
+                        .is_none_or(|session| !session.can_cancel())
+                {
+                    spec.contract.availability = Availability::Unavailable {
+                        code: "no_cancellable_authentication".into(),
+                        reason: "No authentication attempt can be cancelled now".into(),
+                    };
+                }
+            } else if self.phase != AuthPhase::Idle {
                 spec.contract.availability = Availability::Unavailable {
                     code: "authentication_busy".into(),
                     reason: "An authentication attempt is already running".into(),
@@ -324,6 +482,324 @@ mod authentication_tests {
     use std::os::unix::net::{UnixListener, UnixStream};
 
     const SECRET: &str = "console-test-secret-never-published";
+
+    fn start_worker(
+        app: &mut GreeterApp,
+        socket: &std::path::Path,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<crate::auth::AuthUpdate>>> {
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = std::sync::Arc::clone(&updates);
+        app.begin_authenticating();
+        app.auth_session = Some(crate::auth::spawn_auth_updates(
+            socket.to_str().unwrap().to_owned(),
+            app.attempt_username(),
+            Zeroizing::new(SECRET.to_owned()),
+            app.sessions.get(app.selected_session).unwrap().argv.clone(),
+            GreeterApp::session_env(app.next_sign_in_diagnostics),
+            std::sync::Arc::clone(&app.challenge_sequence),
+            move |update| observed.lock().unwrap().push(update),
+        ));
+        updates
+    }
+
+    fn password_exchange(stream: &mut UnixStream) {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(
+            read_request(stream),
+            json!({"type":"create_session","username":"quinten"})
+        );
+        respond(
+            stream,
+            &json!({"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}),
+        );
+        assert_eq!(
+            read_request(stream),
+            json!({"type":"post_auth_message_response","response":SECRET})
+        );
+    }
+
+    fn await_challenge(app: &GreeterApp) -> crate::auth::Challenge {
+        tilo_test_env::wait_until("actual greetd challenge", || {
+            app.auth_session
+                .as_ref()
+                .and_then(crate::auth::AuthSession::challenge)
+                .is_some()
+        });
+        app.auth_session.as_ref().unwrap().challenge().unwrap()
+    }
+
+    fn apply_worker_updates(
+        app: &mut GreeterApp,
+        updates: &std::sync::Arc<std::sync::Mutex<Vec<crate::auth::AuthUpdate>>>,
+        doc: &mut AutoCommit,
+    ) {
+        tilo_test_env::wait_until("actual authentication worker completion", || {
+            updates
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|update| matches!(update, crate::auth::AuthUpdate::Failed(_)))
+        });
+        let events = std::mem::take(&mut *updates.lock().unwrap());
+        for event in events {
+            assert!(!event.encode().contains(SECRET));
+            ui::widget::Widget::on_external_event(
+                app,
+                &event.encode(),
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+            );
+        }
+    }
+
+    fn invoke(app: &mut GreeterApp, id: &str, args: &Value) -> Value {
+        let line =
+            json!({"op":"actions_invoke","provider":PROVIDER,"id":id,"args":args}).to_string();
+        serde_json::from_str(&app.answer_console(&line, &AutoCommit::new())).unwrap()
+    }
+
+    #[test]
+    fn declared_session_diagnostics_are_bounded_transient_and_secret_free() {
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
+        assert!(app.next_sign_in_diagnostics.is_none());
+        *app.password_buffer.lock().unwrap() = SECRET.into();
+        let options = json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false});
+        let reply = invoke(&mut app, "configure-session-diagnostics@greeter", &options);
+        assert_eq!(reply["answer"]["status"], "accepted");
+        assert_eq!(app.console_state()["session_diagnostics"], options);
+        assert!(!reply.to_string().contains(SECRET));
+        assert!(!app.console_state().to_string().contains(SECRET));
+        let env = GreeterApp::session_env(app.next_sign_in_diagnostics);
+        assert_eq!(
+            &env[3..],
+            [
+                "TILO_PROFILE_PRESENTATION=1",
+                "TILO_PROFILE_GPU_STAGES=1",
+                "VELLO_GPU_TIMESTAMPS=1"
+            ]
+        );
+        let refused = invoke(
+            &mut app,
+            "configure-session-diagnostics@greeter",
+            &json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":false,"gpu_dispatch_timestamps":true}),
+        );
+        assert_eq!(refused["err"]["code"], "invalid_arguments");
+        assert_eq!(app.console_state()["session_diagnostics"], options);
+        let refused = invoke(
+            &mut app,
+            "configure-session-diagnostics@greeter",
+            &json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false,"environment":{"TILO_NATIVE_SCENARIO":SECRET}}),
+        );
+        assert_eq!(refused["err"]["code"], "invalid_arguments");
+        assert!(!refused.to_string().contains(SECRET));
+        let disabled = json!({"presentation":false,"gpu_stages":false,"gpu_timestamps":false,"gpu_dispatch_timestamps":false});
+        let reply = invoke(&mut app, "configure-session-diagnostics@greeter", &disabled);
+        assert_eq!(reply["answer"]["status"], "accepted");
+        assert_eq!(
+            GreeterApp::session_env(app.next_sign_in_diagnostics).len(),
+            3
+        );
+        assert_eq!(app.console_state()["session_diagnostics"], disabled);
+        app.phase = AuthPhase::Authenticating;
+        let refused = invoke(&mut app, "configure-session-diagnostics@greeter", &options);
+        assert_eq!(refused["err"]["code"], "action_unavailable");
+        assert_eq!(app.console_state()["session_diagnostics"], disabled);
+        assert!(
+            GreeterApp::for_shot(AuthScenario::PersonalSessions)
+                .next_sign_in_diagnostics
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn session_diagnostics_reach_the_ordinary_authenticated_greetd_start() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("greetd.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            password_exchange(&mut stream);
+            respond(&mut stream, &json!({"type":"success"}));
+            let request = read_request(&mut stream);
+            assert_eq!(
+                request,
+                json!({
+                    "type":"start_session", "cmd":["/usr/libexec/tilo-session"],
+                    "env":["XDG_SESSION_TYPE=wayland","XDG_SESSION_DESKTOP=tilo","XDG_CURRENT_DESKTOP=tilo",
+                        "TILO_PROFILE_PRESENTATION=1","TILO_PROFILE_GPU_STAGES=1","VELLO_GPU_TIMESTAMPS=1"]
+                })
+            );
+            assert!(!request.to_string().contains(SECRET));
+            respond(&mut stream, &json!({"type":"success"}));
+        });
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
+        let configured = invoke(
+            &mut app,
+            "configure-session-diagnostics@greeter",
+            &json!({
+                "presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false
+            }),
+        );
+        assert_eq!(configured["answer"]["status"], "accepted");
+        let updates = start_worker(&mut app, &socket);
+        tilo_test_env::wait_until("authenticated greetd StartSession", || {
+            updates
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, crate::auth::AuthUpdate::Accepted))
+        });
+        assert_eq!(app.selected_session, 0);
+        assert_eq!(app.attempt_username(), "quinten");
+        assert!(!app.console_state().to_string().contains(SECRET));
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn remote_challenges_use_actual_pam_prompts_and_reject_stale_response_owners() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("greetd.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            password_exchange(&mut stream);
+            for (kind, expected) in [("secret", "one-time-code"), ("visible", "private-realm")] {
+                respond(
+                    &mut stream,
+                    &json!({"type":"auth_message","auth_message_type":kind,"auth_message":if kind == "visible" { format!("Choose realm after {SECRET} one-time-code") } else { format!("One-time verification code after {SECRET}") }}),
+                );
+                assert_eq!(
+                    read_request(&mut stream),
+                    json!({"type":"post_auth_message_response","response":expected})
+                );
+            }
+            respond(
+                &mut stream,
+                &json!({"type":"error","error_type":"auth_error","description":format!("pam_authenticate: {SECRET}: AUTH_ERR")}),
+            );
+            assert_eq!(read_request(&mut stream), json!({"type":"cancel_session"}));
+            respond(&mut stream, &json!({"type":"success"}));
+        });
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
+        let updates = start_worker(&mut app, &socket);
+        let first = await_challenge(&app);
+        assert!(first.secret);
+        let state = app.console_state();
+        assert_eq!(state["challenge"]["id"], first.id.to_string());
+        assert!(!state.to_string().contains(SECRET));
+        assert!(
+            state["challenge"]["question"]
+                .as_str()
+                .unwrap()
+                .contains("One-time verification code")
+        );
+        let answer = invoke(
+            &mut app,
+            "respond-challenge@greeter",
+            &json!({"challenge":first.id.to_string(),"response":"one-time-code"}),
+        );
+        assert_eq!(answer["answer"]["status"], "accepted");
+        let second = await_challenge(&app);
+        assert_ne!(first.id, second.id);
+        assert!(!second.secret);
+        let state = app.console_state();
+        assert!(
+            state["challenge"]["question"]
+                .as_str()
+                .unwrap()
+                .contains("Choose realm")
+        );
+        assert!(!state.to_string().contains(SECRET));
+        assert!(!state.to_string().contains("one-time-code"));
+        let refusal = invoke(
+            &mut app,
+            "respond-challenge@greeter",
+            &json!({"challenge":first.id.to_string(),"response":SECRET}),
+        );
+        assert_eq!(refusal["err"]["code"], "invalid_arguments");
+        assert!(!refusal.to_string().contains(SECRET));
+        let answer = invoke(
+            &mut app,
+            "respond-challenge@greeter",
+            &json!({"challenge":second.id.to_string(),"response":"private-realm"}),
+        );
+        assert_eq!(answer["answer"]["status"], "accepted");
+        let mut doc = AutoCommit::new();
+        apply_worker_updates(&mut app, &updates, &mut doc);
+        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(app.failures, 1);
+        assert!(app.password_buffer.lock().unwrap().is_empty());
+        assert!(!app.console_state().to_string().contains(SECRET));
+        assert!(
+            !doc.save()
+                .windows(SECRET.len())
+                .any(|bytes| bytes == SECRET.as_bytes())
+        );
+        assert_eq!(
+            app.challenge_sequence
+                .load(std::sync::atomic::Ordering::Relaxed),
+            second.id + 1
+        );
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn remote_cancellation_uses_greetd_and_waits_for_worker_completion() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("greetd.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            password_exchange(&mut stream);
+            respond(
+                &mut stream,
+                &json!({"type":"auth_message","auth_message_type":"secret","auth_message":"Second factor:"}),
+            );
+            assert_eq!(read_request(&mut stream), json!({"type":"cancel_session"}));
+            ack_rx.recv().unwrap();
+            respond(&mut stream, &json!({"type":"success"}));
+            let mut byte = [0];
+            assert_eq!(
+                stream.read(&mut byte).unwrap(),
+                0,
+                "cancellation must not start a session"
+            );
+        });
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
+        let updates = start_worker(&mut app, &socket);
+        let challenge = await_challenge(&app);
+        let answer = invoke(&mut app, "cancel-authentication@greeter", &json!({}));
+        assert_eq!(answer["answer"]["status"], "accepted");
+        assert_eq!(
+            app.phase,
+            AuthPhase::Authenticating,
+            "greetd has not yet acknowledged cancellation"
+        );
+        assert_eq!(app.console_state()["cancellation_requested"], true);
+        assert!(app.console_state()["challenge"].is_null());
+        let refusal = invoke(
+            &mut app,
+            "respond-challenge@greeter",
+            &json!({"challenge":challenge.id.to_string(),"response":SECRET}),
+        );
+        assert_eq!(refusal["err"]["code"], "action_unavailable");
+        assert!(!refusal.to_string().contains(SECRET));
+        ack_tx.send(()).unwrap();
+        let mut doc = AutoCommit::new();
+        apply_worker_updates(&mut app, &updates, &mut doc);
+        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(app.failures, 0);
+        assert!(matches!(
+            app.notice,
+            super::super::Notice::Hint("greeter-auth-cancelled")
+        ));
+        assert!(app.auth_session.is_none());
+        assert!(app.password_buffer.lock().unwrap().is_empty());
+        daemon.join().unwrap();
+    }
 
     fn read_request(stream: &mut UnixStream) -> Value {
         let mut len = [0; 4];

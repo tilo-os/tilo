@@ -393,10 +393,22 @@ fn quick_open_and_go_to_line_open_the_host_palette() {
     sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
     sample.app.harness().key("p");
     assert_eq!(
-        ui::host_palette::take(),
-        Some(ui::host_palette::PaletteRequest::Search(String::new())),
-        "quick open is the host palette over the project's search entries"
+        sample
+            .app
+            .harness()
+            .focused_access_node()
+            .expect("host search focus")
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Search"))
+            .expect("host search query")
+            .role,
+        ui::a11y::Role::TextInput,
+        "quick open exposes the platform search query over project entries"
     );
+    sample.app.harness().set_modifiers(&[]);
+    sample.app.harness().key("Escape");
+    sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
     sample.app.harness().key("g");
     sample.app.harness().set_modifiers(&[]);
     assert_eq!(
@@ -542,9 +554,10 @@ fn layout_is_docked_when_wide_overlay_when_narrow() {
     app.set_width_hint(600.0);
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
     // Boundary is inclusive at the breakpoint → docked.
-    app.set_width_hint(SIDEBAR_BREAKPOINT);
+    let breakpoint = app.drawer.resolved_breakpoint();
+    app.set_width_hint(breakpoint);
     assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-    app.set_width_hint(SIDEBAR_BREAKPOINT - 1.0);
+    app.set_width_hint(breakpoint - 1.0);
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
 }
 
@@ -862,9 +875,9 @@ fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
 fn find_highlights_and_navigates_matches() {
     let mut sample = synced_sample();
     sample.with_doc(|app, doc| {
-        app.open_find(false, doc);
+        app.open_find();
         app.find.set_query("primes");
-        app.refresh_find(doc);
+        app.drive_find(doc);
 
         assert!(
             app.find_matches.len() >= 2,
@@ -1117,7 +1130,7 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show bottom panel"),
+        Some("Show panel"),
         "keyboard close returns focus to the retained disclosure"
     );
 
@@ -1130,7 +1143,7 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Hide bottom panel"),
+        Some("Hide panel"),
         "reopening keeps focus on the disclosure instead of hidden Terminal content"
     );
 
@@ -1175,9 +1188,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     // same line, and never overlaps it.
     assert!(
         (trigger.center().y - header.center().y).abs() < 1.0,
-        "trigger and file name share the chrome row: {} vs {}",
-        trigger.center().y,
-        header.center().y
+        "trigger and file name share the chrome row: {trigger:?} vs {header:?}"
     );
     assert!(
         header.x1 <= trigger.x0,
@@ -1185,7 +1196,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     );
     let closed_snapshot = driver.inspection();
     let closed = trigger_semantics(&closed_snapshot);
-    assert_eq!(closed.name.as_deref(), Some("Show bottom panel"));
+    assert_eq!(closed.name.as_deref(), Some("Show panel"));
     assert_eq!(closed.state.expanded, Some(false));
     assert!(!closed.state.selected);
 
@@ -1195,7 +1206,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     assert!(driver.targets().contains_key("bottom_panel"));
     let open_snapshot = driver.inspection();
     let open = trigger_semantics(&open_snapshot);
-    assert_eq!(open.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(open.name.as_deref(), Some("Hide panel"));
     assert_eq!(open.state.expanded, Some(true));
     assert!(open.state.selected);
     assert_eq!(
@@ -1203,7 +1214,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Hide bottom panel"),
+        Some("Hide panel"),
         "click transfers keyboard focus to the retained trigger"
     );
 
@@ -1231,12 +1242,12 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show bottom panel"),
+        Some("Show panel"),
         "Escape returns focus to the retained trigger"
     );
 
     let trigger_node = driver
-        .a11y_node_named("Show bottom panel")
+        .a11y_node_named("Show panel")
         .expect("trigger is exported to assistive technology");
     driver
         .perform_a11y_action(trigger_node, &ui::a11y::Action::Activate)
@@ -1272,7 +1283,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     assert!(header_standard.x1 <= trigger_standard.x0);
     let resized_snapshot = driver.inspection();
     let resized_trigger = trigger_semantics(&resized_snapshot);
-    assert_eq!(resized_trigger.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(resized_trigger.name.as_deref(), Some("Hide panel"));
     assert_eq!(resized_trigger.state.expanded, Some(true));
     assert!(resized_trigger.state.selected);
 

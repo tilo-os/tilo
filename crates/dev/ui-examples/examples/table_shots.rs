@@ -163,7 +163,7 @@ fn shoot(table: &mut Table, size: (f64, f64), out: &Path) {
     let mut scene = Scene::new();
     table.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     let mut r = OffscreenRenderer::new(cw, ch);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
 }
 

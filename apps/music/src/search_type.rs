@@ -317,40 +317,36 @@ fn top_hit(top: &SearchTop) -> SearchHit {
 
 fn song_subtitle(artist: &str, duration_s: u32) -> String {
     if duration_s == 0 {
-        format!("Song · {artist}")
+        format!("Song by {artist}")
     } else {
         format!(
-            "Song · {artist} · {}",
+            "Song by {artist}, {}",
             ui::format::timecode(u64::from(duration_s))
         )
     }
 }
 
-fn album_subtitle(artist: &str, kind: &str, year: u32) -> String {
-    if year == 0 {
-        format!("{kind} · {artist}")
-    } else {
-        format!("{kind} · {artist} · {year}")
-    }
+/// An album's one secondary fact: its artist.
+fn album_subtitle(artist: &str, _kind: &str, _year: u32) -> String {
+    artist.to_string()
 }
 
+/// An artist's one secondary fact: how many people follow them, when known.
 fn artist_subtitle(subscribers: u64) -> String {
     if subscribers == 0 {
-        "Artist".into()
+        String::new()
     } else {
-        format!(
-            "Artist · {} subscribers",
-            ui::format::compact_count(subscribers)
-        )
+        format!("{} subscribers", ui::format::compact_count(subscribers))
     }
 }
 
+/// A playlist's one secondary fact: who made it, else how long it is.
 fn playlist_subtitle(owner: &str, tracks: u64) -> String {
     match (owner.is_empty(), tracks) {
-        (true, 0) => "Playlist".into(),
-        (true, n) => format!("Playlist · {n} songs"),
-        (false, 0) => format!("Playlist · {owner}"),
-        (false, n) => format!("Playlist · {owner} · {n} songs"),
+        (false, _) => owner.to_string(),
+        (true, 0) => String::new(),
+        (true, 1) => "1 song".into(),
+        (true, n) => format!("{n} songs"),
     }
 }
 
@@ -408,17 +404,23 @@ pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
         let genre = lib
             .artist(&track.artist_id)
             .map_or("", |artist| artist.genre.as_str());
-        entries.push(
-            SearchEntry::new(track.title.clone(), String::new())
-                .field(artist, SearchWeight::Subtitle)
-                .field(genre, SearchWeight::Metadata)
-                .anchored(crate::actions::track_resource_id(&track.id))
-                .invoking(crate::actions::play_track_address(&track.id))
-                .grouped(kind_label(SONG_TYPE_ID))
-                .subtitled(song_subtitle(artist, track.duration_s))
-                .with_icon(kind_icon(SONG_TYPE_ID).name())
-                .boosted(i32::try_from(track.plays).unwrap_or(i32::MAX)),
-        );
+        let mut entry = SearchEntry::new(track.title.clone(), String::new())
+            .field(artist, SearchWeight::Subtitle)
+            .field(genre, SearchWeight::Metadata)
+            .anchored(crate::actions::track_resource_id(&track.id))
+            .invoking(crate::actions::play_track_address(&track.id))
+            .grouped(kind_label(SONG_TYPE_ID))
+            .subtitled(song_subtitle(artist, track.duration_s))
+            .with_icon(kind_icon(SONG_TYPE_ID).name())
+            .boosted(i32::try_from(track.plays).unwrap_or(i32::MAX));
+        entry.row = Some(ui::tilo_resource::SearchRow::shaped(
+            ui::tilo_resource::SearchRowShape::Media {
+                byline: Some(artist.into()),
+                duration: (track.duration_s > 0)
+                    .then(|| ui::format::timecode(u64::from(track.duration_s))),
+            },
+        ));
+        entries.push(entry);
     }
     for album in lib.albums.values() {
         let artist = lib.artist_name(&album.artist_id);
@@ -476,7 +478,7 @@ pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
                     track_id,
                 ))
                 .grouped("Playlist tracks")
-                .subtitled(format!("Open in {} · {artist}", playlist.name))
+                .subtitled(format!("Open in {} by {artist}", playlist.name))
                 .with_icon(kind_icon(SONG_TYPE_ID).name()),
             );
         }
@@ -622,9 +624,9 @@ mod tests {
         {
             // The subscriber count in an artist subtitle is abbreviated via the
             // shared compact-count formatter (12_300 → "12.3K").
-            assert_eq!(artist_subtitle(0), "Artist");
-            assert_eq!(artist_subtitle(12_300), "Artist · 12.3K subscribers");
-            assert_eq!(artist_subtitle(4_100_000), "Artist · 4.1M subscribers");
+            assert_eq!(artist_subtitle(0), "");
+            assert_eq!(artist_subtitle(12_300), "12.3K subscribers");
+            assert_eq!(artist_subtitle(4_100_000), "4.1M subscribers");
         }
     }
 
@@ -799,7 +801,7 @@ mod tests {
 
             let provider = source(&lib);
             assert!(provider.search("absent-token").is_empty());
-            let page = provider.search_page("song", None, 64, 64);
+            let page = provider.search_page(&ui::search::SearchQuery::new("song"), None, 64, 64);
             assert!(
                 page.inspected <= 64,
                 "a broad query still honors the per-page inspection budget"
@@ -956,11 +958,12 @@ mod tests {
                 );
             }
             let provider = source(&lib);
-            let first = provider.search_page("CAFÉ", None, 7, 7);
+            let first = provider.search_page(&ui::search::SearchQuery::new("CAFÉ"), None, 7, 7);
             assert_eq!(first.inspected, 7);
             assert_eq!(first.results.len(), 7);
             let next = first.next.as_ref().expect("more matching rows remain");
-            let second = provider.search_page("CAFÉ", Some(next), 7, 7);
+            let second =
+                provider.search_page(&ui::search::SearchQuery::new("CAFÉ"), Some(next), 7, 7);
             assert_eq!(second.inspected, 7);
             assert!(
                 second

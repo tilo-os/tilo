@@ -701,7 +701,10 @@ pub fn export(
         art,
         art.bounds(),
         scale,
-        &Options::default(),
+        &Options {
+            bare: export.transparent.unwrap_or(false),
+            ..Options::default()
+        },
     )?;
     let (bytes, format) = match format {
         "png" => (encode_png(&rgba, width, height)?, "png"),
@@ -988,6 +991,16 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         "listed": marks.len(),
         "matching": matching.len(),
     });
+    if inspect.palette == Some(true)
+        && let Value::Object(fields) = &mut answer
+    {
+        let palette = crate::palette::used(matching.iter().copied());
+        fields.insert("palette_colours".into(), json!(palette.len()));
+        fields.insert(
+            "palette".into(),
+            json!(palette.into_iter().take(32).collect::<Vec<_>>()),
+        );
+    }
     if let Some(selection) = selection_info(art)
         && let Value::Object(fields) = &mut answer
     {

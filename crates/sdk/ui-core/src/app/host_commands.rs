@@ -135,9 +135,9 @@ impl App {
         let mut resources = vec![edit_resource(&self.focused_undo_status())];
         resources.extend(self.history_local_resources());
         if self.palette_presented()
-            && let Some(search) = resources.iter_mut().find(|resource| {
-                resource.id.as_str() == crate::standalone_history_host::SEARCH_RESOURCE
-            })
+            && let Some(search) = resources
+                .iter_mut()
+                .find(|resource| resource.id.as_str() == crate::search::request::SEARCH_RESOURCE)
         {
             // The open palette answers its own shortcut by closing.
             for action in &mut search.actions {

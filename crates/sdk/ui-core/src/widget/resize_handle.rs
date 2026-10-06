@@ -253,7 +253,7 @@ impl Widget for ResizeHandle {
             return;
         }
         let colour = if active {
-            theme.tokens.colors.accent[5]
+            theme.tokens.colors.intent.inverted
         } else {
             // Neutral slate at ~0.35 alpha, matching the per-group
             // right-edge grip's idle treatment. `accent[5] @ 0.45` read

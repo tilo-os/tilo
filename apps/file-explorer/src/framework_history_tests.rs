@@ -135,7 +135,9 @@ fn confirm(driver: &mut ui::headless::FrameHarness, phase: &str) {
         "confirmation missing in {phase}: {}",
         driver.inspection_json().unwrap()
     );
-    driver.key("Enter");
+    driver
+        .click_named("history-restore-review.primary")
+        .expect("the retained primary restore button is activated explicitly");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

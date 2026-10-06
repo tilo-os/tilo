@@ -9,10 +9,9 @@
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prefs {
-    /// Sampler cadence in milliseconds. Cycled through a small set in the
-    /// header control.
+    /// Sampler cadence in milliseconds, one of the header menu's choices.
     pub interval_ms: u64,
     /// Whether periodic sampling is running. Manual Refresh remains available
     /// while paused, making pause a low-power inspection mode rather than a
@@ -93,9 +92,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_favor_safe_periodic_sampling_and_interval_cycles() {
+    fn defaults_favor_periodic_sampling_without_kernel_threads() {
         let prefs = Prefs::default();
-
         assert_eq!(prefs.interval_ms, 1500);
         assert!(prefs.auto_refresh);
         assert!(!prefs.show_kernel_threads);

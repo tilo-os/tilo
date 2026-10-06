@@ -68,7 +68,7 @@ impl OskSurface {
     /// The surface over `keyboard`.
     pub fn with_keyboard(keyboard: OskWidget) -> Self {
         Self {
-            keyboard,
+            keyboard: keyboard.with_surface_height(),
             preferences: None,
             learned: None,
             focus: None,
@@ -244,7 +244,21 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
         let staged = match scenario {
             Some("french") => Some(SetPreference::Layout("azerty".into())),
             Some("emoji") => Some(SetPreference::EmojiRecents(
-                ["👍", "😂", "❤️", "🎉"].map(str::to_owned).to_vec(),
+                [
+                    "thumbs up",
+                    "face with tears of joy",
+                    "red heart",
+                    "party popper",
+                ]
+                .into_iter()
+                .filter_map(|name| {
+                    emoji::Catalogue::english()
+                        .emoji()
+                        .iter()
+                        .find(|entry| entry.name() == name)
+                })
+                .map(|entry| entry.text().to_owned())
+                .collect(),
             )),
             _ => None,
         };

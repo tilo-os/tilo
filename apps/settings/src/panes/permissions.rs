@@ -226,7 +226,7 @@ enum Tint {
 impl Tint {
     fn tone(self) -> StatusTone {
         match self {
-            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Accent,
+            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Info,
             Tint::Camera | Tint::Microphone | Tint::Remote => StatusTone::Warning,
             Tint::Network => StatusTone::Success,
         }
@@ -299,7 +299,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             } else {
                 t("perm-verb-ro")
             };
-            ("Files", format!("{p}  ·  {verb}"), Tint::Files)
+            ("Files", format!("{verb}: {p}"), Tint::Files)
         }
         Scope::Device(d) if d == "camera" => ("Camera", t("perm-capture-video"), Tint::Camera),
         Scope::Device(d) if d == "microphone" => {
@@ -396,7 +396,11 @@ fn cap_row(view: &CapView) -> El {
     Box::new(
         Row::new()
             .push(semantic_status_pill(&kind, view.tint.tone()))
-            .push(Box::new(Text::new(&view.detail).with_size(12.0).dimmed()))
+            .push(Box::new(
+                Text::new(&view.detail)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            ))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(&expiry, StatusTone::Neutral)),
     )
@@ -405,7 +409,9 @@ fn cap_row(view: &CapView) -> El {
 /// One app's block within a workspace card: the app id, then its grants.
 fn app_block(grants: &AppGrants) -> El {
     let mut items: Vec<El> = Vec::new();
-    items.push(Box::new(Text::new(&grants.app).with_size(13.0)));
+    items.push(Box::new(
+        Text::new(&grants.app).with_role(ui::TextRole::Body),
+    ));
     for cap in &grants.caps {
         items.push(cap_row(cap));
     }
@@ -486,7 +492,7 @@ fn scope_card() -> El {
     card(
         &t("perm-this-device"),
         rows(vec![Box::new(
-            Text::new(&t("perm-this-device-body")).with_size(12.0),
+            Text::new(&t("perm-this-device-body")).with_role(ui::TextRole::Caption),
         )]),
     )
 }
@@ -497,9 +503,9 @@ fn workspace_grants_intro_card(cx: &PaneCx) -> El {
     card(
         &t("perm-workspace-intro-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-workspace-intro-body")).with_size(12.0)),
+            Box::new(Text::new(&t("perm-workspace-intro-body")).with_role(ui::TextRole::Caption)),
             Box::new(cx.bind_invocation(
-                Button::new("open-workspace-privacy", &open).content_sized(),
+                Button::new("open-workspace-privacy", &open),
                 PermissionsEffect::OpenWorkspacePrivacy,
             )),
         ]),
@@ -512,7 +518,7 @@ fn no_workspace_grants_card() -> El {
     card(
         &t("perm-no-grants-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-no-grants-body")).with_size(12.0)),
+            Box::new(Text::new(&t("perm-no-grants-body")).with_role(ui::TextRole::Caption)),
             gap(SpacingStep::S1),
             caption(&t("perm-no-grants-caption")),
         ]),
@@ -526,7 +532,7 @@ fn workspace_grants_unavailable_card() -> El {
     card(
         &t("perm-unavailable-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-unavailable-body")).with_size(12.0)),
+            Box::new(Text::new(&t("perm-unavailable-body")).with_role(ui::TextRole::Caption)),
             caption(&t("perm-unavailable-caption")),
         ]),
     )
@@ -542,7 +548,11 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
         "perm-grants-summary",
         &[("grants", grants.into()), ("workspaces", workspaces.into())],
     );
-    panel.push(Box::new(Text::new(&summary).with_size(11.0).dimmed()));
+    panel.push(Box::new(
+        Text::new(&summary)
+            .with_role(ui::TextRole::Caption)
+            .dimmed(),
+    ));
 
     for ws in all {
         let mut body: Vec<El> = Vec::new();
@@ -721,7 +731,7 @@ mod tests {
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             button_labels(pane.as_ref(), &mut labels);
-            assert_eq!(labels, vec!["Open current workspace access"]);
+            assert_eq!(labels, vec!["Open workspace access"]);
         }
 
         // Case `cap_view_maps_each_scope_to_its_kind`.
@@ -789,7 +799,7 @@ mod tests {
                 "two pills per grant"
             );
             // Intro + one workspace + enforcement cards are all present.
-            assert!(count_named(pane.as_ref(), "Card") >= 3);
+            assert!(count_named(pane.as_ref(), "Section") >= 3);
         }
     }
 
@@ -831,7 +841,7 @@ mod tests {
             );
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"Workspace access can't be checked".to_string()));
             assert!(
                 !labels
                     .iter()
@@ -845,8 +855,8 @@ mod tests {
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"No workspace access grants".to_string()));
-            assert!(!labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"No workspace access".to_string()));
+            assert!(!labels.contains(&"Workspace access can't be checked".to_string()));
         }
 
         // Case `workspace_without_app_grants_is_omitted`.
@@ -871,7 +881,7 @@ mod tests {
             assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"Workspace access can't be checked".to_string()));
         }
     }
 }

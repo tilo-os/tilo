@@ -774,7 +774,7 @@ impl PowerPane {
             .collect();
         if trend.len() >= 2 {
             battery_rows.push(Box::new(
-                Sparkline::new(trend, Theme::dark().accent_primary)
+                Sparkline::new(trend, Theme::dark().tokens.colors.text_primary)
                     .with_max(100.0)
                     .with_size(320.0, 56.0),
             ));

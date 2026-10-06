@@ -402,6 +402,14 @@ pub fn window_key(
     use crate::tools::Tool;
     let command = modifiers.control_key() || modifiers.super_key();
     let shift = modifiers.shift_key();
+    if command && matches!(key, "0" | "1") {
+        tools.view.set(Some(if key == "0" {
+            crate::tools::ViewRequest::Fit
+        } else {
+            crate::tools::ViewRequest::Actual
+        }));
+        return true;
+    }
     let request = match (key, command, shift) {
         // A keyboard may report the slash with Shift held rather than `?`.
         ("?", false, _) | ("/", false, true) => {

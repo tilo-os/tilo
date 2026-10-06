@@ -374,6 +374,7 @@ impl ResourceSurface<PrintDefaults, PrintCentreEffect> for PrintCentre {
     /// A live window asks CUPS and SANE; a screenshot shows its scenario's
     /// made-up devices, or none.
     fn attach(&mut self, cx: SurfaceCx<PrintDefaults>) {
+        self.controls = Some(cx.actions());
         self.dispatcher = Some(cx.dispatcher());
         match cx.mode() {
             RunMode::Live => self.refresh(),

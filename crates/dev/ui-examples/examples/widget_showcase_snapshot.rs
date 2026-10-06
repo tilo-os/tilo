@@ -12,19 +12,18 @@ use std::sync::Arc;
 use automerge::AutoCommit;
 use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::popover_widget::PopoverSide;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, PopoverWidget,
-    ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar,
-    TreeView, Widget,
+    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, Popover, ProgressBar,
+    Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -114,13 +113,13 @@ impl Widget for LabelTile {
             None,
             &self.rect,
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &self.text,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             translated(transform, self.rect.x0 + 8.0, self.rect.y0 + 6.0),
             None,
+            &theme.text(TextRole::Caption),
         );
     }
     fn name(&self) -> &'static str {
@@ -229,17 +228,14 @@ fn build_tree_view() -> TreeView<()> {
 }
 
 /// The scrollable column of every widget this scenario showcases. Also
-/// builds (and discards) a `PopoverWidget` and `ModalDialog` to prove they
+/// builds (and discards) a `Popover` and `ModalDialog` to prove they
 /// construct cleanly — see the trailing comment on `row_struct` for why
 /// they aren't actually spliced into the column. Split out of `run` to
 /// keep that under the line cap.
 fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
-    let popover = PopoverWidget::new(
-        Rect::new(60.0, 60.0, 220.0, 90.0),
-        LabelTile::new("Popover content (always open)"),
-        PopoverSide::Below,
-    )
-    .open(true);
+    let popover = Popover::with_content(LabelTile::new("Popover content (always open)"))
+        .anchored(Rect::new(60.0, 60.0, 220.0, 90.0))
+        .open(true);
 
     let modal = ModalDialog::new(
         "Save your changes?",
@@ -277,9 +273,12 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
                 .push(caption("row_avatar_badge"))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Avatar::from_initials("QD", 48.0)))
-                        .push(Box::new(Avatar::from_initials("AL", 48.0)))
-                        .push(Box::new(Avatar::new(placeholder_image(), 48.0)))
+                        .push(Box::new(Avatar::person("Quinn Daley", "quinn.daley")))
+                        .push(Box::new(Avatar::person("Ada Lovelace", "ada.lovelace")))
+                        .push(Box::new(
+                            Avatar::person("Sam Okafor", "sam.okafor")
+                                .with_image(placeholder_image()),
+                        ))
                         .push(Box::new(Badge::dot()))
                         .push(Box::new(Badge::count(7)))
                         .push(Box::new(Badge::count(120))),
