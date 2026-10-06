@@ -13,6 +13,7 @@ import subprocess
 import time
 
 from input_latency import summarize_physical_notes_latency
+from device_notes_trace import collect_trace
 
 
 def require_scratch(state, page, count):
@@ -143,8 +144,8 @@ def capture(device, options):
     log_path = device.execute(["/usr/bin/python3", "-c",
         "import os; print(os.path.join(os.environ['HOME'], "
         "'.local/state/tilo/session-logs/latest.log'))"]).strip()
-    line = int(device.execute(["/usr/bin/wc", "-l", log_path]).split()[0])
     states = []
+    records = {}
     try:
         for index in range(options.samples):
             require_scratch(device.action("inspect-editor", {}), page, index)
@@ -154,27 +155,22 @@ def capture(device, options):
             state = device.action("inspect-editor", {})
             require_scratch(state, page, index + 1)
             states.append(state)
+            lines = collect_trace(device, log_path, page, records)
+            report = summarize_physical_notes_latency(lines, page)
+            if len(report["samples"]) != index + 1:
+                raise ValueError("Physical trace did not preserve every scratch input")
+            private_write(options.out / "timeline.log", "\n".join(lines))
             print(f"Scratch key {index + 1}/{options.samples} adopted", flush=True)
         time.sleep(.5)
     finally:
-        raw = device.execute(["/usr/bin/tail", "-n", f"+{line + 1}", log_path])
-        private_write(options.out / "raw.log", raw)
         private_write(options.out / "states.json", json.dumps(states, indent=2))
         private_write(options.out / "capture.json", json.dumps({
             "device": options.device, "slot": options.slot,
             "scratch_page": page, "samples_requested": options.samples,
             "samples_adopted": len(states), "log_path": log_path,
         }, indent=2))
-    markers = ("tilo-physical-input ", "tilo-physical-frame ",
-               "tilo-physical-delivery ", "tilo-display-frame ")
-    lines = []
-    for line in raw.splitlines():
-        for marker in markers:
-            if marker in line:
-                lines.append(line[line.index(marker):])
-                break
-    private_write(options.out / "timeline.log", "\n".join(lines))
-    return summarize_physical_notes_latency(lines, page)
+        private_write(options.out / "timeline.log", "\n".join(records))
+    return summarize_physical_notes_latency(list(records), page)
 
 
 def main():
