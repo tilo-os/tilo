@@ -3299,40 +3299,12 @@ impl ChatApp {
             self.rect.y0 + self.chrome.header_h,
         )
     }
-    /// The composer field's height for a draft `text` wrapped at `width`:
-    /// one line at rest, growing with the draft up to the cap.
-    pub(crate) fn composer_field_height(
-        &self,
-        tr: &mut TextRenderer,
-        text: &str,
-        width: f64,
-    ) -> f64 {
+    /// Reserve the canonical editor's measured height and its action row.
+    pub(crate) fn composer_input_height(&self) -> f64 {
         let chrome = &self.chrome;
-        let wrap = width.max(40.0) as f32;
-        let probe = if text.is_empty() { "Ag" } else { text };
-        let (_, h) = tr.measure_style(probe, Some(wrap), &chrome.body);
         let pad = chrome.composer_min_h - chrome.body_line;
-        (f64::from(h) + pad).clamp(chrome.composer_min_h, chrome.composer_max_h)
-    }
-    /// The width the composer's draft wraps at inside a field `field_w`
-    /// wide. Direct-Agent actions live on their own row, so enlarged labels
-    /// never squeeze the editor or disagree with the width used to paint it.
-    pub(crate) fn composer_text_width(&self, field_w: f64) -> f64 {
-        if self.direct_agent.is_some() {
-            field_w - 2.0 * self.chrome.composer_text_inset
-        } else {
-            field_w - 4.0 * self.chrome.composer_min_h
-        }
-    }
-
-    /// Total field height for the draft plus any separate action row.
-    pub(crate) fn composer_input_height(
-        &self,
-        tr: &mut TextRenderer,
-        text: &str,
-        field_w: f64,
-    ) -> f64 {
-        let draft = self.composer_field_height(tr, text, self.composer_text_width(field_w));
+        let draft = (self.composer_main.measured_height() + pad)
+            .clamp(chrome.composer_min_h, chrome.composer_max_h);
         draft
             + if self.direct_agent.is_some() {
                 self.chrome.composer_min_h
@@ -3386,9 +3358,8 @@ impl ChatApp {
         lines
     }
 
-    fn composer_height_with_notice(&self, tr: &mut TextRenderer, hero_notice: bool) -> f64 {
-        let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
-        let field = self.composer_input_height(tr, &self.draft_main, field_w);
+    fn composer_height_with_notice(&self, _tr: &mut TextRenderer, hero_notice: bool) -> f64 {
+        let field = self.composer_input_height();
         if self.direct_agent.is_none() {
             return field;
         }
@@ -3487,10 +3458,12 @@ impl ChatApp {
 
     /// The thread's composer: the same control and height rule as the main
     /// composer, at the bottom of the thread panel `panel`.
-    pub(crate) fn thread_composer_rect(&self, tr: &mut TextRenderer, panel: Rect) -> Rect {
+    pub(crate) fn thread_composer_rect(&self, panel: Rect) -> Rect {
         let pad = self.chrome.composer_pad;
-        let field_w = panel.width() - 2.0 * pad;
-        let h = self.composer_input_height(tr, &self.composer_thread.value(), field_w);
+        let chrome = &self.chrome;
+        let inset = chrome.composer_min_h - chrome.body_line;
+        let h = (self.composer_thread.measured_height() + inset)
+            .clamp(chrome.composer_min_h, chrome.composer_max_h);
         Rect::new(
             panel.x0 + pad,
             panel.y1 - h - pad,

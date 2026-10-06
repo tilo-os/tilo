@@ -497,8 +497,7 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 
 /// The welcome over a blank artwork: what a person can do here, that an
 /// agent can paint here too, and the artworks worked on lately.
-pub fn welcome(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    // Shown while the artwork is blank and the welcome was not put away.
+pub fn welcome(cx: &ViewCx<ArtworkResource>, tools: &Tools, compact: bool) -> Element {
     let blank = cx.value(|art: &Artwork| art.marks.is_empty());
     let tools = tools.clone();
     cx.switch(&blank, move |cx, blank| {
@@ -510,10 +509,7 @@ pub fn welcome(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             if *welcomed {
                 return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
             }
-            let tools = tools.clone();
-            cx.switch(&tools.sidebar.clone(), move |cx, shown| {
-                placed(card(cx, &tools), *shown)
-            })
+            placed(card(cx, &tools), compact)
         })
     })
 }
@@ -613,10 +609,29 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     })
 }
 
-/// The card centred over the canvas: inset by the rail, the header and
-/// the sidebar when it is shown. Everywhere else the canvas stays the
-/// artwork's.
-fn placed(card: Element, sidebar: bool) -> Element {
+/// The welcome is a child of the actual artwork viewport, so the shell's
+/// header, inspector and tools retain their full measured space. Phones get
+/// a scrolling page; desktop cards stay centred over the artwork.
+fn placed(card: Element, compact: bool) -> Element {
+    if compact {
+        return super::layout::themed(
+            Box::new(
+                Container::new().filling().with_child(Box::new(
+                    Scrollable::new_vertical()
+                        .fill_parent_height()
+                        .with_child(card),
+                )),
+            ),
+            |theme, style| {
+                style.padding = ui::taffy::Rect {
+                    left: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    right: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    top: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    bottom: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                };
+            },
+        );
+    }
     Box::new(
         Container::new()
             .with_no_padding()
@@ -637,15 +652,13 @@ fn placed(card: Element, sidebar: bool) -> Element {
                         )),
                 ),
                 move |theme, style| {
-                    style.padding.left =
-                        ui::taffy::LengthPercentage::length(theme.tokens.metrics.rail_width);
-                    style.padding.right = ui::taffy::LengthPercentage::length(if sidebar {
-                        theme.tokens.metrics.inspector_width
-                    } else {
-                        theme.tokens.spacing.s4
-                    });
-                    style.padding.top =
-                        ui::taffy::LengthPercentage::length(theme.tokens.metrics.header_height);
+                    let gutter = ui::taffy::LengthPercentage::length(theme.tokens.spacing.s4);
+                    style.padding = ui::taffy::Rect {
+                        left: gutter,
+                        right: gutter,
+                        top: gutter,
+                        bottom: gutter,
+                    };
                 },
             )),
     )

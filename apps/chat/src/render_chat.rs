@@ -34,7 +34,7 @@ use ui::widget::{
 };
 
 use crate::app::{ChatApp, Hit, MenuTarget};
-use crate::geometry::{centered_band, title_beside_chip};
+use crate::geometry::title_beside_chip;
 use crate::model::{
     self, AgentRoute, AgentStepOutcome, AgentWork, AgentWorkState, Attachment, ChannelKind,
     Message, Presence,
@@ -246,6 +246,9 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
+        let width = composer_editor_width(field_w, theme, true, self.direct_agent.is_some());
+        self.composer_main.measure(width, f32::INFINITY, theme, tr);
         self.resolve_agent_notice_layout(tr, theme);
         let area = self.messages_rect(tr);
         if area.width() > 0.0 && area.height() >= self.chrome.body_line {
@@ -2591,7 +2594,7 @@ impl ChatApp {
             && self.editing.is_none();
         let draft = self.composer_main.value();
         let input = if self.direct_agent.is_some() {
-            let wanted_input_h = self.composer_input_height(tr, &draft, rect.width());
+            let wanted_input_h = self.composer_input_height();
             let controls_h = (self.composer_height(tr) - wanted_input_h).max(0.0);
             let input_h = wanted_input_h.min((rect.height() - controls_h).max(0.0));
             let input = Rect::new(rect.x0, rect.y1 - input_h, rect.x1, rect.y1);
@@ -2908,49 +2911,11 @@ impl ChatApp {
     /// The band is sized from the measured `draft` (one line when empty) and
     /// centred on the field, so a short draft lines up with the buttons; a
     /// long draft fills the field, which itself grows with the text.
-    fn composer_editor_rect(&self, rect: Rect) -> Rect {
-        if self.direct_agent.is_some() {
-            Rect::new(
-                rect.x0,
-                rect.y0,
-                rect.x1,
-                (rect.y1 - self.chrome.composer_min_h).max(rect.y0),
-            )
-        } else {
-            rect
-        }
-    }
-
-    fn composer_text_rect(
-        &self,
-        field: Rect,
-        ordinary_left: f64,
-        emoji_left: f64,
-        inset: f64,
-    ) -> Rect {
-        let editor = self.composer_editor_rect(field);
-        if self.direct_agent.is_some() {
-            Rect::new(
-                editor.x0 + self.chrome.composer_text_inset,
-                editor.y0 + inset,
-                editor.x1 - self.chrome.composer_text_inset,
-                editor.y1 - inset,
-            )
-        } else {
-            Rect::new(
-                ordinary_left,
-                field.y0 + inset,
-                emoji_left,
-                field.y1 - inset,
-            )
-        }
-    }
-
     pub(crate) fn draw_input_box(
         &self,
         paint: PaintCtx<'_>,
         rect: Rect,
-        draft: &str,
+        _draft: &str,
         (send_enabled, focused, attach, interactive): (bool, bool, bool, bool),
         focus_hit: Hit,
         hits: &mut Vec<(Rect, Hit)>,
@@ -2963,31 +2928,14 @@ impl ChatApp {
         } = paint;
         let sp = &theme.tokens.spacing;
         let btn = ButtonFace::height(ControlSize::Regular, theme);
-        let inset = f64::from(sp.s1);
         let labelled_send = self.direct_agent.is_some();
-        // Ordinary actions share the last draft line. Direct-Agent actions
-        // use a separate row so their localized labels never consume the
-        // editor's width at narrow or enlarged metrics.
-        let cy = rect.y1 - inset - btn / 2.0;
         paint_field(scene, tf, theme, rect, focused);
         if interactive {
             ChatApp::push_hit(hits, rect, focus_hit);
         }
 
-        let mut tx = rect.x0 + f64::from(sp.s3);
         if !interactive {
-            return self.read_only_input_band(tr, theme, rect, draft);
-        }
-        if attach {
-            let plus = square(Point::new(rect.x0 + inset + btn / 2.0, cy), btn);
-            let face = ButtonFace::icon_only(plus, Icon::Paperclip, "Attach a file")
-                .hovered(interactive && self.hovered(plus))
-                .disabled(!interactive);
-            Button::paint(scene, tf, tr, theme, &face);
-            if interactive {
-                ChatApp::push_hit(hits, plus, Hit::Attach);
-            }
-            tx = plus.x1 + f64::from(sp.s1);
+            return tilo_rich_text::ComposerFrame::layout(rect, theme, &[], &[]).editor;
         }
 
         let send_label = match self.direct_agent_intent() {
@@ -3002,12 +2950,28 @@ impl ChatApp {
         }
         .control_size(ControlSize::Regular);
         let send_w = send_face.intrinsic_width(tr, theme);
-        let send = Rect::new(
-            rect.x1 - inset - send_w,
-            cy - btn / 2.0,
-            rect.x1 - inset,
-            cy + btn / 2.0,
-        );
+        let leading = if attach { vec![btn] } else { Vec::new() };
+        let emoji_w =
+            ButtonFace::icon_only(Rect::ZERO, Icon::Smile, "Emoji").intrinsic_width(tr, theme);
+        let layout = if labelled_send {
+            tilo_rich_text::ComposerFrame::layout_stacked
+        } else {
+            tilo_rich_text::ComposerFrame::layout
+        };
+        let frame = layout(rect, theme, &leading, &[send_w, emoji_w]);
+        if attach {
+            let plus = composer_slot(&frame.leading, 0);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::icon_only(plus, Icon::Paperclip, "Attach a file")
+                    .hovered(self.hovered(plus)),
+            );
+            ChatApp::push_hit(hits, plus, Hit::Attach);
+        }
+        let send = composer_slot(&frame.trailing, 0);
         let send_face = if labelled_send {
             ButtonFace::new(send, &send_label).icon(Icon::Send)
         } else {
@@ -3034,18 +2998,14 @@ impl ChatApp {
             ChatApp::push_hit(hits, send, Hit::Send);
         }
 
-        let emoji_face = ButtonFace::icon_only(Rect::ZERO, Icon::Smile, "Emoji");
-        let emoji_w = emoji_face.intrinsic_width(tr, theme);
-        let emoji = Rect::new(
-            send.x0 - f64::from(sp.s1) - emoji_w,
-            cy - btn / 2.0,
-            send.x0 - f64::from(sp.s1),
-            cy + btn / 2.0,
+        let emoji = composer_slot(&frame.trailing, 1);
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &ButtonFace::icon_only(emoji, Icon::Smile, "Emoji").hovered(self.hovered(emoji)),
         );
-        let emoji_face = ButtonFace::icon_only(emoji, Icon::Smile, "Emoji")
-            .hovered(interactive && self.hovered(emoji))
-            .disabled(!interactive);
-        Button::paint(scene, tf, tr, theme, &emoji_face);
         let picker_w = f64::from(theme.tokens.metrics.panel_width_utility);
         if interactive {
             ChatApp::push_hit(
@@ -3055,32 +3015,7 @@ impl ChatApp {
             );
         }
 
-        let full = self.composer_text_rect(rect, tx, emoji.x0 - f64::from(sp.s1), inset);
-        let wrap_w = full.width().max(f64::from(sp.s8)) as f32;
-        let probe = if draft.is_empty() { "Ag" } else { draft };
-        let content_h = f64::from(tr.measure_style(probe, Some(wrap_w), &self.chrome.body).1);
-        centered_band(full, content_h, f64::from(sp.s1))
-    }
-
-    fn read_only_input_band(
-        &self,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        draft: &str,
-    ) -> Rect {
-        let sp = &theme.tokens.spacing;
-        let inset = f64::from(sp.s1);
-        let full = Rect::new(
-            rect.x0 + f64::from(sp.s3),
-            rect.y0 + inset,
-            rect.x1 - f64::from(sp.s3),
-            rect.y1 - inset,
-        );
-        let wrap_w = full.width().max(f64::from(sp.s8)) as f32;
-        let probe = if draft.is_empty() { "Ag" } else { draft };
-        let content_h = f64::from(tr.measure_style(probe, Some(wrap_w), &self.chrome.body).1);
-        centered_band(full, content_h, f64::from(sp.s1))
+        frame.editor
     }
 
     // ---------------------------------------------------------------- thread
@@ -3097,7 +3032,15 @@ impl ChatApp {
             return;
         };
         let panel = self.thread_rect();
-        let comp = self.thread_composer_rect(tr, panel);
+        let width = composer_editor_width(
+            panel.width() - 2.0 * self.chrome.composer_pad,
+            theme,
+            true,
+            false,
+        );
+        self.composer_thread
+            .measure(width, f32::INFINITY, theme, tr);
+        let comp = self.thread_composer_rect(panel);
         let head = self.draw_thread_header(scene, tf, tr, theme, panel, hits);
         let body = Rect::new(
             panel.x0,
@@ -4050,6 +3993,36 @@ impl RowM {
             + self.thread_h
             + self.pad
     }
+}
+
+/// Match the shared square control slots actually painted beside the editor.
+fn composer_editor_width(field: f64, theme: &Theme, attach: bool, stacked: bool) -> f64 {
+    let button = ButtonFace::height(ControlSize::Regular, theme);
+    let leading = if attach { vec![button] } else { Vec::new() };
+    let layout = if stacked {
+        tilo_rich_text::ComposerFrame::layout_stacked
+    } else {
+        tilo_rich_text::ComposerFrame::layout
+    };
+    layout(
+        Rect::new(0.0, 0.0, field, button),
+        theme,
+        &leading,
+        &[button, button],
+    )
+    .editor
+    .width()
+    .max(1.0)
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "ComposerFrame returns one slot for each supplied control width; these callers supply the matching fixed slots"
+)]
+fn composer_slot(slots: &[Rect], index: usize) -> Rect {
+    *slots
+        .get(index)
+        .expect("supplied composer control has a slot")
 }
 
 #[cfg(test)]

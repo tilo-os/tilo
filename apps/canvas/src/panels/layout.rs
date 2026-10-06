@@ -64,3 +64,53 @@ pub(super) fn width(
         style.size.width = ui::taffy::Dimension::length(measure(&theme.tokens.metrics));
     })
 }
+
+/// Layout cache announcing the viewport's size class to retained composition.
+/// It holds no artwork state and delegates all controls and input unchanged.
+pub(crate) struct ViewportMode<T: Widget> {
+    child: T,
+    compact: ui::LocalState<bool>,
+    threshold: f64,
+}
+
+impl<T: Widget> ViewportMode<T> {
+    pub(crate) fn new(child: T, compact: ui::LocalState<bool>) -> Self {
+        Self {
+            child,
+            compact,
+            threshold: 0.0,
+        }
+    }
+}
+
+impl<T: Widget + 'static> Decorator for ViewportMode<T> {
+    type Inner = T;
+    fn inner(&self) -> &T {
+        &self.child
+    }
+    fn inner_mut(&mut self) -> &mut T {
+        &mut self.child
+    }
+    fn build_layout(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.threshold = f64::from(theme.tokens.metrics.content_min_width);
+        self.child.build_layout(tree, theme, nodes)
+    }
+    fn apply_layout(
+        &mut self,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        origin: ui::vello::kurbo::Point,
+    ) {
+        self.child.apply_layout(tree, node, origin);
+        let rect = self.child.get_rect();
+        let compact = rect.width().min(rect.height()) < self.threshold;
+        if self.compact.get() != compact {
+            self.compact.set(compact);
+        }
+    }
+}

@@ -35,13 +35,22 @@ pub mod keys {
 }
 
 /// The two files of a two-way comparison.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct Comparison {
     pub left_label: String,
     pub left: String,
     pub right_label: String,
     pub right: String,
+    pub(crate) source_values: Option<(ObjId, ObjId)>,
 }
+
+impl PartialEq for Comparison {
+    fn eq(&self, other: &Self) -> bool {
+        self.values() == other.values()
+    }
+}
+
+impl Eq for Comparison {}
 
 impl Comparison {
     const FIELDS: [&'static str; 4] = ["left_label", "left", "right_label", "right"];
@@ -58,6 +67,7 @@ impl Comparison {
             left,
             right_label,
             right,
+            source_values: source_value_ids(doc),
         })
     }
 
@@ -66,8 +76,11 @@ impl Comparison {
     }
 
     /// The comparison's line-aligned diff.
-    pub fn model(&self) -> DiffModel {
-        DiffModel::compute(&self.left, &self.right)
+    pub fn model(&self) -> std::sync::Arc<DiffModel> {
+        self.source_values.as_ref().map_or_else(
+            || crate::model::comparison(&self.left, &self.right),
+            |values| crate::model::record_comparison(values, &self.left, &self.right),
+        )
     }
 
     /// `left ↔ right`, as the palette names the comparison.
@@ -78,6 +91,15 @@ impl Comparison {
             format!("{} ↔ {}", self.left_label, self.right_label)
         }
     }
+}
+
+// `ReadDoc::get` returns the winning scalar's operation ID, not merely
+// its containing map. Replacing either source gives the cache a new identity.
+fn source_value_ids(doc: &AutoCommit) -> Option<(ObjId, ObjId)> {
+    let (_, map) = doc.get(ROOT, keys::COMPARISON).ok()??;
+    let (_, left) = doc.get(&map, "left").ok()??;
+    let (_, right) = doc.get(&map, "right").ok()??;
+    Some((left, right))
 }
 
 /// The three inputs of a three-way merge.
@@ -324,6 +346,29 @@ mod tests {
     use std::fmt::Write as _;
     use tilo_automerge::ApplyIncoming;
 
+    #[test]
+    fn immutable_source_operations_cache_alignment_and_source_replacement_invalidates_it() {
+        let mut doc = AutoCommit::new();
+        let source = Comparison {
+            left: "before\n".into(),
+            right: "after\n".into(),
+            ..Comparison::default()
+        };
+        source.write(&mut doc).unwrap();
+        let first = Comparison::read(&doc).unwrap();
+        let model = first.model();
+        let digests = crate::model::digest_passes();
+        let again = Comparison::read(&doc).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&model, &again.model()));
+        assert_eq!(crate::model::digest_passes(), digests);
+        let (_, map) = doc.get(ROOT, keys::COMPARISON).unwrap().unwrap();
+        doc.put(&map, "right", "before\n").unwrap();
+        let changed = Comparison::read(&doc).unwrap();
+        assert_ne!(first.source_values, changed.source_values);
+        assert!(changed.model().blocks.is_empty());
+        assert!(!std::sync::Arc::ptr_eq(&model, &changed.model()));
+    }
+
     /// The merged-output text: round trip, identical sets commit nothing,
     /// resolves splice rather than rewrite, and two peers converge.
     #[test]
@@ -389,6 +434,7 @@ mod tests {
             left: "x\n".into(),
             right_label: "r".into(),
             right: "y\n".into(),
+            ..Comparison::default()
         };
         comparison.write(&mut doc).unwrap();
         MergeDoc::set_merged(&mut doc, &inputs.model().merged_text()).unwrap();
