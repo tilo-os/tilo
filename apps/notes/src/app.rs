@@ -311,7 +311,6 @@ pub struct NotesApp {
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
     transfer_toasts: ui::widget::toast::ToastStack,
-    last_toast_tick: ui::time::Instant,
     /// Shot-only override for the real save progress/failure presentation.
     /// Notes opens its workspace synchronously, so this does not alter live
     /// loading behavior or introduce a second production state source.
@@ -589,7 +588,6 @@ impl NotesApp {
             save_surface: ui::SaveStatusSurface::new(),
             save_retry: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
-            last_toast_tick: ui::time::now(),
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
@@ -2450,10 +2448,7 @@ impl Widget for NotesApp {
         }
         // Transient floating status bubble (bottom-right).
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let now = ui::time::now();
-        self.transfer_toasts
-            .tick(now.saturating_duration_since(self.last_toast_tick));
-        self.last_toast_tick = now;
+        self.transfer_toasts.advance(ui::time::now());
         // Toasts stand above the status bubble's corner.
         let gutter = f64::from(theme.tokens.spacing.s4);
         let lift = ui::status_bubble::pill_height(theme) + gutter;
@@ -3229,6 +3224,34 @@ impl NotesApp {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn capture_draw_preserves_import_notification_at_expiry_boundary() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        // A zero remaining lifetime deterministically exercises the expiry
+        // boundary without making CI speed or a real-time sleep the oracle.
+        app.transfer_toasts =
+            ui::widget::toast::ToastStack::new().with_default_ttl(ui::time::Duration::ZERO);
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::empty(),
+        );
+        let node = app
+            .transfer_toasts
+            .accessibility()
+            .expect("the captured import notification remains announced");
+        assert_eq!(node.name.as_deref(), Some("Notifications"));
+        assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
+    }
 
     #[test]
     fn published_block_range_selects_unicode_in_the_real_editor_without_editing() {
