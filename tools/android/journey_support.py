@@ -31,8 +31,9 @@ class AccessiblePicker:
                 continue
         return None
 
-    def activate(self, expected):
+    def activate(self, expected, before_click=None):
         client, path, tree = wait_for(lambda: self.described(expected),
             'external AT-SPI picker control ' + expected)
+        if before_click: before_click()
         client.click(tree, expected)
         return {'bus_name': client.bus_name, 'path': path, 'tree': tree}

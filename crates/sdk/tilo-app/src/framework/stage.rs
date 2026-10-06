@@ -164,6 +164,12 @@ pub fn stage<A: ResourceApp>(
             scenario.unwrap_or("default")
         ))
     })?;
+    // Project acknowledged scenario edits before awaiting asynchronous
+    // rendering. Transient save feedback belongs to the captured scene;
+    // its lifetime is separate from unfinished placeholder work.
+    harness
+        .flush_component_records()
+        .map_err(LaunchError::Operation)?;
     harness
         .wait_for_visuals(SETTLE)
         .map_err(|error| match scenario {

@@ -1894,9 +1894,8 @@ impl AppHandler {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
         }
 
-        let mut native_main_stages = (self.native_input_origin.is_some()
-            && crate::render_thread::timing::enabled())
-        .then(MainStages::default);
+        let mut native_main_stages =
+            crate::render_thread::timing::enabled().then(MainStages::default);
         record_main_stage(&mut native_main_stages, MainStage::BeforeProfilerCommit);
 
         // Folds in any `handle_event` time banked since last frame.
@@ -2065,11 +2064,11 @@ impl AppHandler {
             };
             announce_frame(window);
             let (send_result, send_bounds) = crate::render_thread::timing::around(
-                self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
+                crate::render_thread::timing::enabled(),
                 || render.render_tx.send(req),
             );
             if let Some(bounds) = send_bounds {
-                crate::native_scenario::log::emit_json(
+                crate::native_scenario::log::emit_timing_json(
                     "tilo-native-send",
                     serde_json::json!({
                         "cpu_frame_id": send_cpu_frame_id,
@@ -2083,7 +2082,7 @@ impl AppHandler {
                 );
             }
             if let Some(stages) = native_main_stages {
-                crate::native_scenario::log::emit_json(
+                crate::native_scenario::log::emit_timing_json(
                     "tilo-native-main-stages",
                     stages.row(send_cpu_frame_id),
                 );

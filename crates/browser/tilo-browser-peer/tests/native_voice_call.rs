@@ -210,7 +210,7 @@ impl Native {
         tilo_test_env::within(what, async {
             while !done(self) {
                 let inbound = tokio::select! {
-                    inbound = self.session.recv() => inbound.expect("the session stays open"),
+                    inbound = self.session.recv() => inbound.unwrap_or_else(|| panic!("{what}: native relay session closed before the expected call state")),
                     () = tokio::time::sleep(Duration::from_millis(50)) => continue,
                 };
                 match inbound {

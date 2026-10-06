@@ -183,6 +183,7 @@ fn argument(envelope: &InvocationEnvelope) -> Result<String, DesktopCommandError
 
 fn import_action(action: &str, label: &str) -> PublishedAction {
     PublishedAction {
+        semantic_identity: None,
         resource: RESOURCE.into(),
         action: action.into(),
         resource_kind: "document-import".into(),

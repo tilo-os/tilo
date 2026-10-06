@@ -1075,6 +1075,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         };
         let workspace = tilo_actions::remote::workspace_provider_room(&provider).is_some();
         let query = CatalogueQuery {
+            view_resource: None,
             provider: Some(provider),
             parent_resource: (!parent.is_empty()).then_some(parent),
             // A host matches one substring; the longest word narrows most,

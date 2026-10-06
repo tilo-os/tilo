@@ -512,11 +512,21 @@ pub enum SearchProximity {
 /// by value so providers don't have to store the borrows.
 #[derive(Clone, Copy)]
 pub struct SearchContext<'a> {
+    /// Effective registry scope, independent of the palette's current filter.
+    pub query_scope: Option<SearchScope>,
+    /// Explicit machine discovery; ordinary palette queries keep this false.
+    pub include_programmatic: bool,
     pub needle: &'a str,
     pub wanted: &'a [ResourceKind],
     pub chrome: &'a ChromeState,
     pub doc: &'a AutoCommit,
     pub doc_root: &'a ObjId,
+}
+
+impl SearchContext<'_> {
+    pub fn effective_scope(&self) -> SearchScope {
+        self.query_scope.unwrap_or(self.chrome.search_scope)
+    }
 }
 
 /// Arguments for [`SearchRegistry::query`]/[`SearchRegistry::query_grouped`]
@@ -768,6 +778,8 @@ impl SearchRegistry {
             return None;
         }
         let ctx = SearchContext {
+            query_scope: Some(args.scope),
+            include_programmatic: false,
             needle: "",
             wanted: &wanted,
             chrome: args.chrome,
@@ -807,6 +819,8 @@ impl SearchRegistry {
                 continue;
             }
             let ctx = SearchContext {
+                query_scope: Some(args.scope),
+                include_programmatic: false,
                 needle: args.needle,
                 wanted: &wanted,
                 chrome: args.chrome,
@@ -855,6 +869,8 @@ impl SearchRegistry {
         }
         Some(provider.query_page(
             SearchContext {
+                query_scope: Some(args.scope),
+                include_programmatic: false,
                 needle: args.needle,
                 wanted: &wanted,
                 chrome: args.chrome,
@@ -943,6 +959,8 @@ impl SearchRegistry {
             out.push_str(provider.id());
             out.push('\0');
             out.push_str(&provider.search_revision(&SearchContext {
+                query_scope: Some(args.scope),
+                include_programmatic: false,
                 needle: args.needle,
                 wanted: args.wanted_kinds,
                 chrome: args.chrome,
@@ -958,16 +976,27 @@ impl SearchRegistry {
     /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
     pub fn query(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, false)
+        self.query_inner(args, false, false)
     }
 
     /// Exhaust every provider continuation for a render-free action listing.
     /// Interactive palette queries deliberately remain one bounded page.
     pub fn query_exhaustive(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, true)
+        self.query_inner(args, true, false)
     }
 
-    fn query_rounds(&self, args: &QueryArgs<'_>, exhaustive: bool) -> Vec<ProviderQuery<'_>> {
+    /// Explicit machine enumeration includes programmatic actions within the
+    /// same bounded provider, continuation and visibility machinery.
+    pub fn query_with_programmatic(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
+        self.query_inner(args, true, true)
+    }
+
+    fn query_rounds(
+        &self,
+        args: &QueryArgs<'_>,
+        exhaustive: bool,
+        include_programmatic: bool,
+    ) -> Vec<ProviderQuery<'_>> {
         let mut sources: Vec<_> = self
             .enabled_providers()
             .filter(|provider| scope_allows(provider.as_ref(), args.scope, args.active_provider_id))
@@ -1017,6 +1046,8 @@ impl SearchRegistry {
                 }
                 let page = source.provider.query_page(
                     SearchContext {
+                        query_scope: Some(args.scope),
+                        include_programmatic,
                         needle: args.needle,
                         wanted: &source.wanted,
                         chrome: args.chrome,
@@ -1064,7 +1095,12 @@ impl SearchRegistry {
         sources
     }
 
-    fn query_inner(&self, args: &QueryArgs<'_>, exhaustive: bool) -> Vec<SearchResult> {
+    fn query_inner(
+        &self,
+        args: &QueryArgs<'_>,
+        exhaustive: bool,
+        include_programmatic: bool,
+    ) -> Vec<SearchResult> {
         if !query_input_is_bounded(args.needle) {
             return Vec::new();
         }
@@ -1077,7 +1113,7 @@ impl SearchRegistry {
         } = *args;
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
-        for source in self.query_rounds(args, exhaustive) {
+        for source in self.query_rounds(args, exhaustive, include_programmatic) {
             let provider = source.provider;
             let top = provider.max_score().max(1);
             for r in source.results {

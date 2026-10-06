@@ -1913,6 +1913,8 @@ mod tests {
             let doc = AutoCommit::new();
             let wanted = [ResourceKind::Action];
             let context = |needle| SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &wanted,
                 chrome: &chrome,
