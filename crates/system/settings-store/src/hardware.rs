@@ -1260,6 +1260,8 @@ pub struct RichInputConfig {
     pub keyboard_layout: String,
     /// Ordered source ids.
     pub keyboard_layouts: Vec<String>,
+    /// Explicit XKB physical model, bounded to the supported PC geometries.
+    pub keyboard_model: String,
     pub compose_key: Option<String>,
     /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
     /// `backspace` turn it into that key.
@@ -1297,6 +1299,7 @@ impl Default for RichInputConfig {
             key_repeat_rate_hz: None,
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
+            keyboard_model: "pc105".into(),
             compose_key: None,
             caps_lock: None,
             touchpad_gestures: true,
@@ -1512,6 +1515,12 @@ impl RichInputConfig {
             .get("caps_lock")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        section
+            .get("keyboard_model")
+            .and_then(serde_json::Value::as_str)
+            .filter(|model| matches!(*model, "pc104" | "pc105" | "jp106" | "kr106"))
+            .unwrap_or("pc105")
+            .clone_into(&mut config.keyboard_model);
         config.normalise_sources();
         config
     }
