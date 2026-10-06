@@ -386,8 +386,15 @@ This is an explicit public-metadata publication action after sign-in. Automatic
 publication from every sign-in entry has not been wired; callers must use this
 Settings action before the corresponding browser picker entry is available.
 
-Cloud's separate prepared change inventories `resource.html` and `resource.css`,
-with a stable external-module redirect to one immutable runtime release. Its
-fixtures preserve the resource fragment and existing CSP. No Cloud deployment,
-actual production bundle ABI verification, physical microphone test or deployed
-native-to-browser journey has run in this continuation.
+Cloud's separate change inventories `resource.html` and `resource.css`, with a
+stable external-module redirect to one immutable runtime release. It explicitly
+accepts the native Tilo desktop bindings, canonical fonts, app inventory and
+attested data payloads, while retaining the legacy Cloud console entry. The source
+build now truthfully records `builtFromSource` in its existing hash manifest.
+Packaging fixtures preserve the resource fragment, licenses and existing CSP.
+Native navigation correlations fit JSON's exact integer range so browser peers
+can return the same catalogue request identifier. The observed public Copy
+result passes the browser resolver's exact hydration, range view, Leave and
+post-hydration revocation fixture. No Cloud deployment, actual compiled desktop
+bundle validation, physical microphone test or deployed native-to-browser journey
+has run in this continuation.

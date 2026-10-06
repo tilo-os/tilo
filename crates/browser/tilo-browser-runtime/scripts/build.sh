@@ -154,7 +154,7 @@ python3 - "$out" "$revision" "$source_status" "$profile" "$(rustc --version)" "$
   "$cargo_profile" "$bundle" "$wasm_opt_version" "$wasm_opt_flags" <<'PY'
 import hashlib, json, pathlib, sys
 out = pathlib.Path(sys.argv[1])
-metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[4], rustc=sys.argv[5],
+metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[4], builtFromSource=True, rustc=sys.argv[5],
                 wasmBindgen=sys.argv[6], wasmOpt=sys.argv[7] == '1', target='wasm32-unknown-unknown',
                 cargoProfile=sys.argv[8], bundle=sys.argv[9])
 if metadata['wasmOpt']:
