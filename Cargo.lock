@@ -15647,6 +15647,7 @@ dependencies = [
 name = "tilo-agent-participant"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "agent",
  "api-tester",
  "blake3",
@@ -15699,10 +15700,12 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-browser-peer",
  "tilo-clock",
+ "tilo-crypto",
  "tilo-document",
  "tilo-model-gateway",
  "tilo-moq",
  "tilo-net",
+ "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
