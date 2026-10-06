@@ -1079,6 +1079,7 @@ FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
 COPY os/usr/lib/systemd/user/tilo-ush.service /tilo-components/usr/lib/systemd/user/
+COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share/licenses/tilo-speech-worker/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
     python3 /tilo-components/install-components.py \

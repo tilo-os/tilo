@@ -692,6 +692,15 @@ inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
 readers = ["crates/runtime/ush/tests/serve_handoff.rs"]
 
 [[cargo]]
+package = "local-model-service"
+# Verifies the actual image catalogue and public trust keys retain their signature.
+inputs = [
+  "os/usr/share/tilo/system-extensions/local-model-catalog.json",
+  "os/usr/share/tilo/system-extensions/local-model-keys.json",
+]
+readers = ["crates/agent/local-model-service/src/main.rs"]
+
+[[cargo]]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
