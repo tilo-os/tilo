@@ -663,6 +663,7 @@ fn previous_sections(
     workspace: Scene,
 ) -> ProducedSections {
     ProducedSections {
+        foreign_images: Vec::new(),
         backdrop: Scene::new(),
         topbar: Scene::new(),
         workspace,
@@ -748,4 +749,321 @@ fn a_settled_desktop_does_not_rebuild_its_layout_whichever_tab_is_shown() {
             let _ = frame.paint_with_damage();
         }
     }
+}
+
+#[test]
+fn foreign_pixel_replacement_uses_bounded_damage_and_matches_dense_gpu_pixels() {
+    foreign_replacement_pixel_oracle(false, ui::widget::WindowWidth::Narrow, true);
+}
+
+#[test]
+fn imported_foreign_pixel_replacement_uses_bounded_damage_and_matches_dense_gpu_pixels() {
+    foreign_replacement_pixel_oracle(true, ui::widget::WindowWidth::Narrow, true);
+}
+
+#[test]
+fn wide_foreign_pixel_replacement_keeps_dense_admission_and_matches_gpu_pixels() {
+    foreign_replacement_pixel_oracle(false, ui::widget::WindowWidth::Wide, false);
+}
+
+fn foreign_replacement_pixel_oracle(
+    imported: bool,
+    window_width: ui::widget::WindowWidth,
+    expect_sparse: bool,
+) {
+    let _ambient = DenyAmbientStarts::new();
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let surface = if imported { 8_493_104 } else { 8_493_103 };
+    let (mut fixture, size) = foreign_damage_fixture(window_width, surface);
+    let store = crate::shell::foreign::store();
+    let mut retained = bridge();
+    let mut oracle = bridge();
+    publish_foreign_fixture_frame(
+        surface,
+        size,
+        [255, 0, 0, 255],
+        imported.then_some(&retained),
+    );
+    let first = fixture.paint_with_damage();
+    assert_eq!(
+        fixture
+            .last_produced_sections
+            .as_ref()
+            .expect("sections")
+            .foreign_images
+            .len(),
+        1,
+        "the actual Foreign widget must record its drawn image"
+    );
+    paint_retained_and_compare(&mut retained, &mut oracle, &first, "first foreign frame");
+    let mounted = fixture
+        .foreign_surface_rect(surface)
+        .expect("mounted foreign rect");
+    let pixel = fixture
+        .layout_rect_to_scene(mounted)
+        .expect("real scene placement")
+        .center();
+    assert_foreign_pixel(&mut oracle, &first, pixel, [0, 0, 255]);
+    let previous_sections = fixture.last_produced_sections.as_ref().unwrap().clone();
+    publish_foreign_fixture_frame(
+        surface,
+        size,
+        [0, 255, 0, 255],
+        imported.then_some(&retained),
+    );
+    let changed = fixture.paint_with_damage();
+    let current_sections = fixture.last_produced_sections.as_ref().unwrap();
+    assert_foreign_metadata_is_strict(&previous_sections, current_sections, &changed);
+    let damage = changed
+        .damage_regions
+        .as_ref()
+        .expect("foreign-only update has bounded damage");
+    assert!(!damage.is_empty(), "replacement pixels must be repainted");
+    assert!(
+        damage
+            .iter()
+            .all(|rect| rect.width < NATIVE_WIDTH || rect.height < NATIVE_HEIGHT),
+        "an app buffer update must not invalidate the entire output"
+    );
+    let dirty_pixels: u64 = damage
+        .iter()
+        .map(|rect| u64::from(rect.width) * u64::from(rect.height))
+        .sum();
+    assert_eq!(
+        dirty_pixels * 2 < u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+        expect_sparse,
+        "the ordinary width must exercise the unchanged sparse admission boundary"
+    );
+    paint_retained_and_compare(
+        &mut retained,
+        &mut oracle,
+        &changed,
+        "replacement foreign pixels",
+    );
+    assert_foreign_pixel(&mut oracle, &changed, pixel, [0, 255, 0]);
+    if expect_sparse {
+        assert!(
+            retained.last_sparse_render_attempts() >= 1,
+            "replacement pixels must exercise the production sparse render path"
+        );
+    } else {
+        assert_eq!(
+            retained.last_sparse_render_attempts(),
+            0,
+            "a wide whole-buffer replacement must retain conservative dense admission"
+        );
+    }
+    let _settings = foreign_filter_settings(&fixture);
+    clock.set("TILO_SHOTS_THEME", "dark");
+    fixture.night_light = true;
+    fixture.watch_configured_theme = true;
+    assert!(
+        fixture.paint_with_damage().damage_regions.is_none(),
+        "global filters require dense repair"
+    );
+    store.forget(surface);
+}
+
+fn foreign_damage_fixture(
+    window_width: ui::widget::WindowWidth,
+    surface: u64,
+) -> (PopulatedShellFixture, (u32, u32)) {
+    let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+    let workspace = tree
+        .desktop
+        .active_workspace_mut()
+        .expect("active workspace");
+    workspace.strips.truncate(1);
+    let strip = &mut workspace.strips[0];
+    strip.window_groups.truncate(1);
+    let group = &mut strip.window_groups[0];
+    group.tabs.truncate(1);
+    group.active_tab = group.tabs[0].id;
+    let tab = group.active_tab;
+    group.width = window_width;
+    tree.seed_doc_from_cache();
+    let mut fixture = PopulatedShellFixture::with_tree(
+        (NATIVE_WIDTH, NATIVE_HEIGHT),
+        Theme::dark().with_reduce_motion(true),
+        tree,
+    );
+    let store = crate::shell::foreign::store();
+    store.note_adopted(surface);
+    fixture.with_chrome(|chrome| {
+        {
+            let mut tree = chrome.tree_mut();
+            crate::shell::tab_binding::adopt_toplevel_at(
+                &mut tree,
+                surface,
+                Some("so.tilo.notes".into()),
+                crate::shell::tab_binding::Placement::IntoTab(tab),
+            );
+        }
+        chrome.bump();
+    });
+    fixture.relayout();
+    let rect = fixture
+        .foreign_surface_rect(surface)
+        .expect("normal adoption mounts the real Foreign widget");
+    // Answer the actual configure size. The ordinary opening guard deliberately
+    // withholds a tiny initial buffer that does not fill the newly laid-out tab.
+    let width = rect.width().round() as u32;
+    let height = rect.height().round() as u32;
+    (fixture, (width, height))
+}
+
+fn publish_foreign_fixture_frame(
+    surface: u64,
+    size: (u32, u32),
+    texel: [u8; 4],
+    importing_bridge: Option<&VelloDrmBridge>,
+) {
+    let store = crate::shell::foreign::store();
+    if let Some(bridge) = importing_bridge {
+        let (device, queue) = bridge.gpu();
+        let frame = crate::shell::gpu_frames::frame_for_test(
+            device,
+            queue,
+            bridge
+                .present_generation_for_test()
+                .expect("presenting device"),
+            size,
+            texel,
+            surface,
+        );
+        assert!(matches!(
+            store.publish_gpu_for_test(surface, frame),
+            Some(crate::shell::foreign::CaptureOutcome::Dmabuf { .. })
+        ));
+        assert!(
+            store
+                .frame_image(surface)
+                .expect("activated GPU pixels")
+                .0
+                .data
+                .is_empty(),
+            "the real owned GPU frame must carry no CPU pixel blob"
+        );
+    } else {
+        store.publish_rgba(
+            surface,
+            &texel.repeat(size.0 as usize * size.1 as usize),
+            size.0,
+            size.1,
+        );
+    }
+}
+
+fn assert_foreign_metadata_is_strict(
+    previous_sections: &ProducedSections,
+    current_sections: &ProducedSections,
+    changed: &FramePaint,
+) {
+    if changed.damage_regions.is_none() {
+        for (name, old, new) in [
+            (
+                "backdrop",
+                &previous_sections.backdrop,
+                &current_sections.backdrop,
+            ),
+            (
+                "workspace",
+                &previous_sections.workspace,
+                &current_sections.workspace,
+            ),
+            (
+                "topbar",
+                &previous_sections.topbar,
+                &current_sections.topbar,
+            ),
+            (
+                "quick_settings",
+                &previous_sections.quick_settings,
+                &current_sections.quick_settings,
+            ),
+            (
+                "above",
+                &previous_sections.above_quick_settings,
+                &current_sections.above_quick_settings,
+            ),
+        ] {
+            eprintln!(
+                "foreign damage comparison {name}: strict={} normalized={:?}",
+                old.encoding_eq(new),
+                super::super::foreign_damage::image_only_damage(
+                    old,
+                    new,
+                    &previous_sections.foreign_images,
+                    &current_sections.foreign_images
+                )
+            );
+        }
+    }
+    let mut changed_metadata = current_sections.workspace.clone();
+    let image = changed_metadata
+        .encoding_mut()
+        .resources
+        .patches
+        .iter_mut()
+        .find_map(|patch| match patch {
+            vello_encoding::Patch::Image { image, .. } => Some(image),
+            _ => None,
+        })
+        .expect("actual Foreign widget encoded its image");
+    image.width = image.width.saturating_add(1);
+    assert!(
+        super::super::foreign_damage::image_only_damage(
+            &previous_sections.workspace,
+            &changed_metadata,
+            &previous_sections.foreign_images,
+            &current_sections.foreign_images
+        )
+        .is_none(),
+        "normalization must not hide encoded image metadata changes"
+    );
+}
+
+fn assert_foreign_pixel(
+    bridge: &mut VelloDrmBridge,
+    frame: &FramePaint,
+    point: Point,
+    xrgb: [u8; 3],
+) {
+    let pixels = render_dense(bridge, &frame.scene);
+    let at = (point.y as usize * NATIVE_WIDTH as usize + point.x as usize) * 4;
+    assert_eq!(&pixels[at..at + 3], &xrgb, "actual foreign interior pixels");
+}
+
+struct ForeignFilterSettings(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
+impl Drop for ForeignFilterSettings {
+    fn drop(&mut self) {
+        settings_store::install_source(self.0.take());
+    }
+}
+
+fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
+    let previous = settings_store::installed_source();
+    let temperatures: serde_json::Map<_, _> = frame
+        .chrome()
+        .tree()
+        .desktop
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.id.0.to_string(), serde_json::json!(0.0)))
+        .collect();
+    let settings = serde_json::json!({"appearance":{"workspace_temperatures":temperatures}})
+        .as_object()
+        .expect("fixture settings object")
+        .clone();
+    // Supply the actual host settings source, so the live theme/filter path
+    // never falls back to native wallpaper services in this owned fixture.
+    let source = settings_store::HostDocument::new(settings, |_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "read-only fixture settings",
+        ))
+    });
+    settings_store::install_source(Some(std::sync::Arc::new(source)));
+    ForeignFilterSettings(previous)
 }
