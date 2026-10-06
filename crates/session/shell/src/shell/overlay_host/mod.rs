@@ -1778,7 +1778,7 @@ impl ShellOverlayHost {
     ) {
         if let Some(chrome) = &self.chrome {
             chrome.borrow_mut().native_app_opening =
-                Some(crate::shell::launcher::NativeAppOpening(broker.clone()));
+                Some(crate::shell::launcher::NativeAppOpening(broker.downgrade()));
         }
         self.room_activity.attach_task_broker(broker.clone());
         self.attach_shortcut_trigger_broker(broker.clone());

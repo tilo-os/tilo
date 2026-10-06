@@ -4,6 +4,7 @@ use crate::shell::{
     state::WorkspaceTree,
 };
 use std::time::{Duration, Instant};
+use tilo_action_broker::peer_actions::CertificateAuthority;
 use tilo_actions::InvocationUpdate;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
@@ -58,7 +59,6 @@ fn fixture() -> NativeFixture {
     // The normal service factory installs NativeCertificates, not a recording
     // authority or a test PolicyTime. Its real clock must retain the original.
     let authority = NativeCertificates::default();
-    use tilo_action_broker::peer_actions::CertificateAuthority;
     authority
         .authorize_join(
             uuid::Uuid::parse_str(&room.to_string()).unwrap(),
@@ -87,7 +87,8 @@ fn native_certified_local_membership_retains_original_and_settles_failed_and_suc
         room,
         path,
     } = fixture();
-    let actions = broker.app_action_broker().unwrap();
+    let discovery = broker.app_action_broker().unwrap().downgrade();
+    let actions = discovery.upgrade().unwrap();
     let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
     while !actions.state().published_surfaces().iter().any(|surface| {
         surface.live
@@ -150,10 +151,11 @@ fn native_certified_local_membership_retains_original_and_settles_failed_and_suc
     }
     drop(actions);
     drop(broker);
+    assert!(discovery.upgrade().is_err());
     crate::shell::persist::wait_for_saves();
     drop(owner);
     let mut stored = crate::shell::persist::load_tree_from(&path).unwrap();
-    stored.persist_path = Some(path.clone());
+    stored.persist_path = Some(path);
     let reopened = native_workspace_owner::open(stored.shared()).unwrap();
     reopened
         .with_current(room, |view| {

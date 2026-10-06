@@ -1694,10 +1694,10 @@ mod tests {
         let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
         let certificate = tilo_joined_room::testing::certificate(&root, &device, "clock test");
-        let room = uuid::Uuid::parse_str(tilo_joined_room::testing::ROOM).unwrap();
+        let room_id = uuid::Uuid::parse_str(tilo_joined_room::testing::ROOM).unwrap();
         assert_eq!(
             authority
-                .authorize_with_policy_time(room, &certificate, &foreign_time)
+                .authorize_with_policy_time(room_id, &certificate, &foreign_time)
                 .unwrap_err(),
             "native certificate policy origin changed"
         );
@@ -1705,7 +1705,7 @@ mod tests {
         assert!(foreign_time.now_ns().is_err());
         assert_eq!(
             authority
-                .authorize_with_policy_time(room, &certificate, &foreign_time)
+                .authorize_with_policy_time(room_id, &certificate, &foreign_time)
                 .unwrap_err(),
             "native certificate policy origin changed"
         );
