@@ -353,7 +353,7 @@ impl CapnpBrokerState {
         // The Agent executor is serial. Do not label its next instruction as
         // working while another owner-backed run is still active.
         if agent_has_active_run(&snapshot, agent)
-            || next_queued_task(&snapshot.tasks, agent) != Some(task_id)
+            || next_queued_task(&snapshot, agent) != Some(task_id)
         {
             return Ok(None);
         }
@@ -548,7 +548,7 @@ impl CapnpBrokerState {
             return Ok(None);
         };
         let snapshot = checked_snapshot(service.as_ref(), room)?;
-        let Some(task_id) = next_queued_task(&snapshot.tasks, agent) else {
+        let Some(task_id) = next_queued_task(&snapshot, agent) else {
             return Ok(None);
         };
         self.dispatch_live_workspace_task(room, task_id, service.as_ref())
@@ -1309,17 +1309,18 @@ fn agent_has_active_run(snapshot: &crate::services::WorkspaceTaskSnapshot, agent
 }
 
 fn next_queued_task<'a>(
-    tasks: &'a [tilo_desktop_model::WorkspaceTask],
+    snapshot: &'a crate::services::WorkspaceTaskSnapshot,
     agent: &str,
 ) -> Option<&'a str> {
-    tasks
+    snapshot
+        .tasks
         .iter()
         .filter(|task| {
             task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
                 && task.assigned_agent.as_deref() == Some(agent)
                 && task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual
         })
-        .min_by_key(|task| (task.created_at, task.id.as_str()))
+        .min_by_key(|task| task.queue_order_key(snapshot.controls.get(&task.id)))
         .map(|task| task.id.as_str())
 }
 
@@ -1605,7 +1606,7 @@ fn read_current_tasks(
                 )
         })
         .collect::<Vec<_>>();
-    pending.sort_by_key(|task| (task.created_at, task.id.as_str()));
+    pending.sort_by_key(|task| task.queue_order_key(snapshot.controls.get(&task.id)));
     let mut pending = pending
         .into_iter()
         .map(|task| {
@@ -2289,9 +2290,72 @@ mod tests {
         assert_eq!(pending[1]["task_id"], "task:m-waiting");
         assert_eq!(pending[1]["status"], "waiting");
         assert_eq!(pending[2]["task_id"], "task:a-later");
+        assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:z-first"));
+    }
+
+    #[test]
+    fn runnable_head_and_pending_projection_use_owner_ordinals_not_time_or_identity() {
+        let mut first = task("task:z-first", "scribe");
+        let mut second = task("task:a-second", "scribe");
+        first.created_at = 42;
+        second.created_at = 42;
+        let mut waiting = task("task:m-waiting", "scribe");
+        waiting.created_at = -100;
+        waiting.status = tilo_desktop_model::WorkspaceTaskStatus::Waiting;
+        let legacy = task("task:legacy", "scribe");
+        let mut service = ReadOnlyTasks(crate::services::WorkspaceTaskSnapshot {
+            room: "room-a".into(),
+            generation: 8,
+            tasks: vec![second, waiting, first, legacy],
+            controls: [
+                ("task:z-first", 1),
+                ("task:a-second", 2),
+                ("task:m-waiting", 3),
+            ]
+            .into_iter()
+            .map(|(id, ordinal)| {
+                (
+                    id.into(),
+                    tilo_desktop_model::WorkspaceTaskControl {
+                        queue_ordinal: Some(ordinal),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
+        });
+        assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:legacy"));
+        service.0.tasks.retain(|task| task.id != "task:legacy");
+        assert_eq!(next_queued_task(&service.0, "scribe"), Some("task:z-first"));
+        let result = read_current_tasks(
+            "room-a",
+            &envelope(
+                COLLECTION,
+                "read-current-tasks",
+                Some(serde_json::json!({"agent": "scribe"})),
+            ),
+            &service,
+        )
+        .unwrap();
+        let pending = result["pending"].as_array().unwrap();
         assert_eq!(
-            next_queued_task(&service.0.tasks, "scribe"),
-            Some("task:z-first")
+            pending
+                .iter()
+                .map(|row| row["task_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["task:z-first", "task:a-second", "task:m-waiting"]
+        );
+        assert_eq!(pending[2]["status"], "waiting");
+        service
+            .0
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == "task:z-first")
+            .unwrap()
+            .status = tilo_desktop_model::WorkspaceTaskStatus::Done;
+        assert_eq!(
+            next_queued_task(&service.0, "scribe"),
+            Some("task:a-second")
         );
     }
 
