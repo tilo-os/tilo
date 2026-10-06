@@ -517,6 +517,18 @@ impl AppWidget for EmbeddedApp {
     fn permission_hint(&self) -> Option<AppKind> {
         self.app_widget()?.permission_hint()
     }
+    fn device_shell_operation(
+        &mut self,
+        operation: &crate::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        self.app_widget_mut()
+            .ok_or("Terminal is not available")?
+            .device_shell_operation(operation)
+    }
+    fn request_device_shell(&mut self) -> bool {
+        self.app_widget_mut()
+            .is_some_and(AppWidget::request_device_shell)
+    }
     fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
         self.app_widget_mut()?.take_host_intent()
     }

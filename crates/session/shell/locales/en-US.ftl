@@ -2381,11 +2381,23 @@ airdrop-verify-detail =
     File: { $name }
     Size: { $bytes } bytes
     Receiver: { $endpoint }
-    Enter the receiver's SHA-256 certificate fingerprint from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
+    Enter the receiver's SHA-256 certificate fingerprint as 64 hexadecimal digits from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
 airdrop-error-unavailable = AirDrop lab requires an unlocked local session, file-transfer permission and current Files access.
 airdrop-error-source = AirDrop lab accepts one readable regular file up to 16 MiB.
 airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
 airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
 airdrop-error-declined = AirDrop transfer was cancelled before sending.
-airdrop-error-verification = The independent fingerprint does not match. Check the receiver; no file has been sent.
+airdrop-error-verification = Fingerprint differs. Check the receiver; nothing sent.
 airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
+search-provider-device-shell = Device shell
+terminal-request-device-shell = Request this device's own shell
+terminal-device-shell-owner-required = Only the device owner can request its own shell
+
+terminal-inspect-device-shell = Inspect this device's shell session
+terminal-run-device-shell = Run a command in this device's shell
+terminal-read-device-shell = Read this device's shell output
+
+terminal-device-shell-session-param = Exact local session UUID from Inspect
+terminal-device-shell-command-param = One reviewed command in this device shell
+
+terminal-device-shell-confirm-param = Confirm this reviewed device-shell operation

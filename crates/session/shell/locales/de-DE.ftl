@@ -2378,16 +2378,27 @@ a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
 airdrop-verify-title = AirDrop-Empfänger überprüfen
-airdrop-verify-send-once = Senden
+airdrop-verify-send-once = Einmal senden
 airdrop-verify-detail =
     Datei: { $name }
     Größe: { $bytes } Bytes
     Empfänger: { $endpoint }
-    Den SHA-256-Fingerabdruck des Empfängerzertifikats von einer vertrauenswürdigen Konsole oder einem unabhängig bestätigten Kanal eingeben. Nur bei Übereinstimmung wird diese vorbereitete Datei einmal gesendet. Ohne Überprüfung abbrechen.
+    Den SHA-256-Fingerabdruck des Empfängerzertifikats als 64 Hexadezimalzeichen von einer vertrauenswürdigen Konsole oder einem unabhängig bestätigten Kanal eingeben. Nur bei Übereinstimmung wird diese vorbereitete Datei einmal gesendet. Ohne Überprüfung abbrechen.
 airdrop-error-unavailable = Das AirDrop-Labor benötigt eine entsperrte lokale Sitzung, Dateiübertragungsrechte und aktuellen Dateizugriff.
 airdrop-error-source = Das AirDrop-Labor unterstützt eine lesbare reguläre Datei bis 16 MiB.
 airdrop-error-busy = Eine AirDrop-Übertragung läuft bereits. Vor einer weiteren Übertragung abbrechen.
 airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor einem neuen Versuch erneut prüfen.
 airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
-airdrop-error-verification = Der unabhängige Fingerabdruck stimmt nicht überein. Empfänger prüfen; keine Datei wurde gesendet.
+airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
 airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
+search-provider-device-shell = Shell dieses Geräts
+terminal-request-device-shell = Eigene Shell dieses Geräts anfordern
+terminal-device-shell-owner-required = Nur der Gerätebesitzer darf die eigene Shell dieses Geräts anfordern
+
+terminal-inspect-device-shell = Shell-Sitzung dieses Geräts prüfen
+terminal-run-device-shell = Befehl in der Shell dieses Geräts ausführen
+terminal-read-device-shell = Ausgabe der Shell dieses Geräts lesen
+
+terminal-device-shell-session-param = Genaue lokale Sitzungs-UUID aus der Sitzungsprüfung
+terminal-device-shell-command-param = Ein geprüfter Befehl in der Shell dieses Geräts
+terminal-device-shell-confirm-param = Diesen geprüften Vorgang in der Geräte-Shell bestätigen

@@ -7,6 +7,7 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$repo/tools/desktop-isolation.sh"
 tilo_test_isolate "$@"
+python3 "$repo/os/tests/flight_recorder_test.py"
 wrapper="$repo/os/usr/libexec/tilo-session"
 target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
 selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
