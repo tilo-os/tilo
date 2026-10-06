@@ -64,6 +64,27 @@ Fixture coverage exercises the actual durable store across reopen, offline
 notification, unrelated-transfer preservation, and Files' published semantic
 action. This is not a claim of a live two-device transport test.
 
+## Fresh-consent retry of an interrupted receive
+
+A durable sender retry/restart creates a new offer request ID. Previously,
+accepting that offer hit the store's exact-request resume check and could not
+reuse the old checkpoint. The accepted-offer path now permits a new request ID
+only for the same certified source and unchanged transfer ID, name, kind, size
+and full content hash. It truncates uncheckpointed bytes, durably records the new
+request binding and returns the committed prefix/hash. Ordinary resume remains
+exact-request bound. Receiver frame admission continues to reject old request
+IDs. Declining a fresh matching offer also removes the retained checkpoint;
+another peer or a changed manifest cannot use decline to erase it.
+
+The test journey reopens sender/receiver stores, uses a fresh consent/request
+binding and approved destination, then streams the remaining bytes over two real
+Iroh endpoints. Full-hash installation preserves an existing same-name file and
+uses the immutable sender spool even after the original source is edited. Store
+tests separately cover uncheckpointed tail truncation, persisted rebinding,
+stale-request rejection, changed peer/manifest rejection and decline cleanup.
+This is a production transport/store fixture, not a full headless Files or device
+enrollment ceremony and not a physical-device interoperability claim.
+
 ## Compatibility candidates
 
 | Protocol | Primary implementation or documentation | Integration decision |
@@ -79,6 +100,26 @@ to ship them. Pin and audit a particular revision before importing code; retain
 license notices and source obligations for any distributed component.
 
 ## Ordered follow-up slices
+
+### Bounded acceptance checklist
+
+This is a capability assessment, not a declaration that continuity is complete.
+The implementation column names existing production code; the validation column
+separates automated fixtures from physical-device observations.
+
+| Journey | Already implemented | This branch | Remaining implementation | Validation still required |
+|---|---|---|---|---|
+| Nearby transfer between certified Tilo devices | Files resources/actions and opaque connection/workspace-bound handles; approved source/destination descriptors; explicit receive consent; immutable file/folder staging; chunk transport, checkpoint hashes, collision-safe install, cancel/retry and policy teardown | Confirmed local decline of recovered partials; fresh-consent retry rebinding for an unchanged exact-source object | No further missing general-transfer code established in this assessment; additional gaps must come from the remaining journey checks. | Two-Iroh-endpoint resumed-byte fixture plus store/broker tests; physical paired-device disconnect/reconnect, grant revocation and large-file/folder journeys remain unobserved. |
+| Shared clipboard | Same-identity fabric snapshots, bounded shared history, sensitive-content exclusion, imported provenance and policy withdrawal; explicit history activation rather than remote writes replacing the live selection | Existing privacy/history tests exercised; no new clipboard engine | No established missing code for the current history-sharing contract. Apple Universal Clipboard interoperability is a separate, unimplemented adapter. | Existing runtime policy/provenance tests are fixtures. A live certified two-session copy → history activation → paste journey still needs end-to-end validation; two Wayland clients on one compositor do not prove this. |
+| Resume work | Private continuity checkpoints, structural/generic app contracts and app-specific metadata; continuation suggestion/accept/dismiss; resource-position launch and preserved local focus | Existing semantic suggestion tests exercised; no new app resume implementation | No established missing general transport code. App-specific semantic fidelity must be assessed against each app's declared contract; Music owns playback state. | Semantic tests prove offer/accept/dismiss, not sleeping-device catch-up. Live paired-session resource resolution, restart catch-up and position fidelity remain to validate. |
+| AirPlay/Cast projection | Compositor-owned capture, receiver discovery/selection, existing encrypted AirPlay helper and PIN/password input, Cast/FCast control and disconnect | Explicit credential isolation/redaction with reject/retry/ready/disconnect subprocess regression | No second Cast/Spotify controller. Opt-in AirPlay receiver mode would be new code, outside the existing sender journey. | FCast socket and discovery fixtures exist; AirPlay helper regression uses a substitute child process. Assembled-image encrypted interoperability and physical AirPlay/Cast receivers remain unverified here. |
+| AirDrop interoperability | No AirDrop adapter, AWDL lifecycle or AirDrop action surface found | Primary-source candidate/license/security roadmap only | Substantial missing code: package/pin the audited adapter, AWDL discovery/session lifecycle, selected external peer transaction, bounded transfer staging through Files consent and sandbox, cancellation/errors, and identity-verification design. Stock automatic receive is not an acceptable integration. | Adapter simulation must precede an authorized AWDL-capable hardware lab. This is not blocked only by physical testing; the adapter and security integration still need implementation. |
+
+Acceptance for the retry slice: immutable peer/name/kind/size/hash must match;
+fresh consent and an approved destination precede request rebinding; old request
+frames remain stale; only checkpointed bytes survive; receiver installation
+verifies the full hash and preserves an existing same-name file. No protocol,
+pairing or persistent access-grant changes are required.
 
 1. Nearby-send journey: two certified isolated peers, explicit receive destination,
    interruption/resume, destination collision, revoked grant and source teardown.

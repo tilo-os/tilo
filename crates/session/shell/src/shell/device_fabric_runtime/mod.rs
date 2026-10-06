@@ -5089,7 +5089,22 @@ pub fn decide_nearby_transfer_at(
         }
         PendingNearbyPayload::Durable { kind, content_hash } => {
             if !accept {
+                let discarded = with_nearby_transfer_store(|store| {
+                    store.decline_incoming_offer(&crate::shell::nearby_transfer::IncomingManifest {
+                        id: transfer_id,
+                        source: pending.source.as_str().to_string(),
+                        request_id: pending.request_id,
+                        name: pending.name.clone(),
+                        kind,
+                        total_bytes: pending.total_bytes,
+                        content_hash,
+                    })
+                })?;
                 if let Ok(mut state) = nearby_drop_state().lock() {
+                    if discarded {
+                        state.destinations.remove(&transfer_id);
+                        state.progress.remove(&transfer_id);
+                    }
                     state.record_history(NearbyTransferHistory {
                         transfer_id,
                         peer: pending.source.clone(),
@@ -5109,7 +5124,7 @@ pub fn decide_nearby_transfer_at(
                 return Ok(());
             }
             let (committed_offset, prefix_hash) = with_nearby_transfer_store(|store| {
-                store.begin_incoming(
+                store.accept_incoming_offer(
                     crate::shell::nearby_transfer::IncomingManifest {
                         id: transfer_id,
                         source: pending.source.as_str().to_string(),
