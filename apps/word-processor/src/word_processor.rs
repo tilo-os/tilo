@@ -507,10 +507,11 @@ impl WordProcessor {
         // imported, user-defined, or edited built-ins — overlay them.
         let mut sheet = StyleSheet::default();
         for id in ids {
-            sheet.styles.insert(
-                id.clone(),
-                StyleProps::from_attrs(&tilo_doc::model::style_props(state, c, &id)),
-            );
+            // Typed style actions persist individual fields. Missing fields
+            // keep the resolved base style instead of becoming zero metrics.
+            let mut props = sheet.get(&id).to_attrs();
+            props.extend(tilo_doc::model::style_props(state, c, &id));
+            sheet.styles.insert(id, StyleProps::from_attrs(&props));
         }
         sheet
     }
