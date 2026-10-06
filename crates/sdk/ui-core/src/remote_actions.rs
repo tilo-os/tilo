@@ -58,9 +58,9 @@ impl Drop for RemoteActionsGuard {
 /// How long a running invocation is left before it is observed again.
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
 /// Native shell chrome has no callback wake scope, so it revisits an
-/// outstanding reply at a bounded cadence until a receipt arrives. This can
-/// present at 20 fps, but only for the explicit response window below; an
-/// unresolved result then becomes idle instead of turning into a render loop.
+/// outstanding reply at a bounded cadence until a receipt arrives. A timer
+/// alone does not present a frame, and the explicit response window below
+/// prevents unresolved work from becoming a permanent compositor wake loop.
 const RESPONSE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// After this bound, a missing reply is an unresolved outcome. The original
 /// invocation remains owned and is never retried under a new identity.

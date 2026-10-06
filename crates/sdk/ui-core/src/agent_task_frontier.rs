@@ -26,6 +26,7 @@ const QUEUE_TASK_ACTION: &str = "queue";
 const STOP_TASK_ACTION: &str = "stop";
 const TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const ASYNC_CONTROL_POLL: Duration = Duration::from_millis(50);
+const CONTROL_RESPONSE_WINDOW: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentTaskFrontier {
@@ -60,6 +61,10 @@ pub enum AgentDirectionState {
     #[default]
     Draft,
     Submitting,
+    Uncertain {
+        task_id: String,
+        run_epoch: u64,
+    },
     Saved {
         task_id: String,
         run_epoch: u64,
@@ -89,6 +94,7 @@ pub enum AgentQueueState {
     #[default]
     Ready,
     Submitting,
+    Uncertain,
     Queued {
         task_id: String,
     },
@@ -100,6 +106,10 @@ pub enum AgentStopState {
     #[default]
     Ready,
     Submitting {
+        task_id: String,
+        run_epoch: u64,
+    },
+    Uncertain {
         task_id: String,
         run_epoch: u64,
     },
@@ -167,15 +177,18 @@ struct PendingTaskRead {
 }
 
 struct DirectionCall {
+    invocation: InvocationId,
     call: LocalState<InvocationCall>,
     frontier: AgentTaskFrontier,
 }
 
 struct QueueCall {
+    invocation: InvocationId,
     call: LocalState<InvocationCall>,
 }
 
 struct StopCall {
+    invocation: InvocationId,
     call: LocalState<InvocationCall>,
     frontier: AgentTaskFrontier,
 }
@@ -203,6 +216,7 @@ pub struct AgentTaskFrontiers {
     /// The current caller's offered actions, not permissions inferred from
     /// task visibility. Refreshed on the same authenticated transport.
     controls: BTreeMap<(String, String), LocalState<CatalogueCall>>,
+    control_response_until: Option<Instant>,
     current_consumed: bool,
     current_issued: u64,
     current_accepts_frontier_change: bool,
@@ -254,6 +268,7 @@ impl AgentTaskFrontiers {
             agent: String::new(),
             current: None,
             controls: BTreeMap::new(),
+            control_response_until: None,
             current_consumed: false,
             current_issued: 0,
             current_accepts_frontier_change: false,
@@ -290,6 +305,7 @@ impl AgentTaskFrontiers {
         agent.clone_into(&mut self.agent);
         self.current = None;
         self.controls.clear();
+        self.control_response_until = None;
         self.current_consumed = true;
         self.current_issued = 0;
         self.current_accepts_frontier_change = false;
@@ -353,12 +369,16 @@ impl AgentTaskFrontiers {
     /// in the production compositor's deadline-driven loop.
     #[must_use]
     pub fn next_wake_deadline(&self) -> Option<Instant> {
-        let now = crate::time::now();
+        let now = crate::background::Background::current().now();
         let control = self
             .controls
             .values()
             .any(|call| call.get().is_pending())
-            .then(|| now + ASYNC_CONTROL_POLL);
+            .then(|| {
+                self.control_response_until
+                    .map(|until| (now + ASYNC_CONTROL_POLL).min(until))
+            })
+            .flatten();
         [
             self.next_refresh,
             self.remote.next_observation_deadline(),
@@ -460,7 +480,10 @@ impl AgentTaskFrontiers {
         matches!(self.actionable_frontier(), Some(frontier)
             if frontier.route == "model" && !frontier.cancellation_requested
                 && self.offers(&task_target(&self.workspace, &frontier.task_id, DIRECT_TASK_ACTION)))
-            && !matches!(self.direction_state, AgentDirectionState::Submitting)
+            && !matches!(
+                self.direction_state,
+                AgentDirectionState::Submitting | AgentDirectionState::Uncertain { .. }
+            )
     }
 
     /// An affordance only: the owner rechecks authority when invoked.
@@ -523,6 +546,7 @@ impl AgentTaskFrontiers {
             self.stale_frontier = false;
             self.direction_state = AgentDirectionState::Draft;
             self.controls.clear();
+            self.control_response_until = None;
             self.refresh_control_offers();
             Ok(())
         } else {
@@ -581,7 +605,11 @@ impl AgentTaskFrontiers {
         let call = self
             .remote
             .invoke_with_id(invocation, target, argument, None);
-        self.direction = Some(DirectionCall { call, frontier });
+        self.direction = Some(DirectionCall {
+            invocation,
+            call,
+            frontier,
+        });
         self.direction_state = AgentDirectionState::Submitting;
         Ok(invocation)
     }
@@ -622,7 +650,7 @@ impl AgentTaskFrontiers {
             InvokeArgument::Json(argument),
             None,
         );
-        self.queue = Some(QueueCall { call });
+        self.queue = Some(QueueCall { invocation, call });
         self.queue_state = AgentQueueState::Submitting;
         Ok(invocation)
     }
@@ -664,7 +692,11 @@ impl AgentTaskFrontiers {
             task_id: frontier.task_id.clone(),
             run_epoch: frontier.run_epoch,
         };
-        self.stop = Some(StopCall { call, frontier });
+        self.stop = Some(StopCall {
+            invocation,
+            call,
+            frontier,
+        });
         Ok(invocation)
     }
 
@@ -705,6 +737,14 @@ impl AgentTaskFrontiers {
         }
         self.collect_current_tasks(now);
         self.refresh_control_offers();
+        let controls_pending = self.controls.values().any(|call| call.get().is_pending());
+        if !controls_pending
+            || self
+                .control_response_until
+                .is_some_and(|until| until <= now)
+        {
+            self.control_response_until = None;
+        }
         self.poll_direction();
         self.poll_saved_direction();
         self.poll_queue();
@@ -726,12 +766,14 @@ impl AgentTaskFrontiers {
                     STOP_TASK_ACTION,
                 ));
             }
+            let mut inserted = false;
             for target in targets {
                 let key = (
                     target.address.resource.clone(),
                     target.address.action.clone(),
                 );
                 self.controls.entry(key).or_insert_with(|| {
+                    inserted = true;
                     self.remote.catalogue_page(CatalogueQuery {
                         provider: Some(target.provider),
                         target: Some(target.address),
@@ -739,6 +781,11 @@ impl AgentTaskFrontiers {
                         ..CatalogueQuery::default()
                     })
                 });
+            }
+            if inserted && self.control_response_until.is_none() {
+                self.control_response_until = crate::background::Background::current()
+                    .now()
+                    .checked_add(CONTROL_RESPONSE_WINDOW);
             }
         }
     }
@@ -751,6 +798,7 @@ impl AgentTaskFrontiers {
         // Discard old grants immediately while a fresh observation is pending.
         // Browse only this room's Task Center surface; labels never grant access.
         self.controls.clear();
+        self.control_response_until = None;
         self.current_accepts_frontier_change = accepts_frontier_change;
         self.current = Some(self.remote.invoke(
             task_collection_target(&self.workspace, READ_CURRENT_TASKS_ACTION),
@@ -968,6 +1016,7 @@ impl AgentTaskFrontiers {
 
     fn invalidate_snapshot(&mut self, discovery: AgentTaskDiscovery) {
         self.controls.clear();
+        self.control_response_until = None;
         self.invalidated = true;
         self.snapshot_complete = false;
         self.frontiers.clear();
@@ -980,13 +1029,21 @@ impl AgentTaskFrontiers {
         let Some(queue) = &self.queue else {
             return;
         };
+        let outcome_uncertain = self.remote.invocation_outcome_uncertain(queue.invocation);
+        if outcome_uncertain {
+            self.queue_state = AgentQueueState::Uncertain;
+        }
         match queue.call.get() {
             RemoteCall::Pending
             | RemoteCall::Done(
                 InvocationUpdate::Accepted { .. }
                 | InvocationUpdate::Progress { .. }
                 | InvocationUpdate::Item { .. },
-            ) => {}
+            ) => {
+                if !outcome_uncertain {
+                    self.queue_state = AgentQueueState::Submitting;
+                }
+            }
             RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => {
                 self.queue_state = queue_task_id(&output)
                     .map_or(AgentQueueState::Failed, |task_id| AgentQueueState::Queued {
@@ -1009,13 +1066,27 @@ impl AgentTaskFrontiers {
         let Some(stop) = &self.stop else {
             return;
         };
+        let outcome_uncertain = self.remote.invocation_outcome_uncertain(stop.invocation);
+        if outcome_uncertain {
+            self.stop_state = AgentStopState::Uncertain {
+                task_id: stop.frontier.task_id.clone(),
+                run_epoch: stop.frontier.run_epoch,
+            };
+        }
         match stop.call.get() {
             RemoteCall::Pending
             | RemoteCall::Done(
                 InvocationUpdate::Accepted { .. }
                 | InvocationUpdate::Progress { .. }
                 | InvocationUpdate::Item { .. },
-            ) => {}
+            ) => {
+                if !outcome_uncertain {
+                    self.stop_state = AgentStopState::Submitting {
+                        task_id: stop.frontier.task_id.clone(),
+                        run_epoch: stop.frontier.run_epoch,
+                    };
+                }
+            }
             RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => {
                 let state = if stop_requested(&output, &stop.frontier) {
                     AgentStopState::Stopping {
@@ -1049,13 +1120,26 @@ impl AgentTaskFrontiers {
         let Some(direction) = &mut self.direction else {
             return;
         };
+        let outcome_uncertain = self
+            .remote
+            .invocation_outcome_uncertain(direction.invocation);
+        if outcome_uncertain {
+            self.direction_state = AgentDirectionState::Uncertain {
+                task_id: direction.frontier.task_id.clone(),
+                run_epoch: direction.frontier.run_epoch,
+            };
+        }
         match direction.call.get() {
             RemoteCall::Pending
             | RemoteCall::Done(
                 InvocationUpdate::Accepted { .. }
                 | InvocationUpdate::Progress { .. }
                 | InvocationUpdate::Item { .. },
-            ) => {}
+            ) => {
+                if !outcome_uncertain {
+                    self.direction_state = AgentDirectionState::Submitting;
+                }
+            }
             RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => {
                 let Some(revision) = direction_revision(&output, &direction.frontier.task_id)
                 else {
@@ -2549,5 +2633,144 @@ mod tests {
         };
         assert_eq!(frontier.after_revision, 5);
         assert_eq!(frontier.applied_revision, 5);
+    }
+
+    #[test]
+    fn missing_control_catalogue_response_stops_waking_after_its_bound() {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let mut model = AgentTaskFrontiers::with_actions(RemoteActions::session());
+        model.workspace = "room".into();
+        model.agent = "agent-a".into();
+        model.current_consumed = true;
+        model.snapshot_complete = true;
+        model.invalidated = false;
+
+        model.refresh_control_offers();
+        let wake = model
+            .next_wake_deadline()
+            .expect("pending control response schedules a bounded native pump");
+        assert!(wake <= clock.background().now() + ASYNC_CONTROL_POLL);
+        assert_eq!(model.take_collab_requests().len(), 1);
+
+        clock.advance(CONTROL_RESPONSE_WINDOW);
+        model.poll();
+
+        assert_eq!(model.control_response_until, None);
+        assert_eq!(model.remote.next_observation_deadline(), None);
+        assert_eq!(model.next_refresh, None);
+        assert_eq!(model.next_wake_deadline(), None);
+        assert!(model.take_collab_requests().is_empty());
+        assert!(!model.can_queue());
+    }
+
+    #[test]
+    fn missing_task_receipts_become_uncertain_without_resubmitting_effects() {
+        use crate::collaboration::CollabEvent;
+        use tilo_actions::remote::RemoteActionMessage;
+
+        let remote = RemoteActions::session();
+        let mut model = AgentTaskFrontiers::with_actions(remote.clone());
+        let frontier = AgentTaskFrontier {
+            task_id: "original-task".into(),
+            title: "Original task".into(),
+            run_epoch: 7,
+            after_revision: 4,
+            applied_revision: 4,
+            route: "model".into(),
+            cancellation_requested: false,
+        };
+        let direction_id = InvocationId(uuid::Uuid::from_bytes([0x71; 16]));
+        let queue_id = InvocationId(uuid::Uuid::from_bytes([0x72; 16]));
+        let stop_id = InvocationId(uuid::Uuid::from_bytes([0x73; 16]));
+        model.direction = Some(DirectionCall {
+            invocation: direction_id,
+            call: remote.invoke_with_id(
+                direction_id,
+                task_target("room", "original-task", DIRECT_TASK_ACTION),
+                InvokeArgument::None,
+                None,
+            ),
+            frontier: frontier.clone(),
+        });
+        model.direction_state = AgentDirectionState::Submitting;
+        model.queue = Some(QueueCall {
+            invocation: queue_id,
+            call: remote.invoke_with_id(
+                queue_id,
+                task_collection_target("room", QUEUE_TASK_ACTION),
+                InvokeArgument::None,
+                None,
+            ),
+        });
+        model.queue_state = AgentQueueState::Submitting;
+        model.stop = Some(StopCall {
+            invocation: stop_id,
+            call: remote.invoke_with_id(
+                stop_id,
+                task_target("room", "original-task", STOP_TASK_ACTION),
+                InvokeArgument::None,
+                None,
+            ),
+            frontier,
+        });
+        model.stop_state = AgentStopState::Submitting {
+            task_id: "original-task".into(),
+            run_epoch: 7,
+        };
+        assert_eq!(model.take_collab_requests().len(), 3);
+
+        for invocation in [direction_id, queue_id, stop_id] {
+            model.handle_collab_event(&CollabEvent::RemoteAction {
+                message: RemoteActionMessage::Update {
+                    invocation,
+                    state: None,
+                },
+            });
+        }
+
+        assert!(matches!(
+            model.direction_state(),
+            AgentDirectionState::Uncertain {
+                task_id,
+                run_epoch: 7
+            } if task_id == "original-task"
+        ));
+        assert_eq!(model.queue_state(), &AgentQueueState::Uncertain);
+        assert!(matches!(
+            model.stop_state(),
+            AgentStopState::Uncertain {
+                task_id,
+                run_epoch: 7
+            } if task_id == "original-task"
+        ));
+        assert!(model.take_collab_requests().is_empty());
+        assert!(model.direction.is_some() && model.queue.is_some() && model.stop.is_some());
+        assert_eq!(model.next_wake_deadline(), None);
+
+        model.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Update {
+                invocation: queue_id,
+                state: Some(InvocationState::new(
+                    queue_id,
+                    InvocationUpdate::Succeeded {
+                        invocation: queue_id,
+                        output: ActionOutput {
+                            value: Some(serde_json::json!({
+                                "result": {"queued": {"task_id": "late-original"}}
+                            })),
+                            resources: Vec::new(),
+                        },
+                    },
+                )),
+            },
+        });
+        assert_eq!(
+            model.queue_state(),
+            &AgentQueueState::Queued {
+                task_id: "late-original".into()
+            }
+        );
+        assert!(model.queue.is_none());
     }
 }

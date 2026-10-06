@@ -145,6 +145,7 @@ chat-agent-task-stopping = Stopping
 chat-agent-task-attention = Needs attention
 chat-agent-direction-saved = Direction saved
 chat-agent-direction-applied = Direction applied
+chat-agent-direction-outcome-unknown = Direction sent; waiting for Task Center to confirm the outcome
 chat-agent-task-status = { $state }: { $title }
 chat-agent-task-queued-count = { $count ->
     [one] 1 queued task

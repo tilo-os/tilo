@@ -47,17 +47,45 @@ struct PendingMessageOffer {
 struct PendingWork {
     intent: ComposerIntent,
     draft_revision: u64,
+    follow_until: std::time::Instant,
 }
+
+const RECEIPT_FOLLOW_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+type DraftKey = (String, String, ComposerIntent);
 
 #[derive(Default)]
 struct Drafts {
-    values: HashMap<(String, String, ComposerIntent), DraftEntry>,
+    values: HashMap<DraftKey, DraftEntry>,
 }
 
 #[derive(Clone)]
 struct DraftEntry {
     text: String,
     revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ComposerReceiptKind {
+    MessageAccepted,
+    Queued {
+        task_id: String,
+    },
+    DirectionSaved {
+        task_id: String,
+        run_epoch: u64,
+        revision: u64,
+    },
+    DirectionApplied {
+        task_id: String,
+        run_epoch: u64,
+        revision: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ComposerReceipt {
+    submitted_revision: u64,
+    kind: ComposerReceiptKind,
 }
 
 struct RetainedSession {
@@ -83,7 +111,15 @@ impl RetainedSession {
             .is_some()
             .then(|| self.tasks.next_wake_deadline())
             .flatten();
-        earliest(message, task)
+        let follow = self.pending_work.and_then(|pending| {
+            (pending.intent == ComposerIntent::Steer
+                && matches!(
+                    self.tasks.direction_state(),
+                    AgentDirectionState::Saved { .. }
+                ))
+            .then_some(pending.follow_until)
+        });
+        earliest(earliest(message, task), follow)
     }
 }
 
@@ -105,6 +141,297 @@ fn earliest(
     }
 }
 
+fn work_outcome(
+    tasks: &AgentTaskFrontiers,
+    intent: ComposerIntent,
+) -> Option<Result<ComposerReceiptKind, ()>> {
+    match intent {
+        ComposerIntent::Queue => match tasks.queue_state() {
+            AgentQueueState::Queued { task_id } => Some(Ok(ComposerReceiptKind::Queued {
+                task_id: task_id.clone(),
+            })),
+            AgentQueueState::Failed => Some(Err(())),
+            AgentQueueState::Ready | AgentQueueState::Submitting | AgentQueueState::Uncertain => {
+                None
+            }
+        },
+        ComposerIntent::Steer => match tasks.direction_state() {
+            AgentDirectionState::Saved {
+                task_id,
+                run_epoch,
+                revision,
+            } => Some(Ok(ComposerReceiptKind::DirectionSaved {
+                task_id: task_id.clone(),
+                run_epoch: *run_epoch,
+                revision: *revision,
+            })),
+            AgentDirectionState::Applied {
+                task_id,
+                run_epoch,
+                revision,
+            } => Some(Ok(ComposerReceiptKind::DirectionApplied {
+                task_id: task_id.clone(),
+                run_epoch: *run_epoch,
+                revision: *revision,
+            })),
+            AgentDirectionState::NeedsRefresh(_) => Some(Err(())),
+            AgentDirectionState::Draft
+            | AgentDirectionState::Submitting
+            | AgentDirectionState::Uncertain { .. } => None,
+        },
+        ComposerIntent::Message => None,
+    }
+}
+
+fn receipt_follow_deadline() -> std::time::Instant {
+    let now = std::time::Instant::now();
+    now.checked_add(RECEIPT_FOLLOW_WINDOW).unwrap_or(now)
+}
+
+fn poll_retained_message(
+    drafts: &mut Drafts,
+    receipts: &mut HashMap<DraftKey, ComposerReceipt>,
+    room: &str,
+    agent: &str,
+    intent: ComposerIntent,
+    session: &mut RetainedSession,
+) {
+    let Some(pending) = session.pending_message.as_mut() else {
+        return;
+    };
+    match ui::agent_message_action::poll(
+        &session.actions,
+        room,
+        agent,
+        &pending.text,
+        &pending.state,
+        pending.deadline,
+        pending.pages_remaining,
+    ) {
+        AgentMessagePoll::Waiting => {}
+        AgentMessagePoll::Advance {
+            submission,
+            pages_remaining,
+        } => {
+            pending.state = submission;
+            pending.pages_remaining = pages_remaining;
+        }
+        AgentMessagePoll::Succeeded => {
+            let revision = pending.draft_revision;
+            receipts.insert(
+                (room.to_owned(), agent.to_owned(), intent),
+                ComposerReceipt {
+                    submitted_revision: revision,
+                    kind: ComposerReceiptKind::MessageAccepted,
+                },
+            );
+            clear_retained_draft(drafts, room, agent, intent, revision);
+            session.pending_message = None;
+        }
+        AgentMessagePoll::Failed => session.pending_message = None,
+    }
+}
+
+fn retained_work_outcome(
+    session: &AgentTaskFrontiers,
+    pending: PendingWork,
+    now: std::time::Instant,
+) -> Option<Result<(ComposerReceiptKind, bool), ()>> {
+    if pending.intent != ComposerIntent::Steer {
+        return work_outcome(session, pending.intent)
+            .map(|outcome| outcome.map(|kind| (kind, true)));
+    }
+    match session.direction_state() {
+        AgentDirectionState::Saved {
+            task_id,
+            run_epoch,
+            revision,
+        } => Some(Ok((
+            ComposerReceiptKind::DirectionSaved {
+                task_id: task_id.clone(),
+                run_epoch: *run_epoch,
+                revision: *revision,
+            },
+            now >= pending.follow_until,
+        ))),
+        AgentDirectionState::Applied {
+            task_id,
+            run_epoch,
+            revision,
+        } => Some(Ok((
+            ComposerReceiptKind::DirectionApplied {
+                task_id: task_id.clone(),
+                run_epoch: *run_epoch,
+                revision: *revision,
+            },
+            true,
+        ))),
+        AgentDirectionState::NeedsRefresh(_) => Some(Err(())),
+        AgentDirectionState::Draft
+        | AgentDirectionState::Submitting
+        | AgentDirectionState::Uncertain { .. } => None,
+    }
+}
+
+fn poll_retained_work(
+    drafts: &mut Drafts,
+    receipts: &mut HashMap<DraftKey, ComposerReceipt>,
+    room: &str,
+    agent: &str,
+    session: &mut RetainedSession,
+    now: std::time::Instant,
+) {
+    let Some(pending) = session.pending_work else {
+        return;
+    };
+    let key = (room.to_owned(), agent.to_owned(), pending.intent);
+    let Some(outcome) = retained_work_outcome(&session.tasks, pending, now) else {
+        return;
+    };
+    let Ok((kind, terminal)) = outcome else {
+        session.pending_work = None;
+        return;
+    };
+    if terminal {
+        session.pending_work = None;
+    }
+    let would_downgrade = matches!(
+        receipts.get(&key).map(|receipt| &receipt.kind),
+        Some(ComposerReceiptKind::DirectionApplied { .. })
+    ) && matches!(&kind, ComposerReceiptKind::DirectionSaved { .. });
+    if !would_downgrade {
+        receipts.insert(
+            key,
+            ComposerReceipt {
+                submitted_revision: pending.draft_revision,
+                kind,
+            },
+        );
+    }
+    clear_retained_draft(drafts, room, agent, pending.intent, pending.draft_revision);
+}
+
+fn receipt_status(kind: &ComposerReceiptKind) -> String {
+    match kind {
+        ComposerReceiptKind::MessageAccepted => t("agent-quick-message-sent"),
+        ComposerReceiptKind::Queued { task_id } => t_args(
+            "agent-quick-queue-accepted",
+            &[("task", task_id.clone().into())],
+        ),
+        ComposerReceiptKind::DirectionSaved {
+            task_id,
+            run_epoch,
+            revision,
+        } => t_args(
+            "agent-quick-guide-saved",
+            &[
+                ("task", task_id.clone().into()),
+                ("run", i64::try_from(*run_epoch).unwrap_or(i64::MAX).into()),
+                (
+                    "revision",
+                    i64::try_from(*revision).unwrap_or(i64::MAX).into(),
+                ),
+            ],
+        ),
+        ComposerReceiptKind::DirectionApplied {
+            task_id,
+            run_epoch,
+            revision,
+        } => t_args(
+            "agent-quick-guide-applied",
+            &[
+                ("task", task_id.clone().into()),
+                ("run", i64::try_from(*run_epoch).unwrap_or(i64::MAX).into()),
+                (
+                    "revision",
+                    i64::try_from(*revision).unwrap_or(i64::MAX).into(),
+                ),
+            ],
+        ),
+    }
+}
+
+fn message_status(
+    permission_refused: bool,
+    checking_offer: bool,
+    receipt: Option<&ComposerReceipt>,
+) -> String {
+    if permission_refused {
+        return t("agent-quick-message-refused");
+    }
+    if let Some(receipt) = receipt
+        && matches!(&receipt.kind, ComposerReceiptKind::MessageAccepted)
+    {
+        return receipt_status(&receipt.kind);
+    }
+    if checking_offer {
+        t("agent-quick-checking")
+    } else {
+        t("agent-quick-ready")
+    }
+}
+
+fn queue_status(tasks: &AgentTaskFrontiers, receipt: Option<&ComposerReceipt>) -> String {
+    match tasks.queue_state() {
+        AgentQueueState::Submitting => t("agent-quick-queue-submitting"),
+        AgentQueueState::Uncertain => t("agent-quick-queue-outcome-unknown"),
+        AgentQueueState::Queued { task_id } => receipt_status(&ComposerReceiptKind::Queued {
+            task_id: task_id.clone(),
+        }),
+        AgentQueueState::Failed => t("agent-quick-work-refused"),
+        AgentQueueState::Ready => receipt
+            .filter(|receipt| matches!(&receipt.kind, ComposerReceiptKind::Queued { .. }))
+            .map_or_else(
+                || t("agent-quick-queue-help"),
+                |receipt| receipt_status(&receipt.kind),
+            ),
+    }
+}
+
+fn direction_status(tasks: &AgentTaskFrontiers, receipt: Option<&ComposerReceipt>) -> String {
+    match tasks.direction_state() {
+        AgentDirectionState::Submitting => t("agent-quick-guide-submitting"),
+        AgentDirectionState::Uncertain { .. } => t("agent-quick-guide-outcome-unknown"),
+        AgentDirectionState::Saved {
+            task_id,
+            run_epoch,
+            revision,
+        } => receipt_status(&ComposerReceiptKind::DirectionSaved {
+            task_id: task_id.clone(),
+            run_epoch: *run_epoch,
+            revision: *revision,
+        }),
+        AgentDirectionState::Applied {
+            task_id,
+            run_epoch,
+            revision,
+        } => receipt_status(&ComposerReceiptKind::DirectionApplied {
+            task_id: task_id.clone(),
+            run_epoch: *run_epoch,
+            revision: *revision,
+        }),
+        AgentDirectionState::NeedsRefresh(_) => t("agent-quick-work-refused"),
+        AgentDirectionState::Draft => receipt
+            .filter(|receipt| {
+                matches!(
+                    &receipt.kind,
+                    ComposerReceiptKind::DirectionApplied { .. }
+                        | ComposerReceiptKind::DirectionSaved { .. }
+                )
+            })
+            .map_or_else(
+                || match tasks.choice() {
+                    AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => {
+                        t_args("agent-quick-guide-task", &[("task", task.title.into())])
+                    }
+                    AgentTaskChoice::Choose(_) => t("agent-quick-guide-choose"),
+                    AgentTaskChoice::None => t("agent-quick-guide-none"),
+                },
+                |receipt| receipt_status(&receipt.kind),
+            ),
+    }
+}
+
 /// Shell-owned state. Presence identifies the row; the pinned caller and
 /// freshly resolved published actions remain the only authority.
 pub(crate) struct AgentQuickComposer {
@@ -114,6 +441,7 @@ pub(crate) struct AgentQuickComposer {
     agent_label: String,
     frozen_anchor: Rect,
     drafts: Drafts,
+    receipts: HashMap<DraftKey, ComposerReceipt>,
     draft: LocalState<String>,
     title: LocalState<String>,
     intent: LocalState<ComposerIntent>,
@@ -129,10 +457,9 @@ pub(crate) struct AgentQuickComposer {
     message_offer: Option<AgentMessageOffer>,
     next_message_offer_refresh: Option<std::time::Instant>,
     pending_work: Option<PendingWork>,
-    message_receipt_revision: Option<u64>,
     permission_refused: bool,
     focus_reset: bool,
-    retained_sessions: HashMap<(String, String, ComposerIntent), RetainedSession>,
+    retained_sessions: HashMap<DraftKey, RetainedSession>,
 }
 
 impl Default for AgentQuickComposer {
@@ -208,6 +535,7 @@ impl Default for AgentQuickComposer {
             agent_label: String::new(),
             frozen_anchor: Rect::ZERO,
             drafts: Drafts::default(),
+            receipts: HashMap::new(),
             draft,
             title,
             intent,
@@ -223,7 +551,6 @@ impl Default for AgentQuickComposer {
             message_offer: None,
             next_message_offer_refresh: None,
             pending_work: None,
-            message_receipt_revision: None,
             permission_refused: false,
             focus_reset: false,
             retained_sessions: HashMap::new(),
@@ -335,7 +662,6 @@ impl AgentQuickComposer {
         self.pending_message_offer = None;
         self.message_offer = None;
         self.next_message_offer_refresh = None;
-        self.message_receipt_revision = None;
         self.status.set(t("agent-quick-checking"));
         if self.pending_message.is_none() {
             self.start_message_offer_refresh();
@@ -459,7 +785,6 @@ impl AgentQuickComposer {
         self.park_pending_session();
         self.shown_intent = selected;
         self.intent.set(selected);
-        self.message_receipt_revision = None;
         self.pending_message_offer = None;
         self.message_offer = None;
         self.next_message_offer_refresh = None;
@@ -489,71 +814,16 @@ impl AgentQuickComposer {
 
     fn poll_retained_sessions(&mut self) {
         let drafts = &mut self.drafts;
+        let receipts = &mut self.receipts;
+        let now = std::time::Instant::now();
         self.retained_sessions
             .retain(|(room, agent, intent), session| {
                 session.actions.poll();
                 if session.pending_work.is_some() {
                     session.tasks.observe(room, agent);
                 }
-                if let Some(pending) = session.pending_message.as_mut() {
-                    match ui::agent_message_action::poll(
-                        &session.actions,
-                        room,
-                        agent,
-                        &pending.text,
-                        &pending.state,
-                        pending.deadline,
-                        pending.pages_remaining,
-                    ) {
-                        AgentMessagePoll::Waiting => {}
-                        AgentMessagePoll::Advance {
-                            submission,
-                            pages_remaining,
-                        } => {
-                            pending.state = submission;
-                            pending.pages_remaining = pages_remaining;
-                        }
-                        AgentMessagePoll::Succeeded => {
-                            clear_retained_draft(
-                                drafts,
-                                room,
-                                agent,
-                                *intent,
-                                pending.draft_revision,
-                            );
-                            session.pending_message = None;
-                        }
-                        AgentMessagePoll::Failed => session.pending_message = None,
-                    }
-                }
-                if let Some(pending) = session.pending_work {
-                    let settled = match pending.intent {
-                        ComposerIntent::Queue => match session.tasks.queue_state() {
-                            AgentQueueState::Queued { .. } => Some(true),
-                            AgentQueueState::Failed => Some(false),
-                            AgentQueueState::Ready | AgentQueueState::Submitting => None,
-                        },
-                        ComposerIntent::Steer => match session.tasks.direction_state() {
-                            AgentDirectionState::Saved { .. }
-                            | AgentDirectionState::Applied { .. } => Some(true),
-                            AgentDirectionState::NeedsRefresh(_) => Some(false),
-                            AgentDirectionState::Draft | AgentDirectionState::Submitting => None,
-                        },
-                        ComposerIntent::Message => None,
-                    };
-                    if let Some(success) = settled {
-                        session.pending_work = None;
-                        if success {
-                            clear_retained_draft(
-                                drafts,
-                                room,
-                                agent,
-                                pending.intent,
-                                pending.draft_revision,
-                            );
-                        }
-                    }
-                }
+                poll_retained_message(drafts, receipts, room, agent, *intent, session);
+                poll_retained_work(drafts, receipts, room, agent, session, now);
                 session.is_pending()
             });
     }
@@ -564,7 +834,7 @@ impl AgentQuickComposer {
             return;
         }
         let revision = self.draft.revision();
-        self.message_receipt_revision = None;
+        self.receipts.remove(&self.draft_key());
         match self.shown_intent {
             ComposerIntent::Message => {
                 let Some(actions) = self.actions.as_ref() else {
@@ -593,6 +863,7 @@ impl AgentQuickComposer {
                     self.pending_work = Some(PendingWork {
                         intent: ComposerIntent::Queue,
                         draft_revision: revision,
+                        follow_until: receipt_follow_deadline(),
                     });
                 }
             }
@@ -605,6 +876,7 @@ impl AgentQuickComposer {
                     self.pending_work = Some(PendingWork {
                         intent: ComposerIntent::Steer,
                         draft_revision: revision,
+                        follow_until: receipt_follow_deadline(),
                     });
                 }
             }
@@ -636,7 +908,13 @@ impl AgentQuickComposer {
                     let revision = pending.draft_revision;
                     self.pending_message = None;
                     self.clear_if_unchanged(revision);
-                    self.message_receipt_revision = Some(self.draft.revision());
+                    self.receipts.insert(
+                        self.draft_key(),
+                        ComposerReceipt {
+                            submitted_revision: revision,
+                            kind: ComposerReceiptKind::MessageAccepted,
+                        },
+                    );
                     self.start_message_offer_refresh();
                 }
                 AgentMessagePoll::Failed => {
@@ -654,25 +932,17 @@ impl AgentQuickComposer {
         let Some(pending_work) = self.pending_work else {
             return;
         };
-        let settled = match pending_work.intent {
-            ComposerIntent::Queue => match tasks.queue_state() {
-                AgentQueueState::Queued { .. } => Some(true),
-                AgentQueueState::Failed => Some(false),
-                AgentQueueState::Ready | AgentQueueState::Submitting => None,
-            },
-            ComposerIntent::Steer => match tasks.direction_state() {
-                AgentDirectionState::Saved { .. } | AgentDirectionState::Applied { .. } => {
-                    Some(true)
-                }
-                AgentDirectionState::NeedsRefresh(_) => Some(false),
-                AgentDirectionState::Draft | AgentDirectionState::Submitting => None,
-            },
-            ComposerIntent::Message => None,
-        };
-        if let Some(success) = settled {
+        if let Some(settled) = work_outcome(tasks, pending_work.intent) {
             self.pending_work = None;
-            if success {
+            if let Ok(kind) = settled {
                 self.clear_if_unchanged(pending_work.draft_revision);
+                self.receipts.insert(
+                    self.draft_key(),
+                    ComposerReceipt {
+                        submitted_revision: pending_work.draft_revision,
+                        kind,
+                    },
+                );
             } else {
                 self.status.set(t("agent-quick-work-refused"));
             }
@@ -764,36 +1034,19 @@ impl AgentQuickComposer {
         let Some(tasks) = self.tasks.as_ref() else {
             return;
         };
+        let receipt_key = self.draft_key();
+        let receipt = self
+            .receipts
+            .get(&receipt_key)
+            .filter(|receipt| receipt.submitted_revision != self.draft.revision());
         let value = match self.shown_intent {
-            ComposerIntent::Message if self.permission_refused => t("agent-quick-message-refused"),
-            ComposerIntent::Message
-                if self.message_receipt_revision == Some(self.draft.revision()) =>
-            {
-                t("agent-quick-message-sent")
-            }
-            ComposerIntent::Message if self.pending_message_offer.is_some() => {
-                t("agent-quick-checking")
-            }
-            ComposerIntent::Message => t("agent-quick-ready"),
-            ComposerIntent::Queue => match tasks.queue_state() {
-                AgentQueueState::Submitting => t("agent-quick-queue-submitting"),
-                AgentQueueState::Queued { .. } => t("agent-quick-queue-accepted"),
-                AgentQueueState::Failed => t("agent-quick-work-refused"),
-                AgentQueueState::Ready => t("agent-quick-queue-help"),
-            },
-            ComposerIntent::Steer => match tasks.direction_state() {
-                AgentDirectionState::Submitting => t("agent-quick-guide-submitting"),
-                AgentDirectionState::Saved { .. } => t("agent-quick-guide-saved"),
-                AgentDirectionState::Applied { .. } => t("agent-quick-guide-applied"),
-                AgentDirectionState::NeedsRefresh(_) => t("agent-quick-work-refused"),
-                AgentDirectionState::Draft => match tasks.choice() {
-                    AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => {
-                        t_args("agent-quick-guide-task", &[("task", task.title.into())])
-                    }
-                    AgentTaskChoice::Choose(_) => t("agent-quick-guide-choose"),
-                    AgentTaskChoice::None => t("agent-quick-guide-none"),
-                },
-            },
+            ComposerIntent::Message => message_status(
+                self.permission_refused,
+                self.pending_message_offer.is_some(),
+                receipt,
+            ),
+            ComposerIntent::Queue => queue_status(tasks, receipt),
+            ComposerIntent::Steer => direction_status(tasks, receipt),
         };
         if self.status.get() != value {
             self.status.set(value);
@@ -1070,14 +1323,167 @@ impl Widget for AgentQuickComposer {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
     use taffy::{AvailableSpace, Size};
     use tilo_actions::remote::{
-        InvocationReceipt, InvokeArgument, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+        ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+        InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+        RemoteActionMessage, RemoteActionTarget,
     };
     use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
     use ui::remote_actions::RemoteCall;
     use vello::{Scene, kurbo::Affine};
+
+    struct CompletedTaskHost {
+        applied_revision: Arc<AtomicU64>,
+    }
+
+    impl ActionHost for CompletedTaskHost {
+        fn query(
+            &self,
+            _caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            let provider = query.provider.unwrap_or_default();
+            let target = query.target.expect("exact task control query");
+            let resource = target.resource.clone();
+            Pending::ready(Ok(CataloguePage {
+                revision: "task-controls-1".into(),
+                rows: vec![tilo_actions::remote::CatalogueRow {
+                    provider,
+                    app_id: "task-center".into(),
+                    parent_resource: String::new(),
+                    resource: tilo_actions::remote::CatalogueResource {
+                        id: resource,
+                        kind: "desktop.task".into(),
+                        label: "Task".into(),
+                        presentation: None,
+                    },
+                    action: Some(tilo_actions::ActionDescriptor {
+                        address: target,
+                        semantic_identity: None,
+                        resource_kind: "desktop.task".into(),
+                        resource_label: "Task".into(),
+                        action_label: "Control".into(),
+                        description: None,
+                        locus: tilo_actions::ExecutionLocus::ClientLocal,
+                        kind: tilo_actions::OperationKind::Document,
+                        contract: tilo_actions::ActionContract::default(),
+                        input: tilo_actions::InputSpec::None,
+                        params: Vec::new(),
+                        view: None,
+                    }),
+                    has_children: false,
+                    visibility: None,
+                }],
+                exhausted: true,
+                ..CataloguePage::default()
+            }))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            let action = request.target.address.action.as_str();
+            let value = match action {
+                "read-current-tasks" => serde_json::json!({
+                    "generation": 1,
+                    "complete": true,
+                    "total": 1,
+                    "tasks": [{
+                        "task_id": "task-a",
+                        "title": "Release notes",
+                        "assigned_agent": "scribe",
+                        "status": "in_progress",
+                        "run_epoch": 7,
+                        "active_agent": "scribe",
+                        "after_revision": 4,
+                        "applied_revision": self.applied_revision.load(Ordering::Relaxed),
+                        "route": "model",
+                        "cancellation_requested": false
+                    }],
+                    "pending_complete": true,
+                    "pending_total": 0,
+                    "pending": []
+                }),
+                "queue" => serde_json::json!({
+                    "result": {"queued": {"task_id": "queued-a"}},
+                    "delivery": "queued"
+                }),
+                "direct" => serde_json::json!({
+                    "result": {"direction_added": {"task_id": "task-a", "revision": 5}}
+                }),
+                "read-task" => serde_json::json!({
+                    "generation": 2,
+                    "task_id": "task-a",
+                    "title": "Release notes",
+                    "route": "model",
+                    "cancellation_requested": false,
+                    "status": "in_progress",
+                    "assigned_agent": "scribe",
+                    "active_agent": "scribe",
+                    "run_epoch": 7,
+                    "after_revision": 5,
+                    "applied_revision": self.applied_revision.load(Ordering::Relaxed)
+                }),
+                _ => {
+                    return Pending::ready(Err(ActionHostError::InvalidRequest {
+                        reason: "unexpected task action".into(),
+                    }));
+                }
+            };
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+            }))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
+            Err(ActionHostError::NotCancellable {
+                reason: "fixture actions settle immediately".into(),
+            })
+        }
+    }
+
+    fn task_composer(applied_revision: u64) -> AgentQuickComposer {
+        task_composer_with_applied(applied_revision).0
+    }
+
+    fn task_composer_with_applied(applied_revision: u64) -> (AgentQuickComposer, Arc<AtomicU64>) {
+        let applied_revision = Arc::new(AtomicU64::new(applied_revision));
+        let actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::new(CompletedTaskHost {
+                applied_revision: applied_revision.clone(),
+            }),
+            Caller::local_app("so.tilo.chat").in_room("room-a"),
+        );
+        let mut tasks = AgentTaskFrontiers::with_actions(actions.clone());
+        tasks.observe("room-a", "scribe");
+        (
+            AgentQuickComposer {
+                room: "room-a".into(),
+                agent: "scribe".into(),
+                actions: Some(actions),
+                tasks: Some(tasks),
+                ..AgentQuickComposer::default()
+            },
+            applied_revision,
+        )
+    }
 
     fn layout_panel(
         composer: &mut AgentQuickComposer,
@@ -1213,12 +1619,13 @@ mod tests {
             ..AgentQuickComposer::default()
         };
         composer.set_draft("Review the release notes");
+        let submitted_revision = composer.draft.revision();
         composer.pending_message = Some(PendingMessage {
             state: AgentMessageSubmission::Invoke { invocation, call },
             deadline: std::time::Instant::now(),
             pages_remaining: 0,
             text: "Review the release notes".into(),
-            draft_revision: composer.draft.revision(),
+            draft_revision: submitted_revision,
             outcome_uncertain: false,
         });
         composer.save_draft();
@@ -1263,12 +1670,13 @@ mod tests {
             ..AgentQuickComposer::default()
         };
         composer.set_draft("Review the release notes");
+        let submitted_revision = composer.draft.revision();
         composer.pending_message = Some(PendingMessage {
             state: AgentMessageSubmission::Invoke { invocation, call },
             deadline: std::time::Instant::now(),
             pages_remaining: 0,
             text: "Review the release notes".into(),
-            draft_revision: composer.draft.revision(),
+            draft_revision: submitted_revision,
             outcome_uncertain: false,
         });
         composer.save_draft();
@@ -1288,6 +1696,15 @@ mod tests {
         composer.tick();
 
         assert!(composer.retained_sessions.is_empty());
+        assert_eq!(
+            composer
+                .receipts
+                .get(&("room-a".into(), "scribe".into(), ComposerIntent::Message,)),
+            Some(&ComposerReceipt {
+                submitted_revision,
+                kind: ComposerReceiptKind::MessageAccepted,
+            })
+        );
         let saved = composer
             .drafts
             .values
@@ -1306,6 +1723,186 @@ mod tests {
             )),
             "background custody never emits a duplicate invocation: {follow_up:?}"
         );
+    }
+
+    #[test]
+    fn hidden_queue_receipt_survives_return_and_does_not_claim_execution() {
+        let mut composer = task_composer(4);
+        composer.shown_intent = ComposerIntent::Queue;
+        composer.set_draft("Prepare the launch checklist");
+        let submitted_revision = composer.draft.revision();
+        let actions = composer.actions.clone().expect("task actions");
+        composer.submit();
+        assert!(composer.pending_work.is_some());
+        composer.save_draft();
+        composer.park_pending_session();
+        composer.poll_retained_sessions();
+
+        let key = ("room-a".into(), "scribe".into(), ComposerIntent::Queue);
+        assert!(composer.retained_sessions.is_empty());
+        assert_eq!(
+            composer.receipts.get(&key),
+            Some(&ComposerReceipt {
+                submitted_revision,
+                kind: ComposerReceiptKind::Queued {
+                    task_id: "queued-a".into()
+                }
+            })
+        );
+        assert_eq!(
+            composer
+                .drafts
+                .values
+                .get(&key)
+                .map(|draft| draft.text.as_str()),
+            Some("")
+        );
+
+        composer.shown_intent = ComposerIntent::Queue;
+        composer.tasks = Some(AgentTaskFrontiers::with_actions(actions));
+        composer.load_draft_and_rebind_pending_revision();
+        composer.refresh_status();
+        assert_eq!(
+            composer.status.get(),
+            "Task Center queued an earlier submission as task queued-a"
+        );
+    }
+
+    #[test]
+    fn hidden_saved_direction_receipt_keeps_a_later_edit_and_original_run_binding() {
+        let mut composer = task_composer(4);
+        composer.shown_intent = ComposerIntent::Steer;
+        composer.set_draft("Use the reviewed wording");
+        let submitted_revision = composer.draft.revision();
+        let actions = composer.actions.clone().expect("task actions");
+        composer.submit();
+        assert!(composer.pending_work.is_some());
+        composer
+            .pending_work
+            .as_mut()
+            .expect("saved direction follow window")
+            .follow_until = std::time::Instant::now();
+        composer.save_draft();
+        composer.park_pending_session();
+        let key = ("room-a".into(), "scribe".into(), ComposerIntent::Steer);
+        composer.drafts.values.insert(
+            key.clone(),
+            DraftEntry {
+                text: "Keep the legal note too".into(),
+                revision: submitted_revision.saturating_add(100),
+            },
+        );
+
+        composer.poll_retained_sessions();
+
+        assert!(composer.retained_sessions.is_empty());
+        assert_eq!(
+            composer.receipts.get(&key),
+            Some(&ComposerReceipt {
+                submitted_revision,
+                kind: ComposerReceiptKind::DirectionSaved {
+                    task_id: "task-a".into(),
+                    run_epoch: 7,
+                    revision: 5,
+                }
+            })
+        );
+        assert_eq!(
+            composer
+                .drafts
+                .values
+                .get(&key)
+                .map(|draft| draft.text.as_str()),
+            Some("Keep the legal note too")
+        );
+
+        composer.shown_intent = ComposerIntent::Steer;
+        composer.tasks = Some(AgentTaskFrontiers::with_actions(actions));
+        composer.load_draft_and_rebind_pending_revision();
+        composer.refresh_status();
+        assert_eq!(
+            composer.status.get(),
+            "Earlier direction saved for task task-a, run 7, revision 5"
+        );
+    }
+
+    #[test]
+    fn hidden_applied_direction_receipt_is_not_downgraded_to_saved() {
+        let (mut composer, applied_revision) = task_composer_with_applied(4);
+        composer.shown_intent = ComposerIntent::Steer;
+        composer.set_draft("Use the reviewed wording");
+        let actions = composer.actions.clone().expect("task actions");
+        composer.submit();
+        composer.save_draft();
+        composer.park_pending_session();
+        composer.poll_retained_sessions();
+
+        let key = ("room-a".into(), "scribe".into(), ComposerIntent::Steer);
+        assert_eq!(composer.retained_sessions.len(), 1);
+        assert!(matches!(
+            composer.receipts.get(&key).map(|receipt| &receipt.kind),
+            Some(ComposerReceiptKind::DirectionSaved { .. })
+        ));
+        applied_revision.store(5, Ordering::Relaxed);
+        composer
+            .retained_sessions
+            .values_mut()
+            .next()
+            .expect("saved direction remains bounded for owner confirmation")
+            .tasks
+            .refresh_direction_status()
+            .expect("re-read the exact saved direction");
+        composer.poll_retained_sessions();
+
+        assert!(composer.retained_sessions.is_empty());
+        assert!(matches!(
+            composer.receipts.get(&key).map(|receipt| &receipt.kind),
+            Some(ComposerReceiptKind::DirectionApplied {
+                task_id,
+                run_epoch: 7,
+                revision: 5,
+            }) if task_id == "task-a"
+        ));
+
+        composer.shown_intent = ComposerIntent::Steer;
+        composer.tasks = Some(AgentTaskFrontiers::with_actions(actions));
+        composer.load_draft_and_rebind_pending_revision();
+        composer.refresh_status();
+
+        assert_eq!(
+            composer.status.get(),
+            "Earlier direction applied to task task-a, run 7, revision 5"
+        );
+    }
+
+    #[test]
+    fn historical_direction_receipt_never_rebinds_to_a_newer_frontier() {
+        let mut composer = task_composer(4);
+        composer.shown_intent = ComposerIntent::Steer;
+        composer.set_draft("New draft for the replacement task");
+        let current_revision = composer.draft.revision();
+        composer.receipts.insert(
+            composer.draft_key(),
+            ComposerReceipt {
+                submitted_revision: current_revision.saturating_sub(1),
+                kind: ComposerReceiptKind::DirectionSaved {
+                    task_id: "retired-task".into(),
+                    run_epoch: 2,
+                    revision: 9,
+                },
+            },
+        );
+
+        composer.refresh_status();
+
+        assert_eq!(
+            composer.status.get(),
+            "Earlier direction saved for task retired-task, run 2, revision 9"
+        );
+        assert!(matches!(
+            composer.tasks.as_ref().map(AgentTaskFrontiers::choice),
+            Some(AgentTaskChoice::One(task)) if task.task_id == "task-a" && task.run_epoch == 7
+        ));
     }
 
     #[test]

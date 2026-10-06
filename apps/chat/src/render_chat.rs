@@ -218,6 +218,9 @@ fn agent_task_run_state(
     let receipt = match direction {
         AgentDirectionState::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-saved")),
         AgentDirectionState::Applied { .. } => Some(crate::i18n::t("chat-agent-direction-applied")),
+        AgentDirectionState::Uncertain { .. } => {
+            Some(crate::i18n::t("chat-agent-direction-outcome-unknown"))
+        }
         AgentDirectionState::Draft
         | AgentDirectionState::Submitting
         | AgentDirectionState::NeedsRefresh(_) => None,
