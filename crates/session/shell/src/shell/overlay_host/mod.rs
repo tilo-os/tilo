@@ -9434,15 +9434,25 @@ impl ShellOverlayHost {
 
     /// Keyboard navigation for the notification centre, available without
     /// pointer hover. Returns whether the centre consumed the key.
+    #[cfg(test)]
     fn handle_qs_notification_keyboard(&mut self, logical_key: &Key) -> bool {
+        self.handle_qs_notification_keyboard_with_shift(logical_key, false)
+    }
+
+    fn handle_qs_notification_keyboard_with_shift(
+        &mut self,
+        logical_key: &Key,
+        backwards: bool,
+    ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         let layout = self.qs_notification_layout();
-        let outcome = self.notification_center.key(
+        let outcome = self.notification_center.key_with_shift(
             &ChromeNotifications::new(&chrome).with_agents(&self.room_activity),
             &layout,
             logical_key,
+            backwards,
         );
         self.apply_notification_center_outcome(outcome)
     }
@@ -11342,11 +11352,23 @@ impl ShellOverlayHost {
         }
     }
 
+    fn notification_history_covers_pointer(&self, point: Point) -> bool {
+        self.chrome.as_ref().is_some_and(|chrome| {
+            let st = chrome.borrow();
+            st.overlays.quick_settings
+                && matches!(
+                    st.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Notifications
+                )
+                && self.quick_settings_rect().contains(point)
+        })
+    }
+
     /// Absorbs every non-`Pressed` pointer event over an open overlay so
     /// a hover/drag can't continue underneath it (`Pressed` is excluded
     /// so the per-overlay branches later still get clicks), and a
-    /// left-click on a toast dismisses it before the permission prompt
-    /// or any other overlay sees the press.
+    /// left-click on an uncovered toast dismisses it. Foreground notification
+    /// history receives its own presses rather than dismissing a covered toast.
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
@@ -11378,6 +11400,7 @@ impl ShellOverlayHost {
             },
         ) = (self.chrome.as_ref(), event)
             && let Some(p) = self.last_cursor
+            && !self.notification_history_covers_pointer(p)
             && self
                 .notification_stack
                 .click_at(&ChromeNotifications::new(chrome), p)
@@ -12963,6 +12986,24 @@ impl ShellOverlayHost {
 
     /// The Escape dismissal ladder. Priority matches z-order: palette >
     /// overview > ws settings > quick settings.
+    fn finish_notification_reading(
+        &mut self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+    ) -> bool {
+        if st.overlays.quick_settings
+            && matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Notifications
+            )
+            && self.notification_center.close_reader()
+        {
+            st.bump();
+            true
+        } else {
+            false
+        }
+    }
+
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
         if self.cancel_tab_drags() {
             *handled = true;
@@ -13029,6 +13070,10 @@ impl ShellOverlayHost {
         if st.overlays.collaborators {
             st.overlays.collaborators = false;
             st.bump();
+            *handled = true;
+            return true;
+        }
+        if self.finish_notification_reading(&mut st) {
             *handled = true;
             return true;
         }
@@ -14881,7 +14926,7 @@ impl ShellOverlayHost {
             history_level,
             Some(crate::shell::quick_settings::QsLevel::Notifications)
         ) {
-            let consumed = self.handle_qs_notification_keyboard(logical_key);
+            let consumed = self.handle_qs_notification_keyboard_with_shift(logical_key, backwards);
             *handled = consumed;
             return consumed;
         }
@@ -17400,6 +17445,36 @@ impl Widget for ShellOverlayHost {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        let st = self.chrome.as_ref()?.borrow();
+        if st.overlays.quick_settings
+            && matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Notifications
+            )
+        {
+            self.notification_center.reading_scroll()
+        } else {
+            None
+        }
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        if self.primary_vertical_scroll().is_none() {
+            return ui::widget::PrimaryScrollResult::Unsupported;
+        }
+        let result = self.notification_center.apply_reading_scroll(action);
+        if matches!(result, ui::widget::PrimaryScrollResult::Changed(_))
+            && let Some(chrome) = &self.chrome
+        {
+            chrome.borrow_mut().bump();
+        }
+        result
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "event routing stays linear so modal gates retain their security-sensitive order"
@@ -17807,6 +17882,37 @@ impl Widget for ShellOverlayHost {
             },
         ) {
             return;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let reading = {
+                let st = chrome.borrow();
+                st.overlays.quick_settings
+                    && matches!(
+                        st.quick_settings.current_level(),
+                        crate::shell::quick_settings::QsLevel::Notifications
+                    )
+                    && self.notification_center.is_reading()
+            };
+            if reading
+                && self.notification_center.reader_event(
+                    event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state: state.reborrow(),
+                        path: ctx.path,
+                        handled: &mut *ctx.handled,
+                        focus_target: &mut *ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
+                )
+            {
+                chrome.borrow_mut().bump();
+            }
+            if *ctx.handled {
+                return;
+            }
         }
         if self.route_qs_slider_drag(event, ctx.handled) {
             return;
