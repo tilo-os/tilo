@@ -1135,7 +1135,7 @@ impl AudioModel {
     fn speakers_card(&self) -> crate::widgets::El {
         let open_label = t("sound-speakers-open");
         let open = self.cx.bind_invocation(
-            Button::new("sound.speakers", &open_label).content_sized(),
+            Button::new("sound.speakers", &open_label),
             crate::effects::NavigationEffect::OpenPane {
                 pane: crate::categories::Category::Speakers.slug().to_owned(),
             },
@@ -1231,45 +1231,36 @@ impl AudioModel {
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
             output_rows.push(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                "settings.audio.advanced",
-                                &if self.tests_shown {
-                                    t("sound-test-hide")
-                                } else {
-                                    t("sound-test-show")
-                                },
-                            )
-                            .content_sized(),
-                            AudioEffect::ShowSoundTests {
-                                show: !self.tests_shown,
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            "settings.audio.advanced",
+                            &if self.tests_shown {
+                                t("sound-test-hide")
+                            } else {
+                                t("sound-test-show")
                             },
                         ),
-                    ))
+                        AudioEffect::ShowSoundTests {
+                            show: !self.tests_shown,
+                        },
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
             if self.tests_shown {
                 output_rows.push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            self.cx.bind_invocation(
-                                Button::new("settings.audio.test.left", &t("sound-test-left"))
-                                    .content_sized(),
-                                AudioEffect::TestSpeaker {
-                                    channel: "left".into(),
-                                },
-                            ),
-                        ))
-                        .push(Box::new(
-                            self.cx.bind_invocation(
-                                Button::new("settings.audio.test.right", &t("sound-test-right"))
-                                    .content_sized(),
-                                AudioEffect::TestSpeaker {
-                                    channel: "right".into(),
-                                },
-                            ),
-                        ))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("settings.audio.test.left", &t("sound-test-left")),
+                            AudioEffect::TestSpeaker {
+                                channel: "left".into(),
+                            },
+                        )))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("settings.audio.test.right", &t("sound-test-right")),
+                            AudioEffect::TestSpeaker {
+                                channel: "right".into(),
+                            },
+                        )))
                         .push(Box::new(Spacer::new())),
                 ));
                 output_rows.push(caption(&t("sound-test-caption")));
@@ -1333,22 +1324,21 @@ impl AudioModel {
             };
             input_rows.push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(&activity).with_size(12.0)))
-                    .push(Box::new(Spacer::new()))
                     .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                "settings.audio.mic_test",
-                                &if running {
-                                    t("sound-mic-stop")
-                                } else {
-                                    t("sound-mic-test")
-                                },
-                            )
-                            .content_sized(),
-                            AudioEffect::ToggleMicrophoneTest,
+                        Text::new(&activity).with_role(ui::TextRole::Caption),
+                    ))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            "settings.audio.mic_test",
+                            &if running {
+                                t("sound-mic-stop")
+                            } else {
+                                t("sound-mic-test")
+                            },
                         ),
-                    )),
+                        AudioEffect::ToggleMicrophoneTest,
+                    ))),
             ));
             input_rows.push(caption(&t("sound-mic-caption")));
         }

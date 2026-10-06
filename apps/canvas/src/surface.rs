@@ -169,12 +169,6 @@ pub struct CanvasSurface {
     /// Focus came from a press on the canvas, not the keyboard: the
     /// pointer already says where the person is, so no ring is drawn.
     pressed_into_focus: bool,
-    /// Whether the window was narrower than the compact breakpoint the last
-    /// time the canvas looked; `None` before it first did.
-    was_narrow: Option<bool>,
-    /// Whether the sidebar was shown, and where the canvas ended, the last
-    /// time the canvas looked at the window's width.
-    width_seen: Option<(bool, f64)>,
     space: bool,
     modifiers: ModifiersState,
     /// What the pen reported with the pointer's newest move or press; none
@@ -199,7 +193,6 @@ impl CanvasSurface {
             // The artboard sits in the middle of the room it is given.
             viewport: ui::widget::ViewportState::new()
                 .with_zoom_bounds(0.05, 64.0)
-                .with_padding(24.0)
                 .with_alignment(
                     ui::widget::SmallContentAlign::Center,
                     ui::widget::SmallContentAlign::Center,
@@ -227,8 +220,6 @@ impl CanvasSurface {
             staged_view: None,
             focused: false,
             pressed_into_focus: false,
-            was_narrow: None,
-            width_seen: None,
             space: false,
             modifiers: ModifiersState::empty(),
             stylus: None,
@@ -1526,28 +1517,13 @@ impl CanvasSurface {
         }
     }
 
-    /// Put the sidebar away when the window becomes narrower than the
-    /// compact breakpoint, and bring it back when it widens again. Only a
-    /// crossing changes it, so a person who opens or closes it in between
-    /// keeps their choice.
-    fn follow_width(&mut self) {
+    /// Tell the strip over the canvas how much room it has. The window
+    /// shell docks the inspector, or makes it a drawer, as the window's
+    /// width asks.
+    fn follow_width(&self) {
         if self.rect.width() <= 1.0 {
             return;
         }
-        let shown = self.tools.sidebar.with(|shown| *shown);
-        // The sidebar just shown or put away, with the canvas not laid out
-        // again yet: its width says nothing about the window until it is.
-        let seen = self.width_seen.replace((shown, self.rect.x1));
-        if seen.is_some_and(|(was, x1)| was != shown && (x1 - self.rect.x1).abs() < 0.5) {
-            self.width_seen = seen;
-            return;
-        }
-        let sidebar = if shown {
-            f64::from(crate::SIDEBAR)
-        } else {
-            0.0
-        };
-        let window = self.rect.x1 + sidebar;
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -1557,13 +1533,6 @@ impl CanvasSurface {
             (self.rect.width().max(0.0) as u32) / crate::tools::ROOM_STEP * crate::tools::ROOM_STEP;
         if self.tools.room.with(|shown| *shown != room) {
             self.tools.room.writer().set(room);
-        }
-        let narrow = window < f64::from(self.metrics.compact_breakpoint);
-        if self.was_narrow != Some(narrow) {
-            if self.was_narrow.is_some() || narrow {
-                self.tools.sidebar.writer().set(!narrow);
-            }
-            self.was_narrow = Some(narrow);
         }
     }
 
@@ -2412,7 +2381,7 @@ impl CanvasSurface {
         self.overlay_selection(scene, to_screen, theme);
         self.overlay_drag(scene, to_screen, theme);
         self.overlay_paths(scene, to_screen, theme);
-        self.overlay_footprint(scene, to_screen);
+        self.overlay_footprint(scene, to_screen, theme);
         if let Some(session) = &self.text {
             self.draw_caret(scene, to_screen, theme, text, session);
         }
@@ -2478,7 +2447,7 @@ impl CanvasSurface {
             scene.fill(
                 Fill::NonZero,
                 at,
-                theme.bg_app.multiply_alpha(0.6),
+                theme.tokens.colors.surfaces.content.multiply_alpha(0.6),
                 None,
                 &whole,
             );
@@ -2488,7 +2457,13 @@ impl CanvasSurface {
         let mut edge = whole;
         edge.apply_affine(at);
         let dashes = Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]);
-        scene.stroke(&dashes, Affine::IDENTITY, theme.accent_primary, None, &edge);
+        scene.stroke(
+            &dashes,
+            Affine::IDENTITY,
+            theme.tokens.colors.intent.you,
+            None,
+            &edge,
+        );
     }
 
     /// The selected area's outline, and the area being selected.
@@ -2514,14 +2489,15 @@ impl CanvasSurface {
             let mut outline = crate::render::silhouette(mark);
             outline.apply_affine(to_screen * mark.affine());
             let marked = hovered == Some(mark.id.as_str()) || self.selection.contains(&mark.id);
-            crate::render::eraser_outline(scene, &outline, marked.then_some(theme.accent_primary));
+            ui::widget::selection_handles::ToolFeedback::Erased { marked }
+                .draw(scene, &outline, theme);
         }
     }
 
     /// The brush's or eraser's footprint round the pointer: a ring as wide
     /// as the mark it lays at this zoom, dark and light so it reads on any
     /// paint, as a painter's hand expects to see where it will land.
-    fn overlay_footprint(&self, scene: &mut Scene, to_screen: Affine) {
+    fn overlay_footprint(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
         if !matches!(self.current_tool(), Tool::Brush | Tool::Eraser)
             || self.space
             || matches!(self.drag, Some(Drag::Pan))
@@ -2539,12 +2515,12 @@ impl CanvasSurface {
         }
         let mut path = ui::vello::kurbo::Shape::to_path(&ring, 0.1);
         path.apply_affine(to_screen);
-        crate::render::footprint_ring(scene, &path);
+        ui::widget::selection_handles::ToolFeedback::Footprint.draw(scene, &path, theme);
     }
 
     /// What is hovered and picked: outlines, the frame and its guides.
     fn overlay_selection(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let zoom = self.zoom();
         let hair = Stroke::new(1.0);
         let line = Stroke::new(1.5);
@@ -2651,7 +2627,7 @@ impl CanvasSurface {
 
     /// What a drag is making: a marquee, a shape, a stroke on a plain layer.
     fn overlay_drag(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let hair = Stroke::new(1.0);
         match &self.drag {
             Some(Drag::Marquee { start, now, .. }) => {
@@ -2659,7 +2635,7 @@ impl CanvasSurface {
                 scene.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
-                    accent.multiply_alpha(0.08),
+                    theme.tokens.colors.intent.selection_tint,
                     None,
                     &area,
                 );
@@ -2729,7 +2705,7 @@ impl CanvasSurface {
 
     /// The path the pen is laying down, or the points of one being edited.
     fn overlay_paths(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let line = Stroke::new(1.5);
         let screen = |mut path: BezPath, affine: Affine| {
             path.apply_affine(to_screen * affine);
@@ -2842,7 +2818,7 @@ impl CanvasSurface {
         let leading = size * line_height.unwrap_or(1.2);
         #[allow(clippy::cast_precision_loss, reason = "a text has at most 2000 lines")]
         let top = y - size * 0.8 + leading * row as f64;
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let at = to_screen * affine;
         let caret_line = Line::new(
             at * Point::new(left + prefix, top),
@@ -2959,8 +2935,8 @@ fn draw_anchor(
     active: bool,
     handles: bool,
 ) {
-    let accent = theme.accent_primary;
-    let surface = theme.tokens.colors.surfaces.base;
+    let accent = theme.tokens.colors.intent.you;
+    let surface = theme.tokens.colors.surfaces.raised;
     let line = Stroke::new(1.0);
     let at = to_screen * anchor.at;
     if handles {
@@ -3072,13 +3048,19 @@ impl Widget for CanvasSurface {
             transform,
             &self.rect,
         );
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
         let to_screen = transform * self.viewport.content_to_screen();
         let board = self.art.bounds();
-        let zoom = self.zoom();
-        // The sheet lies on the table: the theme's own lift under it.
+        // The sheet is an object lifted off the content ground: the one
+        // soft shadow a floating thing casts, and an edge measured against
+        // the ground it sits on.
         let sheet = self.viewport.content_to_screen().transform_rect_bbox(board);
-        ui::surface::shadow(scene, transform, sheet, 0.0, &theme.tokens.elevation.e2);
+        ui::surface::shadow(
+            scene,
+            transform,
+            sheet,
+            0.0,
+            &theme.tokens.elevation.floating,
+        );
         let options = Options {
             reference: self
                 .art
@@ -3112,22 +3094,10 @@ impl Widget for CanvasSurface {
                 .borrow_mut()
                 .draw(&art, scene, to_screen, text_renderer, &options);
         }
-        scene.stroke(
-            &Stroke::new(1.0 / zoom),
-            to_screen,
-            theme.border_standard,
-            None,
-            &board,
-        );
+        ui::surface::ContentFrame::Sheet.draw(scene, transform, sheet, theme);
         self.paint_overlay(scene, to_screen, theme, text_renderer);
         if self.focused && !self.pressed_into_focus {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &self.rect.inset(-1.0),
-            );
+            ui::widget::paint_focus_ring(scene, transform, self.rect.inset(-2.0), 0.0, theme);
         }
         scene.pop_layer();
     }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceTree;
+use ui::TextRole;
 use ui::widget::Container;
 
 fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
@@ -1138,10 +1139,10 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
             "Open terminal:Super+Enter",
-            "Global search:Super+K",
+            "Search everywhere:Super+Space",
             "Emoji:Super+.",
             "Overview:Super+Tab",
-            "Lock:Super+L",
+            "Lock screen:Super+L",
             "Quick Settings:Super+Q",
             "Workspace wheel:Super+S",
             "Display layout:Super+P",
@@ -1165,8 +1166,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             )
             .unwrap();
         let rows = shortcut_reference_rows(&shortcuts);
-        assert!(rows.contains(&("Global search".into(), "Alt+G".into())));
-        assert!(!rows.contains(&("Global search".into(), "Super+K".into())));
+        assert!(rows.contains(&("Search everywhere".into(), "Alt+G".into())));
+        assert!(!rows.contains(&("Search everywhere".into(), "Super+Space".into())));
     }
 
     fn shortcut_reference_does_not_repeat_the_open_guide_action() {
@@ -1214,7 +1215,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     fn compact_shortcut_recovery_actions_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let mut renderer = TextRenderer::new();
-        let chord_size = Theme::dark().tokens.typography.scale.xs;
+        let chord_size = Theme::dark().tokens.typography.size(TextRole::Caption);
         // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
         // compact guide uses three semantic columns with quiet key pills.
         let columns = shortcut_reference_columns(688.0);
@@ -1291,7 +1292,7 @@ fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
     ui::keycaps::set_active(ui::Keycaps::US);
     let english = guide_description(&host);
 
-    assert!(german_rows.contains(&("Global search".into(), "Strg+Umschalt+G".into())));
+    assert!(german_rows.contains(&("Search everywhere".into(), "Strg+Umschalt+G".into())));
     assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
     assert!(german.contains("Screenshot: Druck"), "{german}");
     assert!(german.contains("Strg+Umschalt+G"), "{german}");

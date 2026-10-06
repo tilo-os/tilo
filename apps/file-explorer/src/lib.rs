@@ -28,7 +28,6 @@
 
 pub mod actions;
 pub mod archive;
-pub mod breadcrumb_bar;
 pub mod breadcrumbs;
 pub mod command;
 pub mod config;
@@ -60,9 +59,7 @@ pub mod scenarios;
 pub mod search_provider;
 pub mod sharing;
 pub mod shortcut_menu;
-pub mod sidebar;
 pub mod templates;
-pub mod text_layout;
 pub mod toolbar;
 pub mod views;
 

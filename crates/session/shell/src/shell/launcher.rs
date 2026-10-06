@@ -13,6 +13,7 @@
 //! through [`drain_events`], drained once per frame.
 
 use crate::shell::state::WorkspaceAuthority as _;
+pub(crate) mod action_authority;
 use std::collections::VecDeque;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Command;
@@ -2272,7 +2273,7 @@ fn execute_workspace_agent(
         identity_path.as_deref(),
         agent_id,
     );
-    if let Err(detail) = spawn_detached(app.clone(), command) {
+    if let Err(detail) = spawn_detached(app.clone(), command, None) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
     }
     Ok(app)
@@ -2661,9 +2662,10 @@ fn execute_installed_inner(
             app.package_id
         );
     }
+    let authority_lease = action_authority::attach_optional(&app, room, &mut command);
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "governance projection staged");
     remember_launch(&app);
-    spawn_detached(app.clone(), command)
+    spawn_detached(app.clone(), command, authority_lease)
         .map_err(|detail| LaunchError::AgentLaunchWorkerUnavailable { detail })?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch worker queued");
     Ok(app)
@@ -2837,8 +2839,20 @@ pub fn launch_uri_in_workspace(
 
 /// Run `command` on a worker thread and report the outcome through
 /// [`LaunchSession`]; the thread lives as long as the app does.
-fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), String> {
-    spawn_launch(app.package_id, app.display_name, command)
+fn spawn_detached(
+    app: InstalledApp,
+    command: LaunchCommand,
+    authority: Option<action_authority::Lease>,
+) -> Result<(), String> {
+    #[cfg(any(test, target_os = "linux"))]
+    {
+        spawn_launch_with_authority(app.package_id, app.display_name, command, authority)
+    }
+    #[cfg(not(any(test, target_os = "linux")))]
+    {
+        drop(authority);
+        spawn_launch(app.package_id, app.display_name, command)
+    }
 }
 
 /// Put a [`LaunchCommand`]'s environment on the `tilo-launcher` process.
@@ -2873,6 +2887,7 @@ fn apply_launch_env_with(
 #[cfg(any(test, target_os = "linux"))]
 #[derive(Debug)]
 struct HeldLaunch {
+    authority: Option<action_authority::Lease>,
     package_id: String,
     display_name: String,
     command: LaunchCommand,
@@ -2903,7 +2918,13 @@ pub fn release_held_launches() {
     let session = LaunchSession::current();
     release_from(&session.gate, |held| {
         // A failure to start is reported through the session by `start_launch`.
-        let _ = start_launch(held.package_id, held.display_name, held.command, &session);
+        let _ = start_launch(
+            held.package_id,
+            held.display_name,
+            held.command,
+            &session,
+            held.authority,
+        );
     });
 }
 
@@ -3000,18 +3021,37 @@ fn admit_launch(
 pub fn spawn_launch(
     package_id: String,
     display_name: String,
+    command: LaunchCommand,
+) -> Result<(), String> {
+    spawn_launch_with_authority(package_id, display_name, command, None)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn spawn_launch_with_authority(
+    package_id: String,
+    display_name: String,
     mut command: LaunchCommand,
+    authority: Option<action_authority::Lease>,
 ) -> Result<(), String> {
     super::launch_readiness::attach(&mut command);
     let session = LaunchSession::current();
     admit_launch(
         &session.gate,
         HeldLaunch {
+            authority,
             package_id,
             display_name,
             command,
         },
-        |held| start_launch(held.package_id, held.display_name, held.command, &session),
+        |held| {
+            start_launch(
+                held.package_id,
+                held.display_name,
+                held.command,
+                &session,
+                held.authority,
+            )
+        },
         |event| session.push(event),
     )
 }
@@ -3034,6 +3074,7 @@ fn start_launch(
     display_name: String,
     command: LaunchCommand,
     events: &LaunchSession,
+    authority: Option<action_authority::Lease>,
 ) -> Result<(), String> {
     #[cfg(all(test, not(target_os = "linux")))]
     if !TEST_EXECUTION_PROGRAM.with(|slot| slot.borrow().as_ref() == Some(&command.program)) {
@@ -3059,6 +3100,7 @@ fn start_launch(
     let worker_events = events.clone();
     let startup_token = super::launch_readiness::command_token(&command);
     let spawn_result = builder.spawn(move || {
+        let _authority_lease = authority;
         let events = worker_events;
         events.clone().adopt();
         let mut cmd = Command::new(&command.program);
@@ -3989,6 +4031,7 @@ mod tests {
 
     fn held(package_id: &str, args: &[&str]) -> HeldLaunch {
         HeldLaunch {
+            authority: None,
             package_id: package_id.into(),
             display_name: package_id.into(),
             command: LaunchCommand {

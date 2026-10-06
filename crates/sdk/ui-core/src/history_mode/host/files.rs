@@ -36,7 +36,9 @@ impl HistoryHost {
         self.observed_file_binding = binding;
         self.file_target_resolved = false;
         self.timeline.set_entries(vec![]);
-        self.unavailable = Text::new("history-files-select-file");
+        self.unavailable =
+            crate::widget::EmptyState::new(I18nManager::lookup_plain("history-files-select-file"))
+                .with_icon(crate::icons::Icon::History);
         if self.open
             && let Some(target) = target
         {
@@ -75,7 +77,10 @@ impl HistoryHost {
                     }
                 }
             } else if self.files.is_none() {
-                self.unavailable = Text::new("history-files-select-file");
+                self.unavailable = crate::widget::EmptyState::new(I18nManager::lookup_plain(
+                    "history-files-select-file",
+                ))
+                .with_icon(crate::icons::Icon::History);
             }
         }
         for old in &mut self.retired_files {

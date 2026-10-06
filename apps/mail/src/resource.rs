@@ -180,6 +180,23 @@ impl Resource for Mail {
         children
     }
 
+    /// Every folder is a part of the mailbox search can be narrowed to.
+    fn search_scopes(state: &MailboxState) -> Vec<ui::search::ScopeDecl> {
+        let mut scopes = crate::model::Folder::ALL
+            .into_iter()
+            .map(|folder| {
+                ui::search::ScopeDecl::new(
+                    format!("mail.folder:{}", folder.as_key()),
+                    folder.title(),
+                )
+            })
+            .collect::<Vec<_>>();
+        scopes.extend(state.custom_folders.iter().map(|(id, name)| {
+            ui::search::ScopeDecl::new(format!("mail.folder:{id}"), name.clone())
+        }));
+        scopes
+    }
+
     fn search(state: &MailboxState) -> Vec<SearchEntry> {
         crate::search::folder_entries(&state.custom_folders)
     }
@@ -634,9 +651,10 @@ mod tests {
                 );
                 let frame = app.harness().inspection_json().unwrap();
                 match *scenario {
-                    "firstrun" => assert!(frame.contains("Welcome to Mail"), "{frame}"),
+                    "firstrun" => assert!(frame.contains("No email account yet"), "{frame}"),
                     "setup" | "setup_narrow" => {
-                        assert!(frame.contains("you@example.test"), "{scenario}: {frame}");
+                        let email = crate::sample::sample_account_store().active_config().email;
+                        assert!(frame.contains(&email), "{scenario}: {frame}");
                     }
                     "error" => assert!(frame.contains("Couldn’t connect to IMAP"), "{frame}"),
                     _ => {}
@@ -771,7 +789,9 @@ mod tests {
                 .state()
                 .messages
                 .iter()
-                .find(|message| message.folder == Folder::Inbox && !message.read)
+                .find(|message| {
+                    message.folder == Folder::Inbox && !message.read && !message.starred
+                })
                 .cloned()
                 .expect("an unread inbox message");
             let fetched = IngestBaseline {
@@ -779,7 +799,7 @@ mod tests {
                 read: Some(false),
                 starred: Some(false),
                 folder: Some("inbox".into()),
-                account: Some("you@example.test".into()),
+                account: Some(crate::sample::sample_account_store().active_config().email),
                 locator: Some("launch@example.test".into()),
             };
             app.invoke(
@@ -845,8 +865,10 @@ mod tests {
             let latest = app.versions().last().map(|version| version.hash).unwrap();
             let past = app.past_version(&[latest]).unwrap();
             let shown = past.texts().join("\n");
-            assert!(shown.contains("Welcome to Mail"), "{shown}");
-            assert!(!shown.contains("you@example.test"), "{shown}");
+            assert!(shown.contains("No email account yet"), "{shown}");
+            for account in crate::sample::sample_account_store().accounts {
+                assert!(!shown.contains(&account.config.email), "{shown}");
+            }
         }
     }
 
@@ -906,6 +928,35 @@ mod tests {
                 .unwrap_or_else(|| panic!("the composer shows {target}: {inspection}"));
             let edge = |name: &str| bounds[name].as_f64().unwrap();
             Rect::new(edge("x0"), edge("y0"), edge("x1"), edge("y1"))
+        }
+
+        /// The path of the widget that publishes the composer's control
+        /// `target`, to address it the way assistive technology does.
+        fn owner(app: &mut TestApp<MailShell>, target: &str) -> String {
+            fn holds(node: &serde_json::Value, target: &str) -> bool {
+                match node {
+                    serde_json::Value::Object(fields) => {
+                        fields.get("action_target").and_then(|t| t.as_str()) == Some(target)
+                            || fields.values().any(|value| holds(value, target))
+                    }
+                    serde_json::Value::Array(items) => items.iter().any(|v| holds(v, target)),
+                    _ => false,
+                }
+            }
+            fn find(node: &serde_json::Value, target: &str) -> Option<String> {
+                let children = node.get("children")?.as_array()?;
+                if let Some(path) = children.iter().find_map(|child| find(child, target)) {
+                    return Some(path);
+                }
+                node.get("semantics")
+                    .is_some_and(|semantics| holds(semantics, target))
+                    .then(|| node.get("path")?.as_str().map(str::to_owned))
+                    .flatten()
+            }
+            let inspection: serde_json::Value =
+                serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+            find(&inspection["root"], target)
+                .unwrap_or_else(|| panic!("something publishes {target}: {inspection}"))
         }
 
         /// Mail with the composer open and the caret in its body.
@@ -987,8 +1038,24 @@ mod tests {
         #[test]
         fn the_link_prompt_links_the_typed_address() {
             let mut app = composing();
-            let link = control(&mut app, "link");
-            app.harness().click_at(link.center().x, link.center().y);
+            // The command may sit in the bar's overflow menu in a narrow
+            // composer, so it is addressed by its name, as a screen reader
+            // does.
+            let owner = owner(&mut app, "mail.compose:link");
+            app.harness()
+                .perform_semantic_named(
+                    &owner,
+                    Some("mail.compose:link"),
+                    &ui::a11y::Action::Activate,
+                )
+                .unwrap();
+            assert!(
+                app.harness()
+                    .inspection_json()
+                    .unwrap()
+                    .contains("mail.compose:prompt"),
+                "the link prompt opened"
+            );
             // The prompt starts with the scheme; the address goes after it.
             app.harness().key("End");
             app.harness().type_text("example.test/docs");
