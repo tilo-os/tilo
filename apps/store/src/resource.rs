@@ -934,6 +934,50 @@ mod tests {
         assert_valid_launch_job_completion(&mut app, invocation, &contract);
     }
 
+    #[test]
+    fn declared_refresh_job_completes_through_the_worker_with_its_published_result_contract() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let contract = find(&app.harness().resources(), Store::KIND)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "refresh")
+            .unwrap()
+            .contract;
+        assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
+        let versions = app.versions().len();
+        let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                    harness
+                        .job_updates(invocation)
+                        .iter()
+                        .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+                })
+        );
+        let updates = app.harness().job_updates(invocation);
+        let output = updates
+            .iter()
+            .find_map(|update| match update {
+                ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
+                _ => None,
+            })
+            .expect("the real catalogue worker refresh succeeds");
+        contract
+            .result
+            .validate(output)
+            .expect("the worker completion honors its actual published job contract");
+        assert!(output.value.is_none() && output.resources.is_empty());
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            Some("Store refreshed.".to_owned())
+        );
+        assert_eq!(app.versions().len(), versions, "refresh writes no document");
+    }
+
     fn settle_catalogue_worker(app: &mut TestApp<StoreShell>) {
         tilo_test_env::wait_until("the ordinary catalogue worker settles", || {
             app.settle();
@@ -944,7 +988,557 @@ mod tests {
         });
     }
 
+    struct CatalogueHost {
+        browses: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        registry_gate: Option<std::sync::Arc<CatalogueGate>>,
+        account: bool,
+        disabled: std::sync::atomic::AtomicBool,
+    }
+
+    #[derive(Default)]
+    struct CatalogueGate {
+        entered: std::sync::atomic::AtomicBool,
+        released: std::sync::atomic::AtomicBool,
+        calls: std::sync::atomic::AtomicUsize,
+        canceled: std::sync::atomic::AtomicBool,
+        completed: std::sync::atomic::AtomicBool,
+        waker: std::sync::Mutex<Vec<std::task::Waker>>,
+        registry_count: usize,
+    }
+
+    impl CatalogueGate {
+        fn retire_waiter(&self) {
+            let wakers = std::mem::take(&mut *self.waker.lock().unwrap());
+            drop(wakers);
+        }
+
+        fn release(&self) {
+            self.released
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let wakers = std::mem::take(&mut *self.waker.lock().unwrap());
+            for waker in wakers {
+                waker.wake();
+            }
+        }
+    }
+
+    struct PendingCatalogue(std::sync::Arc<CatalogueGate>);
+
+    impl Drop for PendingCatalogue {
+        fn drop(&mut self) {
+            if !self.0.released.load(std::sync::atomic::Ordering::SeqCst) {
+                self.0
+                    .canceled
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
+    impl app_host::app_host_capnp::app_host::Server for CatalogueHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::app_host_capnp::app_host::ListParams,
+            mut results: app_host::app_host_capnp::app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            results.get().init_entries(0);
+            std::future::ready(Ok(()))
+        }
+
+        fn repositories(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::app_host_capnp::app_host::RepositoriesParams,
+            mut results: app_host::app_host_capnp::app_host::RepositoriesResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let json =
+                if let Some(gate) = &self.registry_gate {
+                    let count = gate.registry_count.max(1);
+                    let registries = (0..count).map(|index| serde_json::json!({
+                    "name": format!("slow-{index}"), "base_url": "https://registry.example",
+                    "owner_pubkey_hex": "11".repeat(32), "enabled": true
+                })).collect::<Vec<_>>();
+                    serde_json::json!({"registry": registries})
+                } else {
+                    serde_json::json!({"registry": []})
+                };
+            results.get().set_json(json.to_string());
+            std::future::ready(Ok(()))
+        }
+
+        fn registry_catalogue(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::app_host_capnp::app_host::RegistryCatalogueParams,
+            mut results: app_host::app_host_capnp::app_host::RegistryCatalogueResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            // Setting the result builder does not send a response: Cap'n
+            // Proto waits for the actual server future to finish. Keep its
+            // thread-affine builder out of the explicitly Send gate future.
+            results.get().set_entries("[]");
+            let gate = std::sync::Arc::clone(self.registry_gate.as_ref().unwrap());
+            let call = gate.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if call >= gate.registry_count.max(1) {
+                    return Ok(());
+                }
+                let _pending = PendingCatalogue(std::sync::Arc::clone(&gate));
+                gate.entered
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                std::future::poll_fn(|cx| {
+                    let mut waker = gate.waker.lock().unwrap();
+                    if gate.released.load(std::sync::atomic::Ordering::SeqCst) {
+                        std::task::Poll::Ready(())
+                    } else {
+                        if !waker.iter().any(|waiting| waiting.will_wake(cx.waker())) {
+                            waker.push(cx.waker().clone());
+                        }
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+                gate.completed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        fn flatpak_status(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::app_host_capnp::app_host::FlatpakStatusParams,
+            mut results: app_host::app_host_capnp::app_host::FlatpakStatusResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let mut result = results.get();
+            result.set_available(true);
+            result.set_installed("");
+            let row = if self.registry_gate.is_some() {
+                let scope = if self.account { "user" } else { "system" };
+                let disabled = if self.disabled.load(std::sync::atomic::Ordering::SeqCst) {
+                    ",disabled"
+                } else {
+                    ""
+                };
+                format!("flathub\thttps://dl.flathub.org/repo/\tFlathub\t{scope}{disabled}\n")
+            } else {
+                "tools\thttps://tools.example/repo\tExample tools\tsystem\n".into()
+            };
+            result.set_remotes(&row);
+            std::future::ready(Ok(()))
+        }
+
+        fn remote(
+            self: capnp::capability::Rc<Self>,
+            params: app_host::app_host_capnp::app_host::RemoteParams,
+            mut results: app_host::app_host_capnp::app_host::RemoteResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let params = params.get().unwrap();
+            assert!(
+                self.account,
+                "the immutable device source cannot be changed"
+            );
+            assert_eq!(params.get_name().unwrap().to_str().unwrap(), "flathub");
+            assert_eq!(
+                params.get_action().unwrap(),
+                app_host::app_host_capnp::RemoteAction::Disable
+            );
+            self.disabled
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            results.get().set_status("Source disabled.");
+            std::future::ready(Ok(()))
+        }
+
+        fn flatpak_catalogue(
+            self: capnp::capability::Rc<Self>,
+            params: app_host::app_host_capnp::app_host::FlatpakCatalogueParams,
+            mut results: app_host::app_host_capnp::app_host::FlatpakCatalogueResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let params = params.get().unwrap();
+            let name = if self.registry_gate.is_some() {
+                "flathub"
+            } else {
+                "tools"
+            };
+            assert_eq!(params.get_remote().unwrap().to_str().unwrap(), name);
+            assert!(
+                params.get_user_managed() == self.account,
+                "the original source scope reaches the host"
+            );
+            self.browses
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            results.get().set_rows(format!(
+                "org.example.Editor\tEditor\tEdit local documents\t2.0\tstable\t{name}\n"
+            ));
+            std::future::ready(Ok(()))
+        }
+    }
+
+    fn assert_visible_owner_control(app: &mut TestApp<StoreShell>, name: &str) {
+        app.settle();
+        let controls = app.harness().controls();
+        let control = controls
+            .iter()
+            .find(|control| {
+                control
+                    .name
+                    .as_deref()
+                    .is_some_and(|label| label.starts_with(name))
+                    && control.bounds.is_some()
+            })
+            .unwrap_or_else(|| {
+                panic!("live pending-source view is missing a laid-out {name}: {controls:?}")
+            });
+        assert!(
+            !control.disabled,
+            "pending-source view must keep {name} operable"
+        );
+        let bounds = control
+            .bounds
+            .expect("the laid-out control has real geometry");
+        assert!(
+            bounds
+                .intersect(ui::vello::kurbo::Rect::new(0.0, 0.0, 1472.0, 920.0))
+                .area()
+                > 0.0,
+            "{name} must be visible in the real owner frame: {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn slow_native_registry_does_not_block_configured_flatpak_browse_or_search() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        app.harness().resize((1472, 920)).unwrap();
+        let gate = std::sync::Arc::new(CatalogueGate {
+            registry_count: 6,
+            ..CatalogueGate::default()
+        });
+        let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            browses: std::sync::Arc::clone(&browses),
+            registry_gate: Some(std::sync::Arc::clone(&gate)),
+            account: false,
+            disabled: std::sync::atomic::AtomicBool::new(false),
+        })
+        .unwrap();
+        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(1), |_| {
+                    gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+                }),
+            "the actual native catalogue RPC is pending"
+        );
+        let remote = "remote:system:flathub";
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(1), |harness| {
+                    find(&harness.resources(), remote).is_some()
+                }),
+            "the independent configured remote must publish while native discovery is pending"
+        );
+        app.effect(&StoreEffect::ShowRemotes).unwrap();
+        assert_visible_owner_control(&mut app, "Flathub");
+        let contract = find(&app.harness().resources(), remote)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "browse-remote")
+            .unwrap()
+            .contract;
+        let before = browses.load(std::sync::atomic::Ordering::SeqCst);
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        assert_visible_owner_control(&mut app, "Editor");
+        assert_visible_owner_control(&mut app, "Search");
+        assert!(browses.load(std::sync::atomic::Ordering::SeqCst) > before);
+        assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
+        app.effect(&StoreEffect::SetSearch {
+            query: "Editor".into(),
+        })
+        .unwrap();
+        tilo_test_env::wait_until(
+            "the actual public Search result while native discovery is pending",
+            || {
+                app.settle();
+                let snapshot = app
+                    .effect(&StoreEffect::InspectCatalogue { app: None })
+                    .unwrap()
+                    .value
+                    .unwrap();
+                snapshot["status"]
+                    .as_str()
+                    .is_some_and(|status| status.contains("results for “Editor”"))
+                    && snapshot["query"] == "Editor"
+                    && snapshot["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|item| item["id"] == "org.example.Editor")
+            },
+        );
+        assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.query().to_owned()),
+            Some("Editor".to_owned())
+        );
+        assert!(
+            app.with_surface::<StoreApp, _>(|surface| surface
+                .items()
+                .iter()
+                .any(|item| item.id == "org.example.Editor"))
+                .unwrap()
+        );
+        assert_visible_owner_control(&mut app, "Editor");
+        assert_visible_owner_control(&mut app, "Search");
+        assert_background_refresh_keeps_its_locale(&mut app, remote, &contract, &gate);
+        service.shutdown().unwrap();
+    }
+
+    fn assert_background_refresh_keeps_its_locale(
+        app: &mut TestApp<StoreShell>,
+        remote: &str,
+        contract: &ui::tilo_actions::ActionContract,
+        gate: &CatalogueGate,
+    ) {
+        let selected = ui::i18n::I18nManager::current_locale();
+        let pseudo = ui::i18n::I18nManager::pseudo_locale();
+        let expected = ui::i18n!("store-catalogue-refreshed").as_str().to_owned();
+        ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
+        assert_ne!(ui::i18n!("store-catalogue-refreshed").as_str(), expected);
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(app, invocation, contract);
+        let inspector = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(inspector["worker_busy"], true);
+        let calls = gate.calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            (2..=4).contains(&calls),
+            "several native sources remain bounded and pending: {calls}"
+        );
+        assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
+        gate.release();
+        settle_catalogue_worker(app);
+        let actual = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        ui::i18n::I18nManager::set_locale(&selected);
+        ui::i18n::I18nManager::set_pseudo_locale(pseudo);
+        assert_eq!(
+            actual["status"], expected,
+            "background refresh retains its own locale across differently localized requests"
+        );
+    }
+
+    #[test]
+    fn source_mutation_retires_pending_generation_without_reenabling_the_source() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let gate = std::sync::Arc::new(CatalogueGate::default());
+        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            registry_gate: Some(std::sync::Arc::clone(&gate)),
+            account: true,
+            disabled: std::sync::atomic::AtomicBool::new(false),
+        })
+        .unwrap();
+        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        let remote = "remote:flathub";
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(2), |harness| {
+                    gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+                        && find(&harness.resources(), remote).is_some()
+                })
+        );
+        let contract = find(&app.harness().resources(), remote)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "disable-remote")
+            .unwrap()
+            .contract;
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::DisableRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            app.with_surface::<StoreApp, _>(|surface| surface
+                .admit(StoreEffect::BrowseRemote {
+                    remote: remote.into()
+                })
+                .is_err())
+                .unwrap(),
+            "the mutation readback immediately makes the disabled source unavailable"
+        );
+        // The old bounded server call really completes late. Its response
+        // cannot overwrite the mutation's newer source state.
+        gate.release();
+        settle_catalogue_worker(&mut app);
+        assert!(gate.completed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(gate.calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+        assert!(
+            app.with_surface::<StoreApp, _>(|surface| surface
+                .admit(StoreEffect::BrowseRemote {
+                    remote: remote.into()
+                })
+                .is_err())
+                .unwrap(),
+            "the late retired response cannot re-enable the source"
+        );
+        service.shutdown().unwrap();
+    }
+
+    #[test]
+    fn disconnected_source_settles_refresh_and_reports_the_transport_error() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let gate = std::sync::Arc::new(CatalogueGate::default());
+        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            registry_gate: Some(std::sync::Arc::clone(&gate)),
+            account: false,
+            disabled: std::sync::atomic::AtomicBool::new(false),
+        })
+        .unwrap();
+        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(2), |_| gate
+                    .entered
+                    .load(std::sync::atomic::Ordering::SeqCst))
+        );
+        service.shutdown().unwrap();
+        // The fixture owns the saved task waker too. Retire it after the
+        // transport driver joins, rather than retain a task/future cycle.
+        gate.retire_waiter();
+        settle_catalogue_worker(&mut app);
+        assert!(gate.canceled.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            app.with_surface::<StoreApp, _>(|surface| {
+                surface.inspect_catalogue(None).unwrap()["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("slow"))
+            })
+            .unwrap(),
+            "the actual source disconnect remains visible, with no fake success result"
+        );
+    }
+
+    #[test]
+    fn declared_browse_job_completes_through_host_rpc_worker_and_snapshot() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            browses: std::sync::Arc::clone(&browses),
+            registry_gate: None,
+            account: false,
+            disabled: std::sync::atomic::AtomicBool::new(false),
+        })
+        .unwrap();
+        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        settle_catalogue_worker(&mut app);
+        let remote = "remote:system:tools";
+        let contract = find(&app.harness().resources(), remote)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "browse-remote")
+            .unwrap()
+            .contract;
+        assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
+        let before = browses.load(std::sync::atomic::Ordering::SeqCst);
+        let versions = app.versions().len();
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        assert_eq!(
+            browses.load(std::sync::atomic::Ordering::SeqCst),
+            before + 1
+        );
+        app.with_surface::<StoreApp, _>(|surface| {
+            assert!(
+                surface.items().iter().any(|item| {
+                    item.id == "org.example.Editor"
+                        && item.name == "Editor"
+                        && item.description == "Edit local documents"
+                }),
+                "the real RPC catalogue reached the live snapshot"
+            );
+            assert!(
+                surface.status_line().contains("Example tools"),
+                "the worker status is a human catalogue message: {:?}",
+                surface.status_line()
+            );
+        })
+        .unwrap();
+        assert_browse_uses_current_locale(&mut app, remote, &contract);
+        assert_eq!(
+            browses.load(std::sync::atomic::Ordering::SeqCst),
+            before + 2
+        );
+        assert_eq!(
+            app.versions().len(),
+            versions,
+            "Browse writes no shared document"
+        );
+        drop(app);
+        service.shutdown().unwrap();
+    }
+
     fn assert_valid_launch_job_completion(
+        app: &mut TestApp<StoreShell>,
+        invocation: ui::tilo_actions::InvocationId,
+        contract: &ui::tilo_actions::ActionContract,
+    ) {
+        assert_valid_unit_job_completion(app, invocation, contract);
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            Some(ui::i18n!("store-launch-opened").as_str().to_owned())
+        );
+    }
+
+    fn assert_valid_unit_job_completion(
         app: &mut TestApp<StoreShell>,
         invocation: ui::tilo_actions::InvocationId,
         contract: &ui::tilo_actions::ActionContract,
@@ -965,16 +1559,49 @@ mod tests {
                 ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
                 _ => None,
             })
-            .expect("the declared launch succeeds only after the original host receipt");
+            .expect("the declared worker job succeeds");
         contract
             .result
             .validate(output)
             .expect("the actual published job accepts its terminal output");
         assert!(output.value.is_none() && output.resources.is_empty());
+    }
+
+    fn assert_browse_uses_current_locale(
+        app: &mut TestApp<StoreShell>,
+        remote: &str,
+        contract: &ui::tilo_actions::ActionContract,
+    ) {
+        let selected = ui::i18n::I18nManager::current_locale();
+        let pseudo = ui::i18n::I18nManager::pseudo_locale();
+        let previous = app
+            .with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
+            .unwrap();
+        ui::i18n::I18nManager::set_locale("fr");
+        ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
+        let expected = STORE_CATALOG.t_args(
+            "store-remote-results",
+            &[
+                ("name", ui::i18n::ArgValue::Text("Example tools".into())),
+                ("count", ui::i18n::ArgValue::Text("1".into())),
+            ],
+        );
+        assert_ne!(expected, previous, "the selected format must be observable");
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(app, invocation, contract);
         assert_eq!(
             app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
-            Some(ui::i18n!("store-launch-opened").as_str().to_owned())
+            Some(expected)
         );
+        ui::i18n::I18nManager::set_locale(&selected);
+        ui::i18n::I18nManager::set_pseudo_locale(pseudo);
     }
 
     /// Opening a `.flatpakref` shows its app ready to install — and

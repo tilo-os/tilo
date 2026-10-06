@@ -31,6 +31,11 @@ impl ImeWindowState {
     pub fn from_widget(widget: &dyn crate::Widget) -> Option<Self> {
         let purpose = widget.ime_purpose()?;
         let rect = widget.ime_cursor_rect()?;
+        Some(Self::from_rect(purpose, rect))
+    }
+
+    #[must_use]
+    pub fn from_rect(purpose: winit::window::ImePurpose, rect: vello::kurbo::Rect) -> Self {
         let bounded = |v: f64| {
             if v.is_finite() {
                 #[allow(
@@ -45,13 +50,13 @@ impl ImeWindowState {
                 0
             }
         };
-        Some(ImeWindowState {
+        ImeWindowState {
             purpose,
             x: bounded(rect.x0),
             y: bounded(rect.y0),
             width: bounded(rect.width()).max(1),
             height: bounded(rect.height()).max(1),
-        })
+        }
     }
 }
 

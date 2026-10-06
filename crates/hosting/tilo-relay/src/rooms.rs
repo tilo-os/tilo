@@ -22,6 +22,8 @@ mod pages;
 mod stewardship;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "agents")]
+mod views;
 mod voice;
 
 use std::collections::BTreeMap;

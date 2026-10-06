@@ -609,7 +609,15 @@ impl Text {
 
     #[must_use]
     pub fn with_balanced_wrap(self) -> Self {
-        self.modify(|m| m.layered = m.layered.clone().with_wrap_mode(TextWrapMode::Balance))
+        self.with_wrap_mode(TextWrapMode::Balance)
+    }
+
+    /// Choose how this text wraps within the width supplied by its layout.
+    /// `WordOrGlyph` keeps long identifiers and URLs readable in narrow panes
+    /// without inserting breaks into their content or accessible name.
+    #[must_use]
+    pub fn with_wrap_mode(self, wrap_mode: TextWrapMode) -> Self {
+        self.modify(|m| m.layered = m.layered.clone().with_wrap_mode(wrap_mode))
     }
 
     #[must_use]

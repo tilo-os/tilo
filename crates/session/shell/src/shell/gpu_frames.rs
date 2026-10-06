@@ -552,6 +552,25 @@ pub(crate) fn frame_for_test(
     texel: [u8; 4],
     surface: u64,
 ) -> Arc<GpuFrame> {
+    frame_pixels_for_test(
+        device,
+        queue,
+        generation,
+        (width, height),
+        &texel.repeat(width.saturating_mul(height) as usize),
+        surface,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn frame_pixels_for_test(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    generation: u64,
+    (width, height): (u32, u32),
+    pixels: &[u8],
+    surface: u64,
+) -> Arc<GpuFrame> {
     let source = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("client-frame-test-source"),
         size: wgpu::Extent3d {
@@ -568,7 +587,7 @@ pub(crate) fn frame_for_test(
     });
     queue.write_texture(
         source.as_image_copy(),
-        &texel.repeat(width.saturating_mul(height) as usize),
+        pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(width.saturating_mul(4)),

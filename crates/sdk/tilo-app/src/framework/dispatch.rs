@@ -59,8 +59,15 @@ use ui_core::widget::controls::AttributedControlInvocation;
 pub struct Dispatcher<R: Resource> {
     app_id: &'static str,
     resource_id: Rc<str>,
+    /// The readable name published by the resource host, shared with surfaces.
+    resource_label: LocalState<String>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<Rc<str>>,
+    /// A dispatcher lent to an admitted effect keeps its original custody.
+    /// Clones cannot turn later work into the host participant's invocation.
+    /// Share the immutable scope rather than embedding its owner/lease in every
+    /// view dispatcher: copying the full scope also inflates construction stacks.
+    custody: Option<Rc<ui_core::invocation_scope::ResourceInvocationScope>>,
     /// Each queued invocation with the effect invocation it continues,
     /// when an effect's handler or completion queued it.
     queue: Rc<RefCell<VecDeque<AttributedControlInvocation>>>,
@@ -128,7 +135,9 @@ impl<R: Resource> Clone for Dispatcher<R> {
         Self {
             app_id: self.app_id,
             resource_id: Rc::clone(&self.resource_id),
+            resource_label: self.resource_label.clone(),
             me: self.me.clone(),
+            custody: self.custody.clone(),
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
             read_only: self.read_only.clone(),
@@ -151,6 +160,37 @@ impl<R: Resource> Clone for Dispatcher<R> {
 }
 
 impl<R: Resource> Dispatcher<R> {
+    pub(crate) fn for_custody(
+        &self,
+        custody: ui_core::invocation_scope::ResourceInvocationScope,
+    ) -> Self {
+        let mut dispatcher = self.clone();
+        dispatcher.custody = Some(Rc::new(custody));
+        // An effect's group cannot absorb the person's unrelated input.
+        dispatcher.group = Rc::default();
+        dispatcher
+    }
+
+    fn queue_invocation(
+        &self,
+        address: ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) {
+        let on_behalf_of = match &self.custody {
+            Some(custody) => {
+                if let Err(error) = custody.check() {
+                    self.refuse(&address.action, error);
+                    return;
+                }
+                Some(custody.invocation())
+            }
+            None => super::effect::acting_for(),
+        };
+        self.queue
+            .borrow_mut()
+            .push_back((ControlInvocation { address, arguments }, on_behalf_of));
+    }
+
     pub(crate) fn new(
         app_id: &'static str,
         resource_id: &str,
@@ -160,7 +200,9 @@ impl<R: Resource> Dispatcher<R> {
         Self {
             app_id,
             resource_id: Rc::from(resource_id),
+            resource_label: LocalState::new(R::LABEL.to_owned()),
             me: me.map(Rc::from),
+            custody: None,
             queue: Rc::default(),
             group: Rc::default(),
             read_only: LocalState::new(read_only),
@@ -358,13 +400,10 @@ impl<R: Resource> Dispatcher<R> {
     /// checked, then its handler runs. A participant who may only view still
     /// invokes the effects declared `permission = "read"`.
     pub fn effect<E: Effect>(&self, effect: &E) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(self.resource_id.as_ref(), effect.id()),
-                arguments: effect.arguments(),
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(
+            ActionAddress::new(self.resource_id.as_ref(), effect.id()),
+            effect.arguments(),
+        );
     }
 
     /// Invoke `effect` as the live row `row` offers it
@@ -372,19 +411,19 @@ impl<R: Resource> Dispatcher<R> {
     /// contract, so a confirmation the row asks for (typing the name of the
     /// device it erases) is asked here too.
     pub fn effect_on<E: Effect>(&self, row: &str, effect: &E) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(row, effect.id()),
-                arguments: serde_json::Map::new(),
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(ActionAddress::new(row, effect.id()), serde_json::Map::new());
     }
 
     /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
     /// or an effect ([`Invoke::effect`]), which reaches its handler as
     /// [`Self::effect`] does.
     pub fn invoke(&self, invoke: Invoke<R>) {
+        if let Some(custody) = &self.custody
+            && let Err(error) = custody.check()
+        {
+            self.refuse(invoke.id, error);
+            return;
+        }
         if invoke.is_effect() {
             self.submit(invoke);
             return;
@@ -404,13 +443,10 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     fn submit(&self, invoke: Invoke<R>) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(self.resource_id.as_ref(), invoke.id),
-                arguments: invoke.arguments,
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(
+            ActionAddress::new(self.resource_id.as_ref(), invoke.id),
+            invoke.arguments,
+        );
     }
 
     /// Whether the participant may take `invoke`: what its declaration, or
@@ -451,10 +487,7 @@ impl<R: Resource> Dispatcher<R> {
         if self.read_only() {
             return;
         }
-        self.queue.borrow_mut().push_back((
-            ControlInvocation { address, arguments },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(address, arguments);
     }
 
     /// Submit one typed action value — an edit with no named declaration,
@@ -525,8 +558,12 @@ impl<R: Resource> Dispatcher<R> {
     pub fn apply_now(&self, edits: &mut Edits<'_>, action: &R::Action) -> Result<(), ActionError> {
         let label = tilo_resource::action_label::<R>(action)
             .unwrap_or_else(|| ActionContext::for_action("", "", action).action_label);
-        let context =
-            ActionContext::for_resource(label, self.resource_id.as_ref(), R::KIND, R::LABEL);
+        let context = ActionContext::for_resource(
+            label,
+            self.resource_id.as_ref(),
+            R::KIND,
+            self.resource_label.get(),
+        );
         self.apply_now_with(edits, action, context)
     }
 
@@ -541,6 +578,11 @@ impl<R: Resource> Dispatcher<R> {
         action: &R::Action,
         context: ActionContext,
     ) -> Result<(), ActionError> {
+        if self.custody.is_some() {
+            return Err(ActionError::Refused(
+                "caller-scoped effects submit document changes through queued actions".into(),
+            ));
+        }
         if !self.may_apply(action) {
             return Err(ActionError::Refused(Self::not_allowed((self
                 .permission_of)(
@@ -549,8 +591,12 @@ impl<R: Resource> Dispatcher<R> {
         }
         // History names the resource and who edited it even when the
         // surface's context does not.
-        let mut named =
-            ActionContext::for_resource("", self.resource_id.as_ref(), R::KIND, R::LABEL);
+        let mut named = ActionContext::for_resource(
+            "",
+            self.resource_id.as_ref(),
+            R::KIND,
+            self.resource_label.get(),
+        );
         if let Some(me) = &self.me {
             named = named.with_invoker(ActionInvoker::actor(me.as_ref()));
         }
@@ -608,7 +654,9 @@ impl<R: Resource> Dispatcher<R> {
         Dispatcher {
             app_id: self.app_id,
             me: self.me.clone(),
+            custody: self.custody.clone(),
             resource_id: Rc::from(id),
+            resource_label: LocalState::new(C::LABEL.to_owned()),
             queue: Rc::clone(&self.queue),
             group: Rc::default(),
             read_only: self.read_only.clone(),
@@ -675,6 +723,10 @@ impl<R: Resource> Dispatcher<R> {
     /// continue it ([`Resource::coalesces`]).
     pub(crate) fn keeps_step_open(&self) -> bool {
         self.opened.get()
+    }
+
+    pub(crate) fn name_resource(&self, label: &str) {
+        self.resource_label.set(label.to_owned());
     }
 
     pub(crate) fn resource_id(&self) -> &str {

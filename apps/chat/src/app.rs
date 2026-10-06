@@ -327,6 +327,9 @@ pub(crate) enum Hit {
     /// Pick a specific file (by path) from the open attachment picker.
     AttachPick(String),
     StartCall,
+    StopSharingLiveContext,
+    CopyResourceLink(Id),
+    OpenResourceLink(Id),
     /// Open the platform search over Chat.
     Search,
     CloseThread,
@@ -375,6 +378,9 @@ impl Hit {
             Self::Attach => "chat.attach".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
             Self::StartCall => "chat.start-call".into(),
+            Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
+            Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
+            Self::OpenResourceLink(id) => format!("chat.open-resource-link:{id}"),
             Self::Search => "chat.search".into(),
             Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
@@ -577,6 +583,7 @@ pub struct ChatApp {
     pub(crate) scroll_viewport: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
+    pub(crate) revealed_range: Option<(Id, String, usize, usize)>,
     /// A search result needs one initial scroll into view. Keeping this
     /// separate from `revealed_message` lets its visual accent remain while
     /// the reader subsequently scrolls through nearby context.
@@ -629,6 +636,7 @@ pub struct ChatApp {
     // Call state.
     pub(crate) call: CallState,
     pub(crate) native_voice: crate::local_voice::LocalVoice,
+    pub(crate) resource_navigation: crate::shared_resources::Navigation,
     /// Measured control/header sizes of the expanded call overlay, refreshed
     /// by the paint pass and read by the renderer-less layout functions.
     pub(crate) call_overlay_metrics: crate::render_call::CallOverlayMetrics,
@@ -706,6 +714,10 @@ pub struct ChatApp {
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
     /// The voice channel a started call joins once it is in the document.
     pub(crate) pending_call: Option<Id>,
+    /// Ephemeral opt-in to publishing Chat navigation through viewport presence.
+    pub(crate) sharing_context: bool,
+    pub(crate) following_context: bool,
+    pub(crate) context_follow_requested: bool,
     /// This person's Chat preferences, following their other devices; `None`
     /// where the host keeps none (a past version, a test).
     pub(crate) preferences: Option<ui::framework::Setting<crate::preferences::ChatPreferences>>,
@@ -870,6 +882,7 @@ impl ChatApp {
             scroll_viewport: 0.0,
             thread_open: Some("m_concept".into()),
             revealed_message: None,
+            revealed_range: None,
             reveal_scroll_pending: false,
             revealed_person: None,
             emoji_open: false,
@@ -901,6 +914,7 @@ impl ChatApp {
             swipe: None,
             call: CallState::default(),
             native_voice: crate::local_voice::LocalVoice::default(),
+            resource_navigation: crate::shared_resources::Navigation::default(),
             call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
             call_overlay_metrics_key: None,
             realtime: crate::continuity::ChatRealtimeContinuity::default(),
@@ -928,6 +942,9 @@ impl ChatApp {
             perms: ChatPermissions::permissive(),
             dispatch: None,
             pending_call: None,
+            sharing_context: false,
+            following_context: false,
+            context_follow_requested: false,
             preferences: None,
             collapsed: std::collections::BTreeSet::new(),
             #[cfg(test)]
@@ -1113,6 +1130,7 @@ impl ChatApp {
             self.context_ws = "ws_acme".into();
             self.active_channel = "c_crit".into();
         }
+        self.sharing_context = scenario == "live-context";
         self.stage_view(scenario);
         self.reselect();
         self.request_relayout();
@@ -2249,18 +2267,15 @@ impl ChatApp {
 
     /// The leading navigation drawer: the workspace rail beside the channel
     /// list, at the shell's sidebar and rail metrics. It docks only while the
-    /// conversation beside it keeps the content minimum for its text after
-    /// the avatar column; below that it becomes a floating drawer.
+    /// conversation column keeps the shared content minimum; below that it
+    /// becomes a floating drawer.
     fn navigation_drawer() -> SidebarDrawer {
         let m = ui::tokens::Metrics::BASE;
-        let s = ui::tokens::Spacing::BASE;
-        let docked = m.rail_width + m.sidebar_width;
-        let avatar_column = s.s6 + m.min_pointer_target + s.s3;
         // One drawer holds the rail (icon-sized, following the UI scale) and
         // the channel list (text-sized) beside it.
         SidebarDrawer::new()
             .with_rail()
-            .breakpoint(f64::from(docked + avatar_column + m.content_min_width))
+            .content_min_width(f64::from(m.content_min_width))
     }
 
     /// The trailing detail drawer, summoned on demand. It docks while the
@@ -2332,25 +2347,12 @@ impl ChatApp {
             self.rect.y0 + self.chrome.header_h,
         )
     }
-    /// The composer field's height for a draft `text` wrapped at `width`:
-    /// one line at rest, growing with the draft up to the cap.
-    fn composer_field_height(&self, tr: &mut TextRenderer, text: &str, width: f64) -> f64 {
+    /// Reserve the height measured by the same editor that will be drawn.
+    pub(crate) fn composer_height(&self, _tr: &mut TextRenderer) -> f64 {
         let chrome = &self.chrome;
-        let wrap = width.max(40.0) as f32;
-        let probe = if text.is_empty() { "Ag" } else { text };
-        let (_, h) = tr.measure_style(probe, Some(wrap), &chrome.body);
         let pad = chrome.composer_min_h - chrome.body_line;
-        (f64::from(h) + pad).clamp(chrome.composer_min_h, chrome.composer_max_h)
-    }
-    /// The width the composer's draft wraps at inside a field `field_w`
-    /// wide: the field less its buttons (attach, emoji, send).
-    fn composer_text_width(&self, field_w: f64) -> f64 {
-        field_w - 4.0 * self.chrome.composer_min_h
-    }
-    pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
-        let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
-        let text_w = self.composer_text_width(field_w);
-        self.composer_field_height(tr, &self.draft_main, text_w)
+        (self.composer_main.measured_height() + pad)
+            .clamp(chrome.composer_min_h, chrome.composer_max_h)
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let h = self.composer_height(tr);
@@ -2365,11 +2367,12 @@ impl ChatApp {
 
     /// The thread's composer: the same control and height rule as the main
     /// composer, at the bottom of the thread panel `panel`.
-    pub(crate) fn thread_composer_rect(&self, tr: &mut TextRenderer, panel: Rect) -> Rect {
+    pub(crate) fn thread_composer_rect(&self, panel: Rect) -> Rect {
         let pad = self.chrome.composer_pad;
-        let field_w = panel.width() - 2.0 * pad;
-        let text_w = self.composer_text_width(field_w);
-        let h = self.composer_field_height(tr, &self.composer_thread.value(), text_w);
+        let chrome = &self.chrome;
+        let inset = chrome.composer_min_h - chrome.body_line;
+        let h = (self.composer_thread.measured_height() + inset)
+            .clamp(chrome.composer_min_h, chrome.composer_max_h);
         Rect::new(
             panel.x0 + pad,
             panel.y1 - h - pad,
@@ -2676,6 +2679,19 @@ impl ChatApp {
                         false,
                     ),
                     Hit::StartCall => ("Start or open call".into(), Role::Button, false),
+                    Hit::StopSharingLiveContext => {
+                        (crate::i18n::t("chat-context-stop"), Role::Button, false)
+                    }
+                    Hit::CopyResourceLink(_) => (
+                        crate::i18n::t("chat-resource-copy-link"),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::OpenResourceLink(_) => (
+                        crate::i18n::t("chat-resource-open-link"),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::Search => ("Search Chat".into(), Role::Button, false),
                     Hit::ToggleLeftFlap => {
                         ("Show conversation navigation".into(), Role::Button, false)
@@ -2888,6 +2904,7 @@ impl Collaborative for ChatApp {
             self.realtime.target_media_ready = false;
         }
         let mut requests = std::mem::take(&mut self.realtime.requests);
+        requests.extend(self.resource_navigation_requests());
         let before = self.native_voice.snapshot.state;
         requests.extend(self.native_voice.take_requests(ui::time::now()));
         if before != self.native_voice.snapshot.state {
@@ -2898,6 +2915,14 @@ impl Collaborative for ChatApp {
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         match event {
+            ui::collaboration::CollabEvent::RemoteAction { message } => {
+                self.complete_resource_navigation(message);
+            }
+            ui::collaboration::CollabEvent::FollowChanged { peer_id } => {
+                self.context_follow_requested = peer_id.is_some();
+                self.following_context = false;
+                self.request_relayout();
+            }
             ui::collaboration::CollabEvent::NativeMediaCommandResult { request_id, result } => {
                 if self.native_voice.complete(*request_id, result) {
                     self.project_native_voice();
@@ -3107,7 +3132,8 @@ impl Widget for ChatApp {
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::collaboration::participants::Participants,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::application_view::ApplicationViewState
+        dyn ui::application_view::ApplicationViewState,
+        dyn ui::view::capability::ViewState
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -3180,6 +3206,10 @@ impl Widget for ChatApp {
     }
     fn set_focus(&mut self, focused: bool) {
         self.host_focused = focused;
+        if !focused {
+            self.left_flap.set_resize_focused(false);
+            self.right_flap.set_resize_focused(false);
+        }
         self.canonical_dirty = true;
         self.set_composer_focus();
     }
@@ -3520,11 +3550,23 @@ impl Widget for ChatApp {
             && !self.thread_is_page()
         {
             self.reconcile_flaps();
-            if self.left_flap.handle_event(event, ctx) {
+            if self.left_flap.handle_event(event, ctx) || self.right_flap.handle_event(event, ctx) {
                 *ctx.handled = true;
                 self.canonical_dirty = true;
                 return;
             }
+        }
+        self.canonical_dirty |=
+            self.left_flap.take_resize_redraw() | self.right_flap.take_resize_redraw();
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                ..
+            }
+        ) {
+            self.left_flap.set_resize_focused(false);
+            self.right_flap.set_resize_focused(false);
         }
         let requested = self.dispatch_event(
             event,
@@ -3542,6 +3584,12 @@ impl Widget for ChatApp {
         if !was_handled && requested && ctx.focus_target.is_none() {
             *ctx.focus_target = Some(ctx.node_id);
         }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.left_flap
+            .resize_cursor(point)
+            .or_else(|| self.right_flap.resize_cursor(point))
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -3611,6 +3659,8 @@ impl Widget for ChatApp {
             .with_hashed_key("message-list");
 
         let mut children: Vec<AccessNode> = controls;
+        children.extend(self.left_flap.resize_accessibility());
+        children.extend(self.right_flap.resize_accessibility());
         if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
                 .with_name(channel.kind.label(&channel.name))
@@ -3630,8 +3680,21 @@ impl Widget for ChatApp {
         {
             children.push(menu_node);
         }
+        // Existing Chat controls are exported by their typed domain resources,
+        // which carry device and destructive-operation metadata. Keep their
+        // synthetic accessibility subtrees outside generic action projection.
+        // Only the shared separators use the generic widget effect contract.
+        for child in &mut children {
+            if !matches!(
+                child.action_target.as_deref(),
+                Some("sidebar-resize" | "inspector-resize")
+            ) {
+                child.semantic_key = None;
+            }
+        }
         Some(
             AccessNode::new(Role::Group)
+                .with_semantic_key("chat-surface")
                 .with_name("Chat")
                 .with_description(if self.inbox_open {
                     "Inbox: conversations across Tilo workspaces"
@@ -3646,7 +3709,20 @@ impl Widget for ChatApp {
         let [index] = path else {
             return None;
         };
-        self.semantic_hits().get(*index).map(|(rect, ..)| *rect)
+        self.semantic_hits()
+            .get(*index)
+            .map(|(rect, ..)| *rect)
+            .or_else(|| {
+                let offset = index.checked_sub(self.semantic_hits().len())?;
+                [
+                    self.left_flap.resize_accessibility(),
+                    self.right_flap.resize_accessibility(),
+                ]
+                .into_iter()
+                .flatten()
+                .nth(offset)
+                .and_then(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect))
+            })
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
@@ -3654,8 +3730,21 @@ impl Widget for ChatApp {
             return false;
         };
         if *index >= self.semantic_hits().len() {
-            return false;
+            let offset = index.saturating_sub(self.semantic_hits().len());
+            let target = [
+                self.left_flap.resize_accessibility(),
+                self.right_flap.resize_accessibility(),
+            ]
+            .into_iter()
+            .flatten()
+            .nth(offset)
+            .and_then(|node| node.action_target);
+            return target.is_some_and(|target| {
+                self.perform_drawer_resize(&target, &ui::a11y::Action::Focus)
+            });
         }
+        self.left_flap.set_resize_focused(false);
+        self.right_flap.set_resize_focused(false);
         self.keyboard_target = Some(*index);
         true
     }
@@ -3672,27 +3761,12 @@ impl Widget for ChatApp {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
+        if self.perform_drawer_resize(target, action) {
+            return true;
+        }
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
-            let Some(mut menu) = self.menu.take() else {
-                return false;
-            };
-            let menu_handled = menu
-                .widget
-                .perform_semantic_action(target, action, state, path);
-            let selection = menu.widget.take_selection();
-            let selected = selection.and_then(|index| menu.items.get(index).copied());
-            let menu_target = menu.target.clone();
-            if menu.widget.is_open() {
-                self.menu = Some(menu);
-            }
-            if let Some(selected) = selected {
-                if self.can_participate() {
-                    self.apply_menu_action(menu_target, selected, state);
-                }
-                return true;
-            }
-            return menu_handled;
+            return self.perform_menu_semantic_action(target, action, state, path);
         }
         let hit = self
             .semantic_hits()
@@ -3819,6 +3893,7 @@ impl Widget for ChatApp {
 
     fn needs_animation_frame(&self) -> bool {
         self.read_on_present
+            || self.resource_navigation.pending()
             || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
             || self.flap_animating
             || self.call_chrome_motion.animating
@@ -3829,7 +3904,9 @@ impl Widget for ChatApp {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.call.placement.is_dragging()
+        self.left_flap.is_resizing()
+            || self.right_flap.is_resizing()
+            || self.call.placement.is_dragging()
             || (self.thread_open.is_some() && self.thread_scroll.wants_pointer_capture())
     }
 
@@ -3846,6 +3923,51 @@ impl Widget for ChatApp {
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
         self.thread_scroll.mark_drawn();
+    }
+}
+
+impl ChatApp {
+    fn perform_menu_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> bool {
+        let Some(mut menu) = self.menu.take() else {
+            return false;
+        };
+        let menu_handled = menu
+            .widget
+            .perform_semantic_action(target, action, state, path);
+        let selection = menu.widget.take_selection();
+        let selected = selection.and_then(|index| menu.items.get(index).copied());
+        let menu_target = menu.target.clone();
+        if menu.widget.is_open() {
+            self.menu = Some(menu);
+        }
+        if let Some(selected) = selected {
+            if self.can_participate() {
+                self.apply_menu_action(menu_target, selected, state);
+            }
+            return true;
+        }
+        menu_handled
+    }
+
+    fn perform_drawer_resize(&mut self, target: &str, action: &ui::a11y::Action) -> bool {
+        if matches!(action, ui::a11y::Action::Focus) {
+            self.left_flap.set_resize_focused(false);
+            self.right_flap.set_resize_focused(false);
+        }
+        let handled = self.left_flap.perform_resize_action(target, action)
+            || self.right_flap.perform_resize_action(target, action);
+        if handled {
+            self.keyboard_target = None;
+            self.reconcile_flaps();
+            self.canonical_dirty = true;
+        }
+        handled
     }
 }
 
@@ -3992,6 +4114,8 @@ impl ChatApp {
         // The sidebar toggle: at the drawer's top-leading corner while it
         // shows, else at the conversation header's leading edge.
         self.draw_flap_toggles(scene, tf, tr, theme, hits);
+        self.left_flap.paint_resize(scene, tf, theme);
+        self.right_flap.paint_resize(scene, tf, theme);
     }
 
     /// Flag a taffy rebuild (kept for parity; the video rect is now set in

@@ -560,6 +560,10 @@ impl BoundPublication {
         binding: &CallbackBinding,
         mut resource: tilo_actions::Resource,
     ) -> Result<tilo_actions::Resource, BoundActionError> {
+        resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(
+            resource.kind.clone(),
+            resource.id.as_str(),
+        );
         resource.id = tilo_actions::ResourceId::new(self.alias(binding, resource.id.as_str())?);
         resource.children = resource
             .children
@@ -1828,6 +1832,9 @@ pub(crate) struct ResourceOperation<'a> {
     pub(crate) local_author: &'a str,
     pub(crate) broker_admitted: bool,
     pub(crate) invocation: tilo_actions::InvocationId,
+    /// Exact invocation retained by an admitted external dispatch. Local
+    /// operation ids are intentionally not projected into action payloads.
+    pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
 }
@@ -1851,9 +1858,14 @@ pub(crate) fn execute_resource_operation(
         local_author,
         broker_admitted,
         invocation,
+        source_invocation,
         ambient,
         scope,
     } = operation;
+    debug_assert!(
+        !broker_admitted || source_invocation.is_some(),
+        "admitted operation {address:?} must retain its source invocation"
+    );
     if spec
         .contract
         .tags
@@ -1895,7 +1907,12 @@ pub(crate) fn execute_resource_operation(
         if context.invoker.is_none() && !actor.is_empty() {
             context = context.with_invoker(tilo_actions::ActionInvoker::actor(actor));
         }
-        let context = context.with_args_from_payload(&encoded.payload);
+        // Ambient context is descriptive and may arrive from the caller. The
+        // retained dispatch boundary is the sole source for invocation
+        // identity, so replace any ambient value, including with `None`.
+        let context = context
+            .with_source_invocation(source_invocation)
+            .with_args_from_payload(&encoded.payload);
         // Before apply, so a delete can still read the row it removes. Undo
         // of this span applies the compensating action instead of patches.
         note_compensating_action(doc, action.inverse_encoded(doc), encoded.clone());
@@ -2008,6 +2025,7 @@ pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) confirmed: bool,
     pub(crate) broker_admitted: bool,
     pub(crate) invocation: tilo_actions::InvocationId,
+    pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
 }
@@ -2028,6 +2046,7 @@ pub(crate) fn invoke_resource_action(
         confirmed,
         broker_admitted,
         invocation,
+        source_invocation,
         ambient,
         scope,
     } = request;
@@ -2132,6 +2151,7 @@ pub(crate) fn invoke_resource_action(
                                 local_author: &binding.author.0,
                                 broker_admitted,
                                 invocation,
+                                source_invocation,
                                 ambient: ambient.or(Some(&binding.operation_context)),
                                 scope,
                             },

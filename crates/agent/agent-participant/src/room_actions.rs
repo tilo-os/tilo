@@ -24,8 +24,10 @@
 //!   accepted at once and runs on the service's own thread; `Observe`
 //!   reports where it stands, and `Cancel` stops one that has not started.
 //!
-//! Only the host user's own devices are served: the principal must be the
-//! person whose root the host chains to. Agents use their own mounts.
+//! Document invocations serve only the host user's own devices. Exact local
+//! View discovery also serves currently certified room readers, through the
+//! host's canonical Read policy; that grants no document invocation authority.
+//! Agents use their own mounts.
 //!
 //! The service joins each room as the host's own device ([`RoomMember`], from
 //! the [`RoomRecordsLink`] the host supplies): a member of the room's
@@ -81,6 +83,40 @@ pub struct RoomMember {
     pub runtime: tokio::runtime::Handle,
 }
 
+/// Current governed read policy supplied by the authenticated host boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewReadPolicy {
+    /// Governed room whose current policy authorized the exact source record.
+    pub room: String,
+    /// Current role of the certified caller, supplied by the host.
+    pub role: collab_types::Role,
+    /// Current capability overrides, including device restrictions.
+    pub caps: Vec<collab_types::caps::CapOverride>,
+    /// Root identity authenticated on the connection.
+    pub person: String,
+    /// Host time used to evaluate capability expiry.
+    pub unix_time: u64,
+}
+
+impl ViewReadPolicy {
+    fn permissions(&self) -> ui::permissions::PermissionContext {
+        ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(self.role), self.person.clone())
+                .in_room(self.room.clone()),
+            self.caps.clone(),
+        )
+        .at_unix_time(self.unix_time)
+    }
+}
+
+/// An existing verified source snapshot for internal view discovery only.
+pub struct ViewDocument {
+    /// Replayed snapshot; never returned in the public metadata response.
+    pub bytes: Vec<u8>,
+    /// Content revision for catalogue freshness.
+    pub revision: String,
+}
+
 /// What the service needs of its host. Methods block; they are called from
 /// the service's own thread, never from the host's runtime.
 pub trait RoomRecordsLink: Send + Sync {
@@ -88,6 +124,41 @@ pub trait RoomRecordsLink: Send + Sync {
     fn user_public_key(&self) -> [u8; 32];
     /// How the service joins the host's rooms.
     fn member(&self) -> RoomMember;
+    /// Current certified-device admission and exact record Read capability.
+    /// Absence denies; this never inherits document invocation authority.
+    fn view_read_policy(
+        &self,
+        _workspace: u64,
+        _caller: &Caller,
+        _app: &str,
+        _record: &str,
+    ) -> Option<ViewReadPolicy> {
+        None
+    }
+    /// Read an exact existing source using already-owned host keys. The host
+    /// must check current certified Read under its room lock before key access
+    /// and again before returning. Missing keys never cause enrollment.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing/currently unauthorized sources, unavailable existing keys,
+    /// invalid signatures, incomplete replay or exceeded read budgets.
+    fn view_document(
+        &self,
+        _workspace: u64,
+        _caller: &Caller,
+        _source: &DocumentRoute,
+    ) -> Result<ViewDocument, String> {
+        Err("existing view documents unavailable".into())
+    }
+    /// The listener-owned public locator; absence cannot mint a browser link.
+    fn view_locator(
+        &self,
+        _room: &str,
+        _provider: &str,
+    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
+        None
+    }
 }
 
 struct Entry {
@@ -135,7 +206,8 @@ impl Ledger {
 enum Job {
     Catalogue {
         workspace_id: u64,
-        query: CatalogueQuery,
+        query: Box<CatalogueQuery>,
+        caller: Caller,
         done: Completer<Result<CataloguePage, ActionHostError>>,
     },
     Invoke {
@@ -261,7 +333,7 @@ impl RoomActions {
                     correlation,
                     result,
                 };
-                if !self.authorized(caller) {
+                if query.view_resource.is_none() && !self.authorized(caller) {
                     return Some(Pending::ready(respond(Ok(CataloguePage::from_rows(
                         "0".into(),
                         Vec::new(),
@@ -271,7 +343,8 @@ impl RoomActions {
                 let (done, answer) = pending();
                 let job = Job::Catalogue {
                     workspace_id,
-                    query,
+                    query: Box::new(query),
+                    caller: caller.clone(),
                     done,
                 };
                 if let Err(Job::Catalogue { done, .. }) = self.submit(job) {
@@ -629,8 +702,16 @@ impl Worker {
                 Job::Catalogue {
                     workspace_id,
                     query,
+                    caller,
                     done,
-                } => done.complete(self.catalogue_page(workspace_id, &query)),
+                } => {
+                    let result = if query.view_resource.is_some() {
+                        self.view_catalogue_page(workspace_id, &caller, &query)
+                    } else {
+                        self.catalogue_page(workspace_id, &query)
+                    };
+                    done.complete(result);
+                }
                 Job::Invoke {
                     workspace_id,
                     invocation,
@@ -783,6 +864,67 @@ impl Worker {
         routes
     }
 
+    fn view_catalogue_page(
+        &self,
+        workspace: u64,
+        caller: &Caller,
+        query: &CatalogueQuery,
+    ) -> Result<CataloguePage, ActionHostError> {
+        let refuse = || ActionHostError::UnknownAction;
+        let (wanted, provider) = exact_view_query(query)?;
+        let route_hint = record_of(provider, "").ok_or_else(refuse)?;
+        let link = self.shared.link.get().cloned().ok_or_else(refuse)?;
+        let first = link
+            .view_read_policy(workspace, caller, &route_hint.app_id, &route_hint.record)
+            .ok_or_else(refuse)?;
+        let route = record_of(provider, &first.room).ok_or_else(refuse)?;
+        let source = link
+            .view_document(workspace, caller, &route)
+            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+        let mut doc = automerge::AutoCommit::new();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &source.bytes)
+            .map_err(|_| refuse())?;
+        let descriptors =
+            self.catalogue
+                .resource_views(&route.app_id, &doc, wanted, &first.permissions());
+        let fresh = link
+            .view_read_policy(workspace, caller, &route.app_id, &route.record)
+            .ok_or_else(refuse)?;
+        if fresh.room != first.room
+            || fresh.role != first.role
+            || fresh.caps != first.caps
+            || fresh.person != first.person
+        {
+            return Err(refuse());
+        }
+        let current =
+            self.catalogue
+                .resource_views(&route.app_id, &doc, wanted, &fresh.permissions());
+        let rows = descriptors
+            .into_iter()
+            .filter(|descriptor| current.contains(descriptor))
+            .map(|descriptor| CatalogueRow {
+                provider: provider.to_owned(),
+                app_id: route.app_id.clone(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: descriptor.address.resource.clone(),
+                    kind: descriptor.resource_kind.clone(),
+                    label: descriptor.resource_label.clone(),
+                    presentation: None,
+                },
+                action: Some(descriptor),
+                has_children: false,
+                visibility: None,
+            })
+            .collect();
+        let mut page = CataloguePage::from_rows(source.revision, rows, query);
+        if !page.rows.is_empty() {
+            page.locator = link.view_locator(&fresh.room, provider);
+        }
+        Ok(page)
+    }
+
     fn catalogue_page(
         &mut self,
         workspace_id: u64,
@@ -877,6 +1019,7 @@ impl Worker {
                         presentation: None,
                     },
                     action: Some(tilo_actions::door::ActionDescriptor {
+                        semantic_identity: None,
                         address: target.address,
                         resource_kind: "applications.app".into(),
                         resource_label: app.to_owned(),
@@ -1089,4 +1232,34 @@ impl Worker {
         }
         Ok(())
     }
+}
+
+fn exact_view_query(
+    query: &CatalogueQuery,
+) -> Result<(&tilo_actions::remote::ViewResourceQuery, &str), ActionHostError> {
+    let wanted = query
+        .view_resource
+        .as_ref()
+        .ok_or(ActionHostError::UnknownAction)?;
+    let provider = query
+        .provider
+        .as_deref()
+        .ok_or(ActionHostError::UnknownAction)?;
+    if wanted.id.is_empty()
+        || wanted.id.trim().is_empty()
+        || wanted.id.chars().any(char::is_control)
+        || wanted.id.len() > 2048
+        || wanted.kind.is_empty()
+        || wanted.kind.trim().is_empty()
+        || wanted.kind.chars().any(char::is_control)
+        || wanted.kind.len() > 128
+        || provider.len() > 2048
+        || provider.chars().any(char::is_control)
+        || query.target.is_some()
+        || !query.cursor.is_empty()
+        || query.parent_resource.is_some()
+    {
+        return Err(ActionHostError::UnknownAction);
+    }
+    Ok((wanted, provider))
 }

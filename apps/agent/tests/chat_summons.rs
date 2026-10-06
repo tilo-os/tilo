@@ -30,7 +30,7 @@ fn config(path: std::path::PathBuf) -> Config {
         app_id: CHAT.into(),
         cluster: typed_peer::room(),
         record: None,
-        agent_id: "Scribe".into(),
+        agent_id: "scribe".into(),
         name: "Reader".into(),
         pace: Duration::ZERO,
         once: true,
@@ -39,10 +39,10 @@ fn config(path: std::path::PathBuf) -> Config {
         await_document: Duration::ZERO,
         settle: Duration::ZERO,
         permissions: PermissionContext::from_capabilities(
-            Actor::agent("Scribe"),
+            Actor::agent("scribe"),
             vec![
                 CapOverride::grant(
-                    Subject::agent("Scribe"),
+                    Subject::agent("scribe"),
                     Scope::App("so.tilo.word-processor".into()),
                     Verb::Write,
                 )
@@ -50,7 +50,7 @@ fn config(path: std::path::PathBuf) -> Config {
                 // Invited to the conversation, as the launcher grants it: the
                 // agent's replies and work state are its own Chat edits.
                 CapOverride::grant(
-                    Subject::agent("Scribe"),
+                    Subject::agent("scribe"),
                     Scope::App(CHAT.into()),
                     Verb::Write,
                 )
@@ -264,6 +264,7 @@ fn scenario_outcome(
                     }
                     CollabEvent::Invocation {
                         id,
+                        invocation,
                         resource,
                         action,
                         argument,
@@ -272,7 +273,7 @@ fn scenario_outcome(
                         ..
                     } => {
                         invocations += 1;
-                        assert_eq!(actor, "agent:Scribe");
+                        assert_eq!(actor, "agent:scribe");
                         let tree = scenario_resources(&document, outcome);
                         let before = document.get_heads();
                         let update = typed_peer::service_document_invocation(
@@ -281,7 +282,7 @@ fn scenario_outcome(
                             &tree,
                             word_processor::actions::register,
                             typed_peer::DocumentInvocation {
-                                id,
+                                invocation,
                                 address: ActionAddress::new(resource, action),
                                 argument: argument.as_deref(),
                                 actor: &actor,
@@ -371,7 +372,7 @@ fn scenario_outcome(
             durable_reply = (1..=expected_requests).all(|number| {
                 let parent = format!("request-{number}");
                 let mut replies = messages.iter().filter(|message| {
-                    message.author == "Scribe" && message.parent.as_deref() == Some(&parent)
+                    message.author == "scribe" && message.parent.as_deref() == Some(&parent)
                 });
                 replies.next().is_some_and(|message| {
                     message.work.as_ref().is_some_and(|work| match outcome {
@@ -436,7 +437,7 @@ fn scenario_outcome(
         return;
     }
     let reply = &replies[0];
-    assert_eq!(reply.author, "Scribe");
+    assert_eq!(reply.author, "scribe");
     assert_eq!(reply.channel, "c_general");
     let work = reply.work.as_ref().unwrap();
     if requests == 0 {
@@ -494,7 +495,7 @@ fn scenario_outcome(
 
 #[test]
 fn native_chat_summons_executes_owner_action_and_restart_does_not_repeat() {
-    scenario("@Scribe insert a table", Some("Scribe"), true, None, true);
+    scenario("@Scribe insert a table", Some("scribe"), true, None, true);
 }
 #[test]
 fn unrelated_message_does_not_dispatch_or_reply() {
@@ -516,13 +517,13 @@ fn display_name_addressing_uses_same_native_loop() {
 }
 #[test]
 fn denied_action_refuses_without_dispatch_and_survives_restart() {
-    scenario("@Scribe insert a table", Some("Scribe"), false, None, true);
+    scenario("@Scribe insert a table", Some("scribe"), false, None, true);
 }
 #[test]
 fn record_scoped_chat_cannot_be_conflated_with_package_primary() {
     scenario(
         "@Scribe insert a table",
-        Some("Scribe"),
+        Some("scribe"),
         true,
         Some("other-chat"),
         false,
@@ -551,7 +552,7 @@ fn scenario(
 fn owner_disconnect_after_mutation_is_unconfirmed_and_restart_never_repeats() {
     scenario_outcome(
         "@Scribe insert a table",
-        Some("Scribe"),
+        Some("scribe"),
         true,
         None,
         true,
@@ -565,7 +566,7 @@ fn owner_disconnect_after_mutation_is_unconfirmed_and_restart_never_repeats() {
 fn missing_owner_state_waits_then_reuses_same_reply_and_executes() {
     scenario_outcome(
         "@Scribe insert a table",
-        Some("Scribe"),
+        Some("scribe"),
         true,
         None,
         true,
@@ -579,7 +580,7 @@ fn missing_owner_state_waits_then_reuses_same_reply_and_executes() {
 fn multiple_addressed_messages_are_pumped_oldest_first_without_new_traffic() {
     scenario_outcome(
         "@Scribe insert a table",
-        Some("Scribe"),
+        Some("scribe"),
         true,
         None,
         true,
@@ -602,7 +603,7 @@ fn record_scoped_chat_configuration_is_rejected_before_connecting() {
 fn permitted_view_operation_is_explicitly_refused_before_dispatch() {
     scenario_outcome(
         "@Scribe zoom in",
-        Some("Scribe"),
+        Some("scribe"),
         true,
         None,
         true,
@@ -616,7 +617,7 @@ fn permitted_view_operation_is_explicitly_refused_before_dispatch() {
 fn owner_mutation_then_cancelled_is_unconfirmed_and_restart_never_repeats() {
     scenario_outcome(
         "@Scribe insert a table",
-        Some("Scribe"),
+        Some("scribe"),
         true,
         None,
         true,

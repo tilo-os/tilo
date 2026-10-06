@@ -33,7 +33,7 @@ use ui::widget::{
 };
 
 use crate::app::{ChatApp, Hit, MenuTarget};
-use crate::geometry::{centered_band, title_beside_chip};
+use crate::geometry::title_beside_chip;
 use crate::model::{
     self, AgentRoute, AgentStepOutcome, AgentWork, AgentWorkState, Attachment, ChannelKind,
     Message, Presence,
@@ -109,6 +109,9 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         self.draw_header(scene, tf, tr, theme, hits);
+        let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
+        let width = composer_editor_width(field_w, theme, true);
+        self.composer_main.measure(width, f32::INFINITY, theme, tr);
         let area = self.messages_rect(tr);
         push_clip(scene, tf, area);
         self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
@@ -192,7 +195,33 @@ impl ChatApp {
             view.set_mention_paint(paint);
             *painted = fingerprint;
         }
-        view.show(&m.blocks());
+        let blocks = m.blocks();
+        view.show(&blocks);
+        let editor = view.editor_mut();
+        editor.clear_document_selection();
+        if let Some((message, source, start, end)) = &self.revealed_range
+            && message == &m.id
+            && self.revealed_message.as_ref() == Some(message)
+            && source == &m.text
+            && crate::body::plain_text(&blocks) == *source
+        {
+            let position = |offset: usize| {
+                let mut remaining = offset;
+                for (block, content) in blocks.iter().enumerate() {
+                    if remaining <= content.text.len() {
+                        return Some(ui::widget::DocumentPosition {
+                            block,
+                            byte: remaining,
+                        });
+                    }
+                    remaining = remaining.saturating_sub(content.text.len() + 1);
+                }
+                None
+            };
+            if let (Some(anchor), Some(cursor)) = (position(*start), position(*end)) {
+                editor.select_document_range(anchor, cursor);
+            }
+        }
         // The view's paragraphs keep a field's side padding. Lay the view out
         // that far to the leading side so the text itself starts on the
         // message column's edge; the padding is read back from the laid-out
@@ -859,10 +888,11 @@ impl ChatApp {
         } else {
             h.x0 + self.chrome.gutter
         };
-        let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, h, hits);
+        let controls = self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits);
+        let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
 
         let ch = self.channel(&self.active_channel).cloned();
-        let (name, topic) = match &ch {
+        let (name, mut topic) = match &ch {
             Some(ch) => {
                 let topic = if self.inbox_open {
                     self.workspaces
@@ -876,6 +906,11 @@ impl ChatApp {
             }
             None => (String::new(), String::new()),
         };
+        if self.sharing_context {
+            topic = crate::i18n::t("chat-context-sharing");
+        } else if self.following_context {
+            topic = crate::i18n::t("chat-context-following");
+        }
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         let max = (cluster_left - f64::from(sp.s3) - left).max(0.0);
         let title_style = theme.text(TextRole::Heading);
@@ -898,6 +933,50 @@ impl ChatApp {
                 line_in(&mut ctx, &topic, &topic_style, theme.text_dim, tx, h, avail);
             }
         }
+    }
+
+    /// An immediate stop stays visible while navigation is being published.
+    /// Its face is the shared Button, and its input uses the public effect.
+    fn draw_context_stop(
+        &self,
+        paint: PaintCtx<'_>,
+        header: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> Rect {
+        if !self.sharing_context {
+            return header;
+        }
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = paint;
+        let caption = crate::i18n::t("chat-context-stop");
+        let probe = ButtonFace::new(Rect::ZERO, &caption);
+        let width = probe.intrinsic_width(text, theme);
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let edge = header.x1 - self.chrome.gutter;
+        let rect = Rect::new(
+            edge - width,
+            header.center().y - height / 2.0,
+            edge,
+            header.center().y + height / 2.0,
+        );
+        Button::paint(
+            scene,
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+        );
+        Self::push_hit(hits, rect, Hit::StopSharingLiveContext);
+        Rect::new(
+            header.x0,
+            header.y0,
+            rect.x0 - f64::from(theme.tokens.spacing.s2),
+            header.y1,
+        )
     }
 
     /// Whether the sidebar toggle stands in the conversation header (the
@@ -940,12 +1019,12 @@ impl ChatApp {
             return search.x0;
         }
         let right = search.x0 - f64::from(sp.s2);
-        let call_label = if self.call.active {
-            "Show call"
+        let call_label = crate::i18n::t(if self.call.active {
+            "chat-header-call-open"
         } else {
-            "Start call"
-        };
-        let probe = ButtonFace::new(Rect::ZERO, call_label);
+            "chat-header-voice-call"
+        });
+        let probe = ButtonFace::new(Rect::ZERO, &call_label);
         let call_w = probe.intrinsic_width(tr, theme);
         let call = Rect::new(
             right - call_w,
@@ -958,7 +1037,7 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::new(call, call_label).hovered(self.hovered(call)),
+            &ButtonFace::new(call, &call_label).hovered(self.hovered(call)),
         );
         ChatApp::push_hit(hits, call, Hit::StartCall);
 
@@ -1321,6 +1400,11 @@ impl ChatApp {
             header_h,
             body_h,
             work_h,
+            resource_h: if !editing && m.reference.is_some() && m.source_provider.is_some() {
+                2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
+            } else {
+                0.0
+            },
             att_h,
             react_h,
             edited_h,
@@ -1415,8 +1499,55 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
+        if rm.resource_h > 0.0 {
+            self.draw_resource_navigation(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
+        }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
+    }
+
+    fn draw_resource_navigation(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        for (key, hit) in [
+            (
+                "chat-resource-copy-link",
+                Hit::CopyResourceLink(m.id.clone()),
+            ),
+            (
+                "chat-resource-open-link",
+                Hit::OpenResourceLink(m.id.clone()),
+            ),
+        ] {
+            *y += gap;
+            let caption = crate::i18n::t(key);
+            let width = ButtonFace::new(Rect::ZERO, &caption)
+                .intrinsic_width(tr, theme)
+                .min(f64::from(column.text_width));
+            let rect = Rect::new(column.text_x, *y, column.text_x + width, *y + height);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+            );
+            ChatApp::push_hit(hits, rect, hit);
+            *y += height;
+        }
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
@@ -2040,15 +2171,15 @@ impl ChatApp {
         } = paint;
         let sp = &theme.tokens.spacing;
         let btn = ButtonFace::height(ControlSize::Regular, theme);
-        let inset = f64::from(sp.s1);
-        // Buttons sit on the last line of a growing draft.
-        let cy = rect.y1 - inset - btn / 2.0;
         paint_field(scene, tf, theme, rect, focused);
         ChatApp::push_hit(hits, rect, focus_hit);
 
-        let mut tx = rect.x0 + f64::from(sp.s3);
+        let leading = if attach { vec![btn] } else { Vec::new() };
+        let emoji_w =
+            ButtonFace::icon_only(Rect::ZERO, Icon::Smile, "Emoji").intrinsic_width(tr, theme);
+        let frame = tilo_rich_text::ComposerFrame::layout(rect, theme, &leading, &[btn, emoji_w]);
         if attach {
-            let plus = square(Point::new(rect.x0 + inset + btn / 2.0, cy), btn);
+            let plus = composer_slot(&frame.leading, 0);
             Button::paint(
                 scene,
                 tf,
@@ -2058,10 +2189,9 @@ impl ChatApp {
                     .hovered(self.hovered(plus)),
             );
             ChatApp::push_hit(hits, plus, Hit::Attach);
-            tx = plus.x1 + f64::from(sp.s1);
         }
 
-        let send = square(Point::new(rect.x1 - inset - btn / 2.0, cy), btn);
+        let send = composer_slot(&frame.trailing, 0);
         let send_face = ButtonFace::icon_only(send, Icon::Send, "Send message")
             .role(ButtonRole::Primary)
             .hovered(self.hovered(send));
@@ -2078,14 +2208,7 @@ impl ChatApp {
         );
         ChatApp::push_hit(hits, send, Hit::Send);
 
-        let emoji_face = ButtonFace::icon_only(Rect::ZERO, Icon::Smile, "Emoji");
-        let emoji_w = emoji_face.intrinsic_width(tr, theme);
-        let emoji = Rect::new(
-            send.x0 - f64::from(sp.s1) - emoji_w,
-            cy - btn / 2.0,
-            send.x0 - f64::from(sp.s1),
-            cy + btn / 2.0,
-        );
+        let emoji = composer_slot(&frame.trailing, 1);
         Button::paint(
             scene,
             tf,
@@ -2100,16 +2223,8 @@ impl ChatApp {
             Hit::ComposerEmoji(Point::new(emoji.x1 - picker_w, rect.y0 - f64::from(sp.s2))),
         );
 
-        let full = Rect::new(
-            tx,
-            rect.y0 + inset,
-            emoji.x0 - f64::from(sp.s1),
-            rect.y1 - inset,
-        );
-        let wrap_w = full.width().max(f64::from(sp.s8)) as f32;
-        let probe = if draft.is_empty() { "Ag" } else { draft };
-        let content_h = f64::from(tr.measure_style(probe, Some(wrap_w), &self.chrome.body).1);
-        centered_band(full, content_h, f64::from(sp.s1))
+        let _ = draft;
+        frame.editor
     }
 
     // ---------------------------------------------------------------- thread
@@ -2126,7 +2241,11 @@ impl ChatApp {
             return;
         };
         let panel = self.thread_rect();
-        let comp = self.thread_composer_rect(tr, panel);
+        let width =
+            composer_editor_width(panel.width() - 2.0 * self.chrome.composer_pad, theme, true);
+        self.composer_thread
+            .measure(width, f32::INFINITY, theme, tr);
+        let comp = self.thread_composer_rect(panel);
         let head = self.draw_thread_header(scene, tf, tr, theme, panel, hits);
         let body = Rect::new(
             panel.x0,
@@ -3004,6 +3123,7 @@ struct RowM {
     header_h: f64,
     body_h: f64,
     work_h: f64,
+    resource_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
@@ -3026,12 +3146,38 @@ impl RowM {
             + header
             + body
             + self.work_h
+            + self.resource_h
             + self.edited_h
             + self.att_h
             + self.react_h
             + self.thread_h
             + self.pad
     }
+}
+
+/// Match the shared square control slots actually painted beside the editor.
+fn composer_editor_width(field: f64, theme: &Theme, attach: bool) -> f64 {
+    let button = ButtonFace::height(ControlSize::Regular, theme);
+    let leading = if attach { vec![button] } else { Vec::new() };
+    tilo_rich_text::ComposerFrame::layout(
+        Rect::new(0.0, 0.0, field, button),
+        theme,
+        &leading,
+        &[button, button],
+    )
+    .editor
+    .width()
+    .max(1.0)
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "ComposerFrame returns one slot for each supplied control width; these callers supply the matching fixed slots"
+)]
+fn composer_slot(slots: &[Rect], index: usize) -> Rect {
+    *slots
+        .get(index)
+        .expect("supplied composer control has a slot")
 }
 
 #[cfg(test)]
@@ -3210,6 +3356,7 @@ mod tests {
             header_h: 0.0,
             body_h: 0.0,
             work_h: 96.0,
+            resource_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,
             edited_h: 0.0,

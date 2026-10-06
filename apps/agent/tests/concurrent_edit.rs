@@ -188,6 +188,7 @@ fn drive_peer_and_type(
             }
             CollabEvent::Invocation {
                 id,
+                invocation,
                 resource,
                 action,
                 argument,
@@ -203,7 +204,7 @@ fn drive_peer_and_type(
                     &resources,
                     word_processor::actions::register,
                     typed_peer::DocumentInvocation {
-                        id,
+                        invocation,
                         address: ActionAddress::new(resource, action),
                         argument: argument.as_deref(),
                         actor: &actor,

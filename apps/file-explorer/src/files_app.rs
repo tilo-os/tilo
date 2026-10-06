@@ -43,6 +43,8 @@ use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
+mod selection_actions;
+
 /// The most lines a detail sheet lists.
 const COLLAB_PANEL_MAX_LINES: usize = 20;
 /// Space kept clear at the bottom of the file viewport for the transient
@@ -1908,6 +1910,31 @@ impl FileExplorerWidget {
                 self.refresh();
                 None
             }
+            FilesEffect::SelectEntries { entries } => {
+                self.select_published_entries(&entries)?;
+                Some(self.selection_answer())
+            }
+            FilesEffect::SelectAll => {
+                self.apply_command(FileCommand::SelectAll);
+                self.last_click = None;
+                Some(self.selection_answer())
+            }
+            FilesEffect::ClearSelection => {
+                self.selection.clear();
+                self.last_click = None;
+                Some(self.selection_answer())
+            }
+            FilesEffect::CopySelection | FilesEffect::CutSelection => {
+                if self.selected_paths().is_empty() {
+                    return Err(t("files-selection-empty"));
+                }
+                self.apply_command(if matches!(effect, FilesEffect::CutSelection) {
+                    FileCommand::Cut
+                } else {
+                    FileCommand::Copy
+                });
+                None
+            }
             FilesEffect::Paste => {
                 self.paste()?;
                 None
@@ -2160,6 +2187,15 @@ impl FileExplorerWidget {
             FilesEffect::DeclineNearby { transfer } => {
                 self.decide_nearby(transfer, None)?;
                 None
+            }
+            FilesEffect::InspectNearby { transfer } => {
+                let status = self
+                    .nearby_send
+                    .transfers()
+                    .iter()
+                    .find(|candidate| candidate.handle == transfer)
+                    .ok_or_else(|| t("files-nearby-transfer-unavailable"))?;
+                Some(serde_json::json!({"transfer": status}))
             }
             FilesEffect::RetryNearby { transfer } => {
                 if !self.nearby_send.transfers().iter().any(|candidate| {
@@ -3270,7 +3306,7 @@ impl FileExplorerWidget {
     pub fn set_sort_by(&mut self, s: SortBy) {
         let changed = self.sort_by != s;
         self.sort_by = s;
-        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        self.sort_preserving_selection();
         if changed {
             self.store_preferences();
         }
@@ -3280,8 +3316,41 @@ impl FileExplorerWidget {
             SortOrder::Ascending => SortOrder::Descending,
             SortOrder::Descending => SortOrder::Ascending,
         };
-        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        self.sort_preserving_selection();
         self.store_preferences();
+    }
+
+    fn sort_preserving_selection(&mut self) {
+        // Sorting only permutes this snapshot; paths identify its unchanged
+        // entries without cloning file metadata or reading/hydrating content.
+        let positions: HashMap<_, _> = self
+            .selection
+            .selected_set()
+            .iter()
+            .copied()
+            .chain(self.selection.primary())
+            .chain(self.selection.anchor())
+            .chain(self.renaming)
+            .filter_map(|index| {
+                self.entries
+                    .get(index)
+                    .map(|entry| (entry.path.clone(), index))
+            })
+            .collect();
+        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        let remapped: HashMap<_, _> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(new, entry)| positions.get(&entry.path).map(|old| (*old, new)))
+            .collect();
+        self.selection
+            .remap_indices(|old| remapped.get(&old).copied());
+        self.renaming = self.renaming.and_then(|old| remapped.get(&old).copied());
+        self.rename_rect.set(None);
+        // A previous click's row cannot be used for double-click detection
+        // after reordering: that row may now contain a different file.
+        self.last_click = None;
     }
     pub fn set_view_mode(&mut self, m: ViewMode) {
         if self.view_mode == m {
@@ -4227,6 +4296,7 @@ impl FileExplorerWidget {
             }
             FileCommand::SelectAll => {
                 self.selection.select_all(self.displayed_entries().len());
+                self.last_click = None;
                 true
             }
             FileCommand::OpenTerminal => {
@@ -5155,6 +5225,10 @@ impl FileExplorerWidget {
     pub fn stage_scenario(&mut self, scenario: Option<&str>) {
         let rect = self.rect;
         match scenario {
+            Some("selection-actions") => self.stage_published_selection(),
+            Some(name @ ("selection-sort" | "selection-sorted" | "selection-reversed")) => {
+                self.stage_sort_selection(name);
+            }
             Some(name @ ("recent" | "recent-menu" | "recent-revealed" | "recent-forgotten")) => {
                 // Capture-only files from the prepared scratch home. Use the
                 // same Recent setting and commands as the live window.
@@ -5252,11 +5326,63 @@ impl FileExplorerWidget {
         }
     }
 
+    fn stage_sort_selection(&mut self, name: &str) {
+        self.set_view_mode(ViewMode::List);
+        self.set_sort_by(SortBy::Name);
+        self.apply_set_sort_order(SortOrder::Ascending);
+        for filename in ["Notes.txt", "Recipes.md"] {
+            if let Some(index) = self.entries.iter().position(|entry| entry.name == filename) {
+                self.apply_command(FileCommand::Click {
+                    index,
+                    ctrl: true,
+                    shift: false,
+                });
+            }
+        }
+        if name != "selection-sort" {
+            self.set_sort_by(SortBy::Size);
+        }
+        if name == "selection-reversed" {
+            self.apply_set_sort_order(SortOrder::Descending);
+        }
+    }
+
+    fn stage_published_selection(&mut self) {
+        use crate::effects::FilesEffect;
+        let entries = self
+            .displayed_entries()
+            .iter()
+            .filter(|entry| matches!(entry.name.as_str(), "Notes.txt" | "Recipes.md"))
+            .map(Self::entry_resource_id)
+            .collect();
+        for effect in [
+            FilesEffect::List,
+            FilesEffect::SortName,
+            FilesEffect::SortAscending,
+            FilesEffect::SelectEntries { entries },
+            FilesEffect::SortSize,
+        ] {
+            if let Err(error) = self.run_effect(effect) {
+                self.set_external_status(error);
+                return;
+            }
+        }
+    }
+
     /// The filesystem work that cannot be done now, as this window's state
     /// says.
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         use crate::effects::FilesEffect;
         let mut statuses = Vec::new();
+        if self.selected_paths().is_empty() {
+            for id in [FilesEffect::COPY_SELECTION, FilesEffect::CUT_SELECTION] {
+                statuses.push(ui::framework::EffectStatus::unavailable(
+                    id,
+                    "selection_empty",
+                    t("files-selection-empty"),
+                ));
+            }
+        }
         if self.last_trash_undo.is_none() {
             statuses.push(ui::framework::EffectStatus::unavailable(
                 FilesEffect::UNDO_TRASH,
@@ -8014,9 +8140,9 @@ impl FileExplorerWidget {
 
     fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
         for transfer in self.nearby_send.transfers() {
-            if let Some(resource) = self.nearby_receiver_resource(transfer) {
-                folder.children.push(resource);
-            }
+            folder
+                .children
+                .push(self.nearby_receiver_resource(transfer));
         }
     }
 
@@ -8027,7 +8153,7 @@ impl FileExplorerWidget {
     fn nearby_receiver_resource(
         &self,
         transfer: &ui::collaboration::NearbyTransferStatus,
-    ) -> Option<Resource> {
+    ) -> Resource {
         use ui::collaboration::NearbyTransferPhase;
 
         let mut resource = Resource::new(
@@ -8038,6 +8164,15 @@ impl FileExplorerWidget {
             "files.nearby-transfer",
             transfer.name.clone(),
         );
+        let mut inspect = crate::effects::row_action(
+            &crate::effects::FilesEffect::InspectNearby {
+                transfer: transfer.handle,
+            },
+            "status",
+            t("files-nearby-status"),
+        );
+        inspect.description = Some(t("files-nearby-status-detail"));
+        resource.actions.push(inspect);
         self.append_nearby_decision_actions(&mut resource, transfer);
         if transfer.phase == NearbyTransferPhase::Failed {
             resource.actions.push(crate::effects::row_action(
@@ -8060,7 +8195,7 @@ impl FileExplorerWidget {
                 t("files-nearby-cancelled"),
             ));
         }
-        (!resource.actions.is_empty()).then_some(resource)
+        resource
     }
 
     #[allow(

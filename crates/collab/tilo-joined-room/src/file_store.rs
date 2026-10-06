@@ -39,6 +39,7 @@ pub fn open_file(path: &Path) -> Result<NativeWorkspaceOwner, String> {
     };
     let store = FileStore {
         path: path.to_path_buf(),
+        history: crate::HistoryContent::for_state_file(path),
         healthy: AtomicBool::new(true),
         uncertain: RwLock::new(BTreeSet::new()),
     };
@@ -47,11 +48,18 @@ pub fn open_file(path: &Path) -> Result<NativeWorkspaceOwner, String> {
 
 struct FileStore {
     path: PathBuf,
+    history: crate::HistoryContent,
     healthy: AtomicBool,
     uncertain: RwLock<BTreeSet<RoomId>>,
 }
 
 impl Store for FileStore {
+    fn put_history(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        self.history.put(bytes)
+    }
+    fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        self.history.read(hash)
+    }
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)
     }

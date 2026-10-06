@@ -697,9 +697,11 @@ fi
 mkdir -p "$MNT"
 if [ "$ROOTFS" = btrfs ]; then
   # Compress objects while bootc installs them, before a small board disk fills.
+  # Level 3 reduces the installed immutable payload. This mount exists only
+  # during assembly; the booted image still selects its runtime mount policy.
   # The inherited inode property also applies to objects created after reboot;
   # the installation mount option alone would only cover this mount's lifetime.
-  sudo -n mount -o compress=zstd:1 "$root_dev" "$MNT"
+  sudo -n mount -o compress=zstd:3 "$root_dev" "$MNT"
   sudo -n btrfs property set "$MNT" compression zstd
 else
   sudo -n mount "$root_dev" "$MNT"

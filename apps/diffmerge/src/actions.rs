@@ -165,6 +165,7 @@ impl Action for DiffmergeAction {
                 left: left.clone(),
                 right_label: right_label.clone(),
                 right: right.clone(),
+                ..Comparison::default()
             }
             .write(doc)
             .map_err(|e| written(&e)),

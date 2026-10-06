@@ -892,6 +892,9 @@ pub struct FloatingPlacement {
     handoff_rect: Option<Rect>,
     drag: Option<Drag>,
     preferred_size: Size,
+    /// Inline app elements may fill their ordinary layout region before
+    /// detaching; activity overlays leave this unset and use the inset home.
+    attached_region: Option<Rect>,
     /// Visual chrome surrounding the content rect while it belongs to an app.
     /// Keeping this here makes the *complete* soft surface stay inside its
     /// parent, while desktop geometry can continue to identify the stable
@@ -920,6 +923,7 @@ impl FloatingPlacement {
             handoff_rect: None,
             drag: None,
             preferred_size,
+            attached_region: None,
             attached_chrome: [0.0; 4],
             safe_insets: [0.0; 4],
             desktop_coordinate_offset: Vec2::ZERO,
@@ -949,8 +953,29 @@ impl FloatingPlacement {
         self.return_pending
     }
 
+    /// Ask the host to return an adopted surface without painting a second
+    /// source copy before its `Suspended` acknowledgement.
+    pub fn request_app_return(&mut self) {
+        if self.desktop_adopted && matches!(self.attachment, Attachment::Desktop { .. }) {
+            self.return_pending = true;
+            self.drag = None;
+        }
+    }
+
     pub fn set_preferred_size(&mut self, size: Size) {
         self.preferred_size = size;
+    }
+
+    /// Bind placement to the exact current app-local region of an inline
+    /// element. This is lifecycle geometry, not an independent layout system.
+    pub fn set_attached_region(&mut self, region: Option<Rect>) {
+        match region {
+            None => self.attached_region = None,
+            Some(rect) if protocol_rect([rect.x0, rect.y0, rect.x1, rect.y1]).is_ok() => {
+                self.attached_region = Some(rect);
+            }
+            Some(_) => {}
+        }
     }
 
     /// Declare app-owned decoration around the placement's content rect as
@@ -1208,6 +1233,9 @@ impl FloatingPlacement {
     }
 
     fn attached_home_rect(&self, app: Rect) -> Rect {
+        if let Some(region) = self.attached_region {
+            return region;
+        }
         let app = self.safe_area(app);
         let [left, top, right, bottom] = self.attached_chrome;
         let w = self
@@ -1412,6 +1440,39 @@ mod tests {
             let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), desk);
             assert_eq!(b.x0 - a.x0, 140.0);
             assert_eq!(b.y0 - a.y0, 40.0);
+        }
+
+        // Case `inline_attached_region_is_the_single_source_geometry`.
+        {
+            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+            let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+            let inline = Rect::new(310.0, 120.0, 840.0, 660.0);
+            let mut p = FloatingPlacement::attached(inline.size());
+            p.set_attached_region(Some(inline));
+            assert_eq!(p.rect(app, desk), inline);
+            p.set_attached_region(Some(Rect::new(f64::NAN, 0.0, 2.0, 2.0)));
+            assert_eq!(p.rect(app, desk), inline, "invalid geometry is ignored");
+        }
+
+        // Case `programmatic_return_requires_confirmed_desktop_ownership`.
+        {
+            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+            let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+            p.request_app_return();
+            assert!(!p.is_return_pending());
+            p.detach_to_desktop(Rect::new(940.0, 120.0, 1_260.0, 300.0));
+            p.request_app_return();
+            assert!(
+                !p.is_return_pending(),
+                "a request is not proof that desktop pixels were adopted"
+            );
+            p.prepare_desktop_rect(Rect::new(940.0, 120.0, 1_260.0, 300.0));
+            p.confirm_desktop_adoption();
+            p.request_app_return();
+            assert!(p.is_return_pending());
+            p.reattach_to_app(app, desk);
+            assert!(!p.is_return_pending());
         }
 
         // Case `safe_insets_keep_the_home_and_a_drag_below_the_header_row`.

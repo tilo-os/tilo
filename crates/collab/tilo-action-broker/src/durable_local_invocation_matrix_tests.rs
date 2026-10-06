@@ -483,6 +483,7 @@ mod durable_local_matrix {
                 // Its edits are admitted as the agent: what the grants allow,
                 // and not what one denies.
                 let action = |action: &str| PublishedAction {
+                    semantic_identity: None,
                     resource: "document-1:body".into(),
                     action: action.into(),
                     resource_kind: "document".into(),

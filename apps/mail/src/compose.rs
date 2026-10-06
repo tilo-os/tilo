@@ -1323,6 +1323,15 @@ impl ComposeWindow {
     /// lay out every interactive region. `bounds` is the app content rect.
     pub fn layout(&mut self, bounds: Rect) {
         self.bounds = bounds;
+        if self.is_full_window_page() {
+            self.rect = bounds;
+            self.drag = None;
+            // Returning to a roomy viewport should restore a floating size,
+            // rather than preserving the phone page as a desktop window.
+            self.placed = false;
+            self.relayout_regions();
+            return;
+        }
         if !self.placed {
             let m = self.metrics;
             let margin = m.pad * 2.0;
@@ -1344,6 +1353,11 @@ impl ComposeWindow {
         }
         self.clamp_into_bounds();
         self.relayout_regions();
+    }
+
+    fn is_full_window_page(&self) -> bool {
+        matches!(self.dock, DockState::Docked)
+            && ui::widget::modal_dialog::uses_full_window(self.bounds, &self.theme)
     }
 
     fn clamp_into_bounds(&mut self) {
@@ -1807,9 +1821,11 @@ impl ComposeWindow {
     ) -> ComposeAction {
         match hit {
             ComposeHit::TitleBar => {
-                self.drag = Some(Drag::Move {
-                    grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
-                });
+                if !self.is_full_window_page() {
+                    self.drag = Some(Drag::Move {
+                        grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
+                    });
+                }
             }
             ComposeHit::Close | ComposeHit::Discard => {
                 self.close();
@@ -2040,6 +2056,9 @@ impl ComposeWindow {
     // ---- move / resize ----
 
     fn resize_edge_at(&self, pt: Point) -> Option<Edge> {
+        if self.is_full_window_page() {
+            return None;
+        }
         let r = self.rect;
         // The grip is the window's own edge, a `s2` band inside it.
         let grip = f64::from(self.theme.tokens.spacing.s2);
@@ -2135,10 +2154,29 @@ impl ComposeWindow {
             self.layout(self.bounds);
         }
         // Docked, the window is modal over the app; detached, it is not.
-        if matches!(self.dock, DockState::Docked) {
-            ui::overlay::scrim::modal(scene, t, self.bounds, 1.0, theme);
+        if self.is_full_window_page() {
+            ui::floating_surface::paint_material(
+                scene,
+                t,
+                &self.rect,
+                ui::floating_surface::Material::Opaque,
+                theme,
+            );
+        } else {
+            if matches!(self.dock, DockState::Docked) {
+                ui::overlay::scrim::behind_panel(
+                    scene,
+                    t,
+                    self.bounds,
+                    vello::kurbo::RoundedRect::from_rect(
+                        self.rect,
+                        ui::widget::floating_surface::radius(theme),
+                    ),
+                    theme,
+                );
+            }
+            ui::widget::floating_surface::paint(scene, t, self.rect, theme);
         }
-        ui::widget::floating_surface::paint(scene, t, self.rect, theme);
         // What is drawn on the panel reads against the panel's ground.
         let panel = theme.on_ground(ui::chrome::panel_ground(theme));
         self.draw_title_bar(scene, t, tr, &panel);
@@ -2793,6 +2831,53 @@ mod tests {
                 "outside click does not close (explicit Discard only)"
             );
             assert!(w.open, "window stays open");
+        }
+    }
+
+    #[test]
+    fn compact_compose_is_a_full_window_page_and_keeps_close_and_send_reachable() {
+        for theme in [Theme::dark(), Theme::light()] {
+            for bounds in [
+                Rect::new(0.0, 0.0, 360.0, 800.0),
+                Rect::new(0.0, 0.0, 800.0, 360.0),
+            ] {
+                let mut window = win();
+                window.theme = theme.clone();
+                window.layout(bounds);
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                window.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                assert_eq!(window.window_rect(), bounds);
+                assert!(window.body_rect().height() > 0.0);
+                for target in [
+                    ComposeHit::Close,
+                    ComposeHit::Send,
+                    ComposeHit::SaveDraft,
+                    ComposeHit::Discard,
+                ] {
+                    assert!(
+                        bounds.contains_rect(hit_rect(&window, target)),
+                        "{target:?} remains reachable"
+                    );
+                }
+                assert!(window.resize_edge_at(bounds.center()).is_none());
+                assert!(
+                    window
+                        .resize_edge_at(Point::new(bounds.x1 - 1.0, bounds.y1 - 1.0))
+                        .is_none()
+                );
+                let close = hit_rect(&window, ComposeHit::Close).center();
+                let (handled, action) = press_at(&mut window, close);
+                assert!(handled);
+                assert!(matches!(action, ComposeAction::Close));
+                assert!(!window.open);
+            }
         }
     }
 
