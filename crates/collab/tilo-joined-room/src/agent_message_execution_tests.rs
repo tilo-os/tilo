@@ -150,7 +150,7 @@ fn launch_for(fixture: &Fixture, agent: &str) -> Running {
         fixture,
         launcher,
         authority.as_ref(),
-        session,
+        &session,
         runtime,
         root,
     )
@@ -160,7 +160,7 @@ fn connect(
     fixture: &Fixture,
     mut launcher: ManagedLauncher,
     authority: &OwnerAuthority,
-    session: AgentSessionBinding,
+    session: &AgentSessionBinding,
     runtime: ManagedRuntimeFacts,
     root: std::path::PathBuf,
 ) -> Running {
@@ -216,10 +216,9 @@ fn connect(
         ready, *b"PR",
         "actual admitted fixture and orphan must be ready"
     );
-    let service = AgentMessageHostService::from_admitted_process(
+    let service = AgentMessageHostService::from_connected_process(
         fixture.owner.clone(),
         fixture.certificate.clone(),
-        session,
         process.clone(),
         fixture.now,
     )
@@ -392,6 +391,10 @@ fn unrelated_person_document_edit_does_not_invalidate_addressed_input() {
 fn real_process_binds_accepts_and_prepares_only_explicit_input() {
     let (fixture, invocation) = admitted();
     let mut running = launch(&fixture);
+    assert_eq!(
+        running.service.pending_invocations(fixture.now).unwrap(),
+        vec![invocation]
+    );
     let mut wrong_session = running.service.session.clone();
     wrong_session.generation = wrong_session.generation.checked_add(1).unwrap();
     assert!(
@@ -409,6 +412,7 @@ fn real_process_binds_accepts_and_prepares_only_explicit_input() {
     assert_eq!(delivered.text, "Explicit input");
     assert_eq!(delivered.request_row, format!("m_{}", invocation.simple()));
     assert_eq!(delivered.agent, "scribe");
+    assert!(delivered.prepared_reply.is_none());
     assert_eq!(delivered.launch, running.process.binding().launch);
     assert_eq!(
         running
@@ -440,8 +444,23 @@ fn real_process_binds_accepts_and_prepares_only_explicit_input() {
         matches!(phase(&fixture, invocation), MessagePhase::ReplyPrepared { invocation: id, .. }
         if id == reply)
     );
+    let recovered = AgentMessageHostService::from_connected_process(
+        fixture.owner.clone(),
+        fixture.certificate.clone(),
+        running.process.clone(),
+        fixture.now,
+    )
+    .unwrap();
+    assert_eq!(
+        recovered
+            .deliver(invocation, fixture.now)
+            .unwrap()
+            .prepared_reply,
+        Some((reply, "Fixture output".into()))
+    );
     running.launcher.shutdown().unwrap();
     assert!(running.process.facts().is_err());
+    assert!(running.service.pending_invocations(fixture.now).is_err());
 }
 
 #[test]
@@ -495,6 +514,13 @@ fn actual_process_commits_one_attributed_same_parent_reply_and_exact_replay() {
         .unwrap();
     assert_eq!(receipt.source, invocation);
     assert_eq!(receipt.reply, reply);
+    assert!(
+        running
+            .service
+            .pending_invocations(fixture.now)
+            .unwrap()
+            .is_empty()
+    );
     assert_committed_reply(&fixture, invocation, &delivery, reply);
     assert_terminal_reply_isolation(&fixture, invocation, &delivery, &receipt, &mut running);
 }

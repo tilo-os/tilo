@@ -1,7 +1,9 @@
 //! Closed native host service. The only execution input is an actual launcher
 //! proof; caller fields, signed data and retained session rows cannot recreate
 //! it. Live checks run inside the owner turn without broker/membership locks.
-use crate::agent_message::{MessageAttention, MessageExecutionBinding, StoredAgentMessage};
+use crate::agent_message::{
+    MessageAttention, MessageExecutionBinding, MessagePhase, StoredAgentMessage,
+};
 use crate::{
     AgentSessionBinding, NativeCommittedView, NativeWorkspaceOwner, RoomId, agent_session,
 };
@@ -23,6 +25,9 @@ pub struct AgentMessageDelivery {
     pub text: String,
     pub source_digest: [u8; 32],
     pub launch: String,
+    /// Previously retained output, if present. A reconnect must commit this
+    /// exact output rather than repeat model generation with a new answer.
+    pub prepared_reply: Option<(uuid::Uuid, String)>,
 }
 
 /// Private host installation, never a serialized capability or guest RPC.
@@ -42,6 +47,55 @@ enum Transition<'a> {
 }
 
 impl AgentMessageHostService {
+    /// Install from the actual admitted private connection. No guest-selected
+    /// session fields, process id or stored digest can construct this service.
+    ///
+    /// # Errors
+    /// The actual proof is stale, its original session is absent, or current
+    /// host, membership and durable bound-process custody no longer match.
+    pub fn from_connected_process(
+        owner: NativeWorkspaceOwner,
+        attestor: DeviceCert,
+        process: VerifiedManagedProcess,
+        now: SystemTime,
+    ) -> Result<Self, String> {
+        let facts = process.facts()?;
+        let room = RoomId::parse(&facts.binding.room).ok_or("connected Agent room is invalid")?;
+        let session = owner.with_current(room, |view| {
+            agent_session::connected_binding(view, &facts.binding.launch)
+        })?;
+        Self::from_admitted_process(owner, attestor, session, process, now)
+    }
+
+    /// Discover only this connected Agent's pending input identities. The
+    /// returned identifiers are not authority: each delivery rechecks its
+    /// original source and current execution inside the serialized owner turn.
+    /// Admission order is stable, including across private-stream replacement.
+    ///
+    /// # Errors
+    /// The current actual process, host or retained session cannot be verified.
+    pub fn pending_invocations(&self, now: SystemTime) -> Result<Vec<uuid::Uuid>, String> {
+        let _turn = self.owner.0.mutation.lock();
+        self.owner.with_current(self.session.room, |view| {
+            self.execution(view, now)?;
+            let mut pending = view
+                .record
+                .agent_messages
+                .values()
+                .filter(|message| {
+                    message.source.agent == self.session.agent
+                        && !matches!(message.phase, MessagePhase::NeedsAttention(_))
+                })
+                .map(|message| (message.admitted_generation, message.source.invocation))
+                .collect::<Vec<_>>();
+            pending.sort_unstable();
+            Ok(pending
+                .into_iter()
+                .map(|(_, invocation)| invocation)
+                .collect())
+        })
+    }
+
     /// Adopt the actual connected Agent proof installed by the native broker.
     ///
     /// # Errors
@@ -89,6 +143,12 @@ impl AgentMessageHostService {
             text: message.source.payload.text.clone(),
             source_digest: message.source.digest()?,
             launch: self.session.launch.clone(),
+            prepared_reply: match &message.phase {
+                MessagePhase::ReplyPrepared { invocation, text } => {
+                    Some((*invocation, text.clone()))
+                }
+                _ => None,
+            },
         })
     }
 

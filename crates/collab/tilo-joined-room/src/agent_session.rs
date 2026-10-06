@@ -94,6 +94,19 @@ pub(crate) struct StoredAgentSession {
     phase: SessionPhase,
 }
 
+/// Retrieve correlation only. The connected-process adapter must subsequently
+/// revalidate the actual kernel proof against this exact retained binding.
+pub(crate) fn connected_binding(
+    view: &NativeCommittedView,
+    launch: &str,
+) -> Result<AgentSessionBinding, String> {
+    view.record
+        .agent_sessions
+        .get(launch)
+        .map(|session| session.binding.clone())
+        .ok_or_else(|| "connected Agent has no retained session".into())
+}
+
 pub(crate) fn authorize_host(
     view: &NativeCommittedView,
     attestor: &DeviceCert,
