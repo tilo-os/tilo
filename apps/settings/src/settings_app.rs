@@ -165,7 +165,7 @@ impl SettingsApp {
             time_date: panes::time_date::TimeDateArea::new(&cx),
             input: panes::mouse_keyboard::InputArea::new(&cx),
             keyboard_map_input: ui::KeyboardMapInput::default(),
-            keyboard_map_cache: Default::default(),
+            keyboard_map_cache: std::rc::Rc::default(),
             power: panes::power::PowerArea::new(&cx),
             updates: panes::updates::UpdatesArea::new(&cx),
             storage: panes::storage::StorageArea::new(&cx),
