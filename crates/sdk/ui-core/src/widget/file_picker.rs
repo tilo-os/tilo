@@ -1489,6 +1489,7 @@ impl Widget for FilePicker {
         if focused {
             self.ensure_valid_focus();
         }
+        self.sync_filename_focus();
     }
 
     fn is_focused(&self) -> bool {
@@ -1501,6 +1502,15 @@ impl Widget for FilePicker {
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
         Widget::ime_cursor_rect(&self.filename)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.filename.ime_purpose()
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.filename.ime_cursor_rect()?;
+        self.filename.ime_edit_fingerprint(key)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -3059,10 +3069,14 @@ mod tests {
             let mut picker =
                 FilePicker::new("Save", &root, vec![root.clone()]).with_mode(FilePickerMode::Save);
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+            Widget::set_focus(&mut picker, true);
+            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_some());
+            let original = picker.ime_edit_fingerprint(&[7; 32]).unwrap();
             // Save starts on Filename. Tab leaves it for the next modal control;
             // Shift+Tab returns to the exact editable target.
             dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Cancel));
+            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_none());
             dispatch_mods(
                 &mut picker,
                 &key_named(winit::keyboard::NamedKey::Tab),
@@ -3071,6 +3085,8 @@ mod tests {
             assert_eq!(picker.focus, Some(PickerFocus::Filename));
             dispatch(&mut picker, &key_char("x"));
             assert_eq!(picker.filename(), "x");
+            assert_ne!(picker.ime_edit_fingerprint(&[7; 32]).unwrap(), original);
+            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_some());
             let node = Widget::accessibility(&picker).expect("dialog semantics");
             let filename = node
                 .children

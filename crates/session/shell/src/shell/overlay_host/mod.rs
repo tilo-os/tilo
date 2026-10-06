@@ -10,6 +10,8 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
+mod axis_navigation;
+
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
@@ -34,6 +36,7 @@ use ui::TextRole;
 
 mod controller;
 mod device_fabric;
+pub(crate) mod dictation_layer;
 mod displays;
 mod emoji_layer;
 mod history;
@@ -682,6 +685,7 @@ pub struct ShellOverlayHost {
     /// The focused `(strip, group)` last recorded in the display partition,
     /// so a focus change is noted once.
     last_noted_focus: Option<(StripId, GroupId)>,
+    axis_gather_pending: Option<axis_navigation::Gather>,
     /// Hit rect for the "+ Add workspace" affordance at the tail of the
     /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
@@ -1784,7 +1788,8 @@ impl ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => false,
+            | LayerId::PowerMenu
+            | LayerId::Dictation => false,
         }
     }
 
@@ -2110,6 +2115,7 @@ impl ShellOverlayHost {
             content_built_empty: None,
             workspace_content_layout_dirty: false,
             last_noted_focus: None,
+            axis_gather_pending: None,
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
@@ -2418,6 +2424,13 @@ impl ShellOverlayHost {
     /// hit-testing would otherwise consume Restore/Close presses before the
     /// `WindowGroup` which draws those controls can see them.
     pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
+        // Local input controls are above window chrome and preserve its seat.
+        if self
+            .last_cursor
+            .is_some_and(|point| self.dictation_pointer_at((point.x, point.y)))
+        {
+            return false;
+        }
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
@@ -4741,7 +4754,6 @@ impl ShellOverlayHost {
                         }
                         if let Some(group) =
                             strip.window_groups.iter_mut().find(|g| g.id == w.group)
-                            && group.active_tab != w.tab
                         {
                             // A stale `bar.active_id` (mid-detach
                             // frame) would write a phantom active-tab
@@ -4750,8 +4762,8 @@ impl ShellOverlayHost {
                             if !tab_exists {
                                 continue;
                             }
+                            selection_changed |= group.active_tab != w.tab;
                             group.active_tab = w.tab;
-                            selection_changed = true;
                             if ws.id == active_workspace {
                                 focus_writes.push((ws.id, w.strip, w.group));
                                 activated_file_tabs.push(w.tab);
@@ -4761,11 +4773,19 @@ impl ShellOverlayHost {
                 }
             }
         }
-        if selection_changed {
+        // Activating a group's already-selected tab is still a focus edge.
+        if selection_changed || !focus_writes.is_empty() {
             let mut tree = st.tree_mut();
             for (ws_id, strip_id, group_id) in focus_writes {
+                selection_changed |= tree.desktop.active_strip.get(&ws_id) != Some(&strip_id)
+                    || tree.desktop.active_group.get(&strip_id) != Some(&group_id);
                 tree.desktop.active_strip.insert(ws_id, strip_id);
                 tree.desktop.active_group.insert(strip_id, group_id);
+                // Assistive activation has no pointer event to choose its display.
+                if let Some(display) = tree.desktop.outputs.display_of(group_id) {
+                    selection_changed |= tree.desktop.outputs.focused_display() != Some(display);
+                    tree.desktop.outputs.set_focused(display);
+                }
             }
             let activated_file_tabs: Vec<_> = activated_file_tabs
                 .into_iter()
@@ -4774,7 +4794,9 @@ impl ShellOverlayHost {
             // Selection is session state, not merely paint state. Persist it
             // in the same input/frame boundary that accepted the click so a
             // compositor crash cannot restore the previously visible tab.
-            tree.queue_save();
+            if selection_changed {
+                tree.queue_save();
+            }
             drop(tree);
             drop(st);
             for tab in activated_file_tabs {
@@ -5901,6 +5923,19 @@ impl ShellOverlayHost {
                 ),
             ));
         }
+        if self.layers.dictation.is_consent() {
+            let outputs = self.layer_outputs();
+            let surface =
+                dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs));
+            targets.push((
+                crate::shell::trusted_ui::DICTATION_PROMPT_TARGET,
+                crate::shell::trusted_ui::seal_band(
+                    surface,
+                    thickness,
+                    f64::from(theme.tokens.radii.control),
+                ),
+            ));
+        }
         if let Some(layout) = self.portal_dialogs.layout(self.rect) {
             let radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
             targets.push((
@@ -6122,6 +6157,13 @@ impl ShellOverlayHost {
     pub fn step_focus_along_strip(&mut self, steps: i32) -> bool {
         if steps == 0 {
             return false;
+        }
+        if self
+            .chrome
+            .as_ref()
+            .is_some_and(|c| c.borrow().axis_navigation_enabled())
+        {
+            return self.step_axis_navigation(steps);
         }
         if let Some(moved) = self.step_focus_across_displays(steps) {
             return moved;
@@ -8508,6 +8550,10 @@ impl ShellOverlayHost {
             .flatten()
     }
 
+    pub(crate) fn palette_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.palette.ime_edit_fingerprint(key)
+    }
+
     /// Force-set the palette visibility, so headless harnesses can drive
     /// the palette scene without a synthetic Ctrl+K.
     pub fn set_palette_visible(&mut self, v: bool) {
@@ -10630,7 +10676,8 @@ impl ShellOverlayHost {
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
-        (self.palette_visible && self.palette.get_rect().contains(p))
+        self.dictation_pointer_at((p.x, p.y))
+            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -12076,12 +12123,57 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Intercept only local input controls without withdrawing text-input focus.
+    pub(crate) fn dictation_owns_key(&self, key: &winit::keyboard::Key) -> bool {
+        self.layers.dictation.owns_key(key)
+    }
+
+    /// Local microphone controls cannot be operated through a shared seat.
+    /// This does not withdraw the original editable field's local IME focus.
+    pub(crate) fn dictation_mutes_remote_input(&self) -> bool {
+        self.layers.dictation.is_open()
+    }
+
+    pub(crate) fn dictation_pointer_at(&self, point: (f64, f64)) -> bool {
+        let outputs = self.layer_outputs();
+        self.layers.dictation.is_open()
+            && dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs))
+                .contains(Point::new(point.0, point.1))
+    }
+
+    pub(crate) fn dictation_input_available(&self) -> bool {
+        self.onboarding.is_none()
+            && self.permission_prompt.is_none()
+            && self.portal_dialogs.layout(self.rect).is_none()
+            && !self.display_confirmation_visible()
+            && !self.window_switcher_active()
+    }
+
+    pub(crate) fn dictation_surface_mut(&mut self) -> &mut dictation_layer::DictationSurface {
+        &mut self.layers.dictation
+    }
+
     /// Run every window operation the action door queued on the chrome
     /// ([`ChromeState::request_shortcut_action`]), in order. The shell
     /// runs this each update, before splicing tree changes into the rows.
     ///
     /// [`ChromeState::request_shortcut_action`]: crate::shell::chrome_state::ChromeState::request_shortcut_action
     pub fn run_requested_shortcut_actions(&mut self) {
+        let cancel = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow_mut().take_tab_drag_cancel_request());
+        if cancel {
+            self.cancel_tab_drags();
+        }
+
+        let gather = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow_mut().take_axis_gather_request());
+        if gather {
+            self.request_axis_gather();
+        }
         let requested = self
             .chrome
             .as_ref()
@@ -12125,6 +12217,29 @@ impl ShellOverlayHost {
             // Zooming is a step, so a held zoom key keeps zooming; the toggle is an edge.
             if !(repeat && step == MagnifierStep::Toggle) {
                 self.step_magnifier(step);
+            }
+            return true;
+        }
+        if matches!(
+            action,
+            A::DictationToggle | A::DictationFinish | A::DictationCancel
+        ) {
+            if !repeat {
+                match action {
+                    A::DictationToggle => self.layers.dictation.request_toggle(),
+                    A::DictationFinish => self.layers.dictation.request_finish(),
+                    A::DictationCancel => self.layers.dictation.request_cancel(),
+                    _ => {}
+                }
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+            }
+            return true;
+        }
+        if action == A::TabMenu {
+            if !repeat {
+                let _ = self.open_focused_tab_context_menu();
             }
             return true;
         }
@@ -12623,6 +12738,10 @@ impl ShellOverlayHost {
     /// The Escape dismissal ladder. Priority matches z-order: palette >
     /// overview > ws settings > quick settings.
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
+        if self.cancel_tab_drags() {
+            *handled = true;
+            return true;
+        }
         if self.palette_visible {
             if let Some(chrome) = self.chrome.clone() {
                 let mut state = chrome.borrow_mut();
@@ -15845,6 +15964,97 @@ impl ShellOverlayHost {
             .open(target, tab_count, point, title, self.rect);
     }
 
+    /// Open the shell menu at the focused tab, independent of the pointer.
+    /// Resolve the durable focus first; a stale or unlaid-out tab cannot open
+    /// a menu at a made-up location. The menu is local presentation only.
+    pub fn open_focused_tab_context_menu(&mut self) -> bool {
+        if self.onboarding.is_some() || self.content.wants_pointer_capture() {
+            return false;
+        }
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let target = {
+            let st = chrome.borrow();
+            if st.session_locked() {
+                return false;
+            }
+            let tree = st.tree();
+            let Some(strip) = tree.desktop.active_strip.get(&tree.desktop.active).copied() else {
+                return false;
+            };
+            let Some(group) = tree.desktop.active_group_for(strip) else {
+                return false;
+            };
+            drop(tree);
+            let Some(tab) = crate::shell::window_actions::active_tab_id(&st) else {
+                return false;
+            };
+            drop(st);
+            TabMenuTarget { strip, group, tab }
+        };
+        let Some(&ptr) = self.group_row_ptrs.get(&target.strip) else {
+            return false;
+        };
+        // SAFETY: see field doc on `group_row_ptrs`; only read the live row.
+        let row: &GroupRow = unsafe { &*ptr };
+        let Some(group) = row.groups.iter().find(|group| group.id == target.group) else {
+            return false;
+        };
+        let Some((index, tab)) = group
+            .tabs()
+            .iter()
+            .enumerate()
+            .find(|(_, tab)| tab.id == target.tab)
+        else {
+            return false;
+        };
+        let Some(rect) = group.tab_rects().get(index).copied() else {
+            return false;
+        };
+        // Compact bars may collapse an inactive pill, and keyboard focus can
+        // change before the next layout expands it. Its laid-out bar remains
+        // a real anchor; do not discard that opening key between frames.
+        let rect = if rect.area() > 0.0 {
+            rect
+        } else {
+            group.bar_rect()
+        };
+        if rect.area() <= 0.0 {
+            return false;
+        }
+        let title = tab.title.clone();
+        let tab_count = group.tab_count();
+        let outputs = self.layer_outputs();
+        let viewport = self.layer_geometry(&outputs).display_for(None);
+        self.layers.tab_menu.open(
+            target,
+            tab_count,
+            Point::new(rect.x0, rect.y1),
+            title,
+            viewport,
+        );
+        self.layers.tab_menu.focus_first_action();
+        true
+    }
+
+    /// Abandon tab gestures and cross-strip feedback, preserving durable state.
+    pub fn cancel_tab_drags(&mut self) -> bool {
+        let mut cancelled = false;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: live rows are visited sequentially under the field's
+            // stable-pointer contract, without retaining a borrowed row.
+            cancelled |= unsafe { &mut *ptr }.cancel_tab_drag();
+        }
+        if cancelled {
+            for &ptr in self.group_row_ptrs.values() {
+                // SAFETY: the same sequential stable-row contract as above.
+                unsafe { &mut *ptr }.set_cross_strip_tab_drag_hover(None);
+            }
+        }
+        cancelled
+    }
+
     /// A menu whose tab or group has gone has nothing left to act on.
     fn prune_stale_tab_context_menu(&mut self) {
         let rows = &self.group_row_ptrs;
@@ -15973,6 +16183,13 @@ impl ShellOverlayHost {
                 true
             }
             LayerIntent::FocusWindow(address) => self.focus_switcher_window(address),
+            LayerIntent::Dictation(request) => {
+                self.layers.dictation.enqueue(request);
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
             LayerIntent::Repaint => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
@@ -16845,6 +17062,7 @@ impl Widget for ShellOverlayHost {
         }
         self.pairing
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
+        self.finish_axis_gather();
         self.publish_strip_viewport();
     }
 
@@ -17562,7 +17780,8 @@ impl Widget for ShellOverlayHost {
                 | LayerId::WindowSwitcher
                 | LayerId::EmojiPicker
                 | LayerId::TabContextMenu
-                | LayerId::PowerMenu => {}
+                | LayerId::PowerMenu
+                | LayerId::Dictation => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
                         // The filter band is the host's, painted over the
@@ -18580,7 +18799,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => None,
+            | LayerId::PowerMenu | LayerId::Dictation => None,
         }
     }
 
@@ -18627,7 +18846,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => false,
+            | LayerId::PowerMenu | LayerId::Dictation => false,
         }
     }
 
@@ -21129,6 +21348,18 @@ impl ShellOverlayHost {
     ) {
         self.draw_top_overlays_below_switcher(scene, transform, text_renderer, theme, presence);
         let outputs = self.layer_outputs();
+        self.layers.draw(
+            LayerId::Dictation,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            },
+        );
         self.layers.draw(
             LayerId::WindowSwitcher,
             &mut LayerPaint {

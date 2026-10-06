@@ -104,12 +104,20 @@ impl Finished {
 }
 
 #[derive(Clone, Debug)]
+pub enum DetailUpdate {
+    /// Enrich the app the person already selected; this is not navigation.
+    Requested { id: String, item: Option<StoreItem> },
+    /// Opening a reference resolves its identity and intentionally opens it.
+    OpenedReference(StoreItem),
+}
+
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub items: Vec<StoreItem>,
     pub status_line: String,
     /// Search responses name their query so stale results can be discarded.
     pub query: Option<String>,
-    pub detail: Option<StoreItem>,
+    pub detail: Option<DetailUpdate>,
     pub remotes: Vec<Remote>,
     pub flatpak_available: bool,
     pub flatpak_error: Option<String>,
@@ -339,7 +347,7 @@ fn handle(
             let (label, detail, error) = match &opened {
                 Ok(item) => (
                     format!("Opened {} from its reference.", item.name),
-                    Some(item.clone()),
+                    Some(DetailUpdate::OpenedReference(item.clone())),
                     None,
                 ),
                 Err(error) => (error.clone(), None, Some(error.clone())),
@@ -804,7 +812,10 @@ fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
         state.base_items.clone(),
         &label,
         None,
-        loaded,
+        Some(DetailUpdate::Requested {
+            id: id.to_string(),
+            item: loaded,
+        }),
         operation_error,
     )
 }
@@ -817,6 +828,10 @@ fn send(
     query: Option<String>,
     detail: Option<StoreItem>,
 ) -> bool {
+    let detail = detail.map(|item| DetailUpdate::Requested {
+        id: item.id.clone(),
+        item: Some(item),
+    });
     send_tracked(snapshots, state, items, status_line, query, detail, None)
 }
 
@@ -899,7 +914,7 @@ fn send_tracked(
     items: Vec<StoreItem>,
     status_line: &str,
     query: Option<String>,
-    detail: Option<StoreItem>,
+    detail: Option<DetailUpdate>,
     operation_error: Option<String>,
 ) -> bool {
     snapshots.send(Snapshot {

@@ -33,6 +33,7 @@ pub(super) struct CardSpec {
     pub action: Action,
     /// A Play action over the art while the card is under the pointer.
     pub play: Option<Action>,
+    pub menu: Option<Action>,
 }
 
 /// What decides whether a grid is rebuilt: everything a card shows and does,
@@ -46,6 +47,7 @@ struct CardKey {
     portrait: bool,
     action: Action,
     play: Option<Action>,
+    menu: Option<Action>,
 }
 
 impl CardKey {
@@ -58,6 +60,7 @@ impl CardKey {
             portrait: card.portrait,
             action: card.action.clone(),
             play: card.play.clone(),
+            menu: card.menu.clone(),
         }
     }
 }
@@ -130,7 +133,16 @@ impl MediaGridHost {
         for line in card.meta {
             built = built.meta(line);
         }
-        if let Some(play) = card.play {
+        if let Some(menu) = card.menu {
+            let asked = Rc::clone(&self.asked);
+            built = built.hover_action(
+                Icon::MoreHorizontal,
+                ui::i18n!("music-spotify-playlist-actions"),
+                move || {
+                    asked.borrow_mut().push(menu.clone());
+                },
+            );
+        } else if let Some(play) = card.play {
             let asked = Rc::clone(&self.asked);
             built = built.hover_action(Icon::Play, "Play", move || {
                 asked.borrow_mut().push(play.clone());

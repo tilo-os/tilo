@@ -62,7 +62,7 @@ impl Resource for Mail {
 
     fn read(doc: &Doc) -> Result<MailboxState, ModelError> {
         let draft = MailDoc::load_draft(doc);
-        let has_draft = !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty();
+        let has_draft = !draft.is_empty();
         let messages = MailDoc::list_message_flags(doc)
             .into_iter()
             .map(|flags| MessageRow {
@@ -337,10 +337,13 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
     /// Every message already loaded, outside Trash: its subject, sender and
     /// body come from the engine, not the document.
     fn search_entries(&self) -> Vec<SearchEntry> {
-        crate::search::message_entries(&self.shared_mailbox())
+        let mut entries = crate::search::message_entries(&self.shared_mailbox());
+        entries.extend(self.contact_recipient_search_entries());
+        entries
     }
 
-    fn present(&mut self, _state: &std::rc::Rc<MailboxState>) {
+    fn present(&mut self, state: &std::rc::Rc<MailboxState>) {
+        self.has_contact_draft_conflict = state.has_draft || state.has_draft_body;
         // Shared folder/message Document state is adopted through sync from
         // the Automerge document. An empty projection must not wipe the
         // unpublished local mailbox corpus or in-flight compose.
@@ -355,6 +358,7 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
         // A screenshot shows its fixture as it is, whatever the profile holds.
         if cx.mode().is_live() {
             self.follow_preferences(cx.settings::<MailPreferences>());
+            self.contact_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();
             if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
                 self.follow_person_accounts(accounts);
             }
@@ -422,6 +426,10 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
                     Ok(app.finish_attachment_save(saved, &name, resource))
                 }),
             );
+        }
+        if matches!(effect, MailEffect::PrepareContactDraft { .. }) {
+            let state = cx.live().get();
+            self.has_contact_draft_conflict = state.has_draft || state.has_draft_body;
         }
         let invocation = cx.invocation().unwrap_or_default();
         let answer = self.begin_effect(invocation, effect)?;

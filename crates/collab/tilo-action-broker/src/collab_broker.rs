@@ -440,6 +440,22 @@ impl AppActionBroker {
             .unwrap_or_default()
     }
 
+    /// Read one current advertised action without cloning the whole inventory.
+    pub fn published_action(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(
+        crate::collab_broker_capnp::PublishedSurface,
+        crate::collab_broker_capnp::PublishedAction,
+    )> {
+        self.state
+            .while_live(|state| Ok(state.published_action(route, resource, action)))
+            .ok()
+            .flatten()
+    }
+
     /// Generation of the retained published-surface source.  Palette query
     /// edits use this inexpensive read before deciding to clone a new source
     /// snapshot.

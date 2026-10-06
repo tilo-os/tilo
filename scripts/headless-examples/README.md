@@ -44,7 +44,21 @@ Each script takes the socket path as its first argument (default `$TILO_TEST_CON
 | `tilo_client.py` | Library with `TiloClient` class; `from tilo_client import TiloClient`. Higher-level than the raw socket calls below. |
 | `library-demo.py` | Same flow as `full-loop.py` but via `TiloClient` — shows the library's API. |
 
-Each script is < 50 lines of Python, no external deps (stdlib `socket` + `json` only).
+The input examples use the Python standard library. Native protocol proofs below
+have their own explicit external prerequisites.
+
+## Native protocol journeys
+
+`airdrop-transfer-proof.py` boots its own isolated compositor, signed thin Files
+package and pinned OpenDrop loopback receiver. It exercises actual Files actions,
+trusted fingerprint entry, status/progress, cancellation and failure recovery.
+`cast-session-proof.py` drives the real prebuilt projector against a bounded TLS
+Cast receiver, checking media LOAD, tokenized HLS isolation and clean stop.
+
+These proofs have explicit prerequisites and fail when they cannot observe the
+subject. They never build, configure radios or use the user's desktop/accounts.
+See [continuity interoperability](../../docs/architecture/continuity-interop.md#native-journey-evidence-and-reproduction)
+for build inputs, pinned external dependencies and qualification limits.
 
 ## `tilo-control` CLI
 

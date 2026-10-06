@@ -132,6 +132,8 @@ struct Harness {
     strip: StripId,
     groups: Vec<GroupId>,
     tabs: Vec<[u64; 2]>,
+    outputs: Vec<shell::shell::overlay_host::OutputGeometry>,
+    reduce_motion: bool,
 }
 
 impl Harness {
@@ -183,6 +185,13 @@ impl Harness {
             strip,
             groups,
             tabs,
+            outputs: vec![shell::shell::overlay_host::OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                f64::from(W),
+                f64::from(H),
+            )],
+            reduce_motion: false,
         };
         h.lay_out();
         h
@@ -196,14 +205,9 @@ impl Harness {
         // it the first pass sizes groups against the toolkit's fallback and
         // the desktop rightly refuses to frame a selection on that stale
         // geometry until a second layout settles it.
-        self.host
-            .set_output_geometry(&[shell::shell::overlay_host::OutputGeometry::unscaled(
-                0.0,
-                0.0,
-                f64::from(W),
-                f64::from(H),
-            )]);
-        let theme = Theme::dark();
+        self.host.set_output_geometry(&self.outputs);
+        let mut theme = Theme::dark();
+        theme.reduce_motion = self.reduce_motion;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let child = self.host.build_layout(&mut taffy, &theme, &mut node_map);
@@ -1445,5 +1449,226 @@ fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
         shown(&h),
         Some(OsdKind::Magnifier { zoom: 2 }),
         "the toggle comes back at the zoom it left"
+    );
+}
+
+#[test]
+fn axis_navigation_is_opt_in_and_preserves_tab_selection() {
+    let mut h = Harness::new();
+    assert!(!h.chrome.borrow().axis_navigation_enabled());
+    assert!(h.host.step_focus_along_strip(1));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(1));
+    assert_eq!(h.active_window(), (h.groups[1], h.tabs[1][0]));
+    assert!(h.host.step_focus_along_strip(-1));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    h.chrome.borrow_mut().set_axis_navigation_enabled(false);
+    assert!(h.host.step_focus_along_strip(1));
+    assert_eq!(h.active_window(), (h.groups[1], h.tabs[1][0]));
+}
+
+#[test]
+fn axis_navigation_keyboard_and_wheel_gather_without_reordering() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+    assert_eq!(h.active_window(), (h.groups[1], h.tabs[1][0]));
+    h.tick();
+    h.scroll_horizontally(1.0);
+    assert_eq!(h.active_window(), (h.groups[2], h.tabs[2][0]));
+    h.tick();
+    let row = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip");
+    let group = row
+        .groups
+        .iter()
+        .find(|g| g.id == h.groups[2])
+        .expect("focused group");
+    let rect = group.get_rect();
+    let (x0, x1) = row.visible_canvas_span();
+    let scroll = row.scroll_x();
+    assert!(rect.x0 >= x0 - scroll - 0.5 && rect.x1 <= x1 - scroll + 0.5);
+    assert_eq!(row.group_ids(), h.groups);
+}
+
+#[test]
+fn axis_gather_reveals_same_focus_after_manual_pan_and_cancels_old_snap() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(4));
+    h.tick();
+    h.host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip")
+        .pan_to(0.0);
+    h.lay_out();
+    let before = h.active_window();
+    h.chrome.borrow_mut().request_axis_gather();
+    h.host.run_requested_shortcut_actions();
+    h.lay_out();
+    h.lay_out();
+    assert_eq!(h.active_window(), before);
+    assert!(h.scroll_x() > 0.0);
+    let offset = h.scroll_x();
+    h.tick();
+    assert_eq!(h.scroll_x(), offset, "a stale snap must not undo gather");
+}
+
+#[test]
+fn axis_pending_gather_is_cancelled_when_disabled_or_focus_changes() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(4));
+    h.chrome.borrow_mut().set_axis_navigation_enabled(false);
+    h.host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip")
+        .pan_to(0.0);
+    h.lay_out();
+    assert_eq!(h.scroll_x(), 0.0);
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    h.host.focus_group_on_strip(h.strip, h.groups[0]);
+    h.lay_out();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+    assert_eq!(h.scroll_x(), 0.0);
+}
+
+#[test]
+fn axis_navigation_stays_in_focused_display_with_mixed_scaling() {
+    use shell::shell::overlay_host::OutputGeometry;
+    let mut h = Harness::new();
+    let first = OutputGeometry::unscaled(0.0, 0.0, 640.0, 800.0).with_id(10);
+    let mut second = OutputGeometry::unscaled(640.0, 0.0, 640.0, 800.0).with_id(20);
+    second.scale = 1.5;
+    second.scene = Rect::new(640.0, 0.0, 1600.0, 1200.0);
+    h.outputs = vec![first, second];
+    h.lay_out();
+    {
+        let st = h.chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        let workspaces = tree.desktop.workspaces.clone();
+        assert!(
+            tree.desktop
+                .outputs
+                .move_group(&workspaces, h.groups[1], 20)
+        );
+        assert!(
+            tree.desktop
+                .outputs
+                .move_group(&workspaces, h.groups[3], 20)
+        );
+        tree.desktop.outputs.set_focused(10);
+    }
+    h.lay_out();
+    h.lay_out();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(1));
+    assert_eq!(h.active_window(), (h.groups[2], h.tabs[2][0]));
+    assert!(h.host.step_focus_along_strip(100));
+    assert_eq!(h.active_window(), (h.groups[4], h.tabs[4][0]));
+    assert!(!h.host.step_focus_along_strip(1));
+    h.tick();
+    let st = h.chrome.borrow();
+    assert_eq!(st.tree().desktop.outputs.focused_display(), Some(10));
+    let row = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip");
+    let remote = row.output_pan(20).expect("second display pan");
+    assert_eq!(
+        remote.scroll_x(),
+        0.0,
+        "gather must not pan another display"
+    );
+    let view = row.output_pan(10).expect("focused display pan").viewport();
+    let group = row
+        .groups
+        .iter()
+        .find(|g| g.id == h.groups[4])
+        .expect("focused group");
+    let rect = group.get_rect();
+    assert!(rect.x0 >= view.x0 - 0.5 && rect.x1 <= view.x1 + 0.5);
+}
+
+#[test]
+fn axis_navigation_lock_interrupts_pending_gather_and_focus_steps() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(4));
+    let selected = h.active_window();
+    h.chrome.borrow_mut().set_session_locked(true);
+    assert!(!h.host.step_focus_along_strip(-1));
+    h.host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip")
+        .pan_to(0.0);
+    h.lay_out();
+    assert_eq!(h.scroll_x(), 0.0);
+    assert_eq!(h.active_window(), selected);
+    h.chrome.borrow_mut().set_session_locked(false);
+    h.lay_out();
+    assert_eq!(h.scroll_x(), 0.0, "unlock must not revive a stale gather");
+}
+
+#[test]
+fn axis_gather_stops_old_snap_when_focus_is_already_visible() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    h.lay_out();
+    let row = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip");
+    assert!(row.scroll_group_into_view_animated(h.groups[4], Instant::now()));
+    h.chrome.borrow_mut().request_axis_gather();
+    h.host.run_requested_shortcut_actions();
+    h.lay_out();
+    h.tick();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+    assert_eq!(
+        h.scroll_x(),
+        0.0,
+        "already-visible gather still cancels old motion"
+    );
+}
+
+#[test]
+fn axis_gather_finishes_without_animation_in_reduced_motion() {
+    let mut h = Harness::new();
+    h.reduce_motion = true;
+    h.lay_out();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(4));
+    h.lay_out();
+    h.lay_out();
+    let offset = h.scroll_x();
+    assert!(offset > 0.0);
+    let row = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip");
+    let group = row
+        .groups
+        .iter()
+        .find(|g| g.id == h.groups[4])
+        .expect("focus");
+    assert!(group.get_rect().x1 <= row.get_rect().x1 + 0.5);
+    h.tick();
+    assert_eq!(
+        h.scroll_x(),
+        offset,
+        "gather must not leave an animation tail"
     );
 }

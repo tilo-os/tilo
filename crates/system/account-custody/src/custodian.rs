@@ -371,6 +371,19 @@ impl Custodian {
         vault.try_save().map_err(CustodyError::Storage)
     }
 
+    /// Forget a local OAuth grant. Provider-side revocation remains separate.
+    ///
+    /// # Errors
+    /// A vault recovery or persistence failure.
+    pub fn forget_oauth(&self, id: &AccountId) -> Result<(), CustodyError> {
+        let mut vault = self.vault();
+        if let Some(error) = vault.recovery_error() {
+            return Err(CustodyError::Storage(error.to_string()));
+        }
+        vault.remove(id);
+        vault.try_save().map_err(CustodyError::Storage)
+    }
+
     /// A current access token for `id`'s `OAuth` grant, for an app that
     /// presents it itself (Mail's `XOAUTH2`). The grant is refreshed through
     /// `oauth_use`'s client when it is due (or `force`) and the result
