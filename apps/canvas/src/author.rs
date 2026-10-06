@@ -97,30 +97,7 @@ pub fn resolve(mut select: Select) -> Result<crate::actions::CanvasAction, Strin
         return Ok(CanvasAction::Select(Box::new(select)));
     }
     if select.subject == Some(true) || select.refine.is_some() {
-        let (found, matte) = with_sight(|renderer, text, art| {
-            if let Some(layer) = &select.layer
-                && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
-            {
-                return Err(format!(
-                    "there is no layer {layer:?} to find the subject on; the layers are {}",
-                    crate::actions::layer_list(art)
-                ));
-            }
-            crate::subject::find(&select, renderer, text, art)
-        })?;
-        let found = match &select.d {
-            Some(d) => Region::of_path(&ui::vello::kurbo::BezPath::from_svg(d).unwrap_or_default())
-                .combine(&found, Op::Union),
-            None => found,
-        };
-        select.d = Some(path_data(&found.to_path()));
-        select.at = None;
-        select.subject = None;
-        select.refine = None;
-        select.layer = None;
-        select.tolerance = None;
-        select.matte = matte;
-        return Ok(CanvasAction::Select(Box::new(select)));
+        return Err("subject selection and edge refinement run as the find-area job; invoke find-area with these arguments".into());
     }
     let colour = match &select.colour {
         Some(text) => Some(
@@ -373,4 +350,25 @@ impl Eye<'_> {
 )]
 fn index(value: f64) -> usize {
     value.floor().max(0.0) as usize
+}
+
+/// The slow query's resolved geometry, retaining its selection options.
+pub fn found(
+    mut select: Select,
+    found: Region,
+    matte: Option<crate::model::Matte>,
+) -> crate::actions::CanvasAction {
+    let found = match &select.d {
+        Some(d) => Region::of_path(&ui::vello::kurbo::BezPath::from_svg(d).unwrap_or_default())
+            .combine(&found, Op::Union),
+        None => found,
+    };
+    select.d = Some(path_data(&found.to_path()));
+    select.at = None;
+    select.subject = None;
+    select.refine = None;
+    select.layer = None;
+    select.tolerance = None;
+    select.matte = matte;
+    crate::actions::CanvasAction::Select(Box::new(select))
 }

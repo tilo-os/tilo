@@ -1004,6 +1004,15 @@ fn sync_authoritative_catalogue(state: &State) {
     state.directory.sync(&state.base_items);
 }
 
+fn verified_registry_entries(
+    host: Option<&app_host::client::BlockingClient>,
+    registry: &str,
+) -> Result<Vec<crate::registry_client::VerifiedEntry>, String> {
+    let host = host.ok_or_else(|| "App service unavailable.".to_string())?;
+    let json = host.registry_catalogue(registry)?;
+    serde_json::from_str(&json).map_err(|error| format!("Invalid verified catalogue: {error}"))
+}
+
 fn collect_items(
     opened_ref: Option<&FlatpakRef>,
     installed: &[(String, String)],
@@ -1032,7 +1041,7 @@ fn collect_items(
     };
     let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
-        match crate::registry_client::fetch_entries(registry) {
+        match verified_registry_entries(host, &registry.name) {
             Ok(entries) => tilo_items.extend(entries.iter().map(|entry| {
                 tilo_to_store_item_on_channel(
                     entry,
