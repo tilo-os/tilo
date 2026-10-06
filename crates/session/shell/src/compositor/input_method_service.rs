@@ -701,12 +701,13 @@ fn bind_private_display(prefix: &str) -> Result<(ListeningSocketSource, PathBuf)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
 
     struct InstalledServiceFixture {
         methods: InputMethodServices,
         state: State,
         directory: tempfile::TempDir,
-        _display: smithay::reexports::wayland_server::Display<State>,
+        display: smithay::reexports::wayland_server::Display<State>,
         _event_loop: smithay::reexports::calloop::EventLoop<'static, State>,
         _env: tilo_test_env::ScopedEnv,
     }
@@ -752,7 +753,7 @@ mod tests {
                 methods,
                 state,
                 directory,
-                _display: display,
+                display,
                 _event_loop: event_loop,
                 _env: env,
             };
@@ -832,7 +833,6 @@ mod tests {
         // after revocation so the backend reaps its queued client kill.
         // wl_display.sync: display object 1, opcode 0, twelve-byte message,
         // with new callback object 2. No application content is transmitted.
-        use std::io::Write as _;
         client
             .write_all(
                 &[
@@ -844,7 +844,7 @@ mod tests {
             )
             .unwrap();
         fixture
-            ._display
+            .display
             .dispatch_clients(&mut fixture.state)
             .unwrap();
         let disconnected = fixture
@@ -899,7 +899,6 @@ mod tests {
         let other = fixture.directory.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("manifest.toml"), "[package]\nid = 'dev.tilo.other'\nversion = '1.0.0'\n[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n").unwrap();
-        use std::io::Write as _;
         std::fs::OpenOptions::new()
             .append(true)
             .open(fixture.directory.path().join("registry.toml"))
