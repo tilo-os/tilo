@@ -151,7 +151,10 @@ impl AudioCapture {
             CapturePurpose::Dictation => vec![
                 "--target".into(), target,
                 "--properties".into(),
-                "{ node.name = tilo-dictation-microphone node.description = \"Tilo dictation microphone\" }".into(),
+                // Consent covers this server-assigned source, not any future
+                // default. Source removal must close the pipe with an error;
+                // otherwise pw-record can remain alive without producing PCM.
+                "{ node.name = tilo-dictation-microphone node.description = \"Tilo dictation microphone\" node.dont-reconnect = true node.dont-fallback = true node.dont-move = true }".into(),
             ],
         };
         let mut recorder = Command::new(if matches!(purpose, CapturePurpose::Dictation) {
