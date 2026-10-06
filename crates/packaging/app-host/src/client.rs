@@ -9,7 +9,10 @@ use crate::app_host_capnp::{
     app_host,
 };
 use crate::install::InstallExpectation;
+
+mod pending;
 use package_store::InstalledPackage;
+pub use pending::PendingRead;
 use tilo_app_package::PackageId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,45 +151,7 @@ impl BlockingClient {
     ///
     /// Returns an error when the service request or an installed manifest cannot be read.
     pub fn list(&self) -> Result<Vec<InstalledPackage>, String> {
-        let response = self.wait(self.client.list_request().send().promise)?;
-        let result = response.get().map_err(|e| e.to_string())?;
-        let entries = result.get_entries().map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(entries.len() as usize);
-        for entry in entries {
-            let manifest_text = entry
-                .get_manifest_text()
-                .map_err(|e| e.to_string())?
-                .to_string()
-                .map_err(|e| e.to_string())?;
-            let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_text)
-                .map_err(|e| format!("installed manifest: {e}"))?;
-            let text = |value: Result<capnp::text::Reader<'_>, capnp::Error>| {
-                text_result(value).map(std::path::PathBuf::from)
-            };
-            let id = parse_id(entry.get_id().map_err(|e| e.to_string())?)?;
-            out.push(InstalledPackage {
-                id: manifest.package.id,
-                version: manifest.package.version,
-                package_id_hex: id.to_hex(),
-                payload_root: text(entry.get_payload_root())?,
-                manifest_path: text(entry.get_manifest_path())?,
-                publisher_key_hex: manifest
-                    .publisher
-                    .identity_bytes()
-                    .map(hex::encode)
-                    .unwrap_or_default(),
-                pinned: entry.get_pinning().map_err(|e| e.to_string())? == WirePinning::Pinned,
-                installed_at: 0,
-                last_used: entry.get_last_used_unix(),
-                attested_by: String::new(),
-                cli_commands: manifest.cli.map(|cli| cli.commands).unwrap_or_default(),
-                runtime: manifest.package.runtime.unwrap_or_default(),
-                source: String::new(),
-                held: false,
-                system: !entry.get_user_managed(),
-            });
-        }
-        Ok(out)
+        self.complete(self.begin_list())
     }
 
     /// Launch an installed package.
@@ -287,13 +252,7 @@ impl BlockingClient {
     ///
     /// Returns an error when the host service cannot read them.
     pub fn repositories(&self) -> Result<String, String> {
-        let request = self.client.repositories_request();
-        text_result(
-            self.wait(request.send().promise)?
-                .get()
-                .map_err(|e| e.to_string())?
-                .get_json(),
-        )
+        self.complete(self.begin_repositories())
     }
 
     /// Read verified metadata from an enabled repository configured by this person.
@@ -302,19 +261,7 @@ impl BlockingClient {
     /// # Errors
     /// Returns why the configured repository cannot be verified or read.
     pub fn registry_catalogue(&self, registry: &str) -> Result<String, String> {
-        let mut request = self.client.registry_catalogue_request();
-        request.get().set_registry(registry);
-        let response = self.wait(request.send().promise)?;
-        let entries = text_result(
-            response
-                .get()
-                .map_err(|error| error.to_string())?
-                .get_entries(),
-        )?;
-        if entries.len() > 4 * 1024 * 1024 {
-            return Err("verified repository catalogue exceeds the response limit".into());
-        }
-        Ok(entries)
+        self.complete(self.begin_registry_catalogue(registry))
     }
 
     /// Read cached app metadata from one configured Flatpak repository.
@@ -322,17 +269,7 @@ impl BlockingClient {
     /// # Errors
     /// Returns why the repository cannot be read on this device.
     pub fn flatpak_catalogue(&self, remote: &str, user_managed: bool) -> Result<String, String> {
-        let mut request = self.client.flatpak_catalogue_request();
-        request.get().set_remote(remote);
-        request.get().set_user_managed(user_managed);
-        let response = self.wait(request.send().promise)?;
-        response
-            .get()
-            .map_err(|e| e.to_string())?
-            .get_rows()
-            .map_err(|e| e.to_string())?
-            .to_string()
-            .map_err(|e| e.to_string())
+        self.complete(self.begin_flatpak_catalogue(remote, user_managed))
     }
 
     /// Install from a configured repository belonging to this account.
@@ -364,13 +301,7 @@ impl BlockingClient {
     /// # Errors
     /// Returns why the host installation cannot be read.
     pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
-        let response = self.wait(self.client.flatpak_status_request().send().promise)?;
-        let result = response.get().map_err(|e| e.to_string())?;
-        Ok(FlatpakStatus {
-            available: result.get_available(),
-            installed: text_result(result.get_installed())?,
-            remotes: text_result(result.get_remotes())?,
-        })
+        self.complete(self.begin_flatpak_status())
     }
 
     /// Enable or disable an existing repository in this account's scope.
