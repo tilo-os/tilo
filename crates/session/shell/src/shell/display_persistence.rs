@@ -4,6 +4,7 @@
 //! settings source compares it after adopting external-copy writes under its
 //! canonical lock; stale answers cannot revive replaced display intent.
 
+use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 
@@ -39,10 +40,36 @@ impl PendingAnswer {
 }
 
 pub(crate) fn answer(answer: Answer) -> std::io::Result<PendingAnswer> {
-    let source = settings_store::installed_source()
-        .ok_or_else(|| std::io::Error::other("conditional display storage is unavailable"))?;
+    answer_for(answer, None)
+}
+
+pub(crate) fn answer_for(
+    answer: Answer,
+    expected_id: Option<u64>,
+) -> std::io::Result<PendingAnswer> {
+    queue_answer(answer, expected_id, None)
+}
+
+pub(crate) fn answer_and_trust(id: u64, tool: DisplayTool) -> std::io::Result<PendingAnswer> {
+    queue_answer(Answer::Keep, Some(id), Some(tool))
+}
+
+fn queue_answer(
+    answer: Answer,
+    expected_id: Option<u64>,
+    trust: Option<DisplayTool>,
+) -> std::io::Result<PendingAnswer> {
+    let source = settings_store::installed_source();
+    let file = if source.is_none() {
+        Some(settings_store::file_write_path()?)
+    } else {
+        None
+    };
     let transaction = DisplayTransaction::load()
         .ok_or_else(|| std::io::Error::other("no display change is waiting"))?;
+    if expected_id.is_some_and(|id| transaction.id != id) {
+        return Err(std::io::Error::other("display change was replaced"));
+    }
     let allowed = match answer {
         Answer::Keep => transaction.state == DisplayTransactionState::AwaitingConfirmation,
         Answer::Revert => matches!(
@@ -70,7 +97,11 @@ pub(crate) fn answer(answer: Answer) -> std::io::Result<PendingAnswer> {
     let (sender, result) = mpsc::channel();
     super::durable_writer::global().submit_ordered(move || {
         let stored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            store_answer(source.as_ref(), &expected, values)
+            store_answer(source.as_deref(), file.as_deref(), &expected, values)?;
+            if let Some(tool) = trust {
+                store_trust(source.as_deref(), file.as_deref(), tool)?;
+            }
+            Ok(())
         }))
         .unwrap_or_else(|_| Err(std::io::Error::other("display answer storage panicked")));
         let _ = sender.send(stored);
@@ -92,12 +123,22 @@ fn section(
 }
 
 fn store_answer(
-    source: &dyn settings_store::SettingsSource,
+    source: Option<&dyn settings_store::SettingsSource>,
+    file: Option<&std::path::Path>,
     expected: &serde_json::Map<String, serde_json::Value>,
     values: serde_json::Map<String, serde_json::Value>,
 ) -> std::io::Result<()> {
     use settings_store::ConditionalUpdate;
-    match source.compare_update_section("display_transaction", expected, values)? {
+    let receipt = match source {
+        Some(source) => source.compare_update_section("display_transaction", expected, values),
+        None => settings_store::compare_update_section_at(
+            file.ok_or_else(|| std::io::Error::other("display storage is unavailable"))?,
+            "display_transaction",
+            expected,
+            values,
+        ),
+    }?;
+    match receipt {
         ConditionalUpdate::Stored => Ok(()),
         ConditionalUpdate::Superseded => Err(std::io::Error::other(
             "display change was replaced before the answer was recorded",
@@ -105,6 +146,55 @@ fn store_answer(
         ConditionalUpdate::StoredWithCopyRepair(error) => {
             tracing::warn!(%error, "display answer is durable; settings copy repair remains pending");
             Ok(())
+        }
+    }
+}
+
+/// Only reached after the exact displayed transaction accepted Keep. An old
+/// or refused answer cannot grant trust to its tool. Both writes stay on the
+/// existing serial worker; trust errors remain visible to the person.
+fn store_trust(
+    source: Option<&dyn settings_store::SettingsSource>,
+    file: Option<&std::path::Path>,
+    tool: DisplayTool,
+) -> std::io::Result<()> {
+    use settings_store::ConditionalUpdate;
+    let document = match source {
+        Some(source) => source.load(),
+        None => settings_store::load_at(
+            file.ok_or_else(|| std::io::Error::other("display storage is unavailable"))?,
+        ),
+    };
+    let mut tools: TrustedDisplayTools = document
+        .get("display_tools")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    if !tools.insert(tool) {
+        return Ok(());
+    }
+    let values = serde_json::to_value(tools)
+        .map_err(std::io::Error::other)?
+        .as_object()
+        .cloned()
+        .ok_or_else(|| std::io::Error::other("invalid trusted display tools"))?;
+    let receipt = if let Some(source) = source {
+        source.update_section_report("display_tools", values)?
+    } else {
+        settings_store::update_section_at(
+            file.ok_or_else(|| std::io::Error::other("display storage is unavailable"))?,
+            "display_tools",
+            values,
+        )?;
+        ConditionalUpdate::Stored
+    };
+    match receipt {
+        ConditionalUpdate::Stored => Ok(()),
+        ConditionalUpdate::StoredWithCopyRepair(error) => {
+            tracing::warn!(%error, "display tool trust is durable; settings copy repair remains pending");
+            Ok(())
+        }
+        ConditionalUpdate::Superseded => {
+            Err(std::io::Error::other("display tool trust was superseded"))
         }
     }
 }

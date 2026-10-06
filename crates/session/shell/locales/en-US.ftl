@@ -2451,3 +2451,6 @@ dictation-copy-failed = Clipboard unavailable. Your complete transcript is still
 search-action-tab-drag-cancel = Cancel tab drag
 search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
 search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
+
+display-confirm-answer-pending = Saving the display answer…
+display-confirm-answer-failed = Could not save the display answer: { $reason }

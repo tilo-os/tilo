@@ -140,6 +140,12 @@ struct PendingApply {
     risk: ChangeRisk,
 }
 
+struct PendingKeep {
+    result: crate::shell::display_persistence::PendingAnswer,
+    confirmation: DisplayConfirmation,
+    asked: AskedChange,
+}
+
 /// A tool's change the person was asked to keep.
 struct AskedChange {
     transaction: u64,
@@ -186,6 +192,7 @@ pub struct OutputManagementState {
     managers: Vec<BoundManager>,
     applies: Vec<PendingApply>,
     staging: Vec<PendingStaging>,
+    keeps: Vec<PendingKeep>,
     wake: Option<crate::session_runtime::Wake>,
     powers: Vec<(ZwlrOutputPowerV1, OutputId)>,
     /// Outputs a client has switched off. Absent means on.
@@ -209,6 +216,7 @@ impl OutputManagementState {
             managers: Vec::new(),
             applies: Vec::new(),
             staging: Vec::new(),
+            keeps: Vec::new(),
             wake: None,
             powers: Vec::new(),
             powered_off: BTreeSet::new(),
@@ -288,7 +296,7 @@ impl OutputManagementState {
     /// Drain durable storage results before reading the backend's transaction.
     /// A completion can arrive after the file-change edge; pump it every loop.
     pub fn poll_staging(&mut self) -> bool {
-        let mut completed = false;
+        let mut completed = self.poll_keeps();
         self.staging.retain(|pending| match pending.result.try_recv() {
             Ok(Ok(transaction)) => {
                 self.applies.push(PendingApply {
@@ -314,6 +322,34 @@ impl OutputManagementState {
         completed
     }
 
+    fn poll_keeps(&mut self) -> bool {
+        let mut completed = false;
+        let confirmation = &mut self.confirmation;
+        let asked = &mut self.asked;
+        self.keeps.retain(|pending| match pending.result.poll() {
+            Ok(None) => true,
+            Ok(Some(())) => { completed = true; false }
+            Err(error) => {
+                tracing::warn!(%error, "output management: automatic Keep failed; asking the person");
+                if DisplayTransaction::load().is_some_and(|transaction| {
+                    transaction.id == pending.confirmation.transaction
+                        && transaction.state == DisplayTransactionState::AwaitingConfirmation
+                }) {
+                    *confirmation = Some(pending.confirmation.clone());
+                    *asked = Some(AskedChange {
+                        transaction: pending.asked.transaction,
+                        tool: pending.asked.tool.clone(),
+                        set: pending.asked.set.clone(),
+                        plan: pending.asked.plan.clone(),
+                    });
+                }
+                completed = true;
+                false
+            }
+        });
+        completed
+    }
+
     pub fn has_pending_apply(&self) -> bool {
         !self.applies.is_empty()
     }
@@ -329,6 +365,7 @@ impl OutputManagementState {
         let heads = &self.heads;
         let confirmation = &mut self.confirmation;
         let asked = &mut self.asked;
+        let keeps = &mut self.keeps;
         self.applies.retain(|apply| {
             let state = current
                 .filter(|transaction| transaction.id == apply.transaction)
@@ -338,7 +375,7 @@ impl OutputManagementState {
                 Some(DisplayTransactionState::AwaitingConfirmation) => {
                     apply.configuration.succeeded();
                     if let Some(transaction) = current {
-                        *confirmation = keep_or_ask(transaction, apply, heads);
+                        *confirmation = keep_or_ask(transaction, apply, heads, keeps);
                         if confirmation.is_some() {
                             *asked = Some(AskedChange {
                                 transaction: transaction.id,
@@ -599,6 +636,7 @@ fn keep_or_ask(
     transaction: &DisplayTransaction,
     apply: &PendingApply,
     heads: &[OutputHead],
+    keeps: &mut Vec<PendingKeep>,
 ) -> Option<DisplayConfirmation> {
     let tool = apply.tool.as_ref();
     let risk = if leaves_a_display_on(&transaction.candidate, heads) {
@@ -612,19 +650,28 @@ fn keep_or_ask(
         ChangeRisk::NoDisplay => false,
     };
     if keep {
-        let mut transaction = transaction.clone();
-        match transaction.request_confirmation() {
-            Ok(()) => {
-                tracing::info!(
-                    transaction = transaction.id,
-                    tool = tool.map(DisplayTool::name),
-                    ?risk,
-                    "output management: kept a tool's display change"
-                );
+        match crate::shell::display_persistence::answer_for(
+            crate::shell::display_persistence::Answer::Keep,
+            Some(transaction.id),
+        ) {
+            Ok(result) => {
+                keeps.push(PendingKeep {
+                    result,
+                    confirmation: DisplayConfirmation {
+                        transaction: transaction.id,
+                        tool: tool.cloned(),
+                    },
+                    asked: AskedChange {
+                        transaction: transaction.id,
+                        tool: tool.cloned(),
+                        set: transaction.set.key.clone(),
+                        plan: transaction.candidate.clone(),
+                    },
+                });
                 return None;
             }
             Err(error) => {
-                tracing::warn!(%error, "output management: could not keep a tool's change");
+                tracing::warn!(%error, "output management: could not queue automatic Keep");
             }
         }
     }

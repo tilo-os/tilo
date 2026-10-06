@@ -149,6 +149,7 @@ pub(crate) struct DisplayLayouts {
     /// settings is never reported as the answer to a new choice.
     staged: Option<u64>,
     notice: Option<String>,
+    answer: Option<crate::shell::display_persistence::PendingAnswer>,
 }
 
 impl DisplayLayouts {
@@ -163,6 +164,21 @@ impl DisplayLayouts {
     }
 
     fn poll(&mut self, now: Instant) {
+        if let Some(answer) = self.answer.as_ref() {
+            match answer.poll() {
+                Ok(None) => {}
+                Ok(Some(())) => {
+                    self.answer = None;
+                    self.notice = None;
+                    self.refresh(now);
+                }
+                Err(error) => {
+                    self.answer = None;
+                    self.notice = Some(error.to_string());
+                    self.refresh(now);
+                }
+            }
+        }
         if self
             .polled_at
             .is_none_or(|at| now.duration_since(at) >= DISPLAY_POLL)
@@ -216,18 +232,28 @@ impl DisplayLayouts {
     }
 
     fn keep(&mut self) {
-        if let Some(transaction) = self.transaction.as_mut()
-            && let Err(error) = transaction.request_confirmation()
-        {
-            self.notice = Some(error.to_string());
-        }
+        self.queue_answer(crate::shell::display_persistence::Answer::Keep);
     }
 
     fn revert(&mut self) {
-        if let Some(transaction) = self.transaction.as_mut()
-            && let Err(error) = transaction.request_revert()
-        {
-            self.notice = Some(error.to_string());
+        self.queue_answer(crate::shell::display_persistence::Answer::Revert);
+    }
+
+    fn queue_answer(&mut self, answer: crate::shell::display_persistence::Answer) {
+        if self.answer.is_some() {
+            return;
+        }
+        let Some(transaction) = self.transaction.as_ref() else {
+            return;
+        };
+        match crate::shell::display_persistence::answer_for(answer, Some(transaction.id)) {
+            Ok(answer) => {
+                self.answer = Some(answer);
+                self.notice = None;
+            }
+            Err(error) => {
+                self.notice = Some(error.to_string());
+            }
         }
     }
 
@@ -864,7 +890,11 @@ impl ProjectionOverlay {
                         .with_name(t(key))
                         .with_description(t("display-confirm-title"))
                         .with_bounds(rect)
-                        .with_state(AccessState::new().focused(self.focus == focus)),
+                        .with_state(
+                            AccessState::new()
+                                .focused(self.focus == focus)
+                                .disabled(self.displays.answer.is_some()),
+                        ),
                 );
             }
         }
@@ -1286,9 +1316,18 @@ impl ProjectionOverlay {
             top + Self::confirm_band_height(),
         );
         if self.confirming() {
-            let status = crate::shell::display_confirm::countdown_status(
-                self.displays.seconds_left(tilo_clock::unix_now_ms()),
-            );
+            let status = if self.displays.answer.is_some() {
+                t("display-confirm-answer-pending")
+            } else if let Some(notice) = self.displays.notice.as_ref() {
+                t_args(
+                    "display-confirm-answer-failed",
+                    &[("reason", ArgValue::Text(notice.clone()))],
+                )
+            } else {
+                crate::shell::display_confirm::countdown_status(
+                    self.displays.seconds_left(tilo_clock::unix_now_ms()),
+                )
+            };
             let focus = match self.focus {
                 SheetFocus::Keep => Some(crate::shell::display_confirm::BandFocus::Keep),
                 SheetFocus::Revert => Some(crate::shell::display_confirm::BandFocus::Revert),
@@ -1302,7 +1341,10 @@ impl ProjectionOverlay {
                 band,
                 &t("display-confirm-title"),
                 &status,
-                focus,
+                crate::shell::display_confirm::BandState {
+                    focus,
+                    disabled: self.displays.answer.is_some(),
+                },
             );
             self.keep_rect = buttons.keep;
             self.revert_rect = buttons.revert;

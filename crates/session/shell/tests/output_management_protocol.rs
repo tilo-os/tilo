@@ -497,6 +497,8 @@ fn apply_stages_the_settings_transaction_and_keeps_a_safe_change_once_applied() 
         .output_management
         .resolve_transactions(DisplayTransaction::load().as_ref());
     assert_eq!(harness.outcome("apply outcome"), "succeeded");
+    shell::shell::durable_writer::global().flush();
+    harness.state.output_management.poll_staging();
     assert_eq!(harness.state.output_management.take_confirmation(), None);
     assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
 }
@@ -668,6 +670,8 @@ fn await_confirmation(
         .output_management
         .resolve_transactions(DisplayTransaction::load().as_ref());
     assert_eq!(harness.outcome("apply outcome"), "succeeded");
+    shell::shell::durable_writer::global().flush();
+    harness.state.output_management.poll_staging();
     transaction
 }
 
@@ -705,6 +709,25 @@ fn prompt_host(
 
 fn key(host: &mut ShellOverlayHost, layout: &(TaffyTree<()>, NodeId), key: NamedKey) {
     crate::display_layout_switcher::press(host, layout, Key::Named(key), ModifiersState::empty());
+}
+
+/// Observe the normal confirmation pump after the real handler admitted an answer.
+/// Dispatch itself stays outside this wait so responsiveness remains observable.
+fn settle_prompt(host: &mut ShellOverlayHost) {
+    let deadline = tilo_test_env::hang_deadline();
+    while Instant::now() < deadline {
+        host.poll_display_confirmation();
+        if !host.display_confirmation_visible()
+            || prompt_dialog(host)
+                .children
+                .iter()
+                .all(|node| !node.state.disabled)
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    panic!("display answer completion did not reach its prompt");
 }
 
 fn prompt_dialog(host: &ShellOverlayHost) -> AccessNode {
@@ -823,6 +846,7 @@ fn a_tool_reapplying_a_reverted_layout_is_refused_with_one_notice() {
     let confirmation = harness.state.output_management.take_confirmation();
     let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
     key(&mut host, &layout, NamedKey::Escape);
+    settle_prompt(&mut host);
     assert_eq!(state_now(), DisplayTransactionState::RevertRequested);
     let reverted = DisplayTransaction::load().expect("transaction").id;
 
@@ -918,12 +942,161 @@ fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
     );
 
     key(&mut host, &layout, NamedKey::Enter);
+    settle_prompt(&mut host);
     assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
     assert!(!host.display_confirmation_visible());
     assert!(
         !TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)),
         "Keep answers for this change only"
     );
+}
+
+#[test]
+fn physical_display_keep_retains_its_prompt_while_real_storage_is_locked() {
+    use settings_store::SettingsSource as _;
+    use std::sync::mpsc;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    let transaction = apply_and_await(&mut harness, countdown_outlasting_the_test());
+    let confirmation = harness.state.output_management.take_confirmation().unwrap();
+    let (mut host, layout) = prompt_host(&harness, confirmation);
+    let lock_path = paths.copy.with_file_name("settings.json.lock");
+    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+    let lock = tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+    let (sent, received) = mpsc::channel();
+    let release = std::thread::spawn(move || {
+        let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+        drop(lock);
+        responsive
+    });
+    key(&mut host, &layout, NamedKey::Enter);
+    let pending_visible = host.display_confirmation_visible();
+    let state_before_release = state_now();
+    let _ = sent.send(());
+    let responsive = release.join().unwrap();
+    shell::shell::durable_writer::global().flush();
+    host.poll_display_confirmation();
+    let reopened = settings_store::SessionSettings::open(paths).unwrap();
+    settings_store::install_source(None);
+    assert!(
+        responsive,
+        "physical Keep dispatch blocked on the real storage lock"
+    );
+    assert!(
+        pending_visible,
+        "the prompt must remain visible until its answer is durable"
+    );
+    assert_eq!(
+        state_before_release,
+        DisplayTransactionState::AwaitingConfirmation
+    );
+    assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
+    assert_eq!(
+        reopened.load()["display_transaction"]["state"],
+        "confirm_requested"
+    );
+    assert!(!host.display_confirmation_visible());
+}
+
+#[test]
+fn failed_physical_always_keep_preserves_prompt_and_never_trusts_the_tool() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    let transaction = apply_and_await(&mut harness, countdown_outlasting_the_test());
+    let confirmation = harness.state.output_management.take_confirmation().unwrap();
+    let (mut host, layout) = prompt_host(&harness, confirmation);
+    key(&mut host, &layout, NamedKey::Tab);
+    key(&mut host, &layout, NamedKey::Tab);
+    let saved = paths.device.with_extension("saved");
+    std::fs::rename(&paths.device, &saved).unwrap();
+    std::fs::create_dir(&paths.device).unwrap();
+    key(&mut host, &layout, NamedKey::Enter);
+    settle_prompt(&mut host);
+    let visible = host.display_confirmation_visible();
+    let dialog = prompt_dialog(&host);
+    let observed = DisplayTransaction::load().unwrap();
+    let trusted = TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI));
+    std::fs::remove_dir(&paths.device).unwrap();
+    std::fs::rename(saved, &paths.device).unwrap();
+    settings_store::install_source(None);
+    assert!(visible, "a failed answer must remain visible");
+    assert!(
+        dialog
+            .description
+            .as_deref()
+            .is_some_and(|description| description.starts_with("Could not save"))
+    );
+    assert!(
+        dialog.children.iter().all(|node| !node.state.disabled),
+        "the person can retry or revert after failure"
+    );
+    assert_eq!(
+        observed, transaction,
+        "failed storage must preserve exact intent"
+    );
+    assert!(!trusted, "a refused Keep must not grant tool trust");
+}
+
+#[test]
+fn replaced_physical_always_keep_cannot_answer_or_trust_another_transaction() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    let mut replacement = apply_and_await(&mut harness, countdown_outlasting_the_test());
+    let confirmation = harness.state.output_management.take_confirmation().unwrap();
+    let (mut host, layout) = prompt_host(&harness, confirmation);
+    key(&mut host, &layout, NamedKey::Tab);
+    key(&mut host, &layout, NamedKey::Tab);
+    replacement.id = replacement.id.checked_add(1).unwrap();
+    replacement.save().unwrap();
+    key(&mut host, &layout, NamedKey::Enter);
+    shell::shell::durable_writer::global().flush();
+    assert!(host.display_confirmation_visible());
+    assert!(
+        prompt_dialog(&host)
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("replaced"))
+    );
+    assert_eq!(DisplayTransaction::load(), Some(replacement));
+    assert!(!TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)));
+}
+
+#[test]
+fn failed_automatic_keep_restores_the_exact_confirmation_prompt() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    TrustedDisplayTools::trust(DisplayTool::new(KANSHI)).unwrap();
+    apply_custom_mode(&mut harness);
+    let mut transaction = DisplayTransaction::load().unwrap();
+    transaction.state = DisplayTransactionState::AwaitingConfirmation;
+    transaction.deadline_unix_ms = Some(countdown_outlasting_the_test());
+    transaction.save().unwrap();
+    let saved = paths.device.with_extension("saved");
+    std::fs::rename(&paths.device, &saved).unwrap();
+    std::fs::create_dir(&paths.device).unwrap();
+    harness
+        .state
+        .output_management
+        .resolve_transactions(Some(&transaction));
+    assert_eq!(harness.outcome("backend accepted the change"), "succeeded");
+    shell::shell::durable_writer::global().flush();
+    harness.state.output_management.poll_staging();
+    let confirmation = harness.state.output_management.take_confirmation();
+    let observed = DisplayTransaction::load();
+    std::fs::remove_dir(&paths.device).unwrap();
+    std::fs::rename(saved, &paths.device).unwrap();
+    settings_store::install_source(None);
+    assert_eq!(observed, Some(transaction.clone()));
+    assert_eq!(confirmation.unwrap().transaction, transaction.id);
 }
 
 #[test]
@@ -934,6 +1107,7 @@ fn escape_restores_the_previous_layout() {
     let confirmation = harness.state.output_management.take_confirmation();
     let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
     key(&mut host, &layout, NamedKey::Escape);
+    settle_prompt(&mut host);
     assert_eq!(state_now(), DisplayTransactionState::RevertRequested);
     assert!(!host.display_confirmation_visible());
 }
@@ -950,7 +1124,11 @@ fn running_out_of_time_restores_the_previous_layout() {
     let mut transaction = DisplayTransaction::load().expect("transaction");
     transaction.deadline_unix_ms = Some(unix_now_ms().saturating_sub(1));
     transaction.save().expect("save");
-    assert!(host.poll_display_confirmation(), "the countdown ended");
+    assert!(
+        !host.poll_display_confirmation(),
+        "expiry queues a durable answer before closing"
+    );
+    settle_prompt(&mut host);
     assert_eq!(state_now(), DisplayTransactionState::RevertRequested);
     assert!(!host.display_confirmation_visible());
 }
@@ -989,6 +1167,7 @@ fn always_keep_trusts_the_tool_and_its_next_change_is_kept_without_asking() {
         "Tab walks Keep, Revert, Always keep"
     );
     key(&mut host, &layout, NamedKey::Enter);
+    settle_prompt(&mut host);
     assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
     assert!(TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)));
 

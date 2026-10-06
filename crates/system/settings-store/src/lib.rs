@@ -230,6 +230,14 @@ pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result
     if let Some(source) = installed_source() {
         return source.update_section(name, values);
     }
+    update_section_at(&file_write_path()?, name, values)
+}
+
+/// The canonical file path, with the same test isolation guard as writes.
+///
+/// # Errors
+/// No configuration directory exists, or this is an unisolated test process.
+pub fn file_write_path() -> std::io::Result<PathBuf> {
     let Some(path) = settings_path() else {
         return Err(std::io::Error::other("no config directory available"));
     };
@@ -245,7 +253,7 @@ pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result
             format!("refusing to write {}: {reason}", path.display()),
         ));
     }
-    update_section_at(&path, name, values)
+    Ok(path)
 }
 
 /// Why a write through the default path would land in the settings of whoever started this
@@ -282,6 +290,30 @@ pub fn update_section_at(
     values: Map<String, Value>,
 ) -> std::io::Result<()> {
     update_document_at(path, |doc| merge_section(doc, name, values))
+}
+
+/// Conditionally merge under the canonical file lock. Missing or replaced
+/// sections refuse the old intent; successful replacement is the receipt.
+///
+/// # Errors
+/// The file cannot be locked, serialised or durably replaced.
+pub fn compare_update_section_at(
+    path: &Path,
+    name: &str,
+    expected: &Map<String, Value>,
+    values: Map<String, Value>,
+) -> std::io::Result<ConditionalUpdate> {
+    let _lock = advisory_lock::FileLock::open(
+        &session::lock_path(path),
+        advisory_lock::LockMode::Exclusive,
+    )?;
+    let mut doc = load_at(path);
+    if doc.get(name) != Some(&Value::Object(expected.clone())) {
+        return Ok(ConditionalUpdate::Superseded);
+    }
+    merge_section(&mut doc, name, values);
+    write_atomic(path, &Value::Object(doc))?;
+    Ok(ConditionalUpdate::Stored)
 }
 
 /// Read the document at `path`, let `change` edit it, and replace it, all
@@ -423,6 +455,51 @@ mod tests {
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn conditional_file_answers_reject_replacement_and_preserve_other_sections() {
+        let dir = tmpdir();
+        let path = dir.join("settings.json");
+        let expected = json!({"id":1,"state":"awaiting_confirmation"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let answer = json!({"id":1,"state":"confirm_requested"})
+            .as_object()
+            .unwrap()
+            .clone();
+        update_section_at(&path, "display_transaction", expected.clone()).unwrap();
+        update_section_at(
+            &path,
+            "region",
+            json!({"units":"metric"}).as_object().unwrap().clone(),
+        )
+        .unwrap();
+        assert!(matches!(
+            compare_update_section_at(&path, "display_transaction", &expected, answer.clone())
+                .unwrap(),
+            ConditionalUpdate::Stored
+        ));
+        assert_eq!(
+            load_at(&path)["display_transaction"],
+            Value::Object(answer.clone())
+        );
+        assert_eq!(load_at(&path)["region"], json!({"units":"metric"}));
+        let replacement = json!({"id":2,"state":"awaiting_confirmation"})
+            .as_object()
+            .unwrap()
+            .clone();
+        update_section_at(&path, "display_transaction", replacement.clone()).unwrap();
+        assert!(matches!(
+            compare_update_section_at(&path, "display_transaction", &expected, answer).unwrap(),
+            ConditionalUpdate::Superseded
+        ));
+        assert_eq!(
+            load_at(&path)["display_transaction"],
+            Value::Object(replacement)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // Path resolution: the divergence this crate ends
