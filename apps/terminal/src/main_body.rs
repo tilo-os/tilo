@@ -6779,6 +6779,18 @@ impl TerminalWidget {
         Ok(widget)
     }
 
+    /// A live hosted tab whose required supervisor is unavailable. Keep the
+    /// startup cause visible and input refused, rather than presenting it as
+    /// a capture-only terminal that was never meant to open a process.
+    pub(crate) fn without_hosted_runtime(reason: String) -> Self {
+        let mut widget = Self::without_process(ContentStore::memory());
+        widget.sessions =
+            crate::sessions::Sessions::hosted(crate::HostedProcessServices::unavailable());
+        widget.sessions.state = crate::sessions::OpenState::NoRuntime(reason.clone());
+        widget.show_status(&reason);
+        widget
+    }
+
     /// The standalone terminal. Its session opens at the first sync, on the
     /// target its record names (or the default for a new tab).
     ///
