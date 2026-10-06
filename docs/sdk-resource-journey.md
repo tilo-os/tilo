@@ -64,9 +64,12 @@ label content, then a UIKit escape hatch. Direct fetching in this execution
 session returned HTTP 403. The example applies that supplied lesson through
 existing Tilo APIs: `cx.button`, an icon-only shared `Button`, an icon plus a
 custom Fluent label, and a custom component implementing `Decorator` over a
-bound button. All four call the same action. A third journey proves their correct
-spoken names (including the custom visible label), keyboard focus, Enter
-activation, undo and live permission behavior.
+bound button. A third journey inspects the production control inventory and
+asserts that each presentation binds exactly the same discovered Add address.
+It proves their correct spoken names (including the custom visible label), button
+roles, keyboard focus, each Enter activation, undo and live disabled state.
+Revoking permission between focus and Enter refuses every presentation without
+a state or history change.
 
 Apple's [Button documentation](https://developer.apple.com/documentation/swiftui/button)
 describes an action paired with a label view (text, icon or both), while
