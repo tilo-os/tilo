@@ -110,34 +110,72 @@ fn readonly(path: &Path) -> Result<bool, DaemonError> {
     Ok(unsafe { status.assume_init() }.f_flag & libc::ST_RDONLY != 0)
 }
 
+fn isolate_base(base: &Path) -> Result<(), DaemonError> {
+    let mut children = Vec::new();
+    for line in fs::read_to_string("/proc/self/mountinfo")
+        .map_err(io)?
+        .lines()
+    {
+        let Some(path) = line.split_whitespace().nth(4) else {
+            return Err(DaemonError::InvalidParams("invalid mount table".into()));
+        };
+        let path = Path::new(path);
+        if path != base && path.starts_with(base) {
+            // Kernel mountinfo escapes whitespace and backslashes. An
+            // unexpected escaped descendant is refused, never interpreted
+            // as a different mountpoint or handed to a shell.
+            if path.as_os_str().as_bytes().contains(&b'\\') || children.len() >= 512 {
+                return Err(DaemonError::InvalidParams(
+                    "unexpected retained-base mount hierarchy".into(),
+                ));
+            }
+            children.push(path.to_path_buf());
+        }
+    }
+    // A bind of a shared boot root inherits its propagation group. Disconnect
+    // every retained child BEFORE unmounting it: otherwise repair would also
+    // unmount the host's live /usr. Fresh bases must never receive later
+    // systemd-sysext refresh mounts.
+    mount(None, base, None, libc::MS_PRIVATE | libc::MS_REC, None)?;
+    children.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for child in children {
+        unmount(&child)?;
+    }
+    Ok(())
+}
+
 fn base(root: &Path, source: &Path) -> Result<PathBuf, DaemonError> {
     let base = root.join("base");
     directory(&base)?;
     if !mounted(&base)? {
         mount(Some(source), &base, None, libc::MS_BIND, None)?;
-        if let Err(error) = mount(
-            None,
-            &base,
-            None,
-            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NODEV,
-            None,
-        ) {
+        let isolated = mount(None, &base, None, libc::MS_PRIVATE | libc::MS_REC, None);
+        if let Err(error) = isolated.and_then(|()| {
+            mount(
+                None,
+                &base,
+                None,
+                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NODEV,
+                None,
+            )
+        }) {
             unmount(&base)?;
             return Err(error);
         }
-    }
-    // A separate /usr filesystem not present in the boot-root backing tree
-    // cannot be silently replaced by an empty directory.
-    if !base.join("usr/lib/os-release").is_file() {
-        return Err(DaemonError::InvalidParams(
-            "the immutable boot root does not contain the base /usr".into(),
-        ));
     }
     let expected = fs::metadata(source).map_err(io)?;
     let actual = fs::metadata(&base).map_err(io)?;
     if expected.dev() != actual.dev() || expected.ino() != actual.ino() || !readonly(&base)? {
         return Err(DaemonError::InvalidParams(
             "the retained boot-root mount has an unexpected origin or is mutable".into(),
+        ));
+    }
+    isolate_base(&base)?;
+    // A separate /usr filesystem not present in the boot-root backing tree
+    // cannot be silently replaced by an empty directory.
+    if !base.join("usr/lib/os-release").is_file() {
+        return Err(DaemonError::InvalidParams(
+            "the immutable boot root does not contain the base /usr".into(),
         ));
     }
     Ok(base)
