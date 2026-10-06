@@ -302,6 +302,7 @@ block-editor-code-exit-hint = Ctrl+Enter to leave code
 block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Copied
 block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: write above · Tab / Shift+Tab: indent / outdent · Ctrl+Shift+C: copy code
+widget-breadcrumb = Path
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
@@ -426,6 +427,28 @@ history-day-yesterday = Yesterday
 history-day-this-week = This week
 history-day-earlier = Earlier
 
+save-status-saving = Saving…
+save-status-saved = Saved
+save-status-failed = Save failed
+save-status-retry = Try again
+save-status-dismiss = Dismiss
+
+# Find bar: the band at the top of a document that finds in it.
+find-bar-name = Find
+find-bar-placeholder = Find
+find-bar-replace-placeholder = Replace with
+find-bar-match-case = Match case
+find-bar-whole-word = Whole word
+find-bar-regex = Regular expression
+find-bar-text = Text
+find-bar-hex = Hex
+find-bar-previous = Previous match
+find-bar-next = Next match
+find-bar-close = Close find
+find-bar-replace = Replace
+find-bar-replace-all = Replace all
+find-bar-position = { $current } of { $total }
+find-bar-no-matches = No matches
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
@@ -500,3 +523,5 @@ music-spotify-artists = Followed artists
 music-spotify-following = Following on Spotify
 music-spotify-follow-artist = Follow artist on Spotify
 music-spotify-unfollow-artist = Unfollow artist on Spotify
+
+music-spotify-playlist-actions = Spotify playlist actions

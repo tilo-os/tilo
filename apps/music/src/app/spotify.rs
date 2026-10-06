@@ -399,7 +399,7 @@ impl MusicApp {
         );
         if matches!(effect, MusicEffect::SpotifyQueue) {
             self.view = super::View::Queue;
-            self.scroll = 0.0;
+            self.set_scroll_y(0.0);
         }
         self.dirty = true;
         Ok(ui::framework::Effected::Pending)
@@ -460,7 +460,7 @@ impl MusicApp {
                         == Some(true)
                     {
                         self.view = super::View::Playlist(playlist.into());
-                        self.scroll = 0.0;
+                        self.set_scroll_y(0.0);
                     }
                 }
                 if reply.state.get("playlist").is_some() || reply.state.get("uri").is_some() {
@@ -480,7 +480,7 @@ impl MusicApp {
             }
             Err(message) => {
                 self.source_error = Some(message.clone());
-                self.toast = Some((message.clone(), ui::time::now()));
+                self.notify(super::ToastKind::Error, message.clone());
                 tilo_actions::InvocationUpdate::Failed {
                     invocation,
                     error: tilo_actions::ActionFailure {
@@ -610,7 +610,6 @@ impl MusicApp {
                         tilo_actions::ActionBinding::unit_for(&resource, effect.id()).ok()?;
                     Some(
                         ui::widget::Button::new(&id, &label)
-                            .content_sized()
                             .with_enabled(!device.restricted)
                             .tooltip(ui::i18n!("music-spotify-device-help"))
                             .on_action(binding),
@@ -783,7 +782,7 @@ impl ui::widget::controls::ActionControls for MusicApp {
         result: &ui::widget::controls::ControlResult,
     ) {
         if let Err(error) = result {
-            self.toast = Some((error.to_string(), ui::time::now()));
+            self.notify(super::ToastKind::Error, error.to_string());
             self.dirty = true;
         }
         for child in ui::widget::Widget::children_mut(self) {
@@ -810,9 +809,14 @@ impl ui::widget::controls::ActionControls for MusicApp {
                 return Some(invocation);
             }
         }
-        ui::widget::Widget::children_mut(self)
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
+        self.search_opener
+            .take()
+            .or_else(|| self.history.take())
+            .or_else(|| {
+                ui::widget::Widget::children_mut(self)
+                    .into_iter()
+                    .find_map(ui::widget::controls::take_control_invocation)
+            })
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
@@ -1061,6 +1065,8 @@ mod tests {
         for scale in [1.0, 2.0] {
             let mut app = MusicApp::without_profile();
             app.snap_spotify("spotify-queue");
+            let snapshot = &mut app.spotify_remote_queue.as_mut().unwrap().0;
+            snapshot["remote_queue"]["queue"] = serde_json::Value::Array((0..20).map(|i| serde_json::json!({"name":format!("A conversation about music and collaborative listening {i}"),"type":"episode","show":{"name":"Example podcast"}})).collect());
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, 360.0, 900.0);
             let theme = ui::theme::Theme::high_contrast().with_text_scale(scale);
             let mut tree = taffy::TaffyTree::new();
@@ -1073,9 +1079,13 @@ mod tests {
                 &mut text,
                 &theme,
             );
-            assert_eq!(tree.children(root).unwrap().len(), 1);
-            assert_eq!(app.children().len(), 1);
-            let control = app.children()[0];
+            assert_eq!(tree.children(root).unwrap().len(), 2);
+            assert_eq!(app.children().len(), 2);
+            let control = app
+                .children()
+                .into_iter()
+                .find(|control| control.test_id() == Some("music-spotify-queue-refresh"))
+                .expect("retained queue refresh control");
             assert_eq!(control.test_id(), Some("music-spotify-queue-refresh"));
             let rect = control.get_rect();
             assert!(rect.width() > 0.0 && rect.x0 >= 0.0 && rect.x1 <= 360.0);
@@ -1090,7 +1100,9 @@ mod tests {
             app.spotify_catalogue = false;
             app.spotify_remote_queue = None;
             assert!(
-                app.children().is_empty(),
+                app.children()
+                    .iter()
+                    .all(|control| control.test_id() != Some("music-spotify-queue-refresh")),
                 "invisible provider controls leave the focus tree"
             );
         }
@@ -1340,13 +1352,20 @@ mod tests {
             &mut text,
             &ui::theme::Theme::dark(),
         );
-        let hit = app.hits.iter().find(|hit| matches!(&hit.action,
-            super::super::Action::Nav(super::super::View::Playlist(id)) if id == "spotify:collection:liked"
-        )).expect("playlist art is an actionable tile");
-        assert!(hit.rect.width() > 100.0 && hit.rect.height() > 100.0);
-        let action = hit.action.clone();
+        let action = super::super::Action::Nav(super::super::View::Playlist(
+            "spotify:collection:liked".into(),
+        ));
+        let grid = app
+            .media_grids
+            .iter()
+            .find(|grid| grid.offers(&action))
+            .expect("playlist art is an actionable retained tile");
+        let rect = grid
+            .card_rect("spotify:collection:liked")
+            .expect("retained playlist card");
+        assert!(rect.width() > 100.0 && rect.height() > 100.0);
         let mut doc = automerge::AutoCommit::new();
-        app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
+        super::super::tests::hosted_click(&mut app, &mut doc, rect.center());
         assert!(
             matches!(&app.view, super::super::View::Playlist(id) if id == "spotify:collection:liked")
         );

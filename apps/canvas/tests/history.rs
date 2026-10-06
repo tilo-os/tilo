@@ -173,10 +173,22 @@ fn a_past_version_is_looked_at_and_its_marks_restored_by_id() {
     assert_eq!(fills(&then), ["#6fa8dc", "#ffd966"]);
     assert_eq!(fills(&now), ["#808080", "#808080"]);
 
-    let look_now = app.call("look", json!({"size": 256})).unwrap().unwrap();
-    let look_then = app
-        .call("look", json!({"size": 256, "version": "good"}))
+    let look_now = app
+        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
+            size: Some(256),
+            ..Default::default()
+        }))
         .unwrap()
+        .value
+        .unwrap();
+    let look_then = app
+        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
+            size: Some(256),
+            version: Some("good".into()),
+            ..Default::default()
+        }))
+        .unwrap()
+        .value
         .unwrap();
     assert_ne!(look_now["content"], look_then["content"]);
     assert_eq!(look_then["version"], then["version"]);
@@ -191,7 +203,10 @@ fn a_past_version_is_looked_at_and_its_marks_restored_by_id() {
     assert_eq!(fill(&app, "sky").as_deref(), Some("#808080"));
 
     let unknown = app
-        .call("look", json!({"version": "nothing-like-it"}))
+        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
+            version: Some("nothing-like-it".into()),
+            ..Default::default()
+        }))
         .expect_err("an unknown version is refused")
         .to_string();
     assert!(
@@ -231,7 +246,7 @@ const WIDTH: u32 = 1280;
 /// The colour of the window's pixel at `(x, y)`.
 fn pixel_at(app: &mut TestApp<App>, (x, y): (f64, f64)) -> [u8; 4] {
     let width = WIDTH;
-    let rgba = app.harness().render_window_rgba();
+    let rgba = app.harness().render_rgba();
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,

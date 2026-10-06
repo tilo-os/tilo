@@ -3,7 +3,9 @@
 use tilo_resource::text::splice_between;
 use tilo_resource::{Doc, PlainText};
 use ui_core::automerge::ObjId;
-use ui_core::widget::{AppModel, CodeEditor, Decorator, EventCtx, ModelPath, TextInput, Widget};
+use ui_core::widget::{
+    AppModel, Autocomplete, CodeEditor, Decorator, EventCtx, ModelPath, TextInput, Widget,
+};
 use ui_core::winit::event::WindowEvent;
 
 use super::dispatch::Dispatcher;
@@ -57,6 +59,24 @@ impl EditsText for CodeEditor {
     }
     fn shown_text(&self) -> &str {
         self.value()
+    }
+}
+
+impl EditsText for Autocomplete {
+    fn show_text(&mut self, obj: ObjId) {
+        self.input_mut().show_text(obj);
+    }
+    fn hide_text(&mut self) {
+        self.input_mut().hide_text();
+    }
+    fn take_edited(&mut self) -> Option<String> {
+        Autocomplete::take_edited(self)
+    }
+    fn reset_text(&mut self, text: &str) {
+        self.set_text(text);
+    }
+    fn shown_text(&self) -> &str {
+        self.text()
     }
 }
 

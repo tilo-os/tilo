@@ -16,8 +16,8 @@
 //!
 //! ## What is *not* an action
 //!
-//! Presentation stays local: selection, scroll, search text, filter tabs,
-//! playback and cache/download policy.
+//! Presentation stays local: selection, scroll, playback and cache/download
+//! policy.
 //! The stable top-level destinations are still exported as idempotent `View`
 //! operations, so history, search hosts and agents can address a screen without
 //! guessing a local widget path. Stream resolution, audio output, artwork
@@ -78,8 +78,8 @@ pub const NAVIGATION_VIEWS: &[(&str, &str)] = &[
     ("artists", "Artists"),
     ("playlists", "Playlists"),
     ("downloads", "Downloads"),
-    ("liked", "Liked Songs"),
-    ("search", "Search"),
+    ("liked", "Liked songs"),
+    ("browse", "Browse"),
     ("queue", "Queue"),
     ("lyrics", "Lyrics"),
 ];
@@ -329,6 +329,10 @@ pub enum MusicEffect {
     #[effect(job, device_only)]
     BrowseYouTube,
 
+    /// Search the remote catalogue
+    /// Results join the canonical search index after the worker answers.
+    #[effect(job, device_only, permission = "read")]
+    Search { query: String },
     /// Open audio file
     ///
     /// Plays a local audio file the person chooses on this device.
@@ -352,6 +356,9 @@ pub enum MusicEffect {
         track: String,
         queued: Option<usize>,
     },
+    /// Like or unlike a catalogue song, importing its real metadata first.
+    #[effect(row)]
+    ToggleLike { track: String },
     /// Add to queue
     #[effect(row)]
     AddToQueue { track: String },
@@ -867,6 +874,8 @@ pub fn set_followed_artist_action(artist: &str, followed: bool) -> MusicAction {
 pub struct TrackRef {
     pub id: String,
     pub label: String,
+    /// Who performs the song: the row's secondary line in search.
+    pub artist: String,
     pub liked: bool,
     pub rank: i64,
 }
@@ -919,6 +928,8 @@ impl PlaylistResource {
 pub struct CatalogTrackResource {
     pub id: String,
     pub label: String,
+    /// Who performs the song: the row's secondary line in search.
+    pub artist: String,
     /// Canonical parent targets retained on the track resource, so an agent
     /// can navigate from a song to its exact album or artist without parsing a
     /// display label or guessing an id.
@@ -963,6 +974,8 @@ pub struct QueueItemResource {
     pub index: usize,
     pub track: String,
     pub label: String,
+    /// Who performs the song: the row's secondary line in search.
+    pub artist: String,
     pub current: bool,
 }
 
@@ -989,18 +1002,14 @@ impl MusicResourceCtx {
     /// publishes. Playback, queue and local-file stay on the widget: they are
     /// device-local and are not in the Automerge library.
     pub fn from_library(lib: &crate::model::Library) -> Self {
-        let track_label = |track_id: &str| -> String {
-            match lib.track(track_id) {
-                Some(track) => {
-                    let artist = lib.artist_name(&track.artist_id);
-                    if artist.is_empty() {
-                        track.title.clone()
-                    } else {
-                        format!("{} — {artist}", track.title)
-                    }
-                }
-                None => track_id.to_string(),
-            }
+        let track_title = |track_id: &str| -> String {
+            lib.track(track_id)
+                .map_or_else(|| track_id.to_string(), |track| track.title.clone())
+        };
+        let track_artist = |track_id: &str| -> String {
+            lib.track(track_id)
+                .map(|track| lib.artist_name(&track.artist_id).to_string())
+                .unwrap_or_default()
         };
         let mut playlists = lib.playlists.iter().collect::<Vec<_>>();
         playlists.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1016,7 +1025,8 @@ impl MusicResourceCtx {
                     .take(OPEN_PLAYLIST_TRACK_LIMIT)
                     .map(|tid| TrackRef {
                         id: tid.clone(),
-                        label: track_label(tid),
+                        label: track_title(tid),
+                        artist: track_artist(tid),
                         liked: lib.is_liked(tid),
                         rank: playlist.track_ranks.get(tid).copied().unwrap_or_default(),
                     })
@@ -1036,7 +1046,8 @@ impl MusicResourceCtx {
                 .take(OPEN_RESOURCE_CATEGORY_LIMIT)
                 .map(|track| CatalogTrackResource {
                     id: track.id.clone(),
-                    label: track_label(&track.id),
+                    label: track_title(&track.id),
+                    artist: track_artist(&track.id),
                     album_id: track.album_id.clone(),
                     artist_id: track.artist_id.clone(),
                     // What this device keeps offline is not library state.
@@ -1086,6 +1097,7 @@ impl MusicResourceCtx {
         let catalog_track = |track: &crate::model::Track| CatalogTrackResource {
             id: track.id.clone(),
             label: track_label(track),
+            artist: lib.artist_name(&track.artist_id).to_owned(),
             album_id: track.album_id.clone(),
             artist_id: track.artist_id.clone(),
             offline: false,
@@ -1126,6 +1138,7 @@ impl MusicResourceCtx {
                 track: TrackRef {
                     id: track.id.clone(),
                     label: track_label(track),
+                    artist: lib.artist_name(&track.artist_id).to_owned(),
                     liked: lib.is_liked(&track.id),
                     rank: playlist
                         .track_ranks
@@ -1444,6 +1457,19 @@ fn open_queue() -> ActionSpec {
     )
 }
 
+/// A song as search shows it: its title as the row's label and its artist
+/// as the secondary line, one fact each.
+fn song_resource(id: String, kind: &str, title: &str, artist: &str) -> Resource {
+    let resource = Resource::new(id, kind, title);
+    if artist.is_empty() {
+        return resource;
+    }
+    resource.with_presentation(tilo_actions::ResourcePresentation {
+        detail: Some(artist.to_string()),
+        ..tilo_actions::ResourcePresentation::default()
+    })
+}
+
 fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
     let index = item.index;
     let track = item.track.clone();
@@ -1457,10 +1483,11 @@ fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
         track: track.clone(),
     }
     .bound();
-    Resource::new(
+    song_resource(
         queue_item_resource_id(index, &track),
         "music.queue-item",
-        item.label.clone(),
+        &item.label,
+        &item.artist,
     )
     .with_action(open_queue())
     .with_action(bound(
@@ -1597,10 +1624,11 @@ fn playlist_track_resource(
     up_rank: i64,
     down_rank: i64,
 ) -> Resource {
-    Resource::new(
+    song_resource(
         playlist_track_resource_id(playlist, &track.id),
         "music.playlist-track",
-        track.label.clone(),
+        &track.label,
+        &track.artist,
     )
     .with_action(bound(
         &MusicEffect::Open {
@@ -1757,6 +1785,30 @@ fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
         },
         &set_saved_album_action(&album.id, !album.saved),
     ))
+}
+
+/// An album, artist or playlist the live catalogue found and the library
+/// does not hold, labelled `label`: opening its page at `address` is all it
+/// offers. `None` for any other address.
+pub fn live_catalogue_resource(address: &ActionAddress, label: &str) -> Option<Resource> {
+    if address.action != "open" {
+        return None;
+    }
+    let resource = address.resource.as_str();
+    let (kind, place) = if let Some(id) = resource.strip_prefix("music.album:") {
+        ("music.album", Place::Album(id.to_owned()))
+    } else if let Some(id) = resource.strip_prefix("music.artist:") {
+        ("music.artist", Place::Artist(id.to_owned()))
+    } else {
+        (
+            "music.playlist",
+            Place::Playlist(resource.strip_prefix("music.playlist:")?.to_owned()),
+        )
+    };
+    Some(
+        Resource::new(resource, kind, label)
+            .with_action(bound(&MusicEffect::Open { place }, "Open")),
+    )
 }
 
 fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
@@ -2236,6 +2288,7 @@ mod tests {
                 let id = format!("track-{number:03}");
                 ctx.tracks.push(CatalogTrackResource {
                     label: format!("Track {number}"),
+                    artist: String::new(),
                     id,
                     album_id: String::new(),
                     artist_id: String::new(),
@@ -2275,7 +2328,8 @@ mod tests {
         {
             let track = CatalogTrackResource {
                 id: "track-1".into(),
-                label: "Song — Artist".into(),
+                label: "Song".into(),
+                artist: String::new(),
                 album_id: "album-9".into(),
                 artist_id: "artist-2".into(),
                 offline: false,
@@ -2524,6 +2578,7 @@ mod tests {
             let track = CatalogTrackResource {
                 id: "track-2".into(),
                 label: "Track 2".into(),
+                artist: String::new(),
                 album_id: String::new(),
                 artist_id: String::new(),
                 offline: false,
@@ -2561,18 +2616,21 @@ mod tests {
                     index: 0,
                     track: "track-1".into(),
                     label: "First track".into(),
+                    artist: String::new(),
                     current: true,
                 },
                 QueueItemResource {
                     index: 1,
                     track: "track-1".into(),
                     label: "Second occurrence".into(),
+                    artist: String::new(),
                     current: false,
                 },
                 QueueItemResource {
                     index: 2,
                     track: "track-2".into(),
                     label: "Third track".into(),
+                    artist: String::new(),
                     current: false,
                 },
             ];
@@ -2679,6 +2737,7 @@ mod tests {
                     .map(|number| TrackRef {
                         id: format!("track:{number}:🎧"),
                         label: format!("Track {number}"),
+                        artist: String::new(),
                         liked: false,
                         rank: i64::try_from(number).unwrap_or(i64::MAX / 1_048_576) * 1_048_576,
                     })

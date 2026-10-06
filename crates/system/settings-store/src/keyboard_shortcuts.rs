@@ -225,14 +225,6 @@ impl ShortcutAction {
             }
         }
     }
-
-    /// Whether a person may move this action to another chord. Locking the
-    /// screen keeps its chord: it is the one safety binding every session
-    /// must answer.
-    #[must_use]
-    pub const fn rebindable(self) -> bool {
-        !matches!(self, Self::Lock)
-    }
 }
 
 /// One key under an exact set of modifiers, spelled as [`KeyChord`] spells
@@ -363,18 +355,6 @@ pub static FIXED_SHORTCUTS: &[FixedShortcut] = &[
         "shortcut-open-terminal",
         ShortcutCategory::Apps,
         &[key(&["Super"], "enter")],
-    ),
-    fixed(
-        "fixed-global-search",
-        "shortcut-global-search",
-        ShortcutCategory::System,
-        &[key(&["Super"], "space")],
-    ),
-    fixed(
-        "fixed-lock",
-        "shortcut-lock",
-        ShortcutCategory::System,
-        &[key(&["Super"], "l")],
     ),
     fixed(
         "fixed-workspace-wheel",
@@ -525,7 +505,7 @@ pub fn catalogue(config: &ShortcutConfig) -> Vec<ShortcutEntry> {
                 .cloned()
                 .into_iter()
                 .collect(),
-            rebindable: action.rebindable(),
+            rebindable: true,
             category: action.category(),
             action: Some(action),
         })
@@ -626,7 +606,7 @@ mod tests {
         let mut config = ShortcutConfig::default();
         let before = config.clone();
         assert_eq!(
-            config.set(ShortcutAction::QuickSettings, chord("Super+K")),
+            config.set(ShortcutAction::QuickSettings, chord("Super+Space")),
             Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
         );
         assert_eq!(config, before, "the chord was not taken from search");
@@ -715,7 +695,7 @@ mod tests {
             .set(ShortcutAction::Search, chord("Super+J"))
             .expect("a free chord");
         config
-            .set(ShortcutAction::QuickSettings, chord("Super+K"))
+            .set(ShortcutAction::QuickSettings, chord("Super+Space"))
             .expect("search gave it up");
         assert_eq!(
             config.reset(ShortcutAction::Search),
@@ -735,7 +715,7 @@ mod tests {
             .expect("a free chord");
         config
             .set_action(
-                chord("Super+K"),
+                chord("Super+Space"),
                 crate::hardware::ActionChordTarget {
                     provider: "workspace:room".into(),
                     resource: "drafts".into(),
@@ -750,12 +730,32 @@ mod tests {
     }
 
     #[test]
-    fn the_lock_chord_cannot_move() {
+    fn search_and_lock_are_one_row_each_whose_rebind_replaces_the_system_chord() {
         let mut config = ShortcutConfig::default();
-        assert!(!ShortcutAction::Lock.rebindable());
-        assert_eq!(
-            config.set(ShortcutAction::Lock, chord("Super+Ctrl+L")),
-            Err(ShortcutConfigError::InvalidChord)
+        let rows = catalogue(&config);
+        for (id, default) in [("search", "Super+Space"), ("lock", "Super+L")] {
+            let matching: Vec<_> = rows
+                .iter()
+                .filter(|entry| entry.chords.contains(&chord(default)))
+                .collect();
+            assert_eq!(matching.len(), 1, "{default} is listed once");
+            assert_eq!(matching[0].id, id);
+            assert!(matching[0].rebindable);
+        }
+        config
+            .set(ShortcutAction::Lock, chord("Ctrl+Alt+L"))
+            .expect("a free chord");
+        config
+            .set(ShortcutAction::Search, chord("Super+K"))
+            .expect("a free chord");
+        assert!(desktop_owner(&chord("Super+L")).is_none());
+        assert!(desktop_owner(&chord("Super+Space")).is_none());
+        assert!(
+            config
+                .bindings
+                .values()
+                .all(|bound| *bound != chord("Super+L") && *bound != chord("Super+Space")),
+            "the old chords are free once rebound"
         );
     }
 
