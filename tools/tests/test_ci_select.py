@@ -367,6 +367,10 @@ class SelectorTests(unittest.TestCase):
             self.assertTrue(plan["full"])
             self.assertEqual(plan["selected_count"], plan["workspace_count"])
             self.assertEqual(plan["shard_count"], 1)  # small workspace stays cheap
+        with self.subTest(phase='vendored crates are build inputs'):
+            self.setUp()
+            plan = ci_select.make_plan(self.metadata, self.root, ["vendor/winit/src/lib.rs"], 2)
+            self.assertTrue(plan["full"])
         with self.subTest(phase='unowned deleted crate path forces full workspace'):
             self.setUp()
             plan = ci_select.make_plan(self.metadata, self.root, ["apps/removed/Cargo.toml"], 2)

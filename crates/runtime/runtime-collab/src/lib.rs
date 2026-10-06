@@ -1984,8 +1984,44 @@ impl ChannelHandle {
         app_id: &str,
         content_hash: Option<&str>,
     ) -> Result<(u64, String), NotAvailable> {
+        self.launch_installed_application(app_id, content_hash, None)
+            .await
+    }
+
+    /// Launch an exact installed package through this authenticated channel,
+    /// returning its observed startup outcome rather than a queue acceptance.
+    ///
+    /// # Errors
+    /// Returns an unavailable or malformed broker response.
+    pub async fn launch_installed_application(
+        &self,
+        app_id: &str,
+        content_hash: Option<&str>,
+        package_root: Option<&str>,
+    ) -> Result<(u64, String), NotAvailable> {
+        self.launch_installed_application_for(app_id, content_hash, package_root, None)
+            .await
+    }
+
+    /// Continue a live invocation on its original caller's behalf.
+    ///
+    /// # Errors
+    /// Returns an unavailable or malformed broker response.
+    pub async fn launch_installed_application_for(
+        &self,
+        app_id: &str,
+        content_hash: Option<&str>,
+        package_root: Option<&str>,
+        on_behalf_of: Option<[u8; 16]>,
+    ) -> Result<(u64, String), NotAvailable> {
         let mut request = self.inner.launch_published_application_request();
+        if let Some(invocation) = on_behalf_of {
+            request.get().set_on_behalf_of(&invocation);
+        }
         request.get().set_app_id(app_id);
+        request
+            .get()
+            .set_package_root(package_root.unwrap_or_default());
         request
             .get()
             .set_content_hash(content_hash.unwrap_or_default());

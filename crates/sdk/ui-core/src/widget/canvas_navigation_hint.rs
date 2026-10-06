@@ -4,6 +4,7 @@ use crate::color_compat::ColorCompat;
 use crate::interaction::{InteractionEnvironment, PointerPrecision};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -73,15 +74,18 @@ impl CanvasNavigationHint {
             None,
             &surface,
         );
-        #[allow(clippy::arithmetic_side_effects)]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo Affine composition is float matrix math; it cannot overflow or panic"
+        )]
         let text_transform = transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 10.0));
-        text.draw_text(
+        text.draw_style(
             scene,
             Self::label(kind, environment),
-            theme.tokens.typography.scale.sm,
             theme.text_dim,
             text_transform,
             None,
+            &theme.text(TextRole::Caption),
         );
     }
 }

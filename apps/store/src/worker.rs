@@ -52,6 +52,10 @@ pub enum Request {
         url: String,
     },
     RemoteRemove(String),
+    RemoteSetEnabled {
+        name: String,
+        enabled: bool,
+    },
     /// Boxed: [`StoreItem`] is far larger than every other variant's
     /// payload, and this is a queued message — boxing keeps every
     /// `Request` (and the channel that carries them) sized to the common
@@ -86,6 +90,7 @@ pub type Done = mpsc::Sender<Outcome>;
 pub struct Finished {
     pub status: String,
     pub case: Option<registry_types::ModerationCase>,
+    pub launch: Option<crate::actions::ApplicationLaunch>,
 }
 
 impl Finished {
@@ -93,6 +98,7 @@ impl Finished {
         Self {
             status: status.into(),
             case: None,
+            launch: None,
         }
     }
 }
@@ -385,6 +391,18 @@ fn handle(
             }
             remote_result(snapshots, state, result)
         }
+        Request::RemoteSetEnabled { name, enabled } => {
+            let result = state.host.as_ref().map_or_else(
+                || Err("App service unavailable.".to_string()),
+                |host| host.set_remote_enabled(&name, enabled),
+            );
+            if result.is_ok() {
+                refresh(state);
+            } else {
+                refresh_flatpak(state);
+            }
+            remote_result(snapshots, state, result)
+        }
         Request::RemoteRemove(name) => {
             let result = state.host.as_ref().map_or_else(
                 || Err("App service unavailable.".to_string()),
@@ -413,7 +431,11 @@ fn handle(
                 operation_error,
             );
             let finished = if outcome.ok {
-                Ok(Finished::status(outcome.status_line))
+                Ok(Finished {
+                    status: outcome.status_line,
+                    case: None,
+                    launch: outcome.launch,
+                })
             } else {
                 Err(outcome.status_line)
             };
@@ -431,6 +453,7 @@ fn handle(
                         case.case_id
                     ),
                     case: Some(case),
+                    launch: None,
                 }),
                 Err(error) => Err(format!(
                     "Report was not submitted. {error} The collaborative draft is unchanged; check your identity or connection and retry."
@@ -457,6 +480,7 @@ fn handle(
                         crate::app::moderation_status_label(case.status)
                     ),
                     case: Some(case),
+                    launch: None,
                 })
                 .map_err(|error| {
                     format!(
