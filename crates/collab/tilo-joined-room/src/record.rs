@@ -60,6 +60,12 @@ pub(crate) struct StoredRoom {
     /// Content-addressed immutable claims for retired launch UUIDs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_history_root: Option<[u8; 32]>,
+    /// Addressed Message input, private to its owning host and not a Chat replica.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_messages: BTreeMap<uuid::Uuid, crate::agent_message::StoredAgentMessage>,
+    /// Immutable terminal correlation index; UUID tombstones are never evicted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_message_history_root: Option<[u8; 32]>,
     /// Original person membership command outcomes, private to the owning host.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub workspace_memberships:

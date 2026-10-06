@@ -36,9 +36,10 @@ path = "src/lib.rs"
 # honour them; shipped images never enable this.
 dev-overrides = ["package-store/dev-overrides"]
 # Explicit opt-in Linux process-tree qualification fixture.
-managed-tree-test = []
+managed-tree-test = ["dep:ed25519-dalek"]
 
 [dependencies]
+ed25519-dalek = { workspace = true, optional = true }
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }

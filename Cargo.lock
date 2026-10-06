@@ -16751,6 +16751,7 @@ dependencies = [
  "getrandom 0.4.3",
  "iroh",
  "iroh-base",
+ "launcher",
  "parking_lot",
  "postcard",
  "rand_core 0.10.0",

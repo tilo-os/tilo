@@ -114,6 +114,30 @@ pub(crate) fn authorize_host(
     Ok(())
 }
 
+/// Durable half of live Message execution custody. Only the closed host
+/// adapter derives this digest from an actual current launcher proof; digest
+/// possession or a Reserved/Claimed row never supplies process authority.
+pub(crate) fn revalidate_bound_process(
+    view: &NativeCommittedView,
+    binding: &AgentSessionBinding,
+    attestor: &DeviceCert,
+    evidence_digest: [u8; 32],
+    now: SystemTime,
+) -> Result<(), String> {
+    let session = view
+        .record
+        .agent_sessions
+        .get(&binding.launch)
+        .ok_or("native Agent Message session is not reserved")?;
+    if session.binding != *binding
+        || session.phase != (SessionPhase::ProcessBound { evidence_digest })
+        || evidence_digest == [0; 32]
+    {
+        return Err("native Agent Message process differs from durable bound custody".into());
+    }
+    authorize(view, &session.reservation, attestor, now)
+}
+
 fn authorize(
     view: &NativeCommittedView,
     reservation: &AgentSessionReservation,
