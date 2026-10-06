@@ -1219,13 +1219,21 @@ impl DrmDispatchState {
         self.events.push(ev);
     }
 
-    /// Report the class of a physical event when it differs from the last
-    /// one. Emitted ahead of the event itself, so the compositor has already
-    /// switched modality when it handles that event.
+    /// Report a physical modality change, or deliberate pointer activation.
+    /// Pointer activation also follows hover, which shares its modality.
+    /// Emitted ahead of the event, so the compositor switches modality first.
     fn note_input_used(&mut self, modality: ui::InputModality) {
-        if self.last_input_used != Some(modality) {
+        if self.last_input_used != Some(modality) || modality == ui::InputModality::Pointer {
             self.last_input_used = Some(modality);
             self.push(BackendEvent::InputUsed(modality));
+        }
+    }
+
+    /// Coalesce hover reports without losing a later touch or click transition.
+    fn note_pointer_motion(&mut self) {
+        if self.last_input_used != Some(ui::InputModality::Pointer) {
+            self.last_input_used = Some(ui::InputModality::Pointer);
+            self.push(BackendEvent::PointerMotionUsed);
         }
     }
 
@@ -2662,10 +2670,11 @@ impl DrmDispatchState {
             InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
                 self.handle_libinput_device_event(event);
             }
-            InputEvent::PointerMotionAbsolute { .. }
-            | InputEvent::PointerMotion { .. }
-            | InputEvent::PointerButton { .. }
-            | InputEvent::PointerAxis { .. } => {
+            InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerMotion { .. } => {
+                self.note_pointer_motion();
+                self.handle_libinput_pointer_event(event);
+            }
+            InputEvent::PointerButton { .. } | InputEvent::PointerAxis { .. } => {
                 self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_pointer_event(event);
             }

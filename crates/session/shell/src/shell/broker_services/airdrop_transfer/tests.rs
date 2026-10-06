@@ -590,6 +590,31 @@ fn verified_airdrop_requires_local_person_and_lab_admission() {
 }
 
 #[test]
+fn verified_airdrop_staging_keeps_the_approved_inode_alive_until_attempt_end() {
+    let fixture = Fixture::new();
+    let source = SecureNearbySource::open_beneath(fixture.root.path(), &fixture.path).unwrap();
+    let inode = source.metadata().unwrap().ino();
+    let descriptor = std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| std::fs::read_link(path).is_ok_and(|target| target == fixture.path))
+        .expect("approved source descriptor");
+    let staged = StagedFile::new(source, &|| true).unwrap();
+    std::fs::remove_file(&fixture.path).unwrap();
+    std::fs::write(&fixture.path, b"replacement").unwrap();
+    let retained =
+        std::fs::metadata(&descriptor).expect("source stays open after staging and unlink");
+    assert_eq!(retained.ino(), inode);
+    assert_eq!(retained.nlink(), 0);
+    assert_ne!(std::fs::metadata(&fixture.path).unwrap().ino(), inode);
+    drop(staged);
+    assert!(
+        std::fs::metadata(descriptor).is_err(),
+        "source authority is closed with the attempt"
+    );
+}
+
+#[test]
 fn verified_airdrop_helper_receives_only_scoped_descriptors_and_no_ambient_credentials() {
     let mut fixture = Fixture::new();
     fixture

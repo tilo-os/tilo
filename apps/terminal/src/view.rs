@@ -217,6 +217,17 @@ impl ui::widget::Decorator for TerminalView {
 }
 
 impl AppWidget for TerminalView {
+    fn device_shell_operation(
+        &mut self,
+        operation: &ui::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        TerminalWidget::device_shell_operation(self.terminal_mut(), operation)
+    }
+
+    fn request_device_shell(&mut self) -> bool {
+        TerminalWidget::request_device_shell(self.terminal_mut())
+    }
+
     fn app_kind(&self) -> AppKind {
         self.terminal().app_kind()
     }

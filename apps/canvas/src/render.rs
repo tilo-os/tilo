@@ -170,10 +170,48 @@ pub struct Renderer {
     pub pictures: Pictures,
     tooth: Option<(String, ImageData)>,
     brushes: BrushCache,
+    paths: PathCache,
     /// The ground's halvings, for a view farther than its scale.
     ground_mips: Mips,
     /// Tiles of a close view, simulated finer than the whole layer.
     tiles: Tiles,
+}
+
+/// Parsed SVG geometry survives viewport redraws. Bound source bytes so an
+/// agent replacing outlines repeatedly cannot keep unbounded old geometry.
+#[derive(Default)]
+struct PathCache {
+    entries: HashMap<String, (String, Arc<BezPath>)>,
+    bytes: usize,
+}
+
+impl PathCache {
+    fn get(&mut self, mark: &Mark) -> Option<Arc<BezPath>> {
+        const BUDGET: usize = 4 << 20;
+        let Shape::Path { d } = &mark.shape else {
+            return None;
+        };
+        if let Some((known, path)) = self.entries.get(&mark.id)
+            && known == d
+        {
+            return Some(Arc::clone(path));
+        }
+        let path = Arc::new(mark.shape.path());
+        if d.len() > BUDGET {
+            return Some(path);
+        }
+        if let Some((old, _)) = self.entries.remove(&mark.id) {
+            self.bytes = self.bytes.saturating_sub(old.len());
+        }
+        if self.bytes.saturating_add(d.len()) > BUDGET || self.entries.len() >= 512 {
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(d.len());
+        self.entries
+            .insert(mark.id.clone(), (d.clone(), Arc::clone(&path)));
+        Some(path)
+    }
 }
 
 /// Dabbed strokes as last laid, by what they were laid from, so a frame
@@ -220,6 +258,7 @@ struct MarkCx<'a> {
     text: &'a mut TextRenderer,
     tooth: Option<&'a Speckle>,
     brushes: &'a mut BrushCache,
+    paths: &'a mut PathCache,
     /// The ground's height field and cells per unit, which graphite and
     /// charcoal catch on.
     ground: (&'a Heightfield, f64),
@@ -491,6 +530,7 @@ impl Renderer {
             text: &mut *text,
             tooth: tooth.as_ref(),
             brushes: &mut self.brushes,
+            paths: &mut self.paths,
             ground: (&field, cell_scale(art)),
             pictures: &mut self.pictures,
             layer_adjust: layer.adjust.as_ref(),
@@ -1627,14 +1667,11 @@ fn draw_mark(
     }
     let picture = matches!(mark.shape, Shape::Image { .. });
     let graded;
-    let mark = if picture {
+    let adjustments = grades_of(&[mark.style.adjust.as_ref(), cx.layer_adjust]);
+    let mark = if picture || adjustments.is_empty() {
         mark
     } else {
-        graded = graded_mark(
-            mark,
-            palette,
-            &grades_of(&[mark.style.adjust.as_ref(), cx.layer_adjust]),
-        );
+        graded = graded_mark(mark, palette, &adjustments);
         &graded
     };
     let mut layers = 0;
@@ -1681,11 +1718,16 @@ fn draw_mark(
     // paint does not: the mark is drawn into a group of its own and the
     // speckle lands only on what it covers. Opaque paint takes the cheap
     // path, its outline filled with the speckle.
-    let reach = mark.bounds().inflate(
-        style.feather.unwrap_or(0.0) + 2.0,
-        style.feather.unwrap_or(0.0) + 2.0,
-    );
     let isolated = !speckles.is_empty() && !opaque(mark, palette);
+    let reach = if isolated {
+        mark.bounds().inflate(
+            style.feather.unwrap_or(0.0) + 2.0,
+            style.feather.unwrap_or(0.0) + 2.0,
+        )
+    } else {
+        Rect::ZERO
+    };
+    let path = cx.paths.get(mark);
     if isolated {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &reach);
     }
@@ -1694,11 +1736,11 @@ fn draw_mark(
     match style.feather {
         _ if picture => {
             draw_picture(mark, cx.layer_adjust, scene, transform, cx.pictures);
-            draw_vector(mark, palette, scene, transform, cx.text);
+            draw_vector_path(mark, palette, scene, transform, cx.text, path.as_deref());
         }
         _ if dabbed => draw_dabbed(mark, palette, scene, cx, Compose::SrcOver),
         Some(feather) if feather > 0.0 => draw_feathered(mark, palette, scene, transform, feather),
-        _ => draw_vector(mark, palette, scene, transform, cx.text),
+        _ => draw_vector_path(mark, palette, scene, transform, cx.text, path.as_deref()),
     }
     if let Some(inner) = &style.inner_shadow {
         draw_inner_shadow(mark, inner, palette, scene, transform);
@@ -2497,6 +2539,17 @@ pub fn draw_vector(
     transform: Affine,
     text: &mut TextRenderer,
 ) {
+    draw_vector_path(mark, palette, scene, transform, text, None);
+}
+
+fn draw_vector_path(
+    mark: &Mark,
+    palette: &[Pigment],
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    cached: Option<&BezPath>,
+) {
     let style = &mark.style;
     let at = transform * mark.affine();
     let opacity = style.opacity();
@@ -2526,16 +2579,22 @@ pub fn draw_vector(
             draw_text_shape(&mark.shape, ink, scene, at, text);
         }
         shape => {
-            let path = shape.path();
+            let fresh;
+            let path = if let Some(path) = cached {
+                path
+            } else {
+                fresh = shape.path();
+                &fresh
+            };
             if shape.closed() {
                 if let Some(gradient) = style
                     .gradient
                     .as_ref()
                     .and_then(|gradient| gradient_brush(gradient, palette, opacity))
                 {
-                    scene.fill(Fill::NonZero, at, &gradient, None, &path);
+                    scene.fill(Fill::NonZero, at, &gradient, None, path);
                 } else if let Some(fill) = named(&style.fill) {
-                    scene.fill(Fill::NonZero, at, fill, None, &path);
+                    scene.fill(Fill::NonZero, at, fill, None, path);
                 }
             }
             let width = if shape.closed() {
@@ -2546,7 +2605,7 @@ pub fn draw_vector(
             if width > 0.0
                 && let Some(line) = named(&style.stroke)
             {
-                scene.stroke(&pen(style, width), at, line, None, &path);
+                scene.stroke(&pen(style, width), at, line, None, path);
             }
         }
     }

@@ -386,6 +386,9 @@ fn wait_for_consent(
 
 struct StagedFile {
     file: File,
+    // Keep the approved inode alive for every admission check. Closing it
+    // after staging could let an unlink/recreate reuse its inode number.
+    _source: File,
     name: String,
     bytes: u64,
     hash: String,
@@ -457,6 +460,7 @@ impl StagedFile {
         }
         Ok(Self {
             file,
+            _source: input,
             name,
             bytes: before.len(),
             hash,
