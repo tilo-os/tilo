@@ -161,6 +161,11 @@ impl ActionHost for CertifiedLocalActionHost {
 
 // Only existing provider forms with preserved original SDK-delivery custody.
 fn certified_provider(provider: &str) -> bool {
+    // This is only door classification. The action host independently looks
+    // up the opaque token and revalidates its live registration/custody.
+    if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
+        return true;
+    }
     provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
         || super::launchable::is_launchable_provider(provider)
