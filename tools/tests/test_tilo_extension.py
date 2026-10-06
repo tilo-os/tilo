@@ -582,6 +582,40 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue(machine.part().is_dir())
         self.assertTrue(machine.part("tilo-codecs-mesa").is_dir())
 
+    def test_plugin_without_codec_is_refused_before_download_on_exact_base(self):
+        machine = Machine(self)
+        plugin = machine.artifact(rpm("gstreamer1-plugin-openh264"))
+        machine.manifest([plugin])
+        self.assertEqual(machine.run("install"), 1)
+        self.assertFalse(machine.part().exists())
+        self.assertIn("Cisco's codec library", machine.status()["last_error"])
+        self.assertFalse(any(url == plugin["urls"][0] for url, _offset in machine.requests))
+
+    def test_retained_plugin_loses_readiness_when_real_codec_becomes_stub(self):
+        machine = Machine(self)
+        machine.packages.append("openh264 0:2.6.0-3.fc44.x86_64")
+        plugin = machine.artifact(rpm("gstreamer1-plugin-openh264"))
+        machine.manifest([plugin])
+        self.assertEqual(machine.run("install"), 0)
+        self.assertTrue(machine.part().exists())
+        previous = list(machine.packages)
+        machine.packages = [p for p in previous if not p.startswith("openh264 ")]
+        machine.packages.append("noopenh264 0:2.6.0-4.fc44.x86_64")
+        self.assertEqual(machine.run("activate"), 0)
+        self.assertFalse(machine.part().exists())
+        self.assertEqual(machine.status()["parts"]["tilo-codecs"], "waiting")
+        machine.packages = previous
+        self.assertEqual(machine.run("activate"), 0)
+        self.assertTrue(machine.part().exists(), "the authenticated part returns on rollback")
+
+    def test_plugin_with_signed_codec_library_can_be_installed(self):
+        machine = Machine(self)
+        machine.packages.append("noopenh264 0:2.6.0-4.fc44.x86_64")
+        machine.manifest([machine.artifact(rpm("gstreamer1-plugin-openh264")),
+                          machine.artifact(rpm("openh264", files={"usr/lib64/libopenh264.so.8": "codec"}))])
+        self.assertEqual(machine.run("install"), 0)
+        self.assertEqual((machine.part() / "usr/lib64/libopenh264.so.8").read_text(), "codec")
+
     def test_a_part_whose_base_package_changed_waits_and_returns_on_rollback(self):
         machine = Machine(self)
         self.install(machine)

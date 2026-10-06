@@ -5460,12 +5460,20 @@ mod tests {
             "RPM Fusion",
             "Cisco (OpenH264)",
             "Tilo does not host or distribute them",
+            "OpenH264 Video Codec provided by Cisco Systems, Inc.",
+            "https://www.openh264.org/BINARY_LICENSE.txt",
         ] {
             assert!(
                 lines.iter().any(|line| line.contains(needle)),
                 "{needle}: {lines:?}"
             );
         }
+        let source = accessibility_for_id(
+            view.composed.as_deref().expect("rendered codecs page"),
+            "onboarding.codecs.source",
+        )
+        .expect("codec licensing explanation must be accessible");
+        assert_eq!(source.name.as_deref(), Some(codecs_source().as_str()));
         assert_eq!(
             &lines[lines.len() - 2..],
             ["Not now", "Install media codecs"],
