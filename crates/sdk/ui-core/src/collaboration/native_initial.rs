@@ -20,10 +20,22 @@ struct Construction {
     manager: RefCell<Option<CollaborationManager>>,
     bridge: Option<InitialReadBridge>,
     primary: RefCell<Option<CommittedDocument>>,
-    creation: RefCell<std::collections::BTreeMap<String, CommittedDocument>>,
+    creation: RefCell<std::collections::BTreeMap<String, CreationCapture>>,
     failure: RefCell<Option<String>>,
     transferring: Cell<bool>,
     component_scope: RefCell<Option<crate::wake::WakeScope>>,
+}
+struct CreationCapture {
+    read: CommittedDocument,
+    claimed: bool,
+}
+impl CreationCapture {
+    fn new(read: CommittedDocument) -> Self {
+        Self {
+            read,
+            claimed: false,
+        }
+    }
 }
 pub(crate) struct NativeConstruction {
     state: Rc<Construction>,
@@ -66,7 +78,7 @@ impl NativeConstruction {
         let creation = None;
         let mut creations = std::collections::BTreeMap::new();
         if let (Some(read), Some(bridge)) = (creation, bridge.as_ref()) {
-            creations.insert(bridge.route.channel_id(), read);
+            creations.insert(bridge.route.channel_id(), CreationCapture::new(read));
         }
         let state = Rc::new(Construction {
             manager: RefCell::new(Some(manager)),
@@ -127,11 +139,24 @@ impl NativeConstruction {
             }
         }
         manager.switch_native_record(&binding.checkout)?;
-        if manager
-            .primary_route()
-            .is_none_or(|witness| binding.admission_route().as_ref() != Some(&witness.route))
+        let connected = manager.is_connected();
+        let current = manager.primary_route().map(|witness| witness.route.clone());
+        let observed = current.as_ref().and_then(|_| binding.admission_route());
+        if current
+            .as_ref()
+            .is_none_or(|route| observed.as_ref() != Some(route))
         {
-            return Err("component route changed during native admission".into());
+            return Err(format!(
+                "component route changed during native admission (connected={}, current_route={}, accepted_matches={}, binding_matches={})",
+                connected,
+                current.is_some(),
+                manager
+                    .primary_route
+                    .accepted
+                    .as_ref()
+                    .is_some_and(|witness| witness.route == requested),
+                observed.as_ref() == Some(&requested),
+            ));
         }
         Ok(())
     }
@@ -194,14 +219,18 @@ pub(crate) fn take_initialization(
     if !checkout.id.is_package_primary() {
         scoped.route = RouteSpec::record(app, bridge.route.cluster_id, checkout.id.as_str());
     }
-    Ok(state
-        .creation
-        .borrow_mut()
-        .remove(&scoped.route.channel_id())
-        .map(|read| RecordInitialization {
-            read,
-            bridge: scoped,
-        }))
+    let mut captures = state.creation.borrow_mut();
+    let Some(capture) = captures.get_mut(&scoped.route.channel_id()) else {
+        return Ok(None);
+    };
+    if capture.claimed {
+        return Ok(None);
+    }
+    capture.claimed = true;
+    Ok(Some(RecordInitialization {
+        read: capture.read.clone(),
+        bridge: scoped,
+    }))
 }
 impl Drop for NativeConstruction {
     fn drop(&mut self) {
@@ -418,6 +447,31 @@ impl InitialReadBridge {
         checkout: &crate::record::RecordCheckout,
     ) -> Result<CommittedDocument, String> {
         self.check_scope(app, Some(room))?;
+        let route = if checkout.id.is_package_primary() {
+            self.route.clone()
+        } else {
+            RouteSpec::record(app, self.route.cluster_id, checkout.id.as_str())
+        };
+        if let Some(read) = current()
+            .and_then(|state| {
+                state
+                    .creation
+                    .borrow()
+                    .get(&route.channel_id())
+                    .map(|capture| capture.read.clone())
+            })
+            .filter(|read| read.creation_workspace().is_some())
+        {
+            // A receiptless refresh cannot replace the source of first
+            // materialization. But it must not conceal newer owner history.
+            if let Some(observed) = self.state.document_reads.initial(&route.channel_id()) {
+                if captured_heads(&read)? != captured_heads(&observed)? {
+                    return Err("original creation graph changed before initialization".into());
+                }
+                observed.applied();
+            }
+            return Ok(read);
+        }
         let read = if checkout.id.is_package_primary() {
             if let Some(initial) = primary(app, Some(room)) {
                 initial.map(|(_, read)| read)?
@@ -430,16 +484,11 @@ impl InitialReadBridge {
         if read.creation_workspace().is_some()
             && let Some(state) = current()
         {
-            let route = if checkout.id.is_package_primary() {
-                self.route.clone()
-            } else {
-                RouteSpec::record(app, self.route.cluster_id, checkout.id.as_str())
-            };
             state
                 .creation
                 .borrow_mut()
                 .entry(route.channel_id())
-                .or_insert_with(|| read.clone());
+                .or_insert_with(|| CreationCapture::new(read.clone()));
         }
         Ok(read)
     }
@@ -480,6 +529,18 @@ impl InitialReadBridge {
             std::thread::sleep(crate::time::Duration::from_millis(10));
         }
     }
+}
+
+#[cfg(feature = "broker-transport")]
+fn captured_heads(read: &CommittedDocument) -> Result<Vec<automerge::ChangeHash>, String> {
+    read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err("creation capture is not a full committed graph".into());
+        };
+        automerge::AutoCommit::load(bytes)
+            .map(|document| automerge::transaction::Transactable::base_heads(&document))
+            .map_err(|error| error.to_string())
+    })?
 }
 
 /// Without the broker transport there is no SDK worker to read committed

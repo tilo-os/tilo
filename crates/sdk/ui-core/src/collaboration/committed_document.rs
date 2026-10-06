@@ -27,6 +27,13 @@ impl Reads {
         let ready = self.pending(key).unwrap();
         self.stage(key, &ready, read).unwrap();
     }
+    #[cfg(test)]
+    pub(super) fn refresh_for_test(&self, key: &str, read: CommittedDocument) {
+        let applied = self.1.lock().unwrap().get(key).unwrap().merged.clone();
+        assert!(applied.load(Ordering::Acquire));
+        self.clear_stage(key, &applied);
+        self.stage_for_test(key, read);
+    }
     pub(super) fn publishable(&self, key: &str) -> bool {
         self.0
             .lock()
