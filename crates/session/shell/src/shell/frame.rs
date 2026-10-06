@@ -6843,9 +6843,21 @@ mod tests {
 
     #[test]
     fn an_unchanged_frame_reports_empty_damage() {
-        let mut frame = FrameBuilder::new((800, 600));
+        // Hosted apps can finish a background save between paints (Notes'
+        // "Saving…" chip becomes "Saved"). This assertion needs an unchanged
+        // scene, so use the production empty workspace with owned services and
+        // controlled fonts instead of starting asynchronous demo applications.
+        let mut frame = crate::shell::test_support::PopulatedShellFixture::with_tree(
+            (800, 600),
+            Theme::dark(),
+            WorkspaceTree::bootstrap_default(),
+        );
         frame.relayout();
         let first = frame.paint_with_damage();
+        assert!(
+            !first.scene.encoding().is_empty(),
+            "real shell chrome is painted"
+        );
         assert!(
             first.damage_regions.is_none(),
             "the first frame has no predecessor to retain"
