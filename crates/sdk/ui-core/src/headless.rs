@@ -1689,6 +1689,18 @@ impl FrameHarness {
         self.root.as_ref()
     }
 
+    /// Drain the native widget tree's requests for a host-owned transport.
+    /// Hosts authenticate and route these; the harness never creates admission.
+    pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        crate::widget::take_collab_requests(self.root.as_mut())
+    }
+
+    /// Deliver an authenticated transport answer through the native widget tree.
+    pub fn handle_collaboration_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        crate::widget::handle_collab_event(self.root.as_mut(), event);
+        self.relayout();
+    }
+
     /// The live document, read-only.
     #[must_use]
     pub fn state(&self) -> &State {

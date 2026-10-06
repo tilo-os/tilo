@@ -26,9 +26,12 @@
 #[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
 mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
-mod support;
+pub(crate) mod support;
 
 mod common;
+
+#[cfg(not(test))]
+pub mod mounted_resource;
 
 tilo_automerge_isolate::test_worker!();
 
@@ -38,13 +41,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
+use tilo_actions::InvocationId;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::{
-    ActionHostError, CataloguePage, CatalogueQuery, Confirmation, InvocationReceipt,
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    RemoteActionTarget,
+    ActionHostError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
+    InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
-use tilo_actions::{ConfirmationPolicy, InvocationId};
+#[cfg(test)]
+use tilo_actions::{
+    ConfirmationPolicy,
+    remote::{Confirmation, ReceiptStatus},
+};
 use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed, record_provider};
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_relay::daemon::{Relay, RelayIdentity};
@@ -410,9 +417,19 @@ struct Hosted {
 }
 
 async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
+    start_browser(root, host, state, None).await
+}
+
+async fn start_browser(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    page: Option<&str>,
+) -> Hosted {
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
+        resource_browser_page: page.map(|origin| format!("{origin}/resource.html")),
         ..Default::default()
     };
     cfg.workspaces.push(tilo_relay::WorkspaceBinding {
@@ -446,7 +463,7 @@ async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
                 hosts: vec!["localhost".into(), "127.0.0.1".into()],
                 store: Some(state.join("web-dev-identity")),
             },
-            allowed_origins: Vec::new(),
+            allowed_origins: page.into_iter().map(str::to_owned).collect(),
             plain_listen: None,
         })
         .await

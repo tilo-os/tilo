@@ -15646,6 +15646,7 @@ dependencies = [
 name = "tilo-agent-participant"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "agent",
  "api-tester",
  "blake3",
@@ -15702,6 +15703,7 @@ dependencies = [
  "tilo-model-gateway",
  "tilo-moq",
  "tilo-net",
+ "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
