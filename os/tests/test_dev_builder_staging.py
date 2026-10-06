@@ -18,6 +18,7 @@ EXPECTED_COPIES = (
     "COPY examples /build/examples",
     "COPY vendor /build/vendor",
     "COPY dist /build/dist",
+    "COPY docs/developers/tasks /build/docs/developers/tasks",
     "COPY os/components.toml /build/os/components.toml",
     "COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh "
     "os/scripts/cargo-freshness.sh /build/os/scripts/",

@@ -23,6 +23,8 @@ standalone-history-restore-unavailable = This version can't be restored here.
 standalone-history-preview-resource = Document
 host-search = Search…
 host-search-placeholder = Search
+dropdown-search-placeholder = Search choices
+dropdown-search-description = Type to filter choices. Use the arrow keys to choose and Enter to select.
 host-undo = Undo
 host-undo-named = Undo { $change }
 host-redo = Redo
@@ -462,6 +464,10 @@ block-editor-replace = Replace
 block-editor-replace-all = Replace all
 block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
 
+dictation-record-once = Record once
+dictation-finish = Finish
+dictation-cancel = Cancel
+
 music-home-heading = Your music
 music-connect-spotify = Connect Spotify
 music-spotify-playback = Authorize playback
@@ -529,3 +535,6 @@ music-spotify-playlist-actions = Spotify playlist actions
 
 widget-sidebar-resize = Resize sidebar
 widget-inspector-resize = Resize inspector
+
+dictation-copy-transcript = Copy transcript
+dictation-discard-transcript = Discard transcript

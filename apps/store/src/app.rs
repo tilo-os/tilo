@@ -301,7 +301,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
     // The row feeds system search, history and assistive clients, which do
     // not see the card layout. Keep its summary short rather than exporting
     // a second, unbounded copy of catalogue metadata.
-    let detail = resource_detail_excerpt(&item.description);
+    let detail = resource_detail_excerpt(item.summary());
     let latest = item.latest_version();
     let badge = if latest.is_empty() {
         source.to_string()
@@ -560,6 +560,17 @@ impl StoreApp {
         // apps…"), not a cleared swapchain: the worker is already in flight.
         self.set_worker_busy(true);
         self.worker = Some(StoreWorker::spawn(self.directory.clone(), wake));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn connect_test_host(&mut self, fd: std::os::fd::OwnedFd) -> Result<(), String> {
+        let current = self
+            .worker
+            .take()
+            .ok_or_else(|| "the live surface must already have its mounted worker".to_owned())?;
+        self.worker = Some(current.with_connected_host(self.directory.clone(), fd));
+        self.set_worker_busy(true);
+        Ok(())
     }
 
     /// Edit reports through `dispatcher`.
@@ -1316,10 +1327,35 @@ impl StoreApp {
                 self.items
                     .iter()
                     .find(|item| item.id == id)
-                    .map(|item| {
-                        inspect_item(item, self.flatpak_available, self.flatpak_error.as_deref())
-                    })
                     .ok_or_else(|| "App is not in the current catalogue.".to_string())
+                    .and_then(|item| {
+                        let mut detail = inspect_item(
+                            item,
+                            self.flatpak_available,
+                            self.flatpak_error.as_deref(),
+                        );
+                        // Language metadata belongs to an explicit app read,
+                        // not every row of a catalogue listing. Bound it even
+                        // when the model was supplied by a legacy source.
+                        let fields = detail.as_object_mut().ok_or_else(|| {
+                            "App inspection did not produce a metadata object.".to_string()
+                        })?;
+                        fields.insert(
+                            "supported_languages".into(),
+                            serde_json::json!(
+                                item.supported_languages
+                                    .iter()
+                                    .take(128)
+                                    .map(|tag| tag.chars().take(64).collect::<String>())
+                                    .collect::<Vec<_>>()
+                            ),
+                        );
+                        fields.insert(
+                            "supported_language_count".into(),
+                            serde_json::json!(item.supported_languages.len()),
+                        );
+                        Ok(detail)
+                    })
             })
             .transpose()?;
         let visible = self.visible_items();
@@ -1780,7 +1816,8 @@ impl StoreApp {
                 Finish::Package | Finish::Status => {}
             }
         }
-        Ok(Effected::value(finished.status))
+        self.set_status_line(finished.status);
+        Ok(Effected::done())
     }
 
     fn start_application_launch(
@@ -1830,7 +1867,7 @@ impl StoreApp {
                     Ok(status) => {
                         app.status_line.clone_from(&status);
                         app.operation_error = None;
-                        Ok(Effected::value(status))
+                        Ok(Effected::done())
                     }
                     Err(error) => {
                         app.show_failure(&error);
@@ -2314,6 +2351,7 @@ fn inspect_item(
     serde_json::json!({
         "resource": format!("app:{}", item.id), "id": item.id,
         "name": resource_detail_excerpt(&item.name),
+        "tagline": resource_detail_excerpt(&item.tagline),
         "description": resource_detail_excerpt(&item.description),
         "source": item.source.short_label(),
         "repository": resource_detail_excerpt(item.source.distribution_name()),

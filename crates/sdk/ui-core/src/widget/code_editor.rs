@@ -748,6 +748,13 @@ impl Widget for CodeEditor {
         Some(winit::window::ImePurpose::Terminal)
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        if self.read_only {
+            return None;
+        }
+        self.inner.ime_edit_fingerprint(key)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let mut node = self.inner.accessibility()?;
         node.state.read_only |= self.read_only;

@@ -1360,6 +1360,7 @@ mod tests {
             app: app.to_string(),
             broker_peer_id: None,
             descriptor: ActionDescriptor {
+                semantic_identity: None,
                 address: ActionAddress::new(resource, action),
                 resource_kind: kind.to_string(),
                 resource_label: "a thing".to_string(),
@@ -1561,6 +1562,7 @@ mod tests {
                     app: "chat".to_string(),
                     broker_peer_id: None,
                     descriptor: ActionDescriptor {
+                        semantic_identity: None,
                         address: surface::open_address("chat"),
                         resource_kind: APPLICATION_KIND.to_string(),
                         resource_label: "the conversation".to_string(),

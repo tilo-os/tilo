@@ -937,3 +937,168 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
         );
     }
 }
+
+#[test]
+fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
+    use crate::effects::ChatEffect;
+    let identity = LocalIdentity::demo();
+    let mut doc = AutoCommit::new();
+    ChatDoc::seed_demo(&mut doc, &identity.id);
+    doc.commit();
+    let message = ChatDoc::list_messages(&doc, "c_general")
+        .first()
+        .expect("seeded message")
+        .clone();
+    ChatDoc::edit_message(
+        &mut doc,
+        &message.channel,
+        &message.id,
+        "café notes",
+        &[],
+        1,
+    );
+    doc.commit();
+    let mut app = projection(&doc, identity);
+    for (start, end, unit) in [(3, 4, "Chars"), (3, 5, "Bytes")] {
+        app.answer_effect(ChatEffect::RevealMessageRange {
+            message: message.id.clone(),
+            start,
+            end,
+            unit: unit.into(),
+        })
+        .unwrap();
+        assert_eq!(
+            app.revealed_range.as_ref().map(|r| (&r.0, r.2, r.3)),
+            Some((&message.id, 3, 5))
+        );
+    }
+    let before = app.revealed_range.clone();
+    for (start, end, unit) in [(3, 4, "Bytes"), (0, 99, "Chars"), (4, 3, "Chars")] {
+        assert!(
+            app.answer_effect(ChatEffect::RevealMessageRange {
+                message: message.id.clone(),
+                start,
+                end,
+                unit: unit.into()
+            })
+            .is_err()
+        );
+        assert_eq!(app.revealed_range, before);
+    }
+    app.answer_effect(ChatEffect::RevealMessage {
+        message: message.id,
+    })
+    .unwrap();
+    assert!(app.revealed_range.is_none());
+}
+
+#[test]
+fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
+    use tilo_actions::remote::RemoteActionMessage;
+    use ui::bound_dispatch::BoundActionAddress;
+    use ui::headless::host_media::MediaLane;
+    use ui::native_media::Command;
+
+    for catalogue_first in [true, false] {
+        let cache = ui::portable_storage::PortableStorage::new(
+            &format!("browser-request-routing-{catalogue_first}"),
+            "device",
+        )
+        .unwrap();
+        let (mut frame, records, checkout) =
+            component_mount_in_room(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
+        let share = BoundActionAddress {
+            instance_id: 1,
+            address: tilo_actions::ActionAddress::new("chat.channel:c_general", "share-resource"),
+        };
+        frame
+            .invoke_bound_action(
+                &share,
+                serde_json::json!({
+                    "reference": {"id":"chat.message:target", "kind":"chat.message", "label":"Target"},
+                    "sourceProvider":"record:so.tilo.chat:"
+                })
+                .as_object()
+                .unwrap(),
+            )
+            .unwrap();
+        frame.persist_flush();
+        frame.relayout();
+        let bytes = records.replication_snapshot(&checkout.id).unwrap().0;
+        let doc = AutoCommit::load(&bytes).unwrap();
+        let shared = ChatDoc::list_messages(&doc, "c_general")
+            .into_iter()
+            .find(|message| message.reference.is_some())
+            .unwrap();
+        let copy = BoundActionAddress {
+            instance_id: 1,
+            address: tilo_actions::ActionAddress::new(
+                format!("chat.message:{}", shared.id),
+                "copy-resource-link",
+            ),
+        };
+        let join = BoundActionAddress {
+            instance_id: 1,
+            address: tilo_actions::ActionAddress::new("chat.call:c_lounge", "join-call"),
+        };
+        frame
+            .invoke_bound_action(&copy, &serde_json::Map::new())
+            .unwrap();
+        frame
+            .invoke_bound_action(&join, &serde_json::Map::new())
+            .unwrap();
+        let mut lane = MediaLane::default();
+        let (catalogues, media) = if catalogue_first {
+            let catalogues = lane.take_catalogue_requests(&mut frame);
+            (catalogues, lane.take(&mut frame))
+        } else {
+            let media = lane.take(&mut frame);
+            (lane.take_catalogue_requests(&mut frame), media)
+        };
+        assert!(catalogues.iter().any(|message| matches!(message,
+            RemoteActionMessage::CatalogueRequest {query, ..}
+                if query.provider.as_deref() == Some("record:so.tilo.chat:")
+                    && query.view_resource.as_ref().is_some_and(|resource| resource.id == "chat.message:target"))));
+        assert!(
+            media
+                .iter()
+                .any(|request| matches!(request.command.command, Command::Join { .. })),
+            "catalogue polling must preserve the actual shared join action"
+        );
+        assert!(lane.take_catalogue_requests(&mut frame).is_empty());
+        frame.close_components();
+    }
+}
+
+#[test]
+fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
+    use ui::bound_dispatch::BoundActionAddress;
+    use ui::headless::host_media::MediaLane;
+    use ui::native_media::Command;
+    let cache =
+        ui::portable_storage::PortableStorage::new("catalogue-media-retirement", "device").unwrap();
+    let (mut frame, _, _) =
+        component_mount_in_room(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
+    frame
+        .invoke_bound_action(
+            &BoundActionAddress {
+                instance_id: 1,
+                address: tilo_actions::ActionAddress::new("chat.call:c_lounge", "join-call"),
+            },
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    let mut lane = MediaLane::default();
+    assert!(lane.take_catalogue_requests(&mut frame).is_empty());
+    frame.close_components();
+    let media = lane.take(&mut frame);
+    assert!(
+        media
+            .iter()
+            .any(|request| request.retired && matches!(request.command.command, Command::Leave))
+    );
+    assert!(
+        media.iter().all(|request| request.retired),
+        "queued commands cannot outlive their bound component"
+    );
+}

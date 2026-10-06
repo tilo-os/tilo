@@ -70,6 +70,54 @@ and what it found at each place when a proof is missing. The owner then
 reviews the application; approval checks the proofs once more, so leave them
 in place until `tilo-app apply --status` says `approved`.
 
+## Your Store page
+
+Write a `store.json` alongside your app before publishing. The same signed
+metadata feeds the Store's cards, detail page and semantic inspection:
+
+```json
+{
+  "name": { "en": "Reading List" },
+  "tagline": { "en": "Keep your next good read close." },
+  "description": {
+    "en": "Collect books, keep notes and share your reading list with a workspace."
+  },
+  "supported_languages": ["en"],
+  "images": {
+    "en": [
+      {
+        "kind": "screenshot",
+        "url": "https://example.com/reading-list.png",
+        "alt": "A reading list with books grouped by reading progress"
+      }
+    ]
+  },
+  "source_url": "https://github.com/your-org/reading-list",
+  "homepage": "https://example.com/reading-list"
+}
+```
+
+Replace the example URLs with your project's credential-free HTTPS URLs.
+Use a short tagline for catalogue browsing; put the full explanation in
+`description`. The detail page shows previews and the description before
+package facts. `images` also accepts `icon` and `banner`; image descriptions
+(`alt`) are required by the registry. The Store shows up to three screenshots.
+
+Each localized text map needs an `en` fallback. Add translations using
+canonical language tags such as `es` or `pt-BR`. `supported_languages` names
+the languages your **app UI** actually supports, independently of the Store
+page's translations; keep the list sorted and unique. The Store displays that
+list, and an agent can read it by inspecting the specific app.
+
+Submit it with the builds:
+
+```bash
+tilo-app publish --metadata store.json
+```
+
+Publication still queues an owner review. A missing field or invalid locale
+is refused rather than silently dropping your presentation.
+
 ## Releasing
 
 Build and sign each platform you ship, then publish everything in `dist/`:

@@ -1255,6 +1255,10 @@ impl Widget for RichTextLine {
     }
 
     /// `multiline` is cleared — a block editor stacks many of these to form a document.
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.inner.ime_edit_fingerprint(key)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Widget::accessibility(&self.inner)
     }

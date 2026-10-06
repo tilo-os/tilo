@@ -207,6 +207,7 @@ fn exported(
     result: ResultSpec,
 ) -> ExportedAction {
     ExportedAction {
+        semantic_identity: None,
         resource: INBOX.into(),
         action: action.into(),
         resource_kind: "fixture.drafts".into(),
@@ -307,12 +308,14 @@ impl FixtureApp {
                 }
                 CollabEvent::Invocation {
                     id,
+                    invocation,
                     action,
                     argument,
                     context,
                     ..
                 } => {
-                    let update = self.serve(id, &action, argument.as_deref(), context.as_deref());
+                    let update =
+                        self.serve(invocation, &action, argument.as_deref(), context.as_deref());
                     self.manager
                         .send(CollabRequest::UpdateInvocation { id, update });
                 }
@@ -323,12 +326,11 @@ impl FixtureApp {
 
     fn serve(
         &mut self,
-        id: u64,
+        invocation: InvocationId,
         action: &str,
         argument: Option<&str>,
         context: Option<&ActionContext>,
     ) -> InvocationUpdate {
-        let invocation = InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let arguments: Map<String, Value> = argument
             .and_then(|slot| slot.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
             .and_then(|json| serde_json::from_str(json).ok())

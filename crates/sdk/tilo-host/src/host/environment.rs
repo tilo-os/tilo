@@ -130,6 +130,8 @@ pub struct RunnerDiagnostics {
     pub profile_out: Option<PathBuf>,
     /// Record presentation feedback for a native performance scenario.
     pub presentation_profile: bool,
+    /// Record content-free render stages under explicit presentation diagnostics.
+    pub presentation_timing: bool,
     /// Open windows without taking focus from the active application.
     pub window_no_activate: bool,
     /// Restore the always-refresh hosted pump for paired host measurements.

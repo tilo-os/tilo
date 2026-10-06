@@ -480,6 +480,16 @@ impl SaveStatusSurface {
         self.failure().is_none() && self.bubble.needs_frame(now)
     }
 
+    /// Wake once to remove a transient, including when reduced motion disables fades.
+    /// Keep an overdue deadline until paint consumes it, so a parked host sees it.
+    #[must_use]
+    pub fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.failure().is_some() || self.bubble.hovered || self.bubble.text.is_empty() {
+            return None;
+        }
+        self.bubble.shown_at?.checked_add(self.bubble.linger)
+    }
+
     /// The pointer moved to `p`; returns whether the hover changed.
     pub fn pointer_moved(&mut self, p: Point) -> bool {
         let before = self.hovered_action();
@@ -552,6 +562,9 @@ impl SaveStatusSurface {
         let corner = Self::corner(area, theme);
         let Some(reason) = self.failure().map(str::to_owned) else {
             self.hit = crate::widget::toast::ToastCardHit::default();
+            if !self.bubble.is_visible(now) {
+                self.bubble.shown_at = None;
+            }
             return self.bubble.paint(scene, transform, tr, theme, corner, now);
         };
         let hovered = self.hovered_action();
@@ -709,6 +722,51 @@ mod tests {
             );
             assert!(!b.is_visible(t0 + Duration::from_millis(1950)));
         }
+    }
+
+    #[test]
+    fn reduced_motion_expiry_wakes_once_and_is_consumed_by_paint() {
+        crate::i18n::I18nManager::init("en-US");
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let now = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set(SaveState::Saved, now);
+        let deadline = surface.next_wake_deadline().expect("saved must expire");
+        let mut scene = Scene::new();
+        assert!(
+            surface
+                .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, now)
+                .is_some()
+        );
+        let overdue = deadline + Duration::from_millis(1);
+        assert_eq!(
+            surface.next_wake_deadline(),
+            Some(deadline),
+            "a parked host must still observe the due wake"
+        );
+        scene.reset();
+        assert!(
+            surface
+                .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, overdue)
+                .is_none()
+        );
+        assert!(
+            scene.encoding().is_empty(),
+            "the expired chip must leave the actual scene"
+        );
+        assert_eq!(
+            surface.next_wake_deadline(),
+            None,
+            "consumed expiry must not spin the host"
+        );
+        surface.set(SaveState::Failed("Disk full".into()), overdue);
+        assert_eq!(
+            surface.next_wake_deadline(),
+            None,
+            "a failure stays until an explicit action"
+        );
     }
 
     /// Saving and saved are transient bubble text; a failure is an error

@@ -212,6 +212,7 @@ impl FramePaint {
 
 #[derive(Clone)]
 struct ProducedSections {
+    foreign_images: Vec<super::foreign_damage::DrawnImage>,
     backdrop: Scene,
     topbar: Scene,
     workspace: Scene,
@@ -407,6 +408,7 @@ pub struct FrameBuilder {
     /// Widget-pointer map captured during `build_layout`, kept alive so the
     /// measure closure in `compute_layout_with_measure` can re-borrow each frame.
     node_map: HashMap<NodeId, *mut dyn Widget>,
+    ime_stamp_key: zeroize::Zeroizing<[u8; 32]>,
     /// Inner node — the host's own root child, target of `apply_layout` so
     /// the host's rect tree roots at the viewport origin.
     host_node: Option<NodeId>,
@@ -683,6 +685,15 @@ impl FrameBuilder {
             chrome,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
+            ime_stamp_key: {
+                let a = uuid::Uuid::new_v4();
+                let b = uuid::Uuid::new_v4();
+                let mut key = [0; 32];
+                for (slot, value) in key.iter_mut().zip(a.as_bytes().iter().chain(b.as_bytes())) {
+                    *slot = *value;
+                }
+                zeroize::Zeroizing::new(key)
+            },
             host_node: None,
             root_node: None,
             text_renderer: presentation.text_renderer,
@@ -1749,6 +1760,7 @@ impl FrameBuilder {
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+        let foreign_recording = super::foreign_damage::Recording::begin();
         let backdrop_recording = BackdropRecording::begin();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
@@ -1806,6 +1818,7 @@ impl FrameBuilder {
         }
 
         let backdrop_surfaces = backdrop_recording.finish();
+        let foreign_images = foreign_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
             recording
                 .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
@@ -1826,7 +1839,9 @@ impl FrameBuilder {
                 || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair);
         let damage_regions = (!global_filter)
-            .then(|| self.damage_from_sections(&sections, global_filter))
+            .then(|| {
+                self.damage_from_sections_with_images(&sections, global_filter, &foreign_images)
+            })
             .flatten();
         let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
         let backdrop =
@@ -1866,6 +1881,7 @@ impl FrameBuilder {
         let scene = self.to_scene(scene);
 
         self.last_produced_sections = Some(ProducedSections {
+            foreign_images,
             backdrop: sections.backdrop,
             topbar: sections.topbar,
             workspace: sections.workspace,
@@ -1914,32 +1930,83 @@ impl FrameBuilder {
         Some(regions)
     }
 
+    fn foreign_damage_regions(
+        &self,
+        previous: &ProducedSections,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        images: &[super::foreign_damage::DrawnImage],
+    ) -> Option<Vec<FineDamageRect>> {
+        let old_scenes = [
+            &previous.backdrop,
+            &previous.workspace,
+            &previous.topbar,
+            &previous.quick_settings,
+            &previous.above_quick_settings,
+        ];
+        let new_scenes = [
+            &current.backdrop,
+            &current.workspace,
+            &current.topbar,
+            &current.quick_settings,
+            &current.above_quick_settings,
+        ];
+        if !super::foreign_damage::unique_uses(old_scenes, &previous.foreign_images)
+            || !super::foreign_damage::unique_uses(new_scenes, images)
+        {
+            return None;
+        }
+        let mut image_regions = Vec::new();
+        for (old, new) in [
+            (&previous.workspace, &current.workspace),
+            (
+                &previous.above_quick_settings,
+                &current.above_quick_settings,
+            ),
+        ] {
+            for bounds in super::foreign_damage::image_only_damage(
+                old,
+                new,
+                &previous.foreign_images,
+                images,
+            )? {
+                image_regions.push(self.native_damage_rect(Some(bounds))?);
+            }
+        }
+        Some(image_regions)
+    }
+
+    #[cfg(test)]
     fn damage_from_sections(
         &self,
         current: &crate::shell::overlay_host::ShellSceneSections,
         current_global_filter: bool,
     ) -> Option<Vec<FineDamageRect>> {
+        self.damage_from_sections_with_images(current, current_global_filter, &[])
+    }
+
+    fn damage_from_sections_with_images(
+        &self,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        current_global_filter: bool,
+        images: &[super::foreign_damage::DrawnImage],
+    ) -> Option<Vec<FineDamageRect>> {
         let previous = self.last_produced_sections.as_ref()?;
         if previous.global_filter || current_global_filter {
             return None;
         }
-        if !previous.backdrop.encoding_eq(&current.backdrop)
-            || !previous.workspace.encoding_eq(&current.workspace)
-            || !previous
-                .above_quick_settings
-                .encoding_eq(&current.above_quick_settings)
-        {
+        if !previous.backdrop.encoding_eq(&current.backdrop) {
             return None;
         }
+        let image_regions = self.foreign_damage_regions(previous, current, images)?;
         let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         if !topbar_changed && !quick_settings_changed {
             // Proven identical to the previous frame. `None` means "no
             // authority, redraw everything"; an empty list means the pixels
             // already on screen are still correct.
-            return Some(Vec::new());
+            return Some(image_regions);
         }
-        let mut regions = Vec::with_capacity(2);
+        let mut regions = image_regions;
         if topbar_changed {
             let old = self.topbar_damage_rect(&previous.topbar, previous.topbar_bounds)?;
             let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
@@ -3327,6 +3394,40 @@ impl FrameBuilder {
         ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
     }
 
+    pub(crate) fn focused_ime_edit_stamp(
+        &self,
+        focus: Option<NodeId>,
+        document: &automerge::AutoCommit,
+    ) -> Option<crate::compositor::shell_text_input::NativeEditStamp> {
+        if self.host.palette_visible() {
+            return Some(crate::compositor::shell_text_input::NativeEditStamp {
+                document: ui::bound_dispatch::DocumentEditStamp::for_document(document),
+                fingerprint: self
+                    .host
+                    .palette_ime_edit_fingerprint(&self.ime_stamp_key)?,
+            });
+        }
+        let focus = focus?;
+        let widget = *self.node_map.get(&focus)?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: the host, layout and pointer map are the same exclusively
+        // owned live build used by focused_ime_field; nothing mutates here.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+        }
+        Some(crate::compositor::shell_text_input::NativeEditStamp {
+            document: admitted.document_edit_stamp(focus, document).ok()?,
+            // SAFETY: the live map's pointer remains owned by the host during
+            // this read; no raw field value escapes the keyed fingerprint.
+            fingerprint: unsafe { &*widget }.ime_edit_fingerprint(&self.ime_stamp_key)?,
+        })
+    }
+
     /// Whether a chrome widget under `point` handles a touch contact that
     /// starts there itself, rather than through the pointer events a touch
     /// is otherwise turned into. Mirrors `ui::App` for application windows.
@@ -4061,6 +4162,8 @@ mod tests {
                 let state = chrome.borrow();
                 ActionsProvider::new()
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "bring record",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -6740,9 +6843,21 @@ mod tests {
 
     #[test]
     fn an_unchanged_frame_reports_empty_damage() {
-        let mut frame = FrameBuilder::new((800, 600));
+        // Hosted apps can finish a background save between paints (Notes'
+        // "Saving…" chip becomes "Saved"). This assertion needs an unchanged
+        // scene, so use the production empty workspace with owned services and
+        // controlled fonts instead of starting asynchronous demo applications.
+        let mut frame = crate::shell::test_support::PopulatedShellFixture::with_tree(
+            (800, 600),
+            Theme::dark(),
+            WorkspaceTree::bootstrap_default(),
+        );
         frame.relayout();
         let first = frame.paint_with_damage();
+        assert!(
+            !first.scene.encoding().is_empty(),
+            "real shell chrome is painted"
+        );
         assert!(
             first.damage_regions.is_none(),
             "the first frame has no predecessor to retain"
@@ -6868,6 +6983,8 @@ mod tests {
                 let state = chrome.borrow();
                 provider
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,

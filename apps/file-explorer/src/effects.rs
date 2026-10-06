@@ -22,6 +22,25 @@ pub enum FilesEffect {
     /// Refresh folder.
     #[effect(permission = "read", idempotent)]
     Refresh,
+    /// Select entries.
+    ///
+    /// Replaces this window's selection with the currently published rows.
+    #[effect(view, returns)]
+    SelectEntries {
+        #[param("Published entry row ids in the folder shown; at most 256")]
+        entries: Vec<String>,
+    },
+    /// Select all.
+    #[effect(view, returns)]
+    SelectAll,
+    /// Clear selection.
+    #[effect(view, returns)]
+    ClearSelection,
+    /// Copy selection.
+    #[effect(permission = "read")]
+    CopySelection,
+    /// Cut selection.
+    CutSelection,
     /// Paste.
     ///
     /// Copies (or moves, after Cut) what the window holds into the folder
@@ -116,6 +135,20 @@ pub enum FilesEffect {
     Reveal {
         #[param("The collaborative record's id")]
         record: String,
+    },
+    /// Open containing folder.
+    #[effect(view, row)]
+    RevealRecent {
+        #[param("The Recent entry's published row id")]
+        entry: String,
+    },
+    /// Remove from Recent.
+    ///
+    /// Forgets this device's recent-use entry. The file remains untouched.
+    #[effect(view, row)]
+    ForgetRecent {
+        #[param("The Recent entry's published row id")]
+        entry: String,
     },
     /// New file from template.
     ///
@@ -258,6 +291,12 @@ pub enum FilesEffect {
     #[effect(row, destructive)]
     DeclineNearby {
         #[param("The incoming transfer")]
+        transfer: NearbyTransferHandle,
+    },
+    /// Inspect a transfer's current phase and confirmed byte progress.
+    #[effect(row, permission = "read", returns, idempotent)]
+    InspectNearby {
+        #[param("The visible transfer")]
         transfer: NearbyTransferHandle,
     },
     /// Retry a transfer.

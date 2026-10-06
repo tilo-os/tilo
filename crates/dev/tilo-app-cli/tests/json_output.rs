@@ -28,6 +28,58 @@ fn document(output: &Output) -> Value {
 }
 
 #[test]
+fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+            .args(args)
+            .current_dir(dir.path())
+            .env("PATH", dir.path())
+            .env("CARGO", dir.path().join("missing-cargo"))
+            .env_remove("TILO_UI_PATH")
+            .output()
+            .unwrap()
+    };
+    let index = run(&["guide", "--json"]);
+    assert!(index.status.success(), "{index:?}");
+    let index = document(&index);
+    let topics = index["result"]["topics"].as_array().unwrap();
+    assert_eq!(topics.len(), 4);
+    for topic in topics {
+        let id = topic["id"].as_str().unwrap();
+        let human = run(&["guide", id]);
+        assert!(human.status.success(), "{human:?}");
+        let human = String::from_utf8(human.stdout).unwrap();
+        let output = run(&["guide", id, "--json"]);
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            output.stderr.is_empty(),
+            "guide text is not duplicated to stderr"
+        );
+        let guide = document(&output);
+        assert_eq!(guide["command"], "guide");
+        assert_eq!(guide["result"]["topic"], id);
+        assert_eq!(guide["result"]["format"], "markdown");
+        assert_eq!(guide["result"]["content"], human);
+        assert!(human.starts_with("# "));
+        assert!(human.contains("tilo-app "));
+        assert!(human.len() < 3500, "one task should stay small: {id}");
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    let invalid = run(&["guide", "unknown", "--json"]);
+    assert!(!invalid.status.success());
+    let error = document(&invalid);
+    assert_eq!(error["ok"], false);
+    let message = error["usage"].as_str().unwrap();
+    for topic in ["start", "actions", "verify", "publish"] {
+        assert!(
+            message.contains(topic),
+            "usage error suggests {topic}: {error}"
+        );
+    }
+}
+
+#[test]
 fn github_ci_reports_both_workflows_without_extra_json_output() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("tilo-app.toml"), "").unwrap();

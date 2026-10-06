@@ -989,6 +989,15 @@ fn launch_resolved_installed_app(
             .active_workspace()
             .and_then(|ws| {
                 crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
+                    .or_else(|| {
+                        (package_id == "so.tilo.terminal")
+                            .then(|| {
+                                crate::shell::peer_windows::opened_locally_in_workspace(
+                                    ws, package_id, salt,
+                                )
+                            })
+                            .flatten()
+                    })
                     .map(|(strip, group, tab)| (ws.id, strip, group, tab))
             })
             .or_else(|| {
@@ -1042,8 +1051,23 @@ fn launch_resolved_installed_app(
     let launched = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        tree.workspace_after_opening_app(package_id)
-            .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
+        let native_room = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+            .filter(|room| tree.requires_native_owner(*room));
+        if let Some(room) = native_room {
+            drop(tree);
+            Some(launcher::queue_native_authoring_launch(
+                app.clone(),
+                st.tree_handle(),
+                room,
+                st.native_app_opening.clone(),
+            ))
+        } else {
+            tree.workspace_after_opening_app(package_id)
+                .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
+        }
     };
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.
@@ -1354,6 +1378,65 @@ mod tests {
     fn chrome_rc() -> Chrome {
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
         ChromeState::new_with_handle(handle)
+    }
+
+    #[test]
+    fn opening_a_live_local_terminal_focuses_without_another_record_writer() {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            next_id,
+        };
+        let tab_id = next_id();
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let mut strip = Strip::new(StripId::from(next_id()), "Main");
+        let group_id = next_id();
+        strip.window_groups.push(WindowGroup {
+            id: group_id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: "Terminal".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.terminal".into(),
+                    surface_id: 7,
+                },
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips.push(strip);
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces = vec![workspace];
+        let handle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        let provider = ApplicationsProvider::new();
+        let rows = provider.results_for(
+            "terminal",
+            vec![app("so.tilo.terminal", "Terminal")],
+            OpenTarget::Beside,
+        );
+        let row = rows.first().expect("installed Terminal action");
+        let mut doc = AutoCommit::new();
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("Open must focus the existing local Terminal");
+        assert_eq!(chrome.borrow().active_tab_id(), Some(tab_id));
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "focus must not queue a second launcher or opening notice"
+        );
+        assert_eq!(
+            handle.read().desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            1
+        );
     }
 
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
@@ -1682,6 +1765,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "hello",
                 wanted: &[ResourceKind::File],
                 chrome: &cs,
@@ -1985,6 +2070,8 @@ mod tests {
             let state = c.borrow();
             let doc = AutoCommit::new();
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "sheets",
                 wanted: &[ResourceKind::Application],
                 chrome: &state,
@@ -2023,6 +2110,8 @@ mod tests {
         let doc = AutoCommit::new();
         for needle in ["Dateien", "dateien", "Files"] {
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Application],
                 chrome: &state,
@@ -2150,6 +2239,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "unique-tail",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2198,6 +2289,8 @@ mod tests {
         });
         let page = provider.query_page(
             SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "unique-tail",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome,
@@ -2225,6 +2318,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "anything",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2288,6 +2383,8 @@ mod tests {
         {
             let chrome = chrome.borrow();
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome,
@@ -2398,6 +2495,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "unique-source-tail",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2564,6 +2663,8 @@ mod native_application_tests {
                 HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),
@@ -2658,6 +2759,8 @@ mod native_application_tests {
 
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),

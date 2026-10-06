@@ -36,6 +36,7 @@ use ui::TextRole;
 
 mod controller;
 mod device_fabric;
+pub(crate) mod dictation_layer;
 mod displays;
 mod emoji_layer;
 mod history;
@@ -696,6 +697,7 @@ pub struct ShellOverlayHost {
     /// `pump_permission_prompt` from the front of
     /// `chrome.pending_grants`. `None` when the queue is empty.
     permission_prompt: Option<PermissionPrompt>,
+    permission_prompt_id: Option<uuid::Uuid>,
     /// The portal's prompt queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
@@ -825,6 +827,8 @@ pub struct ShellOverlayHost {
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
+    followed_tab: Option<u64>,
+    followed_session: Option<u64>,
     /// Room the active Follow command was sent to. Keeping this separate
     /// from the live workspace prevents a later workspace switch from
     /// releasing the wrong set of local app views.
@@ -1787,7 +1791,8 @@ impl ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => false,
+            | LayerId::PowerMenu
+            | LayerId::Dictation => false,
         }
     }
 
@@ -1798,6 +1803,10 @@ impl ShellOverlayHost {
         &mut self,
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
+        if let Some(chrome) = &self.chrome {
+            chrome.borrow_mut().native_app_opening =
+                Some(crate::shell::launcher::NativeAppOpening(broker.downgrade()));
+        }
         self.room_activity.attach_task_broker(broker.clone());
         self.attach_shortcut_trigger_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
@@ -1845,6 +1854,10 @@ impl ShellOverlayHost {
                 search_preferences,
                 provider_catalog,
                 qs_action_slot.clone(),
+            ),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::permission_prompts::PermissionPromptsProvider::default(
             ),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -2113,6 +2126,7 @@ impl ShellOverlayHost {
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
+            permission_prompt_id: None,
             portal_prompts: None,
             host_shell_allows: Vec::new(),
             terminal_device_shell: None,
@@ -2172,6 +2186,8 @@ impl ShellOverlayHost {
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             followed_peer: None,
+            followed_tab: None,
+            followed_session: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
             follow_visual: None,
@@ -2418,6 +2434,13 @@ impl ShellOverlayHost {
     /// hit-testing would otherwise consume Restore/Close presses before the
     /// `WindowGroup` which draws those controls can see them.
     pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
+        // Local input controls are above window chrome and preserve its seat.
+        if self
+            .last_cursor
+            .is_some_and(|point| self.dictation_pointer_at((point.x, point.y)))
+        {
+            return false;
+        }
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
@@ -5747,34 +5770,26 @@ impl ShellOverlayHost {
             return;
         };
 
-        // Step 1 — drain choice + maybe persist grant.
-        let drain_payload = self
+        // The widget and semantic actions answer the same exact pending request.
+        let choice = self
             .permission_prompt
-            .as_mut()
-            .and_then(|p| p.pending_choice.map(|c| (p.app_id.clone(), c)));
-        if let Some((widget_app_id, choice)) = drain_payload {
-            let mut st = chrome_handle.borrow_mut();
-            // Pop only if the head still belongs to the prompt clicked —
-            // a mid-frame portal push could otherwise apply the grant to
-            // the wrong app.
-            let head_matches = st
-                .pending_grants
-                .front()
-                .is_some_and(|p| p.app_id == widget_app_id);
-            if head_matches && let Some(mut pending) = st.pending_grants.pop_front() {
-                // The async portal flow owns persistence after receiving this
-                // answer. Keeping that state in its private consent store is
-                // essential: a personal portal decision must never become a
-                // replicated workspace capability visible to collaborators.
-                // Release the blocked portal call — otherwise the D-Bus
-                // method awaiting the oneshot never returns and the app
-                // hangs on its own Open dialog.
-                pending.answer(prompt_choice_to_outcome(choice));
-                st.bump();
+            .as_ref()
+            .and_then(|p| p.pending_choice);
+        if let Some(choice) = choice {
+            if let Some(id) = self.permission_prompt_id {
+                let _ = crate::shell::search::providers::permission_prompts::answer_pending_prompt(
+                    &mut chrome_handle.borrow_mut(),
+                    id,
+                    choice,
+                );
             }
-            // Discharged either way — drop it so the next frame latches
-            // fresh or paints nothing.
             self.permission_prompt = None;
+            self.permission_prompt_id = None;
+        }
+        let head_id = chrome_handle.borrow().pending_grants.front().map(|p| p.id);
+        if self.permission_prompt_id != head_id {
+            self.permission_prompt = None;
+            self.permission_prompt_id = None;
         }
 
         // Step 2 — latch a new prompt when the queue's front needs
@@ -5782,6 +5797,7 @@ impl ShellOverlayHost {
         if self.permission_prompt.is_none() {
             let st = chrome_handle.borrow();
             if let Some(pending) = st.pending_grants.front() {
+                self.permission_prompt_id = Some(pending.id);
                 let label = capability_label(&pending.capability);
                 let is_owner = is_active_workspace_owner(&st);
                 self.permission_prompt = Some(PermissionPrompt::new(
@@ -5903,6 +5919,19 @@ impl ShellOverlayHost {
             let surface = self.permission_prompt_surface();
             targets.push((
                 crate::shell::trusted_ui::PERMISSION_PROMPT_TARGET,
+                crate::shell::trusted_ui::seal_band(
+                    surface,
+                    thickness,
+                    f64::from(theme.tokens.radii.control),
+                ),
+            ));
+        }
+        if self.layers.dictation.is_consent() {
+            let outputs = self.layer_outputs();
+            let surface =
+                dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs));
+            targets.push((
+                crate::shell::trusted_ui::DICTATION_PROMPT_TARGET,
                 crate::shell::trusted_ui::seal_band(
                     surface,
                     thickness,
@@ -6827,8 +6856,8 @@ impl ShellOverlayHost {
     }
 
     /// Keep local focus attached to the followed participant's current tab.
-    /// Missing location is not guessed: the existing view stays put until a
-    /// fresh live target arrives.
+    /// A missing participant or closed target releases every app in the room.
+    /// Until a first live location arrives, the existing view stays in place.
     fn reconcile_followed_peer(&mut self) -> bool {
         let Some(peer_id) = self.followed_peer.as_deref() else {
             return false;
@@ -6836,26 +6865,28 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let room_changed = {
+        let context_changed = {
             let state = chrome.borrow();
-            state
-                .tree()
-                .desktop
-                .active_workspace()
-                .is_none_or(|workspace| {
-                    self.followed_room
-                        .as_ref()
-                        .is_some_and(|room| room != &workspace.room)
-                })
+            self.followed_tab
+                .is_some_and(|tab| state.active_tab_id() != Some(tab))
+                || state
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .is_none_or(|workspace| {
+                        self.followed_room
+                            .as_ref()
+                            .is_some_and(|room| room != &workspace.room)
+                    })
         };
-        if room_changed {
-            // Follow is an attached local view, never a cross-workspace
-            // navigation command. Stop it before the next room receives any
-            // input, releasing the apps that were actually following.
+        if context_changed {
+            // A semantic focus command takes control just like a pointer or
+            // key. Release the original room before reconciliation can undo
+            // local navigation or attach its apps to a different workspace.
             self.set_followed_peer(None);
             return true;
         }
-        let target = {
+        let (target, unavailable) = {
             let state = chrome.borrow();
             let tree = state.tree();
             let roster: &[crate::shell::state::Collaborator] = match tree.desktop.active_workspace()
@@ -6863,10 +6894,10 @@ impl ShellOverlayHost {
                 Some(workspace) if !workspace.collaborators.is_empty() => &workspace.collaborators,
                 _ => &tree.desktop.collaborators,
             };
-            let tab = roster
+            let participant = roster
                 .iter()
-                .find(|participant| participant.id == peer_id && !participant.invited)
-                .and_then(|participant| participant.active_tab);
+                .find(|participant| participant.id == peer_id && !participant.invited);
+            let tab = participant.and_then(|participant| participant.active_tab);
             let target = tab.and_then(|tab| {
                 tree.desktop
                     .active_workspace()?
@@ -6882,13 +6913,24 @@ impl ShellOverlayHost {
                         })
                     })
             });
+            let unavailable = participant.is_none()
+                || (tab.is_some() && target.is_none())
+                || (self.followed_tab.is_some() && tab.is_none())
+                || self.followed_session.is_some_and(|session| {
+                    participant.is_none_or(|participant| participant.session != Some(session))
+                });
             drop(tree);
             drop(state);
-            target
+            (target, unavailable)
         };
+        if unavailable {
+            self.set_followed_peer(None);
+            return true;
+        }
         let Some((strip, group, tab)) = target else {
             return false;
         };
+        self.followed_tab = Some(tab);
         self.focus_window_on_strip(strip, group, tab)
     }
 
@@ -6902,6 +6944,8 @@ impl ShellOverlayHost {
         }
         let previous_room = self.followed_room.take();
         self.followed_peer = peer_id;
+        self.followed_tab = None;
+        self.followed_session = None;
         if self.followed_peer.is_some() {
             self.follow_visual = self.followed_roster_row();
             self.follow_transition
@@ -6915,13 +6959,14 @@ impl ShellOverlayHost {
                 let state = chrome.borrow();
                 let tree = state.tree();
                 let command = tree.desktop.active_workspace().map(|workspace| {
-                    let target = workspace
+                    let session = workspace
                         .collaborators
                         .iter()
                         .find(|participant| participant.id == id)
-                        .and_then(|participant| participant.session)
-                        .map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
-                    (workspace.room, Some(target))
+                        .and_then(|participant| participant.session);
+                    let target =
+                        session.map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
+                    (workspace.room, Some(target), session)
                 });
                 drop(tree);
                 drop(state);
@@ -6929,24 +6974,27 @@ impl ShellOverlayHost {
             }
             _ => None,
         };
-        if let Some((room, _)) = &active_command {
+        if let Some((room, _, session)) = &active_command {
             self.followed_room = Some(*room);
+            self.followed_session = *session;
         }
-        let command = active_command.or_else(|| {
-            previous_room.map(|room| (room, None)).or_else(|| {
-                self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    let tree = state.tree();
-                    let command = tree
-                        .desktop
-                        .active_workspace()
-                        .map(|workspace| (workspace.room, None));
-                    drop(tree);
-                    drop(state);
-                    command
+        let command = active_command
+            .map(|(room, target, _)| (room, target))
+            .or_else(|| {
+                previous_room.map(|room| (room, None)).or_else(|| {
+                    self.chrome.as_ref().and_then(|chrome| {
+                        let state = chrome.borrow();
+                        let tree = state.tree();
+                        let command = tree
+                            .desktop
+                            .active_workspace()
+                            .map(|workspace| (workspace.room, None));
+                        drop(tree);
+                        drop(state);
+                        command
+                    })
                 })
-            })
-        });
+            });
         if let Some((room, target)) = command {
             if let Some(bridge) = self.follow_bridge.as_ref() {
                 bridge(room, target.clone());
@@ -8524,6 +8572,10 @@ impl ShellOverlayHost {
             .flatten()
     }
 
+    pub(crate) fn palette_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.palette.ime_edit_fingerprint(key)
+    }
+
     /// Force-set the palette visibility, so headless harnesses can drive
     /// the palette scene without a synthetic Ctrl+K.
     pub fn set_palette_visible(&mut self, v: bool) {
@@ -8585,6 +8637,20 @@ impl ShellOverlayHost {
             doc,
             root,
             visibility,
+        )
+    }
+
+    pub fn action_catalog_query(
+        &self,
+        args: &crate::shell::search::QueryArgs<'_>,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+        include_programmatic: bool,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        crate::shell::search::action_api::ActionCatalog::build_query(
+            &self.search_registry,
+            args,
+            visibility,
+            include_programmatic,
         )
     }
 
@@ -10646,7 +10712,8 @@ impl ShellOverlayHost {
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
-        (self.palette_visible && self.palette.get_rect().contains(p))
+        self.dictation_pointer_at((p.x, p.y))
+            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -12092,12 +12159,50 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Intercept only local input controls without withdrawing text-input focus.
+    pub(crate) fn dictation_owns_key(&self, key: &winit::keyboard::Key) -> bool {
+        self.layers.dictation.owns_key(key)
+    }
+
+    /// Local microphone controls cannot be operated through a shared seat.
+    /// This does not withdraw the original editable field's local IME focus.
+    pub(crate) fn dictation_mutes_remote_input(&self) -> bool {
+        self.layers.dictation.is_open()
+    }
+
+    pub(crate) fn dictation_pointer_at(&self, point: (f64, f64)) -> bool {
+        let outputs = self.layer_outputs();
+        self.layers.dictation.is_open()
+            && dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs))
+                .contains(Point::new(point.0, point.1))
+    }
+
+    pub(crate) fn dictation_input_available(&self) -> bool {
+        self.onboarding.is_none()
+            && self.permission_prompt.is_none()
+            && self.portal_dialogs.layout(self.rect).is_none()
+            && !self.display_confirmation_visible()
+            && !self.window_switcher_active()
+    }
+
+    pub(crate) fn dictation_surface_mut(&mut self) -> &mut dictation_layer::DictationSurface {
+        &mut self.layers.dictation
+    }
+
     /// Run every window operation the action door queued on the chrome
     /// ([`ChromeState::request_shortcut_action`]), in order. The shell
     /// runs this each update, before splicing tree changes into the rows.
     ///
     /// [`ChromeState::request_shortcut_action`]: crate::shell::chrome_state::ChromeState::request_shortcut_action
     pub fn run_requested_shortcut_actions(&mut self) {
+        let cancel = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow_mut().take_tab_drag_cancel_request());
+        if cancel {
+            self.cancel_tab_drags();
+        }
+
         let gather = self
             .chrome
             .as_ref()
@@ -12148,6 +12253,23 @@ impl ShellOverlayHost {
             // Zooming is a step, so a held zoom key keeps zooming; the toggle is an edge.
             if !(repeat && step == MagnifierStep::Toggle) {
                 self.step_magnifier(step);
+            }
+            return true;
+        }
+        if matches!(
+            action,
+            A::DictationToggle | A::DictationFinish | A::DictationCancel
+        ) {
+            if !repeat {
+                match action {
+                    A::DictationToggle => self.layers.dictation.request_toggle(),
+                    A::DictationFinish => self.layers.dictation.request_finish(),
+                    A::DictationCancel => self.layers.dictation.request_cancel(),
+                    _ => {}
+                }
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
             }
             return true;
         }
@@ -12652,6 +12774,10 @@ impl ShellOverlayHost {
     /// The Escape dismissal ladder. Priority matches z-order: palette >
     /// overview > ws settings > quick settings.
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
+        if self.cancel_tab_drags() {
+            *handled = true;
+            return true;
+        }
         if self.palette_visible {
             if let Some(chrome) = self.chrome.clone() {
                 let mut state = chrome.borrow_mut();
@@ -15948,6 +16074,23 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Abandon tab gestures and cross-strip feedback, preserving durable state.
+    pub fn cancel_tab_drags(&mut self) -> bool {
+        let mut cancelled = false;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: live rows are visited sequentially under the field's
+            // stable-pointer contract, without retaining a borrowed row.
+            cancelled |= unsafe { &mut *ptr }.cancel_tab_drag();
+        }
+        if cancelled {
+            for &ptr in self.group_row_ptrs.values() {
+                // SAFETY: the same sequential stable-row contract as above.
+                unsafe { &mut *ptr }.set_cross_strip_tab_drag_hover(None);
+            }
+        }
+        cancelled
+    }
+
     /// A menu whose tab or group has gone has nothing left to act on.
     fn prune_stale_tab_context_menu(&mut self) {
         let rows = &self.group_row_ptrs;
@@ -16076,6 +16219,13 @@ impl ShellOverlayHost {
                 true
             }
             LayerIntent::FocusWindow(address) => self.focus_switcher_window(address),
+            LayerIntent::Dictation(request) => {
+                self.layers.dictation.enqueue(request);
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
             LayerIntent::Repaint => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
@@ -17666,7 +17816,8 @@ impl Widget for ShellOverlayHost {
                 | LayerId::WindowSwitcher
                 | LayerId::EmojiPicker
                 | LayerId::TabContextMenu
-                | LayerId::PowerMenu => {}
+                | LayerId::PowerMenu
+                | LayerId::Dictation => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
                         // The filter band is the host's, painted over the
@@ -18684,7 +18835,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => None,
+            | LayerId::PowerMenu | LayerId::Dictation => None,
         }
     }
 
@@ -18731,7 +18882,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => false,
+            | LayerId::PowerMenu | LayerId::Dictation => false,
         }
     }
 
@@ -19046,7 +19197,7 @@ fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
 /// Map the prompt widget's choice onto the portal's outcome vocabulary.
 /// Two enums for one decision because they belong to different layers;
 /// keeping the mapping in one place stops them drifting.
-fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
+pub(crate) fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
     use crate::portal::PromptOutcome;
     match choice {
         PromptChoice::Allow => PromptOutcome::AllowOnce,
@@ -19058,7 +19209,7 @@ fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcom
 
 /// Human-readable label for the inline permission prompt from a
 /// [`Capability`] payload.
-fn capability_label(cap: &Capability) -> String {
+pub(crate) fn capability_label(cap: &Capability) -> String {
     match cap {
         Capability::Filesystem { path, mode, .. } => {
             let path = path.display().to_string();
@@ -21233,6 +21384,18 @@ impl ShellOverlayHost {
     ) {
         self.draw_top_overlays_below_switcher(scene, transform, text_renderer, theme, presence);
         let outputs = self.layer_outputs();
+        self.layers.draw(
+            LayerId::Dictation,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            },
+        );
         self.layers.draw(
             LayerId::WindowSwitcher,
             &mut LayerPaint {

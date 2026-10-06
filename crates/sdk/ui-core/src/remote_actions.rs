@@ -20,7 +20,7 @@
 //! [`ActionHost`] instead, for tests and embedded hosts.
 
 use crate::time::{Duration, Instant};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tilo_actions::InvocationUpdate;
@@ -57,6 +57,10 @@ impl Drop for RemoteActionsGuard {
 
 /// How long a running invocation is left before it is observed again.
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
+/// A remote publisher cannot keep an application walking an unbounded or
+/// cyclic catalogue. Sixty-four full pages still cover the largest normal
+/// application surfaces while giving every caller a deterministic refusal.
+const MAX_CATALOGUE_PAGES: usize = 64;
 
 /// Where one request stands.
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +122,9 @@ struct CatalogueWalk {
     query: CatalogueQuery,
     gathered: CataloguePage,
     answer: LocalStateWriter<CatalogueCall>,
+    pages_remaining: usize,
+    seen_cursors: HashSet<(Option<String>, Vec<u8>)>,
+    follow_pages: bool,
 }
 
 struct Running {
@@ -213,19 +220,44 @@ impl RemoteActions {
     /// Read every page of `query` from the catalogue the app is offered.
     #[must_use]
     pub fn catalogue(&self, query: CatalogueQuery) -> LocalState<CatalogueCall> {
+        self.start_catalogue(query, true)
+    }
+
+    /// Read exactly one bounded page of `query`.
+    ///
+    /// This is for clients that traverse a resource hierarchy and therefore
+    /// must own one global page/work budget across parents. The returned
+    /// cursor is opaque and may only be sent back with the same provider,
+    /// parent and revision.
+    #[must_use]
+    pub fn catalogue_page(&self, query: CatalogueQuery) -> LocalState<CatalogueCall> {
+        self.start_catalogue(query, false)
+    }
+
+    fn start_catalogue(
+        &self,
+        query: CatalogueQuery,
+        follow_pages: bool,
+    ) -> LocalState<CatalogueCall> {
         let answer = LocalState::new(RemoteCall::Pending);
         let message = {
             let mut inner = self.lock();
             let correlation = inner.next_correlation;
             inner.next_correlation = inner.next_correlation.wrapping_add(1);
             let mut first = query.clone();
-            first.max_results = first.max_results.clamp(1, MAX_CATALOGUE_PAGE);
+            if first.provider.is_some() || first.max_results != 0 {
+                first.max_results = first.max_results.clamp(1, MAX_CATALOGUE_PAGE);
+            }
+            let seen_cursors = HashSet::from([(first.revision.clone(), first.cursor.clone())]);
             inner.catalogue.insert(
                 correlation,
                 CatalogueWalk {
                     query: first.clone(),
                     gathered: CataloguePage::default(),
                     answer: answer.writer(),
+                    pages_remaining: MAX_CATALOGUE_PAGES,
+                    seen_cursors,
+                    follow_pages,
                 },
             );
             RemoteActionMessage::CatalogueRequest {
@@ -396,11 +428,38 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                     return None;
                 }
             };
+            walk.pages_remaining = walk.pages_remaining.saturating_sub(1);
+            if !walk.follow_pages {
+                walk.answer.set(RemoteCall::Done(page));
+                return None;
+            }
+            if page.budget_exhausted {
+                walk.answer
+                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
+                        reason: "catalogue provider exhausted its work budget".into(),
+                    }));
+                return None;
+            }
+            if !page.stale_cursor
+                && walk
+                    .query
+                    .revision
+                    .as_ref()
+                    .is_some_and(|revision| revision != &page.revision)
+            {
+                walk.answer
+                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
+                        reason: "catalogue provider changed revision without a stale response"
+                            .into(),
+                    }));
+                return None;
+            }
             if page.stale_cursor {
                 // The offer changed mid-walk; start again from the top.
                 walk.gathered = CataloguePage::default();
                 walk.query.cursor.clear();
                 walk.query.revision = None;
+                walk.seen_cursors.clear();
             } else {
                 walk.gathered.revision.clone_from(&page.revision);
                 walk.gathered.rows.extend(page.rows);
@@ -413,6 +472,21 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                 }
                 walk.query.cursor = page.next_cursor;
                 walk.query.revision = Some(page.revision);
+            }
+            if walk.pages_remaining == 0 {
+                walk.answer
+                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
+                        reason: "catalogue traversal exceeded its page budget".into(),
+                    }));
+                return None;
+            }
+            let cursor = (walk.query.revision.clone(), walk.query.cursor.clone());
+            if !walk.seen_cursors.insert(cursor) {
+                walk.answer
+                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
+                        reason: "catalogue traversal repeated a cursor".into(),
+                    }));
+                return None;
             }
             let next = inner.next_correlation;
             inner.next_correlation = inner.next_correlation.wrapping_add(1);

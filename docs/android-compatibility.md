@@ -155,13 +155,12 @@ Android runtime-permission APIs or malicious JNI containment. The runner stops i
 own compositor process group, checks control socket cleanup and writes
 `journey.json` only after success.
 
-The checked-in [acceptance record](verification/android-arity/journey.json),
-[rendered calculation](verification/android-arity/calculation.png),
-[second-room calculation](verification/android-arity/second-workspace-calculation.png)
-and [confinement log](verification/android-arity/confinement.log) come from that
-complete run. All five original PNGs and their OCR text are preserved there.
-The full APK/framework execution logs and private profiles remain in the owned
-remote test workspace rather than publishing app-data or identity directories.
+Run-specific receipts, original PNGs, OCR text and confinement results are
+preserved in the [execution-evidence attachment on PR #2908](https://code.tilo.so/attachments/9cc177c1-c0ef-4607-8872-0a7b1af8c5e0).
+They are generated artifacts rather than repository inputs. Future runs must use
+an output directory under `target/android-acceptance/` or outside the checkout;
+the runners reject output inside tracked source. Keep full private profiles and
+identity directories out of published artifacts.
 
 ## Bounded Android mediation slice
 
@@ -205,19 +204,15 @@ new artifact pins. The private framework and transport were built in a bounded
 rootless official Alpine container with signed ART development/JDK packages.
 Nothing was added to the laptop or Tilo OS image.
 
-The final [Android API acceptance record](verification/android-mediation/journey.json)
-and [Arity record](verification/android-arity/journey.json) use the same final runtime
-and production binaries as the successful integration below. Both were rerun after
-the security fix. Earlier checkpoint `ccad09593611` reached terminal green affected,
-quality, SDK, filesystem and legacy workflows; new continuation checks are separate.
+The preserved Android API and Arity runs use the same runtime and production
+binaries as the successful integration below. Both were rerun after the security fix.
 
 ## Successful document, notification and accessibility integration
 
-The [complete integration record](verification/android-integration/journey.json),
-[Android results](verification/android-integration/acceptance.txt),
-[external accessibility tree](verification/android-integration/accessibility.json)
-and three original PNGs preserve actual execution evidence. The runner creates only
-new disposable source, destination and sibling-canary documents in its own profile.
+The [PR evidence attachment](https://code.tilo.so/attachments/9cc177c1-c0ef-4607-8872-0a7b1af8c5e0) contains the integration receipt,
+Android callback results, external accessibility tree and three original PNGs.
+The runner creates only new disposable source, destination and sibling-canary
+documents in its own profile.
 Explicit `--fixture-grants` authorizes only the source read grant and destination
 write grant; it never accepts a user document path or touches the user's bus.
 Android `OPEN_DOCUMENT` selects and reads the exact source bytes through Tilo's
@@ -264,12 +259,67 @@ strict C builds, SDK signature verification, all three actual APK journeys and
 visual inspection of the owned fixture PNGs. All Rust builds/tests run remotely
 with local fallback disabled.
 
+## Document metadata and editor modes
+
+Ordinary file clients exposed two framework gaps: `ContentResolver.query` crashed
+with a null projection, and `openOutputStream(Uri, String)` was absent. One signed
+SDK fixture reproduces both failures in actual ART on the previous accepted
+runtime, then passes on the changed runtime with its APK bytes unchanged.
+
+The private integration supports file-URI display names, byte sizes, explicit
+projections, unknown-column nulls, precancelled queries and bounded inputs. An
+actual `android-π-📄.txt` fixture preserves its supplementary-plane filename.
+Editor modes `wt`, `wa`, `rw` and `rwt` use the existing descriptor implementation;
+invalid modes fail without changing bytes. The runner verifies exact output,
+read-only source protection, denied sibling metadata/reads, close callbacks and
+denied former metadata/reads/writes after grant revocation and relaunch.
+
+Metadata requires a read-authorized open inside the unchanged launcher sandbox,
+then observes that descriptor with `fstat`; a swapped path cannot redirect the
+metadata lookup. MIME is inferred from the caller-supplied filename without reading
+content. This remains a file-URI path: Android content providers,
+persisted URI authority and already-open descriptor revocation remain
+unqualified. The [document journey source](../tools/android/run_document_journey.py)
+records actual runtime, APK and production binary pins outside tracked source.
+The original signed integration, denial and Arity APKs are rerun against the new
+runtime to preserve their prior behavior.
+
+## Cold filesystem restoration
+
+The document APK also reads through independent production FUSE host/recipient
+processes on the remote builder. The recipient's persistent store initially has
+neither the manifest nor its chunk. Immediately before the real picker selection,
+the file is still projected. Actual APK reads restore both blobs with exact bytes.
+After close, the existing safe eviction control waits for durable completion;
+independent stopped-store inspection requires both blobs to be `NotFound`.
+The recipient restarts, and the same signed APK repeats its successful read,
+metadata and editor-mode assertions, restoring both blobs again. Revocation
+denials then run with the source still resident, rather than relying on missing
+data to produce a refusal. All owned mounts, processes and grants are cleaned up.
+
+This exposed and fixed a production chooser bug: Save used the first granted
+folder even when that folder was read-only. Open uses read-authorized roots and
+Save uses write-authorized roots; the chosen path still needs final authorization.
+A service regression test covers separate input/output folders without a save hint.
+
+Repeat with `run_document_journey.py --cold-hydration` and the production
+`fs`/`android_hydration_fixture` binaries, following the
+[fixture instructions](../tools/android/mediation/README.md).
+The exact-record share has a generated filename and no sibling; an independently
+authored fixture input asserts its name. The original Unicode/existing-sibling
+journey remains separate. The accepted cold APK SHA-256 is
+`90965424611eb98666fcc06dfc01f1ea7f3b11221f71f41cdce0b5cf1a0be8a2`,
+with signer `05331ce2f12843658fcea5d4d69c214647abee538bfe8c8dc1cc02417153ff0a`.
+Reports and PNGs stay outside tracked source. This is real FUSE/ART execution on
+one remote x86-64 host with software graphics, not qualification of a signed OS
+image, multiple physical machines, native Btrfs projection, ARM64 or physical GPU.
+
 ## Compatibility assessment
 
 | Area | Confirmed | Remaining acceptance |
 | --- | --- | --- |
 | Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation | Real GPU/DRM, resize/rotation, ARM64, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
-| Files/state | App-private history and separate room state; approved local document read/save, read-only and sibling denial; revoked URI read/write denied on relaunch | Cold P2P hydration, sharing, persisted URI authority, immediate running-process revocation and legacy external storage mapping |
+| Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source | Android content providers, Android sharing intents, persisted URI authority, immediate running-process revocation, native projection and legacy external storage mapping |
 | Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability | Full Android notification tags, actions, resource mapping and background persistence |
 | Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
 | Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks, owned compositor teardown | Workspace stop, compositor loss, background workers, service apps, updates and migration |

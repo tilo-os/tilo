@@ -2210,6 +2210,18 @@ impl GroupRow {
         self.tab_drop_target
     }
 
+    /// Cancel owned tab gestures and their in-strip drop feedback.
+    pub fn cancel_tab_drag(&mut self) -> bool {
+        let mut cancelled = false;
+        for group in &mut self.groups {
+            cancelled |= group.cancel_tab_drag();
+        }
+        if cancelled {
+            self.clear_tab_drop_preview();
+        }
+        cancelled
+    }
+
     /// Whether one of this row's own tab bars currently owns a drag.
     pub fn tab_drag_active(&self) -> bool {
         self.groups.iter().any(WindowGroup::drag_in_flight)
@@ -3300,7 +3312,9 @@ impl Widget for GroupRow {
                 *w = right;
             }
         }
-        let steady = !self.group_drag_active()
+        let edge_resizing = self.groups.iter().any(WindowGroup::edge_resize_in_flight);
+        let steady = !edge_resizing
+            && !self.group_drag_active()
             && !self
                 .handles
                 .iter()
@@ -3322,7 +3336,7 @@ impl Widget for GroupRow {
             // or a release settle is in flight. At rest, geometry changes
             // clamp to the deliberate trailing allowance instead of the old
             // three-viewports of unbounded empty canvas.
-            if pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
+            if !edge_resizing && pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
                 pan.scroll_x = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
             }
             if spans_aligned {
