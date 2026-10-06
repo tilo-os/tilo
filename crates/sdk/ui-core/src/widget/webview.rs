@@ -466,6 +466,15 @@ impl Widget for WebView {
         true
     }
 
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        let receipt = self.focused.then(|| self.text_input.start()).flatten();
+        Some(receipt.unwrap_or_else(|| {
+            crate::webview::text_input::Receipt::failed(
+                crate::webview::text_input::Failure::Rejected,
+            )
+        }))
+    }
+
     fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
         let receipt = self
             .focused

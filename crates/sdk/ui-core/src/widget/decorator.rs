@@ -486,6 +486,10 @@ pub trait Decorator {
         self.inner().ime_requires_deferred_ack()
     }
 
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        self.inner_mut().start_deferred_text()
+    }
+
     fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
         self.inner_mut().commit_deferred_text(text)
     }
@@ -1106,6 +1110,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn ime_requires_deferred_ack(&self) -> bool {
         Decorator::ime_requires_deferred_ack(self)
+    }
+
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        Decorator::start_deferred_text(self)
     }
 
     fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {

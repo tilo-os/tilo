@@ -380,6 +380,15 @@ impl Widget for EmbeddedApp {
             .unwrap_or(false)
     }
 
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        self.app
+            .mutate_node(self.app.focused_node?, |widget| {
+                widget.start_deferred_text()
+            })
+            .ok()
+            .flatten()
+    }
+
     fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
         self.app
             .mutate_node(self.app.focused_node?, |widget| {
