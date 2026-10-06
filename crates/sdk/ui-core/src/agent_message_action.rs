@@ -928,7 +928,7 @@ mod tests {
         assert!(matches!(
             result,
             AgentMessagePoll::Advance {
-                submission: AgentMessageSubmission::Invoke(_),
+                submission: AgentMessageSubmission::Invoke { .. },
                 ..
             }
         ));
