@@ -456,3 +456,6 @@ block-editor-replace = Ersetzen
 
 block-editor-replace-all = Alle ersetzen
 block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
+
+widget-sidebar-resize = Breite der Seitenleiste ändern
+widget-inspector-resize = Breite des Inspektors ändern
