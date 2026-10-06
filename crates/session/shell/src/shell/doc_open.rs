@@ -386,7 +386,12 @@ fn open_package(
     let workspace = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        tree.workspace_after_opening_app(&app.package_id)
+        let workspace = tree.workspace_after_opening_app(&app.package_id);
+        // The document's new read grant must reach the accepted-policy
+        // publication before the launch gate checks its immutable snapshot.
+        // Queue here; the launch worker waits without blocking the frame.
+        tree.queue_save();
+        workspace
     };
     let launched = workspace.map(|workspace| {
         launcher::launch_document_in_workspace(&app.package_id, &workspace, Some(path))
