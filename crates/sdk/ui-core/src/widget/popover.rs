@@ -704,6 +704,11 @@ impl Widget for PopoverPrompt {
         Widget::ime_cursor_rect(&self.input)
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.input.ime_edit_fingerprint(key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Widget::ime_purpose(&self.input)
     }

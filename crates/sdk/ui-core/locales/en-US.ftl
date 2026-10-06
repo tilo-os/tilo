@@ -461,3 +461,7 @@ block-editor-replace = Replace
 
 block-editor-replace-all = Replace all
 block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
+
+dictation-record-once = Record once
+dictation-finish = Finish
+dictation-cancel = Cancel

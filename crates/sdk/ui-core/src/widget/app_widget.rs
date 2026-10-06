@@ -1222,6 +1222,13 @@ mod component_adapter {
             };
             root.is_enabled()
         }
+        fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component.root.as_deref()?.ime_edit_fingerprint(key)
+        }
         fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
