@@ -22,7 +22,7 @@ solid surfaces and reduced-motion behavior; no new desktop visual language.
 | Notification center | First increment replaces hand-painted action controls with ButtonFace; aligns accessible action focus/bounds and prevents stale Clear all focus after pointer group activation | [Before/after captures](evidence/notification-center/README.md), Clear/Undo, interrupted Undo, resize/focus, light/dark and enlarged text; production overlay journey exercised |
 | Notification banners | Portable NotificationStack owns geometry and native host supplies effects | Dismiss hit target, error/quiet/locked states and large text; review active banners behind the history center (native capture evidence) |
 | Launcher / search | Shared desktop search already wraps toolkit CommandPalette; native providers and host effects remain shell-owned | Empty/loading/error states, keyboard ranking and repeated launch, narrowed search, Esc |
-| Overview | Portable desktop overview/panel has custom card geometry | Workspace/group selection, pointer/keyboard parity, narrow layout, cancellation |
+| Overview | Native shell overview has custom workspace/window composition; its synthetic child paths and keyboard creation need correction | Workspace/group selection, pointer/keyboard parity, narrow layout, cancellation |
 | Window chrome | DesktopSurface composes toolkit GroupRow/StripView/WindowGroup | Inactive/focused tabs, close/menu states, resizing and shared header controls |
 | Menus / dialogs | Session power flyout now uses ListRowFace for action type, glyphs, elision, selection and focus; measured action labels widen its responsive layout. Tab menu remains shell-owned; workspace lens already uses ButtonFace and SegmentedFace | [Power flyout captures](evidence/power-menu/README.md), keyboard/pointer/a11y parity, Esc, reopen and scaled resize verified; tab-menu focus return and long labels remain |
 | Status / quick settings | Top bar already uses some ButtonFace controls; portable drill-in uses shared back face | Status indicators, paging, focus/hover, offline states; no real device effects during evidence capture |
@@ -60,6 +60,10 @@ the status-rooted Panel material, quiet idle rows, animation and session policy.
 Before/after fixtures cover dark/light/high contrast, 200% text, combined 150% UI
 and 130% text, and a narrow output. Full action names take precedence over
 secondary copy when height is constrained; complete details remain accessible.
+A follow-up must verify a visible keyboard/pointer route to complete notification
+recovery text: screen-reader descriptions and ellipsis alone do not finish that
+UX. Review adaptive detail/wrapping with existing components, and power secondary
+copy at narrow/high-scale sizes. These items remain open.
 
 Capture delivery: all 24 representative and matrix PNGs are saved to native ChatGPT
 Library image files. Small evidence manifests retain their identities, dimensions,

@@ -1379,10 +1379,6 @@ mod tests {
     /// rendered pixels are asserted, not just the file: the title band is
     /// the Panel ground and an idle row's interior is its lift floor.
     #[test]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "menu metrics and sampled colour channels read best as m and r/g/b/e"
-    )]
     fn power_menu_review_fixtures_are_written() {
         use crate::shell::osd::review_offscreen::OffscreenRenderer;
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1391,7 +1387,7 @@ mod tests {
         let mut desktop = OffscreenRenderer::new(1280, 800);
         let mut laptop = OffscreenRenderer::new(800, 700);
         let mut narrow = OffscreenRenderer::new(480, 600);
-        let variants = [
+        let variants = vec![
             (
                 "dark-1x-1280x800",
                 Theme::dark(),
@@ -1458,40 +1454,64 @@ mod tests {
                 "power menu fixture missing: {}",
                 path.display()
             );
-            let rgba = renderer.render_resilient(&scene, ground);
-            let panel = menu.panel_rect(viewport);
-            let m = menu.metrics();
-            let probes = [
-                (
-                    Point::new(panel.center().x, panel.y0 + m.pad / 2.0),
-                    ui::chrome::shell::panel_ground(&theme),
-                    "title band is the Panel ground",
-                ),
-                (
-                    {
-                        let row = menu.action_rect(viewport, 0);
-                        Point::new(row.x1 - m.pad, row.center().y)
-                    },
-                    theme.tokens.colors.lift(0.35),
-                    "an idle row's interior is its lift floor",
-                ),
-            ];
-            for (at, expected, what) in probes {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "probe points are inside a positive viewport"
-                )]
-                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, w, at.x as u32, at.y as u32);
-                let e = expected.to_rgba8();
-                assert!(
-                    r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
-                    "{name}: {what}: got ({r},{g},{b}) expected ({},{},{})",
-                    e.r,
-                    e.g,
-                    e.b
-                );
-            }
+            assert_power_menu_review_pixels(
+                renderer,
+                (&scene, ground, w),
+                &menu,
+                viewport,
+                &theme,
+                name,
+            );
+        }
+    }
+
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "menu metrics and sampled colour channels read best as m and r/g/b/e"
+    )]
+    fn assert_power_menu_review_pixels(
+        renderer: &mut crate::shell::osd::review_offscreen::OffscreenRenderer,
+        paint: (&Scene, vello::peniko::Color, u32),
+        menu: &PowerMenu,
+        viewport: Rect,
+        theme: &Theme,
+        name: &str,
+    ) {
+        use crate::shell::osd::review_offscreen::OffscreenRenderer;
+        let (scene, ground, width) = paint;
+        let rgba = renderer.render_resilient(scene, ground);
+        let panel = menu.panel_rect(viewport);
+        let m = menu.metrics();
+        let probes = [
+            (
+                Point::new(panel.center().x, panel.y0 + m.pad / 2.0),
+                ui::chrome::shell::panel_ground(theme),
+                "title band is the Panel ground",
+            ),
+            (
+                {
+                    let row = menu.action_rect(viewport, 0);
+                    Point::new(row.x1 - m.pad, row.center().y)
+                },
+                theme.tokens.colors.lift(0.35),
+                "an idle row's interior is its lift floor",
+            ),
+        ];
+        for (at, expected, what) in probes {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "probe points are inside a positive viewport"
+            )]
+            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, width, at.x as u32, at.y as u32);
+            let e = expected.to_rgba8();
+            assert!(
+                r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
+                "{name}: {what}: got ({r},{g},{b}) expected ({},{},{})",
+                e.r,
+                e.g,
+                e.b
+            );
         }
     }
 }
