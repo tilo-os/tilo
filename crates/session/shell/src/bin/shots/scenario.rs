@@ -205,6 +205,13 @@ pub enum Action {
     SeedAgentScreenExposure {
         surface_id: u64,
     },
+    /// Present the real broker-disabled marker-adjacent composer.
+    OpenAgentQuickComposer,
+    /// Pin visual-review theme independently of the builder environment.
+    SetAgentQuickReviewTheme {
+        high_contrast: bool,
+        text_scale: f32,
+    },
     SeedInferredStatus(&'static str),
     /// Fill the active room with enough live participants to exercise the
     /// production People pager without weakening each row's action/intent UI.
@@ -705,6 +712,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SeedAgentScreenExposure { surface_id } => {
             driver.seed_agent_screen_exposure_for_shots(*surface_id);
         }
+        Action::OpenAgentQuickComposer => driver.open_agent_quick_composer_for_shots(),
+        Action::SetAgentQuickReviewTheme {
+            high_contrast,
+            text_scale,
+        } => driver.set_agent_quick_review_theme(*high_contrast, *text_scale),
         Action::SeedInferredStatus(text) => driver.seed_inferred_status_for_shots(text),
         Action::SeedCrowdedWorkspace => driver.seed_crowded_workspace_for_shots(),
         Action::SeedForeignAppWork {
@@ -1656,6 +1668,26 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
         "mic_muted" => Osd::mic_mute(true),
         "next_track" => Osd::transport(Transport::Next),
         _ => Osd::volume(0.5, false),
+    }
+}
+
+fn agent_quick_composer(name: &'static str, high_contrast: bool, text_scale: f32) -> Scenario {
+    Scenario {
+        name,
+        description: "Compare the ordinary desktop with the compact Message, Queue and Steer surface opened from an agent action marker.",
+        actions: vec![
+            Action::SetAgentQuickReviewTheme {
+                high_contrast,
+                text_scale,
+            },
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("01-before"),
+            Action::OpenAgentQuickComposer,
+            Action::Wait(3),
+            Action::Relayout,
+            Action::Snapshot("02-after"),
+        ],
     }
 }
 
@@ -2929,6 +2961,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("02-expanded-agent-disclosure"),
             ],
         },
+        agent_quick_composer("agent_quick_composer_light", false, 1.0),
+        agent_quick_composer("agent_quick_composer_hc200", true, 2.0),
         Scenario {
             name: "collaboration_product_proof",
             description: "Prove solo work, a pending invite, live editing, attributed history, forward revert, and cross-app presence.",

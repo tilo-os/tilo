@@ -311,7 +311,7 @@ impl App {
     ) -> Result<(), String> {
         if let Some(request) = self.window.pending_agent_navigation.take() {
             client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::OpenAgentConversation {
+                &crate::floating_surface::FloatingSurfaceClientMessage::OpenAgentQuickComposer {
                     request,
                 },
             )?;

@@ -496,6 +496,11 @@ pub struct FrameBuilder {
     /// matching `ui::App`; an explicit focus-reset ignores it and starts the
     /// replacement wizard step at its first enabled control.
     native_focus_ordinal: Option<usize>,
+    /// A modal widget temporarily replaces the desktop's focus order. Keep
+    /// the prior stable ordinal so dismissing it returns keyboard/AT focus to
+    /// the control the person was using rather than the first chrome item.
+    focus_trap_active: bool,
+    focus_before_trap_ordinal: Option<usize>,
     /// Latest produced sections, not an acknowledgement. A skipped presenter therefore creates a
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
@@ -739,6 +744,8 @@ impl FrameBuilder {
             lock_keyboard_keys: Vec::new(),
             focus_tree_changed: true,
             native_focus_ordinal: None,
+            focus_trap_active: false,
+            focus_before_trap_ordinal: None,
             last_produced_sections: None,
             next_scene_revision: 1,
             painted_hdr_layers: Vec::new(),
@@ -975,18 +982,51 @@ impl FrameBuilder {
         order
     }
 
+    fn has_focus_trap(&self) -> bool {
+        fn contains_trap(widget: &dyn Widget) -> bool {
+            widget.traps_focus() || widget.children().into_iter().any(contains_trap)
+        }
+        contains_trap(self.host.as_ref())
+    }
+
+    fn honor_focus_reset(&mut self, focus: &mut Option<NodeId>) -> bool {
+        if !self.host.take_focus_reset() {
+            return false;
+        }
+        let was_trapped = self.focus_trap_active;
+        let is_trapped = self.has_focus_trap();
+        if is_trapped && !was_trapped {
+            self.focus_before_trap_ordinal = self.native_focus_ordinal;
+        }
+        self.relayout();
+        if !is_trapped && was_trapped {
+            let order = self.focusable_order();
+            let restored = self
+                .focus_before_trap_ordinal
+                .take()
+                .and_then(|ordinal| order.get(ordinal).copied())
+                .or_else(|| self.initial_focus_target(&order));
+            self.set_native_focus(focus, restored);
+            self.focus_tree_changed = false;
+        } else {
+            self.focus_first(focus);
+        }
+        self.focus_trap_active = is_trapped;
+        true
+    }
+
     fn set_native_focus_with_reveal(
         &mut self,
         focus: &mut Option<NodeId>,
         target: Option<NodeId>,
         reveal: bool,
     ) {
-        if *focus == target {
-            return;
-        }
-        if let Some(old) = *focus
-            && let Some(&widget) = self.node_map.get(&old)
-        {
+        // A rebuilt overlay can retain its own ephemeral focus while the
+        // compositor still names a conversation control (and vice versa).
+        // The published accessibility tree may only have one keyboard focus,
+        // so clear every live widget before installing the authoritative one.
+        for &widget in self.node_map.values() {
+            // SAFETY: every pointer belongs to the current live layout tree.
             unsafe { (*widget).set_focus(false) };
         }
         if let Some(new) = target
@@ -1239,13 +1279,10 @@ impl FrameBuilder {
     /// widget tree. Called after layout as well as before input so initial
     /// focus and wizard-step focus are visible without a sacrificial key.
     pub(crate) fn reconcile_native_focus(&mut self, focus: &mut Option<NodeId>) {
-        let reset = self.host.take_focus_reset();
-        if reset {
-            self.relayout();
+        if self.honor_focus_reset(focus) {
+            return;
         }
-        if reset {
-            self.focus_first(focus);
-        } else if self.focus_tree_changed {
+        if self.focus_tree_changed {
             self.restore_focus_after_tree_change(focus);
         } else if focus.is_none() {
             self.focus_first(focus);
@@ -3401,6 +3438,14 @@ impl FrameBuilder {
         &self.theme
     }
 
+    /// Deterministic visual-review override used by `shots`; production
+    /// sessions continue to derive this from the appearance service.
+    #[doc(hidden)]
+    pub fn set_theme_for_shots(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.rebuild_layout_tree();
+    }
+
     pub fn viewport(&self) -> (f64, f64) {
         self.viewport
     }
@@ -3547,6 +3592,13 @@ impl FrameBuilder {
             return false;
         };
 
+        // The compositor owns the single keyboard focus. Clear any retained
+        // conversation/overlay focus before a synthetic owner records its
+        // more specific accessibility descendant.
+        if matches!(action, Action::Focus) {
+            self.set_native_focus(focus, Some(taffy_id));
+        }
+
         let handled = unsafe {
             if let Some(target) = semantic_target.as_deref() {
                 (*widget).perform_semantic_action(target, action, state, root_obj)
@@ -3566,16 +3618,13 @@ impl FrameBuilder {
                     .is_some_and(|target| target.starts_with("tab:"))
                 && unsafe { (*widget).accessibility() }
                     .is_some_and(|node| node.role == ui::a11y::Role::TabBar);
-            if matches!(action, Action::Focus) || activated_tab_bar {
+            if activated_tab_bar {
                 self.set_native_focus(focus, Some(taffy_id));
             }
             if activated_tab_bar && self.chrome().axis_navigation_enabled() {
                 self.chrome.borrow_mut().request_axis_gather();
             }
-            if self.host.take_focus_reset() {
-                self.relayout();
-                self.focus_first(focus);
-            }
+            self.honor_focus_reset(focus);
             return true;
         }
 
@@ -3584,7 +3633,6 @@ impl FrameBuilder {
                 if synthetic && !ordinal_path.is_empty() {
                     unsafe { (*widget).focus_synthetic_accessibility(&ordinal_path) };
                 }
-                self.set_native_focus(focus, Some(taffy_id));
                 true
             }
             Action::Activate | Action::ToggleCheck => {
@@ -3774,10 +3822,7 @@ impl FrameBuilder {
         // Wizard actions can replace the entire subtree during this event.
         // Rebuild and expose a visible first focus immediately, rather than
         // waiting for a second physical key press to repair focus.
-        if self.host.take_focus_reset() {
-            self.relayout();
-            self.focus_first(focus);
-        }
+        self.honor_focus_reset(focus);
         // Native/DRM chrome does not run through `ui::App`, whose event loop
         // normally turns Enter/Space on the focused widget into an
         // accessibility Activate action. Space/Enter for a live Terminal
@@ -7074,6 +7119,75 @@ mod tests {
         assert!(
             (light_y - dark_y).abs() > 0.08,
             "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
+    }
+
+    #[test]
+    fn agent_quick_composer_escape_restores_the_invoking_focus() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let broker =
+            crate::shell::broker_services::test_broker_with_membership(tree.clone().shared());
+        let mut frame = FrameBuilder::with_tree(tree, (1280, 800));
+        frame.host_mut().attach_app_action_broker(broker);
+        frame.relayout();
+        let order = frame.focusable_order();
+        let prior = order.get(2).copied().or_else(|| order.first().copied());
+        let prior_name = focused_name(&frame, prior).expect("desktop focus target");
+        let mut focus = None;
+        frame.set_native_focus(&mut focus, prior);
+        let room = frame
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("active workspace")
+            .room
+            .to_string();
+        assert!(
+            frame
+                .host_mut()
+                .open_agent_quick_composer_from_user_navigation(
+                    &room,
+                    &[("scribe".into(), "Scribe".into())],
+                    Rect::new(720.0, 180.0, 744.0, 204.0),
+                )
+        );
+        frame.reconcile_native_focus(&mut focus);
+        assert_ne!(
+            focused_name(&frame, focus).as_deref(),
+            Some(prior_name.as_str())
+        );
+        assert_eq!(
+            frame
+                .node_map
+                .values()
+                .filter(|widget| unsafe { (***widget).is_focused() })
+                .count(),
+            1,
+            "opening the overlay clears the conversation/desktop keyboard focus"
+        );
+
+        let mut document = AutoCommit::new();
+        assert!(frame.dispatch_event(
+            &key_press(Key::Named(NamedKey::Escape)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            focused_name(&frame, focus).as_deref(),
+            Some(prior_name.as_str()),
+            "Escape returns to the exact valid desktop ordinal that opened the composer"
+        );
+        assert_eq!(
+            frame
+                .node_map
+                .values()
+                .filter(|widget| unsafe { (***widget).is_focused() })
+                .count(),
+            1,
+            "dismissal leaves only the restored desktop node focused"
         );
     }
 

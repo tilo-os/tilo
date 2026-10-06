@@ -99,7 +99,7 @@ fn agent_navigation_fixture(
     let route = CrdtRoute::app("so.tilo.chat", room.clone());
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
-    let broker = crate::shell::broker_services::test_broker_with_membership(tree.shared());
+    let broker = crate::shell::broker_services::test_broker_with_membership(tree.clone().shared());
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
         app_id: "so.tilo.chat".into(),
@@ -413,6 +413,44 @@ fn overlapping_agent_marker_opens_only_the_exact_room_bound_choices() {
     assert!(
         host.search_results.is_empty(),
         "global search never contributes rows"
+    );
+}
+
+#[test]
+fn one_agent_marker_opens_the_room_bound_quick_composer_at_its_exact_anchor() {
+    use crate::shell::state::{Workspace, WorkspaceId};
+
+    let owner = "a1".repeat(32);
+    let mut workspace = Workspace::new(WorkspaceId(88), "Composer room");
+    workspace.set_owner(owner.clone());
+    let room = workspace.room.to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let broker = crate::shell::broker_services::test_broker_with_membership(tree.clone().shared());
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+    let chrome = ChromeState::new(tree);
+    chrome.borrow_mut().act_as(owner);
+    host.chrome = Some(chrome);
+    host.attach_app_action_broker(broker);
+    let anchor = Rect::new(924.0, 180.0, 948.0, 204.0);
+
+    assert!(host.open_agent_quick_composer_from_user_navigation(
+        &room,
+        &[("scribe".into(), "Scribe".into())],
+        anchor,
+    ));
+    assert_eq!(
+        host.agent_quick_composer.target(),
+        Some((room.as_str(), "scribe"))
+    );
+    assert!(
+        host.take_focus_reset(),
+        "the marker-owned surface moves keyboard and AT focus into its editor"
+    );
+    assert!(host.agent_quick_composer.dismiss());
+    assert!(
+        host.take_focus_reset(),
+        "dismissal asks the frame to restore the previous valid focus"
     );
 }
 

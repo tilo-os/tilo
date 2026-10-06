@@ -267,6 +267,31 @@ impl ShellDriver {
         self.fb.viewport()
     }
 
+    pub fn open_agent_quick_composer_for_shots(&mut self) {
+        let (width, height) = self.viewport();
+        let anchor = Rect::new(
+            width * 0.58,
+            height * 0.28,
+            width * 0.58 + 24.0,
+            height * 0.28 + 24.0,
+        );
+        self.fb
+            .host_mut()
+            .open_agent_quick_composer_for_shots(anchor);
+        self.fb.relayout();
+    }
+
+    pub fn set_agent_quick_review_theme(&mut self, high_contrast: bool, text_scale: f32) {
+        let theme = if high_contrast {
+            ui::Theme::high_contrast()
+        } else {
+            ui::Theme::light()
+        }
+        .with_text_scale(text_scale);
+        self.fb.set_theme_for_shots(theme);
+        self.fb.relayout();
+    }
+
     /// The size of the painted scene in physical pixels: what a renderer
     /// target is sized to. Differs from [`Self::viewport`] once a display
     /// draws at a scale other than 1.

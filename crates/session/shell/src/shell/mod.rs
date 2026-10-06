@@ -19,6 +19,7 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod actions;
+pub(crate) mod agent_quick_composer;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;

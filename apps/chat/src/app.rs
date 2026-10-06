@@ -81,110 +81,10 @@ pub(crate) struct AgentSubmission {
     pub(crate) pages_remaining: u16,
 }
 
-#[derive(Clone)]
-pub(crate) enum AgentMessageSubmission {
-    Providers(ui::LocalState<ui::remote_actions::CatalogueCall>),
-    Rows(Box<AgentMessageRows>),
-    Confirm {
-        target: tilo_actions::remote::RemoteActionTarget,
-        revision: String,
-        call: ui::LocalState<ui::remote_actions::CatalogueCall>,
-    },
-    Invoke(ui::LocalState<ui::remote_actions::InvocationCall>),
-}
-
-#[derive(Clone)]
-pub(crate) struct AgentMessageRows {
-    providers: VecDeque<String>,
-    provider: Option<String>,
-    parents: VecDeque<String>,
-    parent: Option<String>,
-    revision: Option<String>,
-    cursor: Vec<u8>,
-    call: Option<ui::LocalState<ui::remote_actions::CatalogueCall>>,
-    matches: Vec<(tilo_actions::remote::RemoteActionTarget, String)>,
-    seen_requests: HashSet<(String, String, Vec<u8>)>,
-    seen_resources: HashSet<(String, String)>,
-}
-
+pub(crate) use ui::agent_message_action::{AgentMessagePoll, AgentMessageSubmission};
 pub(crate) const AGENT_MESSAGE_RESOLVE_WINDOW: std::time::Duration =
-    std::time::Duration::from_secs(5);
-pub(crate) const AGENT_MESSAGE_MAX_PAGES: u16 = 64;
-
-pub(crate) enum AgentMessagePoll {
-    Waiting,
-    Advance {
-        message: Box<AgentMessageSubmission>,
-        pages_remaining: u16,
-    },
-    Succeeded,
-    Failed,
-}
-
-fn unique_agent_message_target(
-    page: &tilo_actions::remote::CataloguePage,
-    agent: &str,
-) -> Option<tilo_actions::remote::RemoteActionTarget> {
-    let mut matching = page
-        .rows
-        .iter()
-        .filter(|row| is_agent_message_row(row, agent));
-    let target = matching.next()?.target()?;
-    matching.next().is_none().then_some(target)
-}
-
-fn is_agent_message_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool {
-    let key = format!("chat.person:{agent}");
-    row.app_id == "so.tilo.chat"
-        && row.action.as_ref().is_some_and(|action| {
-            action.address.action == "message"
-                && action
-                    .semantic_identity
-                    .as_ref()
-                    .is_some_and(|identity| identity.kind == "chat.agent" && identity.key == key)
-        })
-}
-
-fn ingest_agent_message_page(
-    state: &mut AgentMessageRows,
-    page: tilo_actions::remote::CataloguePage,
-    agent: &str,
-) -> Result<(), ()> {
-    if page.stale_cursor
-        || page.budget_exhausted
-        || state
-            .revision
-            .as_ref()
-            .is_some_and(|expected| expected != &page.revision)
-    {
-        return Err(());
-    }
-    state.revision.get_or_insert_with(|| page.revision.clone());
-    for row in &page.rows {
-        if row.has_children
-            && state
-                .seen_resources
-                .insert((row.provider.clone(), row.resource.id.clone()))
-        {
-            state.parents.push_back(row.resource.id.clone());
-        }
-        if is_agent_message_row(row, agent) {
-            let target = row.target().ok_or(())?;
-            state.matches.push((target, page.revision.clone()));
-            if state.matches.len() > 1 {
-                return Err(());
-            }
-        }
-    }
-    if page.next_cursor.is_empty() {
-        state.parent = None;
-        state.cursor.clear();
-    } else {
-        state.cursor = page.next_cursor;
-    }
-    state.call = None;
-    Ok(())
-}
+    ui::agent_message_action::RESOLVE_WINDOW;
+pub(crate) const AGENT_MESSAGE_MAX_PAGES: u16 = ui::agent_message_action::MAX_PAGES;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AgentConversationDrag {
@@ -2316,207 +2216,15 @@ impl ChatApp {
         submission: &AgentSubmission,
         message: &AgentMessageSubmission,
     ) -> AgentMessagePoll {
-        if !matches!(message, AgentMessageSubmission::Invoke(_))
-            && (std::time::Instant::now() >= submission.give_up_at
-                || submission.pages_remaining == 0)
-        {
-            return AgentMessagePoll::Failed;
-        }
-
-        match message {
-            AgentMessageSubmission::Providers(call) => {
-                Self::poll_agent_message_providers(workspace, submission, call)
-            }
-            AgentMessageSubmission::Rows(state) => {
-                self.poll_agent_message_rows(agent, submission, state)
-            }
-            AgentMessageSubmission::Confirm {
-                target,
-                revision,
-                call,
-            } => self.poll_agent_message_confirmation(agent, submission, target, revision, call),
-            AgentMessageSubmission::Invoke(call) => Self::poll_agent_message_invocation(call),
-        }
-    }
-
-    fn poll_agent_message_providers(
-        workspace: &str,
-        submission: &AgentSubmission,
-        call: &ui::LocalState<ui::remote_actions::CatalogueCall>,
-    ) -> AgentMessagePoll {
-        use ui::remote_actions::RemoteCall;
-        let RemoteCall::Done(page) = call.get() else {
-            return if call.get().is_pending() {
-                AgentMessagePoll::Waiting
-            } else {
-                AgentMessagePoll::Failed
-            };
-        };
-        if page.stale_cursor || page.budget_exhausted {
-            return AgentMessagePoll::Failed;
-        }
-        let mut providers = page
-            .providers
-            .into_iter()
-            .filter(|provider| provider.app_id == "so.tilo.chat" && provider.room == workspace)
-            .map(|provider| provider.provider)
-            .collect::<Vec<_>>();
-        providers.sort();
-        providers.dedup();
-        if providers.is_empty() {
-            return AgentMessagePoll::Failed;
-        }
-        AgentMessagePoll::Advance {
-            message: Box::new(AgentMessageSubmission::Rows(Box::new(AgentMessageRows {
-                providers: providers.into(),
-                provider: None,
-                parents: VecDeque::new(),
-                parent: None,
-                revision: None,
-                cursor: Vec::new(),
-                call: None,
-                matches: Vec::new(),
-                seen_requests: HashSet::new(),
-                seen_resources: HashSet::new(),
-            }))),
-            pages_remaining: submission.pages_remaining.saturating_sub(1),
-        }
-    }
-
-    fn poll_agent_message_rows(
-        &self,
-        agent: &str,
-        submission: &AgentSubmission,
-        state: &AgentMessageRows,
-    ) -> AgentMessagePoll {
-        use ui::remote_actions::RemoteCall;
-        let mut state = state.clone();
-        let mut pages_remaining = submission.pages_remaining;
-        if let Some(answer) = state.call.as_ref() {
-            let page = match answer.get() {
-                RemoteCall::Pending => return AgentMessagePoll::Waiting,
-                RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
-                RemoteCall::Done(page) => page,
-            };
-            pages_remaining = pages_remaining.saturating_sub(1);
-            if ingest_agent_message_page(&mut state, page, agent).is_err() {
-                return AgentMessagePoll::Failed;
-            }
-        }
-        if state.provider.is_some() && state.parent.is_none() {
-            state.parent = state.parents.pop_front();
-            state.cursor.clear();
-            if state.parent.is_none() {
-                state.provider = None;
-                state.revision = None;
-            }
-        }
-        if state.provider.is_none() {
-            state.provider = state.providers.pop_front();
-            state.revision = None;
-            state.cursor.clear();
-            state.parents = VecDeque::from([String::new()]);
-            state.parent = state.parents.pop_front();
-        }
-        let Some(provider) = state.provider.clone() else {
-            return self.confirm_unique_agent_message(state, pages_remaining);
-        };
-        let Some(parent) = state.parent.clone() else {
-            return AgentMessagePoll::Failed;
-        };
-        if !state
-            .seen_requests
-            .insert((provider.clone(), parent.clone(), state.cursor.clone()))
-        {
-            return AgentMessagePoll::Failed;
-        }
-        state.call = Some(self.agent_task_actions.catalogue_page(
-            tilo_actions::remote::CatalogueQuery {
-                provider: Some(provider),
-                parent_resource: (!parent.is_empty()).then_some(parent),
-                revision: state.revision.clone(),
-                cursor: state.cursor.clone(),
-                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
-                ..tilo_actions::remote::CatalogueQuery::default()
-            },
-        ));
-        AgentMessagePoll::Advance {
-            message: Box::new(AgentMessageSubmission::Rows(Box::new(state))),
-            pages_remaining,
-        }
-    }
-
-    fn confirm_unique_agent_message(
-        &self,
-        mut state: AgentMessageRows,
-        pages_remaining: u16,
-    ) -> AgentMessagePoll {
-        let Some((target, revision)) = state.matches.pop() else {
-            return AgentMessagePoll::Failed;
-        };
-        let call =
-            self.agent_task_actions
-                .catalogue(tilo_actions::remote::CatalogueQuery::resolve(
-                    &target,
-                    revision.clone(),
-                ));
-        AgentMessagePoll::Advance {
-            message: Box::new(AgentMessageSubmission::Confirm {
-                target,
-                revision,
-                call,
-            }),
-            pages_remaining,
-        }
-    }
-
-    fn poll_agent_message_confirmation(
-        &self,
-        agent: &str,
-        submission: &AgentSubmission,
-        target: &tilo_actions::remote::RemoteActionTarget,
-        revision: &str,
-        call: &ui::LocalState<ui::remote_actions::CatalogueCall>,
-    ) -> AgentMessagePoll {
-        use ui::remote_actions::RemoteCall;
-        let page = match call.get() {
-            RemoteCall::Pending => return AgentMessagePoll::Waiting,
-            RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
-            RemoteCall::Done(page) => page,
-        };
-        if page.stale_cursor
-            || page.budget_exhausted
-            || page.revision != revision
-            || unique_agent_message_target(&page, agent).as_ref() != Some(target)
-        {
-            return AgentMessagePoll::Failed;
-        }
-        let call = self.agent_task_actions.invoke(
-            target.clone(),
-            tilo_actions::remote::InvokeArgument::Text(submission.text.clone()),
-            None,
-        );
-        AgentMessagePoll::Advance {
-            message: Box::new(AgentMessageSubmission::Invoke(call)),
-            pages_remaining: submission.pages_remaining.saturating_sub(1),
-        }
-    }
-
-    fn poll_agent_message_invocation(
-        call: &ui::LocalState<ui::remote_actions::InvocationCall>,
-    ) -> AgentMessagePoll {
-        use ui::remote_actions::RemoteCall;
-        match call.get() {
-            RemoteCall::Refused(_) => AgentMessagePoll::Failed,
-            RemoteCall::Done(update) if update.is_terminal() => {
-                if matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
-                    AgentMessagePoll::Succeeded
-                } else {
-                    AgentMessagePoll::Failed
-                }
-            }
-            RemoteCall::Pending | RemoteCall::Done(_) => AgentMessagePoll::Waiting,
-        }
+        ui::agent_message_action::poll(
+            &self.agent_task_actions,
+            workspace,
+            agent,
+            &submission.text,
+            message,
+            submission.give_up_at,
+            submission.pages_remaining,
+        )
     }
 
     fn settle_agent_submissions(&mut self) {
@@ -2534,10 +2242,10 @@ impl ChatApp {
                 match self.poll_agent_message_submission(&key.0, &key.1, submission, message) {
                     AgentMessagePoll::Waiting => {}
                     AgentMessagePoll::Advance {
-                        message,
+                        submission,
                         pages_remaining,
                     } => {
-                        message_updates.push((key.clone(), message, pages_remaining));
+                        message_updates.push((key.clone(), Box::new(submission), pages_remaining));
                     }
                     AgentMessagePoll::Succeeded => {
                         self.composer_main.clear_private_for_revision(

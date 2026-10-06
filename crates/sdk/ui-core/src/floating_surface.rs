@@ -176,7 +176,7 @@ pub enum FloatingSurfaceClientMessage {
     /// only a navigation hint: the shell must consume compositor-owned input,
     /// derive the room from the exact source surface, and freshly resolve the
     /// non-mutating Chat View. It conveys no app grant or caller authority.
-    OpenAgentConversation {
+    OpenAgentQuickComposer {
         request: AgentConversationNavigation,
     },
     /// Ask the trusted session shell to show its ordinary user-confirmed

@@ -117,7 +117,11 @@ impl<T> LocalState<T> {
         true
     }
 
-    pub(crate) fn revision(&self) -> u64 {
+    /// Monotonic process-local version of this value. A submitter can retain
+    /// it and clear an editor only when the exact submitted draft still owns
+    /// the current revision.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
         self.inner.revision.load(Ordering::Acquire)
     }
 

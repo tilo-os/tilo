@@ -1294,7 +1294,7 @@ fn pump_floating_surface_service(
                     }
                     changed = true;
                 }
-                ui::floating_surface::FloatingSurfaceClientMessage::OpenAgentConversation {
+                ui::floating_surface::FloatingSurfaceClientMessage::OpenAgentQuickComposer {
                     request,
                 } => {
                     let bounded = valid_agent_navigation_request(&request);
@@ -1304,24 +1304,28 @@ fn pump_floating_surface_service(
                             frame_builder
                                 .foreign_surface_with_room_for_app_surface(&app_id, surface)
                         });
-                    let activated = if bounded {
-                        source.as_ref().is_some_and(|(surface, app_rect, _)| {
-                            let marker = app_local_to_desktop(
-                                Rect::new(
-                                    request.anchor[0],
-                                    request.anchor[1],
-                                    request.anchor[2],
-                                    request.anchor[3],
-                                ),
-                                *app_rect,
-                            );
-                            let inside_surface = app_rect.contains(marker.origin())
-                                && app_rect
-                                    .contains(vello::kurbo::Point::new(marker.x1, marker.y1));
-                            let activated =
-                                state.consume_agent_navigation_activation(*surface, marker);
-                            inside_surface && activated
+                    let marker = bounded
+                        .then(|| {
+                            source.as_ref().map(|(_, app_rect, _)| {
+                                app_local_to_desktop(
+                                    Rect::new(
+                                        request.anchor[0],
+                                        request.anchor[1],
+                                        request.anchor[2],
+                                        request.anchor[3],
+                                    ),
+                                    *app_rect,
+                                )
+                            })
                         })
+                        .flatten();
+                    let activated = if let (Some(marker), Some((surface, app_rect, _))) =
+                        (marker, source.as_ref())
+                    {
+                        let inside_surface = app_rect.contains(marker.origin())
+                            && app_rect.contains(vello::kurbo::Point::new(marker.x1, marker.y1));
+                        let activated = state.consume_agent_navigation_activation(*surface, marker);
+                        inside_surface && activated
                     } else {
                         state.discard_agent_navigation_activation();
                         false
@@ -1345,6 +1349,7 @@ fn pump_floating_surface_service(
                     if activated
                         && current
                         && let Some((_, _, room)) = source
+                        && let Some(marker) = marker
                         && request.room == room
                     {
                         let agents = request
@@ -1359,7 +1364,7 @@ fn pump_floating_surface_service(
                             .collect::<Vec<_>>();
                         changed |= frame_builder
                             .host_mut()
-                            .open_agent_conversation_from_user_navigation(&room, &agents);
+                            .open_agent_quick_composer_from_user_navigation(&room, &agents, marker);
                     } else {
                         tracing::info!(%app_id, "refused stale or malformed Agent navigation");
                     }

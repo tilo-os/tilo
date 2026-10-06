@@ -1004,6 +1004,8 @@ pub struct ShellOverlayHost {
     /// on its next settings poll.
     magnifier_changed: bool,
     capture_node: Option<NodeId>,
+    agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
+    agent_quick_composer_node: Option<NodeId>,
     /// Native exact-pixel screenshot editor. It lives in the shared UI crate;
     /// the shell supplies only artifact bytes and drains semantic commands.
     screenshot_markup: Option<ui::widget::ScreenshotMarkup>,
@@ -2328,6 +2330,8 @@ impl ShellOverlayHost {
             instant_captures: Vec::new(),
             magnifier_changed: false,
             capture_node: None,
+            agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
+            agent_quick_composer_node: None,
             screenshot_markup: None,
             screenshot_markup_node: None,
             capture_mirrors: Vec::new(),
@@ -7726,6 +7730,69 @@ impl ShellOverlayHost {
         });
         self.poll_pending_agent_navigations();
         true
+    }
+
+    /// Open the compact marker-adjacent surface under the same authenticated
+    /// local-person custody as certified conversation navigation. The marker
+    /// supplies placement and descriptive Agent identity only.
+    pub(crate) fn open_agent_quick_composer_from_user_navigation(
+        &mut self,
+        room: &str,
+        agents: &[(String, String)],
+        anchor: Rect,
+    ) -> bool {
+        let [(agent, label)] = agents else {
+            return self.open_agent_conversation_from_user_navigation(room, agents);
+        };
+        if !valid_agent_navigation_id(agent) {
+            return self.open_agent_conversation_from_user_navigation(room, agents);
+        }
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let Some(broker) = self.shortcut_triggers.broker() else {
+            return false;
+        };
+        let local_person = {
+            let state = chrome.borrow();
+            let workspace_room = state
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == room)
+                .map(|workspace| workspace.room);
+            let Some(workspace_room) = workspace_room else {
+                return false;
+            };
+            state.local_user_for_room(&workspace_room)
+        };
+        let caller = tilo_actions::remote::Caller::local_person(local_person).in_room(room);
+        let viewport = self.overlay_area();
+        self.agent_quick_composer.open(
+            broker,
+            caller,
+            room.to_owned(),
+            agent.clone(),
+            label.clone(),
+            anchor,
+            viewport,
+        );
+        true
+    }
+
+    /// Shots-only state fixture: real composer layout and paint, deliberately
+    /// without a broker so the sample draft cannot submit.
+    #[doc(hidden)]
+    pub fn open_agent_quick_composer_for_shots(&mut self, anchor: Rect) {
+        self.agent_quick_composer.open_for_shots(
+            "shots-room",
+            "scribe",
+            "Release Notes Agent",
+            &t("agent-quick-shots-draft"),
+            anchor,
+            self.overlay_area(),
+        );
     }
 
     fn poll_agent_navigation(pending: &mut PendingAgentNavigation) -> AgentNavigationPoll {
@@ -13607,31 +13674,7 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.palette_visible {
-            if self.agent_navigation_chooser.take().is_some() {
-                self.palette_visible = false;
-                self.palette.close();
-                self.palette
-                    .set_mode(ui::widget::command_palette::PaletteMode::Search);
-                self.palette.set_modal(false);
-                *handled = true;
-                return true;
-            }
-            if let Some(chrome) = self.chrome.clone() {
-                let mut state = chrome.borrow_mut();
-                if state.search_resource_scope.take().is_some() {
-                    state.bump();
-                    drop(state);
-                    self.palette.set_query("");
-                    self.palette
-                        .set_query_placeholder(t("host-search-placeholder"));
-                    self.last_search_query = "\0resource-scope-back\0".into();
-                    *handled = true;
-                    return true;
-                }
-            }
-            self.palette_visible = false;
-            *handled = true;
+        if self.handle_palette_escape(handled) {
             return true;
         }
         if self.layers.dismiss_topmost() {
@@ -13715,6 +13758,37 @@ impl ShellOverlayHost {
             return true;
         }
         false
+    }
+
+    fn handle_palette_escape(&mut self, handled: &mut bool) -> bool {
+        if !self.palette_visible {
+            return false;
+        }
+        if self.agent_navigation_chooser.take().is_some() {
+            self.palette_visible = false;
+            self.palette.close();
+            self.palette
+                .set_mode(ui::widget::command_palette::PaletteMode::Search);
+            self.palette.set_modal(false);
+            *handled = true;
+            return true;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let mut state = chrome.borrow_mut();
+            if state.search_resource_scope.take().is_some() {
+                state.bump();
+                drop(state);
+                self.palette.set_query("");
+                self.palette
+                    .set_query_placeholder(t("host-search-placeholder"));
+                self.last_search_query = "\0resource-scope-back\0".into();
+                *handled = true;
+                return true;
+            }
+        }
+        self.palette_visible = false;
+        *handled = true;
+        true
     }
 
     /// The workspace-rename text field's own key handling: a buffer in
@@ -17335,6 +17409,7 @@ impl Widget for ShellOverlayHost {
             sidebar.sync(s, p);
         }
         self.palette.sync(s, p);
+        self.agent_quick_composer.sync(s, p);
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
@@ -17437,6 +17512,16 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
         let palette_dirty = self.palette.update(doc, path);
+        let agent_quick_dirty = self.agent_quick_composer.update(doc, path);
+        if self.agent_quick_composer.take_conversation_request()
+            && let Some((room, agent)) = self
+                .agent_quick_composer
+                .target()
+                .map(|(room, agent)| (room.to_owned(), agent.to_owned()))
+        {
+            self.agent_quick_composer.dismiss();
+            self.open_agent_conversation_from_user_navigation(&room, &[(agent.clone(), agent)]);
+        }
         if search_index_ready {
             // A worker published an immutable index after the palette opened.
             // Force one normal fanout this frame so the visible list updates
@@ -17528,6 +17613,7 @@ impl Widget for ShellOverlayHost {
             || pairing_dirty
             || close_dirty
             || palette_dirty
+            || agent_quick_dirty
             || sidebar_dirty
             || notifications_dropped
             || launch_dirty
@@ -17625,6 +17711,10 @@ impl Widget for ShellOverlayHost {
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.capture_node = Some(capture_node);
+        let agent_quick_composer_node = self
+            .agent_quick_composer
+            .build_layout(taffy, theme, node_map);
+        self.agent_quick_composer_node = Some(agent_quick_composer_node);
         self.screenshot_markup_node = self
             .screenshot_markup
             .as_mut()
@@ -17759,6 +17849,7 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing_node) = self.pairing.build_layout(taffy, theme, node_map) {
             children.push(pairing_node);
         }
+        children.push(agent_quick_composer_node);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -17936,6 +18027,13 @@ impl Widget for ShellOverlayHost {
         }
         self.pairing
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
+        if let Some(agent_node) = self.agent_quick_composer_node {
+            self.agent_quick_composer.apply_layout(
+                taffy,
+                agent_node,
+                Point::new(self.rect.x0, self.rect.y0),
+            );
+        }
         self.finish_axis_gather();
         self.publish_strip_viewport();
     }
@@ -18006,6 +18104,8 @@ impl Widget for ShellOverlayHost {
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
+        self.agent_quick_composer
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
@@ -18391,6 +18491,26 @@ impl Widget for ShellOverlayHost {
         // Menus and flyouts sit below the genuinely modal sheets above (a
         // portal answer still wins) and above every other overlay and the
         // windows.
+        if self.agent_quick_composer.is_open()
+            && let Some(agent_node) = self.agent_quick_composer_node
+        {
+            self.agent_quick_composer.handle_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: &mut *ctx.handled,
+                    focus_target: &mut *ctx.focus_target,
+                    node_id: agent_node,
+                    taffy: ctx.taffy,
+                },
+            );
+            if *ctx.handled || self.agent_quick_composer.modal_capture().is_some() {
+                return;
+            }
+        }
         if self.route_layer_band(
             Band::Popover,
             event,
@@ -19759,6 +19879,9 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing) = self.pairing.view() {
             out.push(pairing);
         }
+        if self.agent_quick_composer.is_open() {
+            out.push(&self.agent_quick_composer);
+        }
         out
     }
 
@@ -19787,12 +19910,16 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing) = self.pairing.view_mut() {
             out.push(pairing);
         }
+        if self.agent_quick_composer.is_open() {
+            out.push(&mut self.agent_quick_composer);
+        }
         out
     }
 
     fn take_focus_reset(&mut self) -> bool {
         self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
+            | self.agent_quick_composer.take_focus_reset()
             | self
                 .onboarding
                 .as_mut()

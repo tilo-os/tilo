@@ -1635,12 +1635,7 @@ impl ChatApp {
             if self.agent_submissions.get().contains_key(&key) {
                 return;
             }
-            let call = self
-                .agent_task_actions
-                .catalogue(tilo_actions::remote::CatalogueQuery {
-                    max_results: 0,
-                    ..tilo_actions::remote::CatalogueQuery::default()
-                });
+            let message = ui::agent_message_action::begin(&self.agent_task_actions);
             self.agent_submission_errors
                 .update(|errors| _ = errors.remove(&key));
             self.agent_submissions.update(|pending| {
@@ -1650,7 +1645,7 @@ impl ChatApp {
                         text,
                         draft_revision,
                         intent,
-                        message: Some(crate::app::AgentMessageSubmission::Providers(call)),
+                        message: Some(message),
                         give_up_at: std::time::Instant::now()
                             .checked_add(crate::app::AGENT_MESSAGE_RESOLVE_WINDOW)
                             .unwrap_or_else(std::time::Instant::now),
