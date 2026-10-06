@@ -1134,6 +1134,9 @@ impl ChatApp {
     }
 
     fn on_hit_open_thread(&mut self, id: Id) {
+        if self.direct_agent.is_some() {
+            return;
+        }
         if self.thread_open.as_ref() != Some(&id) {
             self.thread_scroll.set_offset_y(0.0);
         }
@@ -3055,6 +3058,25 @@ mod tests {
         assert_eq!(status.primary, "Last known task: Review the release");
         assert!(status.receipt.is_none());
         assert!(status.queue.is_none());
+        drop(tasks);
+        render_frame(&mut app, 1280.0, 800.0);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::AgentIntent(crate::app::AgentComposerIntent::Message)
+            )),
+            1
+        );
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::AgentIntent(
+                    crate::app::AgentComposerIntent::Queue | crate::app::AgentComposerIntent::Steer
+                )
+            )),
+            0,
+            "missing owner Task data keeps the task modes visible but non-invokable"
+        );
     }
 
     #[test]
@@ -3090,6 +3112,10 @@ mod tests {
 
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
         render_frame_with_theme(&mut app, 560.0, 360.0, &theme);
+        assert!(
+            !app.agent_notice_in_empty_hero,
+            "a constrained hero cannot suppress the only unavailable notice"
+        );
         let mut text = ui::text_render::TextRenderer::new();
         let constrained = app.messages_rect(&mut text);
         assert!(!app.agent_empty_state_will_paint(
@@ -3099,6 +3125,15 @@ mod tests {
             "Scribe is unavailable"
         ));
         render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        assert!(app.agent_notice_in_empty_hero);
+        let compact_height = app.composer_height(&mut text);
+        app.agent_notice_in_empty_hero = false;
+        let duplicate_height = app.composer_height(&mut text);
+        app.agent_notice_in_empty_hero = true;
+        assert!(
+            compact_height < duplicate_height,
+            "the omitted duplicate receipt must also release its layout row"
+        );
         let roomy = app.messages_rect(&mut text);
         assert!(app.agent_empty_state_will_paint(
             &mut text,
@@ -3922,6 +3957,86 @@ mod tests {
         ));
         assert_eq!(ChatDoc::top_level_count(&doc, "c_general"), before + 1);
         assert_eq!(ChatDoc::draft_text(&doc, "c_general"), "");
+    }
+
+    #[test]
+    fn direct_agent_reply_stays_inline_without_losing_its_parent() {
+        fn contains_name(node: &ui::a11y::AccessNode, expected: &str) -> bool {
+            node.name.as_deref() == Some(expected)
+                || node
+                    .children
+                    .iter()
+                    .any(|child| contains_name(child, expected))
+        }
+
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        assert!(ChatDoc::post_agent_message(
+            &mut doc,
+            "ws_home",
+            "scribe",
+            "m_request",
+            NewMessage {
+                author: "u_alice".into(),
+                ts: 10,
+                text: "Summarize the decision".into(),
+                agent_intent: Some(model::AgentIntent::Message),
+                ..NewMessage::default()
+            },
+        ));
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            &channel,
+            "m_answer",
+            NewMessage {
+                author: "agent:scribe".into(),
+                ts: 11,
+                text: "The review is ready".into(),
+                parent: Some("m_request".into()),
+                ..NewMessage::default()
+            },
+        );
+
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.direct_agent = Some("scribe".into());
+        app.active_ws = "ws_home".into();
+        app.reload(&doc);
+        app.users.push(model::User {
+            id: "agent:scribe".into(),
+            name: "Scribe".into(),
+            initials: "S".into(),
+            color_idx: 2,
+            status: model::Presence::Online,
+            is_agent: true,
+        });
+        render_frame(&mut app, 1280.0, 800.0);
+
+        assert!(
+            app.hits
+                .iter()
+                .all(|(_, hit)| !matches!(hit, Hit::OpenThread(_))),
+            "direct replies stay inline without offering an unusable thread composer"
+        );
+        app.on_hit_open_thread("m_request".into());
+        assert!(app.thread_open.is_none());
+
+        let groups = model::group_conversation_messages(&app.messages, true);
+        assert_eq!(
+            groups.len(),
+            2,
+            "request and answer are both in the timeline"
+        );
+        let answer = app
+            .message("m_answer")
+            .expect("durable reply remains loaded");
+        assert_eq!(answer.parent.as_deref(), Some("m_request"));
+        let tree = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
+        assert!(contains_name(&tree, "Alice: Summarize the decision"));
+        assert!(contains_name(&tree, "Scribe: The review is ready"));
     }
 
     #[test]

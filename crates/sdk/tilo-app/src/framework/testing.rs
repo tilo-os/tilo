@@ -1026,6 +1026,34 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.call_at(None, resource, id, arguments, false)
     }
 
+    /// Invoke a published child/live-row action as an admitted host caller,
+    /// returning the exact invocation used for provenance assertions.
+    ///
+    /// # Errors
+    /// As [`Self::call_on`].
+    pub fn call_on_for(
+        &mut self,
+        invoker: tilo_actions::ActionInvoker,
+        resource: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "arguments are an object".into(),
+            ));
+        };
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(resource, id),
+        };
+        let (invocation, _) =
+            self.harness()
+                .start_bound_job_for(Some(invoker), &address, &arguments, false)?;
+        self.harness().relayout();
+        Ok(invocation)
+    }
+
     /// [`Self::call`] after the caller explicitly confirmed this invocation.
     /// Argument validation and current permissions are still enforced.
     ///

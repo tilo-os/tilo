@@ -668,9 +668,19 @@ pub struct MessageGroup {
 /// author within [`GROUP_WINDOW_SECS`]. Threaded replies are excluded —
 /// they render inside the thread panel, not the main timeline.
 pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
+    group_conversation_messages(messages, false)
+}
+
+/// Group a conversation timeline, optionally retaining replies inline. Direct
+/// Agent channels use the inline form so an Agent's causally linked answer is
+/// visible in the ordinary conversation while its durable parent stays intact.
+pub fn group_conversation_messages(
+    messages: &[Message],
+    include_replies: bool,
+) -> Vec<MessageGroup> {
     let mut groups: Vec<MessageGroup> = Vec::new();
     for (i, m) in messages.iter().enumerate() {
-        if !m.is_top_level() {
+        if !include_replies && !m.is_top_level() {
             continue;
         }
         let extend = groups.last().is_some_and(|g| {
@@ -820,6 +830,18 @@ mod tests {
             let groups = group_messages(&msgs);
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].message_indices, vec![0]);
+        }
+        // Phase: direct_agent_conversations_keep_causal_replies_inline.
+        {
+            let msgs = vec![
+                msg("request", "person", 0, None),
+                msg("answer", "agent:scribe", 10, Some("request")),
+            ];
+            let groups = group_conversation_messages(&msgs, true);
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].message_indices, vec![0]);
+            assert_eq!(groups[1].message_indices, vec![1]);
+            assert_eq!(msgs[1].parent.as_deref(), Some("request"));
         }
         // Phase: reply_count_and_participants.
         {

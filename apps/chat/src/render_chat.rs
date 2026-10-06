@@ -204,6 +204,7 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        self.resolve_agent_notice_layout(tr, theme);
         let area = self.messages_rect(tr);
         if area.width() > 0.0 && area.height() >= self.chrome.body_line {
             push_clip(scene, tf, area);
@@ -1473,7 +1474,8 @@ impl ChatApp {
             return;
         }
 
-        let groups = model::group_messages(&self.messages);
+        let groups =
+            model::group_conversation_messages(&self.messages, self.direct_agent.is_some());
         let divider_h = nav_row_height(theme);
         let (rows, total) = self.measure_message_rows(tr, theme, &groups, text_w, divider_h);
 
@@ -1732,11 +1734,12 @@ impl ChatApp {
         } else {
             0.0
         };
-        let thread_h = if model::reply_count(&self.messages, &m.id) > 0 {
-            thread_bar_h(theme) + f64::from(sp.s2)
-        } else {
-            0.0
-        };
+        let thread_h =
+            if self.direct_agent.is_none() && model::reply_count(&self.messages, &m.id) > 0 {
+                thread_bar_h(theme) + f64::from(sp.s2)
+            } else {
+                0.0
+            };
         let edit_ctrl_h = if editing {
             ButtonFace::height(ControlSize::Small, theme) + f64::from(sp.s2)
         } else {
@@ -2502,10 +2505,21 @@ impl ChatApp {
         let send_enabled = can_write
             && !draft.trim().is_empty()
             && (self.direct_agent.is_none() || self.direct_agent_is_available())
-            && (self.direct_agent_intent() != crate::app::AgentComposerIntent::Steer
-                || self
+            && match self.direct_agent_intent() {
+                crate::app::AgentComposerIntent::Message => true,
+                crate::app::AgentComposerIntent::Queue => {
+                    self.direct_agent_tasks().is_some_and(|tasks| {
+                        matches!(
+                            tasks.borrow().discovery(),
+                            ui::agent_task_frontier::AgentTaskDiscovery::Ready
+                                | ui::agent_task_frontier::AgentTaskDiscovery::Incomplete { .. }
+                        )
+                    })
+                }
+                crate::app::AgentComposerIntent::Steer => self
                     .direct_agent_tasks()
-                    .is_some_and(|tasks| tasks.borrow().can_steer()));
+                    .is_some_and(|tasks| tasks.borrow().can_steer()),
+            };
         let inner = self.draw_input_box(
             PaintCtx::new(scene, tf, tr, theme),
             input,
@@ -2526,7 +2540,10 @@ impl ChatApp {
         let mut editor_scene = Scene::new();
         self.composer_main
             .draw(&mut editor_scene, tf, tr, theme, presence);
-        push_clip(scene, tf, input);
+        // The embedded rich editor owns only the text inset. At large text it
+        // can retain a wider cached scene while reflowing; clipping to the
+        // whole input would let that scene cover the emoji and submit column.
+        push_clip(scene, tf, inner.intersect(input));
         scene.append(&editor_scene, None);
         scene.pop_layer();
         let key = ChatApp::draft_presence_key(&self.active_channel);
@@ -2622,30 +2639,8 @@ impl ChatApp {
         let can_act = self.can_participate() && self.direct_agent_is_available();
         let can_stop = current.is_some() && !stopping && can_act;
         let mut lines = self.direct_agent_status_lines(tasks, stopping);
-        if (!self.direct_agent_is_available() || !self.can_participate())
-            && self.messages.is_empty()
-        {
-            let hero = Rect::new(
-                self.center_left(),
-                self.header_rect().y1,
-                self.center_right(),
-                (rect.y0 - self.chrome.avatar_gap).max(self.header_rect().y1),
-            );
-            let name = self
-                .direct_agent
-                .as_deref()
-                .map_or_else(String::new, |agent| self.agent_display_name(agent));
-            let title = crate::i18n::t_args(
-                if self.direct_agent_is_available() {
-                    "chat-agent-empty-read-only-title"
-                } else {
-                    "chat-agent-empty-unavailable-title"
-                },
-                &[("name", name.into())],
-            );
-            if self.agent_empty_state_will_paint(paint.text, paint.theme, hero, &title) {
-                lines.receipt = None;
-            }
+        if self.agent_notice_in_empty_hero {
+            lines.receipt = None;
         }
         let stop_label = crate::i18n::t("chat-agent-stop");
         let stop_w = if can_stop {
@@ -2700,9 +2695,15 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let can_act = self.can_participate() && self.direct_agent_is_available();
+        let task_provider_ready = matches!(
+            tasks.discovery(),
+            ui::agent_task_frontier::AgentTaskDiscovery::Ready
+                | ui::agent_task_frontier::AgentTaskDiscovery::Incomplete { .. }
+        );
         let segments = vec![
             Segment::new(crate::i18n::t("chat-agent-mode-message")).with_enabled(can_act),
-            Segment::new(crate::i18n::t("chat-agent-mode-queue")).with_enabled(can_act),
+            Segment::new(crate::i18n::t("chat-agent-mode-queue"))
+                .with_enabled(can_act && task_provider_ready),
             Segment::new(crate::i18n::t(if tasks.can_steer() {
                 "chat-agent-mode-steer"
             } else {
@@ -2732,7 +2733,12 @@ impl ChatApp {
                 .control_size(ControlSize::Small),
         );
         for (index, part) in parts.into_iter().enumerate() {
-            if can_act && (index != 2 || tasks.can_steer()) {
+            let enabled = match index {
+                0 => can_act,
+                1 => can_act && task_provider_ready,
+                _ => can_act && tasks.can_steer(),
+            };
+            if enabled {
                 let intent = match index {
                     0 => crate::app::AgentComposerIntent::Message,
                     1 => crate::app::AgentComposerIntent::Queue,

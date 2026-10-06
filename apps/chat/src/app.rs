@@ -862,6 +862,9 @@ pub struct ChatApp {
     pub(crate) agent_submission_errors: ui::LocalState<HashMap<(Id, Id), String>>,
     /// Peer-local disclosure state for durable Agent action records.
     pub(crate) agent_work_expanded: ui::LocalState<HashSet<Id>>,
+    /// Whether this frame's empty hero carries the unavailable/read-only
+    /// explanation, allowing the composer to omit its duplicate receipt row.
+    pub(crate) agent_notice_in_empty_hero: bool,
 
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
@@ -1131,6 +1134,7 @@ impl ChatApp {
             agent_submissions: ui::LocalState::new(HashMap::new()),
             agent_submission_errors: ui::LocalState::new(HashMap::new()),
             agent_work_expanded: ui::LocalState::new(HashSet::new()),
+            agent_notice_in_empty_hero: false,
             agent_authors: HashMap::new(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
@@ -1955,6 +1959,13 @@ impl ChatApp {
     /// colour behind a mention.
     pub fn adopt_room(&mut self, presence: &PresenceCtx) {
         self.adopt_own_participant(presence);
+        self.room_agents = presence
+            .names
+            .keys()
+            .filter_map(|id| presence.authenticated_agent_id(id).map(str::to_owned))
+            .collect();
+        self.room_agents.sort();
+        self.room_agents.dedup();
         self.room_names.retain(|id, _| {
             presence
                 .names
@@ -3509,7 +3520,7 @@ impl ChatApp {
         lines
     }
 
-    pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
+    fn composer_height_with_notice(&self, tr: &mut TextRenderer, hero_notice: bool) -> f64 {
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
         let text_w = self.composer_text_width(field_w);
         let field = self.composer_field_height(tr, &self.draft_main, text_w);
@@ -3531,7 +3542,10 @@ impl ChatApp {
                 tasks.choice(),
                 ui::agent_task_frontier::AgentTaskChoice::Choose(_)
             ));
-            let status = self.direct_agent_status_lines(&tasks, stopping);
+            let mut status = self.direct_agent_status_lines(&tasks, stopping);
+            if hero_notice {
+                status.receipt = None;
+            }
             choice + status.count() + 1
         });
         let rows = rows.max(1);
@@ -3539,8 +3553,22 @@ impl ChatApp {
             + rows as f64 * self.chrome.agent_control_h
             + rows.saturating_sub(1) as f64 * self.chrome.agent_control_gap
     }
+
+    pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
+        self.composer_height_with_notice(tr, self.agent_notice_in_empty_hero)
+    }
+
+    fn composer_rect_with_notice(&self, tr: &mut TextRenderer, hero_notice: bool) -> Rect {
+        let wanted = self.composer_height_with_notice(tr, hero_notice);
+        self.composer_rect_for_height(wanted)
+    }
+
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let wanted = self.composer_height(tr);
+        self.composer_rect_for_height(wanted)
+    }
+
+    fn composer_rect_for_height(&self, wanted: f64) -> Rect {
         let regular_pad = self.chrome.composer_pad;
         let regular_room = (self.rect.y1 - regular_pad)
             - (self.header_rect().y1 + regular_pad).min(self.rect.y1 - regular_pad);
@@ -3558,6 +3586,38 @@ impl ChatApp {
             self.center_right() - self.chrome.gutter,
             bottom,
         )
+    }
+
+    /// Resolve the empty-state/composer notice ownership against the larger,
+    /// full-notice composer first. Omitting the duplicate row can only add
+    /// message space, so this cannot oscillate between layouts.
+    pub(crate) fn resolve_agent_notice_layout(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.agent_notice_in_empty_hero = false;
+        let has_agent_conversation = self.direct_agent.is_some();
+        let has_no_messages = self.messages.is_empty();
+        let needs_notice = !self.direct_agent_is_available() || !self.can_participate();
+        if !(has_agent_conversation && has_no_messages && needs_notice) {
+            return;
+        }
+        let full = self.composer_rect_with_notice(tr, false);
+        let hero = Rect::new(
+            self.center_left(),
+            self.header_rect().y1,
+            self.center_right(),
+            (full.y0 - self.chrome.avatar_gap).max(self.header_rect().y1),
+        );
+        let agent = self.direct_agent.as_deref().unwrap_or_default();
+        let name = self.agent_display_name(agent);
+        let title = crate::i18n::t_args(
+            if self.direct_agent_is_available() {
+                "chat-agent-empty-read-only-title"
+            } else {
+                "chat-agent-empty-unavailable-title"
+            },
+            &[("name", name.into())],
+        );
+        self.agent_notice_in_empty_hero =
+            self.agent_empty_state_will_paint(tr, theme, hero, &title);
     }
 
     /// The thread's composer: the same control and height rule as the main
@@ -4156,6 +4216,10 @@ impl Continuable for ChatApp {
 }
 
 impl Collaborative for ChatApp {
+    fn apply_collaboration_context(&mut self, presence: &PresenceCtx) {
+        self.adopt_room(presence);
+    }
+
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.queue_realtime_registration();
         if self.realtime.target_media_ready && self.realtime_target_media_ready() {
@@ -5082,7 +5146,9 @@ impl Widget for ChatApp {
             .messages
             .iter()
             .filter(|message| {
-                if self.thread_is_page() {
+                if self.direct_agent.is_some() {
+                    true
+                } else if self.thread_is_page() {
                     Some(&message.id) == self.thread_open.as_ref()
                         || message.parent.as_ref() == self.thread_open.as_ref()
                 } else {

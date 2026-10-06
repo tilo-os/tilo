@@ -660,6 +660,21 @@ mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
 
+    fn collaborator(
+        id: &str,
+        name: &str,
+        is_agent: bool,
+        is_self: bool,
+    ) -> ui::collaboration::Collaborator {
+        ui::collaboration::Collaborator {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            colour: None,
+            is_agent,
+            is_self,
+        }
+    }
+
     #[test]
     fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
         let mut app = TestApp::<ChatShell>::new().unwrap();
@@ -981,6 +996,95 @@ mod tests {
         assert!(
             lounge.iter().any(|action| action == "join-call"),
             "{lounge:?}"
+        );
+    }
+
+    #[test]
+    fn authenticated_agent_rows_publish_working_message_and_view_actions_then_withdraw() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.harness().set_collaboration_context(vec![
+            collaborator("test-author", "Quinten", false, true),
+            collaborator("tide", "Person Tide", false, false),
+            collaborator("agent:tide", "Tide", true, false),
+        ]);
+        let actions = app.actions().unwrap();
+        let on_agent = actions
+            .iter()
+            .filter(|action| action.address.resource == "chat.person:tide")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            on_agent
+                .iter()
+                .map(|action| action.address.action.as_str())
+                .collect::<Vec<_>>(),
+            ["message", "open-agent-conversation"],
+            "a raw Person id collision does not mint another Agent row"
+        );
+        assert!(
+            on_agent
+                .iter()
+                .all(|action| action.resource_label == "Tide")
+        );
+
+        app.call_on_for(
+            ui::tilo_actions::ActionInvoker::actor("test-author"),
+            "chat.person:tide",
+            "open-agent-conversation",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert_eq!(
+            app.with_widget::<ChatApp, _>(|chat| chat.direct_agent.clone())
+                .flatten()
+                .as_deref(),
+            Some("tide"),
+            "the mounted published View action opens the same direct conversation"
+        );
+
+        let invocation = app
+            .call_on_for(
+                ui::tilo_actions::ActionInvoker::actor("test-author"),
+                "chat.person:tide",
+                "message",
+                serde_json::json!({PROMPTED_PARAM: "Can you summarize the open question?"}),
+            )
+            .unwrap();
+        let message = app.read_document(|doc| {
+            let channel = ChatDoc::list_channels(doc)
+                .into_iter()
+                .find(|channel| channel.conversation_with.as_deref() == Some("tide"))
+                .expect("the direct conversation was created atomically");
+            ChatDoc::list_messages(doc, &channel.id)
+                .into_iter()
+                .next()
+                .expect("the admitted message was posted")
+        });
+        let context = app
+            .versions()
+            .iter()
+            .filter_map(|version| version.context.clone())
+            .find(|context| context.source_invocation == Some(invocation))
+            .expect("the document change retained its action context");
+        assert_eq!(message.author, "test-author");
+        assert_eq!(
+            message.agent_intent,
+            Some(crate::model::AgentIntent::Message)
+        );
+        assert_eq!(context.source_invocation, Some(invocation));
+        assert_eq!(message.id, actions::agent_request_message_id(invocation));
+
+        app.harness().set_collaboration_context(vec![collaborator(
+            "test-author",
+            "Quinten",
+            false,
+            true,
+        )]);
+        assert!(
+            app.actions()
+                .unwrap()
+                .iter()
+                .all(|action| action.address.resource != "chat.person:tide"),
+            "withdrawing the complete Context withdraws both capabilities"
         );
     }
 

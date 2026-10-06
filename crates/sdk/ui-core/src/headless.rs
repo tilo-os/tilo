@@ -5837,6 +5837,10 @@ impl FrameHarness {
             Some(address.instance_id),
         )?
         .ok_or_else(|| tilo_actions::DoorError::Unknown(address.address.clone()))?;
+        // `start_bound_job_for` installs the host-built continuation before
+        // entering this door. Only that retained admission may supply an
+        // external source invocation; ordinary headless calls remain local.
+        let broker_admitted = self.acting_for.contains_key(&invocation);
         let started = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
@@ -5847,9 +5851,9 @@ impl FrameHarness {
                 arguments: Some(arguments),
                 actor,
                 confirmed,
-                broker_admitted: false,
+                broker_admitted,
                 invocation,
-                source_invocation: None,
+                source_invocation: broker_admitted.then_some(invocation),
                 ambient,
                 scope: None,
             },
@@ -7173,6 +7177,18 @@ impl FrameHarness {
     /// rendering that a live broker frame supplies, without a broker process.
     pub fn set_presence_context(&mut self, presence: PresenceCtx) {
         self.presence = presence;
+        self.relayout();
+    }
+
+    /// Replace the complete broker collaboration Context for a hosted-widget
+    /// test. Unlike a paint-only fixture, this runs the same trusted roster
+    /// projection and widget hook as a live collaboration update.
+    pub fn set_collaboration_context(
+        &mut self,
+        collaborators: Vec<crate::collaboration::Collaborator>,
+    ) {
+        self.presence.apply_collaboration_snapshot(&collaborators);
+        crate::widget::apply_collaboration_context(self.root.as_mut(), &self.presence);
         self.relayout();
     }
 
