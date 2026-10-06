@@ -44,6 +44,17 @@
 //! fn main() { tilo_app::framework::run::<NoteApp>() }
 //! ```
 //!
+//! # Test the public workflow
+//!
+//! [`testing::TestApp`] mounts the real app on an isolated profile. Start with
+//! [`actions`](testing::HeadlessApp::actions) to discover the participant's
+//! complete action contracts, then [`call_on`](testing::HeadlessApp::call_on)
+//! using the discovered address and JSON arguments. Test a refusal before
+//! [`call_confirmed_on`](testing::HeadlessApp::call_confirmed_on) for a destructive
+//! operation, and verify that a live role change still refuses a saved address.
+//! The runnable `resource-journey` example exercises that path alongside a bound
+//! input control, authored task identity, undo and reopen without a display.
+//!
 //! # Extension contracts
 //!
 //! Custom parts do not leave the framework. Each contract asks only for what
@@ -322,7 +333,7 @@ pub mod testing;
 mod text;
 mod view;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
