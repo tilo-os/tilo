@@ -831,7 +831,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     self.hooks.settle(id).await.ok_or(StepFailure::Abandoned)?;
                     self.host
                         .observe(&self.caller, &id)
-                        .ok_or(StepFailure::Host {
+                        .ok_or_else(|| StepFailure::Host {
                             error: Box::new(ActionHostError::UnknownInvocation),
                         })?
                         .receipt()
