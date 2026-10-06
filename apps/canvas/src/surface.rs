@@ -3378,6 +3378,16 @@ impl Widget for CanvasSurface {
             .then(|| self.ime_caret.get().unwrap_or(self.rect))
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        // Still captures must await the requested image and paint work;
+        // asking for frames alone does not declare an unfinished placeholder.
+        let renderer = self.tools.renderer.borrow();
+        self.finding
+            || renderer.pictures.decoding()
+            || renderer.detail_pending()
+            || renderer.settling()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
         // drawing until it has caught up. A picture being chosen, or
