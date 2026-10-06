@@ -533,6 +533,9 @@ music-spotify-unfollow-artist = Unfollow artist on Spotify
 
 music-spotify-playlist-actions = Spotify playlist actions
 
+widget-sidebar-resize = Resize sidebar
+widget-inspector-resize = Resize inspector
+
 dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
 
