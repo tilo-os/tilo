@@ -13,6 +13,11 @@ consent uses the visible prompt's actual one-shot control. Only generated 700 Hz
 and 1100 Hz sources and null outputs are allowed; unexpected audio devices fail.
 No hardware microphone, video capture or external account is used. Throwaway
 identities, invitations, publisher pins and processes are removed on exit.
+Forked private D-Bus helpers are stopped through pidfds only after matching both
+this run's exact HOME and runtime directory. `--cleanup-proof` runs a separate,
+short real-daemon check: the owned bus exits and an adjacent private bus survives.
+Its receipt remains `qualified: false`, with `mode: cleanup-proof`, because it
+proves cleanup rather than the native pair journey.
 
 Build and run through rcargo in an owned disposable builder environment:
 

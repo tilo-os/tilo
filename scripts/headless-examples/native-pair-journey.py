@@ -15,6 +15,7 @@ import math
 import os
 import pathlib
 import signal
+import select
 import shutil
 import subprocess
 import tempfile
@@ -120,15 +121,89 @@ class Fixture:
         self.record(f"{name}-isolated-audio", frequency_hz=frequency,
                     devices=[{"class": n["media.class"], "name": n["node.name"]} for n in nodes])
 
+    def stop_private_buses(self):
+        # Launcher/SDK helpers may fork a bus out of their process group.
+        # Exact private profile evidence plus a pidfd bounds cleanup to this run.
+        homes = {str(self.root / name / "home").encode() for name in ("alice", "bob")}
+        runtimes = {str(self.root / name / "run").encode() for name in ("alice", "bob")}
+        stopped = 0
+        for process in pathlib.Path("/proc").iterdir():
+            if not process.name.isdigit():
+                continue
+            descriptor = None
+            try:
+                if process.stat().st_uid != os.getuid() or (process / "comm").read_text().strip() != "dbus-daemon":
+                    continue
+                descriptor = os.pidfd_open(int(process.name))
+                env = dict(item.split(b"=", 1) for item in (process / "environ").read_bytes().split(b"\0") if b"=" in item)
+                if env.get(b"HOME") not in homes or env.get(b"XDG_RUNTIME_DIR") not in runtimes:
+                    continue
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                poller = select.poll()
+                poller.register(descriptor, select.POLLIN)
+                if not poller.poll(3000):
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    if not poller.poll(3000):
+                        raise RuntimeError("owned private bus did not exit")
+                stopped += 1
+            except (ProcessLookupError, FileNotFoundError):
+                continue
+            except PermissionError as error:
+                raise RuntimeError("private bus custody cannot be observed") from error
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        return stopped
+
+    def cleanup_proof(self):
+        with tempfile.TemporaryDirectory(prefix="tilo-neighbor-bus-") as neighbor:
+            directory = pathlib.Path(neighbor)
+            (directory / "home").mkdir(mode=0o700)
+            (directory / "run").mkdir(mode=0o700)
+            owned = self.env("alice")
+            adjacent = {**owned, "HOME": str(directory / "home"), "XDG_RUNTIME_DIR": str(directory / "run")}
+            descriptors = []
+            try:
+                for env in (owned, adjacent):
+                    pid = int(subprocess.check_output([
+                        "dbus-daemon", "--session", "--fork", "--print-pid",
+                        f"--address=unix:path={env['XDG_RUNTIME_DIR']}/fixture-bus",
+                    ], env=env, timeout=3))
+                    descriptors.append(os.pidfd_open(pid))
+                if self.stop_private_buses() != 1:
+                    raise RuntimeError("cleanup did not select exactly the owned private bus")
+                owned_poll, adjacent_poll = select.poll(), select.poll()
+                owned_poll.register(descriptors[0], select.POLLIN)
+                adjacent_poll.register(descriptors[1], select.POLLIN)
+                if not owned_poll.poll(0) or adjacent_poll.poll(0):
+                    raise RuntimeError("private cleanup did not preserve the adjacent bus")
+                self.record("exact-private-bus-cleanup-proved", owned_exited=True, adjacent_survived=True)
+            finally:
+                for descriptor in descriptors:
+                    try:
+                        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                        poller = select.poll()
+                        poller.register(descriptor, select.POLLIN)
+                        if not poller.poll(3000):
+                            raise RuntimeError("cleanup proof daemon did not exit")
+                    except ProcessLookupError:
+                        pass
+                    finally:
+                        os.close(descriptor)
+
     def close(self):
         for process in reversed(self.processes):
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    continue
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=5)
+        self.record("private-process-cleanup", escaped_buses_stopped=self.stop_private_buses())
         for log in self.logs:
             log.close()
         self.root_owner.cleanup()
@@ -393,22 +468,34 @@ def main():
     parser.add_argument("--binaries", type=pathlib.Path, default=REPO / "target/debug")
     parser.add_argument("--pipewire", type=pathlib.Path, required=True,
                         help="private extracted PipeWire server/config/plugin payload")
+    parser.add_argument("--cleanup-proof", action="store_true", help="test exact private daemon cleanup without launching Chat")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
     fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve())
     qualified, error = False, None
     try:
-        fixture.run()
-        qualified = True
+        if args.cleanup_proof:
+            fixture.cleanup_proof()
+        else:
+            fixture.run()
+            qualified = True
     except Exception as failure:
         error = str(failure)
         raise
     finally:
-        fixture.close()
+        cleanup_error = None
+        try:
+            fixture.close()
+        except Exception as failure:
+            qualified = False
+            cleanup_error = str(failure)
         (args.out / "journey.json").write_text(json.dumps({
-            "qualified": qualified, "error": error, "stages": fixture.stages,
+            "qualified": qualified, "mode": "cleanup-proof" if args.cleanup_proof else "native-pair",
+            "error": error, "cleanup_error": cleanup_error, "stages": fixture.stages,
             "real_microphone": False, "video_screen_sharing": False,
         }, indent=2) + "\n")
+        if cleanup_error is not None:
+            raise RuntimeError(f"fixture cleanup failed: {cleanup_error}")
 
 
 if __name__ == "__main__":
