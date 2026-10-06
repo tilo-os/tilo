@@ -76,6 +76,13 @@ The native-chrome journey in `tests/input_method_wire.rs` additionally exercises
 the existing `ShellTextInput` stand-in: corrected dictation becomes one native
 `WindowEvent::Ime(Commit)` after finalization. Reuse this bridge. It is not proof
 of an app's selection, CRDT undo or accessibility routing.
+The native host now supplies a layout-generation-bearing widget identity or
+the palette's keyboard ownership to that bridge. An owner change cancels the
+session immediately and resets its text-input enable cycle, including switches
+between two fields with identical caret geometry. A wire journey proves that
+late results from the old session cannot reach the successor and that a fresh
+session can commit there. This does not yet supply a native document edit
+generation when the same field changes without moving its caret.
 Separate production-reader tests cover queue overflow, source EOF and owned-process teardown
 using synthetic PCM/blocked pipes; they neither capture audio nor run inference.
 
@@ -162,9 +169,9 @@ whisper-rs 0.16.0 `set_abort_callback_safe` erases its closure into a boxed trai
 object, but its trampoline casts that pointer back to the generic closure type
 and does not retain ownership. Do not use that helper. A raw C API adapter needs
 an explicit callback lifetime and process-isolation audit; native CPU build
-flags also need a portable baseline before adoption. The existing field bridge
-reports purpose and caret, so identical-geometry native field switches require
-an explicit field identity/edit generation from the shared host input contract.
+flags also need a portable baseline before adoption. Native keyboard-owner
+identity is supplied by the shell host; a native document edit generation still
+needs the shared host input contract before live microphone capture is enabled.
 
 ## Remaining implementation and acceptance gates
 

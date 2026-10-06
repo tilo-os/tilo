@@ -45,6 +45,15 @@ use super::state::{ClientState, State};
 /// caret is, in desktop coordinates.
 pub type FieldRequest = ui::ime::ImeWindowState;
 
+/// A native keyboard owner, independent of its caret geometry. Widget ids
+/// include the layout arena generation; the palette owns keyboard input even
+/// when the host's ordinary focused node has not changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFieldId {
+    Widget(u64),
+    Palette,
+}
+
 /// Client-side protocol state.
 #[derive(Default)]
 struct ClientSide {
@@ -77,6 +86,7 @@ pub struct ShellTextInput {
     enabled: Option<FieldRequest>,
     /// The field the compositor wants served, if any.
     wanted: Option<FieldRequest>,
+    native_field: Option<NativeFieldId>,
 }
 
 impl ShellTextInput {
@@ -124,6 +134,7 @@ impl ShellTextInput {
             wake,
             enabled: None,
             wanted: None,
+            native_field: None,
         })
     }
 
@@ -153,6 +164,35 @@ impl ShellTextInput {
     /// text input to match. Returns what the input method typed since the
     /// last call, as chrome events.
     pub fn sync(&mut self, state: &mut State, field: Option<FieldRequest>) -> Vec<WindowEvent> {
+        self.sync_for_field(state, field, None)
+    }
+
+    /// Serve an explicitly identified native field. Changing owners cancels
+    /// dictation immediately and starts a fresh protocol enable cycle, even
+    /// when both fields have the same purpose and caret rectangle. Events
+    /// already received for the previous owner are discarded.
+    pub fn sync_for_field(
+        &mut self,
+        state: &mut State,
+        field: Option<FieldRequest>,
+        identity: Option<NativeFieldId>,
+    ) -> Vec<WindowEvent> {
+        let identity = identity.filter(|_| field.is_some());
+        let changed = identity != self.native_field;
+        if changed {
+            state.cancel_active_dictation();
+            if self.enabled.is_some()
+                && let Some(text_input) = self.text_input.as_ref()
+            {
+                text_input.disable();
+                text_input.commit();
+                self.enabled = None;
+            }
+            self.state.pending_preedit = None;
+            self.state.pending_commit = None;
+            self.state.events.clear();
+            self.native_field = identity;
+        }
         self.wanted = field;
         self.pump();
         let holds = self.holds_focus(state);
@@ -174,7 +214,8 @@ impl ShellTextInput {
         }
         self.pump();
         self.update_enable();
-        std::mem::take(&mut self.state.events)
+        let events = std::mem::take(&mut self.state.events);
+        if changed { Vec::new() } else { events }
     }
 
     fn update_enable(&mut self) {
