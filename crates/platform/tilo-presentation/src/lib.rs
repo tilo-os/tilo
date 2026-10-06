@@ -1,6 +1,11 @@
 //! Platform-owned observations for native input and exact buffer presentation.
 //! Missing protocol support returns false while still presenting the buffer.
 pub mod clock;
+mod damage;
+
+pub use damage::DamageRect;
+#[cfg(all(feature = "gpu-damage", not(target_arch = "wasm32")))]
+pub use damage::set_next_present_damage;
 
 use std::time::Duration;
 use winit::{event::WindowEvent, window::Window};
