@@ -2375,3 +2375,17 @@ a11y-speaker-listener = { $group } can calibrate with this microphone
 a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
 speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
 speaker-error-listening-unavailable = choose a microphone that can listen where you sit
+airdrop-verify-title = Verify AirDrop receiver
+airdrop-verify-send-once = Send once
+airdrop-verify-detail =
+    File: { $name }
+    Size: { $bytes } bytes
+    Receiver: { $endpoint }
+    Enter the receiver's SHA-256 certificate fingerprint from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
+airdrop-error-unavailable = AirDrop lab requires an unlocked local session, file-transfer permission and current Files access.
+airdrop-error-source = AirDrop lab accepts one readable regular file up to 16 MiB.
+airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
+airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
+airdrop-error-declined = AirDrop transfer was cancelled before sending.
+airdrop-error-verification = The independent fingerprint does not match. Check the receiver; no file has been sent.
+airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.

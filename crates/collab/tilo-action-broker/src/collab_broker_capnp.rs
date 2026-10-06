@@ -259,6 +259,7 @@ mod device_continuity_service_boundary_tests {
             NEARBY_TRANSFER_APP_ID,
             "workspace-7",
             CrdtRoute::app(NEARBY_TRANSFER_APP_ID, "workspace-7").channel_key(),
+            Some("local-person".into()),
         )
     }
 
@@ -352,6 +353,7 @@ mod device_continuity_service_boundary_tests {
             "so.tilo.browser",
             "workspace-7",
             CrdtRoute::app("so.tilo.browser", "workspace-7").channel_key(),
+            Some("local-person".into()),
         );
         let refused =
             delegate_nearby_transfer_command(&services, &other_app, "so.tilo.browser", &snapshot())
@@ -373,6 +375,49 @@ mod device_continuity_service_boundary_tests {
         );
         assert!(invalid.is_err(), "malformed command refused");
         assert_eq!(service.calls.lock().expect("calls").len(), 1);
+    }
+
+    #[test]
+    fn airdrop_delegation_seals_person_and_rejects_application_trust_claims() {
+        use runtime_collab::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
+        let service = Arc::new(RecordingNearby::answering(Reply::Accepted));
+        let services = HostServices {
+            nearby_transfer: Some(service.clone()),
+            ..Default::default()
+        };
+        let context = files_context();
+        let command = Command::SendAirDrop {
+            source_path: b"/approved/report".to_vec(),
+            address: "127.0.0.1".into(),
+            port: 443,
+        };
+        let json = serde_json::to_vec(&command).unwrap();
+        delegate_nearby_transfer_command(&services, &context, NEARBY_TRANSFER_APP_ID, &json)
+            .unwrap();
+        let calls = service.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.person(), Some("local-person"));
+        assert_eq!(calls[0].1, command);
+        drop(calls);
+        let mut spoof = serde_json::from_slice::<serde_json::Value>(&json).unwrap();
+        for key in ["person", "certificate_sha256", "verified", "remember"] {
+            spoof[key] = "app claim".into();
+            assert!(
+                delegate_nearby_transfer_command(
+                    &services,
+                    &context,
+                    NEARBY_TRANSFER_APP_ID,
+                    &serde_json::to_vec(&spoof).unwrap()
+                )
+                .is_err()
+            );
+            spoof.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(
+            service.calls.lock().unwrap().len(),
+            1,
+            "spoofed authority never reaches the service"
+        );
     }
 
     #[test]
@@ -6944,6 +6989,10 @@ impl channel_handle::Server for CapnpChannelHandle {
             route.app_id.clone(),
             route.cluster_id.clone(),
             route.channel_key(),
+            self.verified_identity
+                .agent_id
+                .is_none()
+                .then(|| self.verified_identity.principal_id.clone()),
         );
         let request = match params.get() {
             Ok(request) => request,
