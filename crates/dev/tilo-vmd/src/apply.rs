@@ -201,7 +201,11 @@ pub trait Apply {
     fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError>;
     /// `tilo-install install --allow-self-signed --force <tapp>` as `user`;
     /// returns what it printed.
-    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError>;
+    fn install_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError>;
     /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
     /// or with `None` put the image's own kernel back (see [`crate::boot`]).
     /// Returns what the next boot starts, and warnings.
@@ -880,8 +884,12 @@ impl Apply for RecordingApply {
         self.call(format!("stop_input {slot}"));
         Ok(())
     }
-    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError> {
-        self.call(format!("install_app {user}"));
+    fn install_app(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+    ) -> Result<String, DaemonError> {
+        self.call(format!("install_app {}", session.user));
         let name = tapp
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
