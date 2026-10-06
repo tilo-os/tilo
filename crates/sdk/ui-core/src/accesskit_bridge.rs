@@ -65,6 +65,9 @@ use crate::a11y::{AccessNode, AccessibleTextSelection, Action, Role};
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
 
+mod floating_surface;
+pub(crate) use floating_surface::{surface_action_target, surface_tree_update};
+
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
