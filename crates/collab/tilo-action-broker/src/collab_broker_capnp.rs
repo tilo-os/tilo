@@ -21,6 +21,7 @@ use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 #[cfg(test)]
 mod app_settings_tests;
+mod canonical_route;
 mod committed_document;
 mod durable_local_invocation;
 #[path = "invocation_journal.rs"]
@@ -802,6 +803,10 @@ fn admit_agent_delegation_at(
     agent_id: &str,
     now: u64,
 ) -> Result<(), String> {
+    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+        agent: agent_id.to_owned(),
+    }
+    .validate()?;
     let workspace = tree
         .workspaces
         .iter()
@@ -2800,6 +2805,7 @@ pub struct CapnpBrokerState {
     peer_action_queue: super::peer_actions::PeerActionQueue,
     peer_action_rx: Mutex<Option<tokio::sync::mpsc::Receiver<super::peer_actions::Request>>>,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
+    canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
@@ -3576,6 +3582,7 @@ impl CapnpBrokerState {
                 peer_action_queue,
                 peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
+                canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
@@ -5616,6 +5623,9 @@ impl CapnpBrokerState {
     }
 
     fn remove_connection(&self, peer_id: u64) {
+        if let Ok(mut directories) = self.canonical_directories.lock() {
+            directories.remove(peer_id);
+        }
         if let Some(media) = self.services.native_media.as_ref() {
             media.disconnect(peer_id);
         }
@@ -6605,16 +6615,10 @@ impl collab_service::Server for CapnpCollabService {
                     "application requires host-owned worker descriptor admission".into(),
                 ));
             }
-            let participant_handle = reader
-                .get_participant_handle()?
-                .to_str()
-                .map_err(|error| {
+            let participant_handle =
+                reader.get_participant_handle()?.to_str().map_err(|error| {
                     capnp::Error::failed(format!("participant handle not utf8: {error}"))
-                })?
-                .trim()
-                .chars()
-                .take(64)
-                .collect::<String>();
+                })?;
             let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
@@ -6629,16 +6633,35 @@ impl collab_service::Server for CapnpCollabService {
             }
             match participant_kind {
                 "" | "person" => {
+                    // A Person handle is presentation, not its certified identity.
+                    let participant_handle = participant_handle
+                        .trim()
+                        .chars()
+                        .take(64)
+                        .collect::<String>();
                     if !participant_handle.is_empty() {
                         verified_identity.display_handle = Some(participant_handle);
                     }
                 }
                 "agent" => {
-                    if participant_handle.is_empty() {
+                    // Unlike a display handle, this names the exact workspace
+                    // principal. Normalize as enrollment does, then validate
+                    // its byte bound; truncation can silently select another
+                    // admitted Agent that shares the same display prefix.
+                    let participant_handle = participant_handle.trim();
+                    // Bound allocation before Unicode case normalization;
+                    // every normalized character consumes at least one byte.
+                    if participant_handle.chars().take(129).count() > 128 {
                         return Err(capnp::Error::failed(
-                            "an agent session must name its workspace agent".into(),
+                            "invalid canonical workspace agent identifier".into(),
                         ));
                     }
+                    let participant_handle = participant_handle.to_lowercase();
+                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                        agent: participant_handle.clone(),
+                    }
+                    .validate()
+                    .map_err(capnp::Error::failed)?;
                     let membership = state.membership.as_ref().ok_or_else(|| {
                         capnp::Error::failed("agent session has no workspace authority".into())
                     })?;
@@ -8154,10 +8177,22 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         let route = self.route();
+        let registration = Rc::new(uuid::Uuid::new_v4());
+        let Ok(_admission) = self.state.admission_lock.lock() else {
+            return Promise::err(capnp::Error::failed(
+                "directory admission unavailable".into(),
+            ));
+        };
+        if let Err(error) =
+            self.state
+                .register_canonical_directory(self.peer_id, &route, *registration)
+        {
+            return Promise::err(capnp::Error::failed(error));
+        }
         self.directories.directories.borrow_mut().insert(
             self.peer_id,
             RegisteredActionDirectory {
-                registration: Rc::new(uuid::Uuid::new_v4()),
+                registration,
                 app_id: app_id.clone(),
                 route: route.clone(),
                 directory,
@@ -8342,6 +8377,26 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request.get_stable_invocation_ids(),
             Err(error) => return Promise::err(error),
         };
+        // Stream replacement and resolved dispatch share the admission boundary:
+        // an admitted old token must never dispatch to a replacement stream.
+        let Ok(admission) = self.state.admission_lock.lock() else {
+            return Promise::err(capnp::Error::failed(
+                "invocation admission registry unavailable".into(),
+            ));
+        };
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        if let Ok(mut directories) = self.state.canonical_directories.lock() {
+            directories.stream_replaced(self.peer_id);
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "canonical stream registry unavailable".into(),
+            ));
+        }
         if let Ok(mut capabilities) = self.state.stable_invocation_subscribers.lock() {
             if stable {
                 capabilities.insert(self.peer_id);
@@ -8361,6 +8416,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "invocation subscriber registry unavailable".into(),
             ));
         }
+        drop(admission);
         // The app the launcher attested, else the one this channel names.
         let (app, room) = self
             .lease
@@ -12815,6 +12871,8 @@ pub mod tests {
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
+    include!("canonical_route_tests.rs");
+    #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
     include!("record_content_tests.rs");
@@ -13503,6 +13561,185 @@ pub mod tests {
             verified.device_public_key,
             device.verifying_key().to_bytes()
         );
+    }
+
+    #[cfg(test)]
+    struct ParticipantJoinFixture {
+        state: Arc<CapnpBrokerState>,
+        fanout: Arc<FanoutState>,
+        client: runtime_collab::CollabClient,
+        presentation: Vec<u8>,
+        route: CrdtRoute,
+        principal: String,
+    }
+
+    #[cfg(test)]
+    impl ParticipantJoinFixture {
+        fn new(agents: &[String]) -> Self {
+            let root = SigningKey::from_bytes(&[101; 32]);
+            let device = SigningKey::from_bytes(&[102; 32]);
+            let principal = principal_id_for_root(root.verifying_key().to_bytes());
+            let mut workspace = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceId(101),
+                "Exact Agent identity",
+            );
+            workspace.owner = Some(principal.clone());
+            let route = CrdtRoute::cluster(workspace.room.to_string());
+            for agent in agents {
+                workspace.grant_capability(CapOverride::membership(
+                    Subject::agent(agent),
+                    route.cluster_id.clone(),
+                    Verb::Comment,
+                ));
+            }
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let fanout = Arc::new(FanoutState::new());
+            let (state, bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(tree.shared()),
+                Some(Arc::new(vec![device.verifying_key().to_bytes()])),
+            );
+            let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+            let peer_id = fanout.next_peer_id();
+            let lease = Rc::new(ConnectionLease {
+                local_media: None,
+                state: Arc::clone(&state),
+                directories: Rc::clone(&directories),
+                peer_id,
+            });
+            let raw: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
+                worker: None,
+                state: Arc::clone(&state),
+                directories,
+                peer_id,
+                lease,
+            });
+            let presentation = certified_join(&route.cluster_id, &root, &device)
+                .encode()
+                .unwrap();
+            Self {
+                state,
+                fanout,
+                client: runtime_collab::CollabClient::from_raw(raw),
+                presentation,
+                route,
+                principal,
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
+        let ascii = "a".repeat(128);
+        let multibyte = "\u{e9}".repeat(64);
+        let fixture = ParticipantJoinFixture::new(&[
+            ascii.clone(),
+            multibyte.clone(),
+            // The old display-name truncation would silently select this
+            // different, also admitted Agent rather than reject the join.
+            "a".repeat(64),
+        ]);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fixture.fanout.subscribe_rooms(
+            vec![fixture.route.cluster_id.clone()],
+            Box::new(move |event, _| {
+                event_tx.send(event.clone()).unwrap();
+            }),
+        );
+        let key = PresenceKey::Resource {
+            app: "so.tilo.notes".into(),
+            id: "note:draft".into(),
+            kind: "note".into(),
+        };
+        let key_bytes = postcard::to_stdvec(&key).unwrap();
+        for expected in [ascii, multibyte] {
+            let input = format!(" {} ", expected.to_uppercase());
+            let channel = fixture
+                .client
+                .join_channel_as_kind(
+                    &fixture.route.channel_key(),
+                    &fixture.presentation,
+                    &input,
+                    "agent",
+                    "",
+                )
+                .await
+                .expect("certified join preserves the complete canonical Agent ID");
+            channel
+                .presence()
+                .await
+                .unwrap()
+                .publish_arrived(&key_bytes)
+                .await
+                .unwrap();
+            let event = event_rx.try_recv().unwrap();
+            assert!(matches!(event,
+                CollabEvent::RemotePresenceUpdate { user_id, key: delivered, payload: PresencePayload::Arrived }
+                    if user_id == format!("agent:{expected}") && delivered == key));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback() {
+        let fixture =
+            ParticipantJoinFixture::new(&["a".repeat(64), "a".repeat(128), "\u{e9}".repeat(64)]);
+        for invalid in [
+            "a".repeat(129),
+            "\u{e9}".repeat(65),
+            // Lowercase expands this input from 86 to 129 UTF-8 bytes.
+            "\u{130}".repeat(43),
+            format!("{}\nx", "a".repeat(64)),
+            String::new(),
+        ] {
+            assert!(
+                fixture
+                    .client
+                    .join_channel_as_kind(
+                        &fixture.route.channel_key(),
+                        &fixture.presentation,
+                        &invalid,
+                        "agent",
+                        "",
+                    )
+                    .await
+                    .is_err(),
+                "invalid Agent IDs must refuse instead of selecting an enrolled prefix"
+            );
+            assert!(fixture.state.channels.lock().unwrap().is_empty());
+        }
+        // The same long string is still a Person's bounded presentation
+        // handle: it never becomes that Person's certified principal.
+        let person = fixture
+            .client
+            .join_channel_as_kind(
+                &fixture.route.channel_key(),
+                &fixture.presentation,
+                &"a".repeat(129),
+                "person",
+                "",
+            )
+            .await
+            .unwrap();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fixture.fanout.subscribe_rooms(
+            vec![fixture.route.cluster_id.clone()],
+            Box::new(move |event, _| {
+                event_tx.send(event.clone()).unwrap();
+            }),
+        );
+        person
+            .presence()
+            .await
+            .unwrap()
+            .publish_arrived(&postcard::to_stdvec(&PresenceKey::pointer_default()).unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(event_rx.try_recv().unwrap(),
+            CollabEvent::RemotePresenceUpdate { user_id, payload: PresencePayload::Arrived, .. }
+                if user_id == fixture.principal));
     }
 
     #[test]

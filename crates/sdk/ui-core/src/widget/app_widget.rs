@@ -366,6 +366,72 @@ mod component_adapter {
     }
 
     impl FloatingSurfaceProvider for BoundAppWidget {
+        fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_floating_surface_focus_changed(id, focused);
+            }
+        }
+
+        fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_floating_surface_event_source(id);
+            }
+        }
+
+        fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component
+                .root
+                .as_deref()?
+                .floating_surface_accessibility(id)
+        }
+
+        fn perform_floating_surface_accessibility_action(
+            &mut self,
+            id: &str,
+            target: &str,
+            action: &crate::a11y::Action,
+            state: &mut crate::widget::Edits<'_>,
+            _path: &ObjId,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(state.document_mut(), |document, record_root| {
+                    self.component.root.as_deref_mut().is_some_and(|root| {
+                        root.perform_floating_surface_accessibility_action(
+                            id,
+                            target,
+                            action,
+                            &mut crate::widget::Edits::lend(document),
+                            record_root,
+                        )
+                    })
+                })
+                .unwrap_or(false)
+        }
+
+        fn floating_surface_ime(
+            &self,
+            id: &str,
+        ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component.root.as_deref()?.floating_surface_ime(id)
+        }
+
         fn take_floating_surface_request(
             &mut self,
         ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
