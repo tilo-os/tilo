@@ -1360,7 +1360,19 @@ fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
 
 #[test]
 fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
+    fn has_label(node: &ui::headless::InspectionNode, name: &str) -> bool {
+        node.semantics
+            .as_ref()
+            .is_some_and(|semantic| semantic.name.as_deref() == Some(name))
+            || node.children.iter().any(|child| has_label(child, name))
+    }
+    // Drive icon/background completions deterministically; this exercises
+    // motion policy, not the shared runner's worker scheduling latency.
+    let pumped = ui::background::Pumped::new();
+    let _entered = pumped.background().enter();
     let mut desk = Desk::open();
+    desk.app.harness().resize((1280, 900)).unwrap();
+    pumped.run_pending();
     desk.key("Ctrl+1");
     desk.key("=");
     let canvas = desk.app.harness().targets()["canvas"];
@@ -1376,13 +1388,31 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     desk.app.harness().set_theme(theme);
     desk.hold(&[]);
     assert!(
+        has_label(&desk.app.harness().inspection().root, "154%"),
+        "reduced motion immediately reaches the wheel's target zoom"
+    );
+    pumped.run_pending();
+    assert!(
         desk.app
             .harness()
-            .settle_for_capture(std::time::Duration::from_secs(1))
+            .settle_for_capture(std::time::Duration::from_secs(1)),
+        "the window settles: {:?}; image loads in flight: {}",
+        desk.app.harness().frame_requesters(),
+        ui::image_store::loads_in_flight()
     );
     desk.hold(&["ctrl"]);
     desk.app.harness().scroll(0.0, 1.0);
     desk.hold(&[]);
+    assert!(
+        has_label(&desk.app.harness().inspection().root, "190%"),
+        "subsequent wheel input immediately reaches its target zoom"
+    );
+    pumped.run_pending();
+    assert!(
+        desk.app
+            .harness()
+            .settle_for_capture(std::time::Duration::from_secs(1))
+    );
     assert!(
         !desk.app.harness().frame_schedule().needs_animation_frame,
         "reduced-motion wheel zoom completes without scheduling interpolation frames"
