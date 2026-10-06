@@ -512,6 +512,56 @@ impl LauncherServices for NativeLauncher {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+    fn begin_launch(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &tilo_desktop_model::Workspace,
+        author: Option<&str>,
+    ) -> Result<tilo_action_broker::services::LaunchReadiness, String> {
+        if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
+            if package_root.is_some() {
+                return Err("a host application cannot name a Tilo package root".into());
+            }
+            return super::launch_readiness::observe(|| {
+                super::host_apps::launch(desktop_id, Some(workspace.room.to_string()))
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            });
+        }
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|network| network.governor_opens_apps(workspace.room))
+        {
+            return Err(
+                "observed package startup must be requested from the workspace host".into(),
+            );
+        }
+        let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
+        let selected = match package_root {
+            Some(root) => {
+                let root = root.parse().map_err(|_| "invalid installed package root")?;
+                tilo_installed_apps::read_exact(&catalog, app, root)
+                    .map_err(|error| error.to_string())?
+            }
+            None => tilo_installed_apps::read(&catalog)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|installed| installed.package_id == app),
+        }
+        .ok_or_else(|| {
+            "the exact selected application package is no longer installed".to_string()
+        })?;
+        let mut workspace = workspace.clone();
+        if let Some(person) = author {
+            self.grant_authorship(person, app, &mut workspace);
+        }
+        super::launch_readiness::observe(|| {
+            super::launcher::launch_resolved_in_workspace(selected, &workspace)
+                .map_err(|error| error.to_string())
+        })
+    }
     fn launch_content(
         &self,
         app: &str,

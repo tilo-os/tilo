@@ -173,6 +173,7 @@ impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
 
     fn attach(&mut self, cx: SurfaceCx<GitClient>) {
         let sample = cx.fixture::<SampleRepository>();
+        self.attach_control_actions(cx.actions());
         self.attach_dispatcher(cx.dispatcher(), cx.mode(), sample.as_deref());
         self.follow_preferences(cx.settings::<crate::settings::Settings>());
     }
@@ -552,8 +553,24 @@ mod tests {
                 .or_else(|| node.children.iter().find_map(|child| bounds(child, target)))
         }
 
-        let mut app = TestApp::<GitClientShell>::capture(None).unwrap();
-        let control = bounds(&app.harness().inspection().root, "git.diff-layout")
+        let (_control_dir, control_path) = scratch_repository("preferences-controls");
+        let mut app =
+            TestApp::<GitClientShell>::launched(&[control_path.to_str().unwrap()]).unwrap();
+        app.settle();
+        // The launch is a document undo step; finish it before proving a
+        // personal preference adds none. Undo retains the real repository's
+        // live projection and device binding, as covered separately below.
+        let mut launch_steps = 0;
+        while app.undo() {
+            launch_steps += 1;
+            assert!(launch_steps < 16, "launch history is bounded");
+        }
+        assert!(
+            launch_steps > 0,
+            "the repository was opened through its real launch action"
+        );
+        app.settle();
+        let control = bounds(&app.harness().inspection().root, "git.diff-layout.split")
             .expect("the app bar exports its layout control")
             .center();
         let before = app.peer_document().get_heads();
@@ -591,11 +608,23 @@ mod tests {
         assert_eq!(layout(&app), DiffLayout::SideBySide);
         app.effect(&GitClientEffect::SyntaxHighlight).unwrap();
         app.effect(&GitClientEffect::ShowWhitespace).unwrap();
+        assert!(
+            app.settings::<Settings>().get().wrap_lines,
+            "long lines wrap by default"
+        );
         app.effect(&GitClientEffect::WrapLines).unwrap();
         let stored = app.settings::<Settings>().get();
         assert!(!stored.syntax_highlight);
         assert!(stored.show_whitespace);
-        assert!(stored.wrap_lines);
+        assert!(
+            !stored.wrap_lines,
+            "the wrapping effect persists the opposite preference"
+        );
+        app.effect(&GitClientEffect::WrapLines).unwrap();
+        assert!(
+            app.settings::<Settings>().get().wrap_lines,
+            "wrapping can be enabled again"
+        );
 
         // A preference stored by another window or device shows here.
         app.settings::<Settings>()

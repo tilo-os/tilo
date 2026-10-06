@@ -56,9 +56,9 @@ its allocation. Probes use cloned Taffy topology and the shared renderer-aware
 policy settlement. They do not apply geometry, replace widgets, or rewrite
 retained node identities. They may refresh measurement caches and policy
 metadata; the final host pass restores decisions for the actual allocation.
-Legacy hosts that rebuild topology from previous geometry settle that topology
-after actual placement. A probe does not predict every hypothetical topology
-of a legacy AppShell.
+Hosts that rebuild topology from previous geometry (`NavShell` showing or
+hiding a column) settle that topology after actual placement. A probe does not
+predict every hypothetical topology of such a host.
 
 ## Changing retained policy inputs
 

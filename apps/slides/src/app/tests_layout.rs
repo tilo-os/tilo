@@ -13,7 +13,10 @@
 use winit::event::MouseScrollDelta;
 
 use super::bench::{Bench, deck_of};
+use super::editor_chrome::UiButton;
 use super::*;
+use ui::TextRole;
+use ui::widget::{ButtonFace, ControlSize};
 
 /// The editor over one slide with a text box, for the chrome around it.
 fn layout_bench() -> Bench {
@@ -49,10 +52,9 @@ fn tall_deck(slide_count: usize) -> Deck {
 fn size(app: &mut SlidesApp, w: f64, h: f64) {
     app.rect = Rect::new(0.0, 0.0, w, h);
     app.chrome_metrics = ChromeMetrics::fallback();
-    app.rail_flap = FlapState::open_when_docked();
-    app.inspector_flap = FlapState::open_when_docked();
+    (app.rail_drawer, app.inspector_drawer) = SlidesApp::new_drawers();
     app.flap_uninitialised = true;
-    app.sync_flaps(0.0, false);
+    app.sync_flaps(Some(&Theme::dark()));
 }
 
 /// [`size`] at `w` × 800 with the chrome metrics measured at `text_scale`,
@@ -71,9 +73,13 @@ fn toolbar_controls(chrome: &Chrome) -> Vec<&UiButton> {
     let mut controls: Vec<&UiButton> = chrome
         .buttons
         .iter()
-        .filter(|b| {
-            !matches!(b.kind, ButtonKind::Hamburger) && b.rect.center().y < chrome.toolbar.y1
+        .enumerate()
+        .filter(|(index, button)| {
+            chrome.button_zone(*index) == super::editor_chrome::Zone::Content
+                && !matches!(button.hit, Hit::ToggleRail)
+                && button.rect.center().y < chrome.toolbar.y1
         })
+        .map(|(_, button)| button)
         .collect();
     controls.sort_by(|a, b| a.rect.x0.total_cmp(&b.rect.x0));
     controls
@@ -130,20 +136,30 @@ fn chrome_density_follows_measured_text_at_every_width() {
                 .iter()
                 .find(|b| matches!(b.hit, Hit::Present))
                 .expect("Present");
-            assert!((present.rect.height() - 34.0).abs() < 0.01, "toolbar pill");
+            assert!(
+                (present.rect.height() - ControlSize::Regular.height(&Theme::dark())).abs() < 0.01,
+                "toolbar pill"
+            );
             let add = chrome
                 .buttons
                 .iter()
                 .find(|b| matches!(b.hit, Hit::NewSlide) && chrome.rail.contains(b.rect.center()))
                 .expect("rail Add");
-            assert!((add.rect.height() - 30.0).abs() < 0.01, "rail control");
+            assert!(
+                (add.rect.height() - ControlSize::Regular.height(&Theme::dark())).abs() < 0.01,
+                "rail control"
+            );
             let layout_pill = chrome
                 .buttons
                 .iter()
-                .find(|b| matches!(b.hit, Hit::SetLayout(_)))
-                .expect("layout pill");
+                .find(|b| {
+                    matches!(b.hit, Hit::OpenLayoutMenu)
+                        && matches!(b.kind, ButtonKind::LayoutPicker)
+                })
+                .expect("the shared slide layout picker");
             assert!(
-                (layout_pill.rect.height() - 28.0).abs() < 0.01,
+                (layout_pill.rect.height() - ControlSize::Regular.height(&Theme::dark())).abs()
+                    < 0.01,
                 "inspector pill"
             );
         });
@@ -163,9 +179,9 @@ fn chrome_density_follows_measured_text_at_every_width() {
                 .and_then(|s| s.elements.first().map(|e| e.id.clone()));
             let chrome = app.compute_chrome();
             let m = app.chrome_metrics.clone();
-            assert!(m.lh_control > 30.0, "2x control line box {}", m.lh_control);
+            assert!(m.lh_label > 30.0, "2x control line box {}", m.lh_label);
             assert!(
-                chrome.toolbar.height() >= m.title_block_h() + 2.0 * m.s2 - 0.01
+                chrome.toolbar.height() >= m.lh_heading + 2.0 * m.s2 - 0.01
                     && chrome.toolbar.height() > 56.0,
                 "toolbar grew to its two-line title block"
             );
@@ -174,17 +190,35 @@ fn chrome_density_follows_measured_text_at_every_width() {
             let centre = controls[0].rect.center().y;
             for b in &controls {
                 assert!((b.rect.center().y - centre).abs() < 0.01, "one centre line");
+                let theme = Theme::dark().with_text_scale(2.0);
+                let size = if matches!(b.kind, ButtonKind::Tool { .. }) {
+                    ControlSize::Small
+                } else {
+                    ControlSize::Regular
+                };
                 assert!(
-                    b.rect.height() >= m.lh_control + m.s4 - 0.01,
-                    "pill fits its line box"
+                    b.rect.height() >= size.height(&theme) - 0.01,
+                    "the shared control fits its measured line and vertical padding"
                 );
-                if let ButtonKind::Text { label, .. } | ButtonKind::IconText { label, .. } = &b.kind
+                assert!(
+                    b.rect.height()
+                        >= f64::from(size.label_style(&theme).line_height_px())
+                            + 2.0 * f64::from(theme.tokens.spacing.s1)
+                            - 0.01,
+                    "no control clips its label at 2x text size"
+                );
+                if let ButtonKind::Command { label, icon, .. } | ButtonKind::Tool { label, icon } =
+                    &b.kind
                 {
-                    let (w, _) =
-                        tr.measure_weighted(label, FONT_CONTROL, None, TextWeight::Semibold);
+                    let face = ButtonFace::new(Rect::ZERO, label).control_size(size);
+                    let face = match icon {
+                        Some(icon) => face.icon(*icon),
+                        None => face,
+                    };
+                    let width = face.intrinsic_width(&mut tr, &theme);
                     assert!(
-                        b.rect.width() >= f64::from(w) + 2.0 * m.s3 - 0.01,
-                        "'{label}' needs {w:.1} + padding, pill is {:.1}",
+                        b.rect.width() >= width - 0.01,
+                        "'{label}' needs {width:.1} for its full shared face, pill is {:.1}",
                         b.rect.width()
                     );
                 }
@@ -199,10 +233,19 @@ fn chrome_density_follows_measured_text_at_every_width() {
             // Inspector: captions keep clear of the control that follows them,
             // and every text control is at least its line box tall.
             let in_inspector = |r: Rect| chrome.inspector.contains(r.center());
-            for l in chrome.labels.iter().filter(|l| {
-                (l.font - FONT_CAPTION).abs() < 0.01 && chrome.inspector.contains(l.pos)
-            }) {
-                let caption = Rect::new(l.pos.x, l.pos.y, l.pos.x + 1.0, l.pos.y + m.lh_caption);
+            for l in chrome
+                .labels
+                .iter()
+                .filter(|l| l.role == TextRole::Caption && chrome.inspector.contains(l.pos))
+            {
+                let caption = Rect::new(
+                    l.pos.x,
+                    l.pos.y,
+                    l.pos.x + 1.0,
+                    l.pos.y
+                        + f64::from(Theme::dark().text(TextRole::Caption).line_height_px())
+                            * m.growth,
+                );
                 for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
                     assert!(
                         b.rect.y0 >= caption.y1 - 0.01 || b.rect.y1 <= caption.y0 + 0.01,
@@ -217,9 +260,9 @@ fn chrome_density_follows_measured_text_at_every_width() {
             }
             for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
                 match &b.kind {
-                    ButtonKind::Text { label, .. } if !label.is_empty() => {
+                    ButtonKind::Command { label, .. } if !label.is_empty() => {
                         assert!(
-                            b.rect.height() >= m.lh_control - 0.01,
+                            b.rect.height() >= m.lh_label - 0.01,
                             "'{label}' row fits its text"
                         );
                     }
@@ -227,7 +270,7 @@ fn chrome_density_follows_measured_text_at_every_width() {
                     // labels once a quarter-width cell is too narrow for them.
                     ButtonKind::Segment { label, .. } => {
                         let (w, _) =
-                            tr.measure_weighted(label, FONT_CONTROL, None, TextWeight::Semibold);
+                            tr.measure_style(label, None, &Theme::dark().text(TextRole::Label));
                         assert!(
                             b.rect.width() >= f64::from(w) + 2.0 * m.s2 - 0.01,
                             "segment '{label}' needs {w:.1}, cell is {:.1}",
@@ -243,15 +286,12 @@ fn chrome_density_follows_measured_text_at_every_width() {
             let font_input = chrome
                 .font_input_rect
                 .expect("text element shows the TYPE row");
-            let (w, _) = tr.measure_weighted("999 pt", FONT_CONTROL, None, TextWeight::Semibold);
-            assert!(font_input.width() >= 2.0 * m.control_h() + f64::from(w) + 2.0 * m.s2 - 0.01);
+            let (w, _) = tr.measure_style("999 pt", None, &Theme::dark().text(TextRole::Label));
+            assert!(font_input.width() >= 2.0 * m.control_h + f64::from(w) + 2.0 * m.s2 - 0.01);
             // The speaker-notes box never inverts or folds back over the sections:
             // it is at least one control tall and starts below the last control.
             let notes = chrome.notes_box.expect("notes box");
-            assert!(
-                notes.height() >= m.control_h() - 0.01,
-                "notes box {notes:?}"
-            );
+            assert!(notes.height() >= m.control_h - 0.01, "notes box {notes:?}");
             let sections_bottom = chrome
                 .buttons
                 .iter()
@@ -265,8 +305,12 @@ fn chrome_density_follows_measured_text_at_every_width() {
             let inspector_controls: Vec<Rect> = chrome
                 .buttons
                 .iter()
-                .filter(|b| in_inspector(b.rect))
-                .map(|b| b.rect)
+                .enumerate()
+                .filter(|(index, b)| {
+                    chrome.button_zone(*index) == super::editor_chrome::Zone::Inspector
+                        && !matches!(b.hit, Hit::EditNotes)
+                })
+                .map(|(_, b)| b.rect)
                 .chain([font_input, notes])
                 .collect();
             for (i, a) in inspector_controls.iter().enumerate() {
@@ -284,11 +328,8 @@ fn chrome_density_follows_measured_text_at_every_width() {
                 .iter()
                 .filter(|b| chrome.rail.contains(b.rect.center()))
             {
-                if let ButtonKind::Text { label, .. } = &b.kind {
-                    assert!(
-                        b.rect.height() >= m.lh_control - 0.01,
-                        "rail '{label}' fits"
-                    );
+                if let ButtonKind::Command { label, .. } = &b.kind {
+                    assert!(b.rect.height() >= m.lh_label - 0.01, "rail '{label}' fits");
                 }
             }
         });
@@ -304,7 +345,7 @@ fn chrome_density_follows_measured_text_at_every_width() {
                 .buttons
                 .iter()
                 .filter(|button| {
-                    !matches!(button.kind, ButtonKind::Hamburger)
+                    !matches!(button.hit, Hit::ToggleRail)
                         && button.rect.center().y < chrome.toolbar.y1
                 })
                 .map(|button| button.rect.x0)
@@ -365,7 +406,7 @@ fn chrome_density_follows_measured_text_at_every_width() {
             .buttons
             .iter()
             .filter(|b| {
-                matches!(b.kind, ButtonKind::Palette { .. })
+                matches!(b.kind, ButtonKind::Theme { .. })
                     && chrome.inspector.contains(b.rect.center())
             })
             .collect();
@@ -375,8 +416,8 @@ fn chrome_density_follows_measured_text_at_every_width() {
             "all five theme pills are present"
         );
         for b in &pills {
-            if let ButtonKind::Palette { kind, .. } = &b.kind {
-                let label_right = b.rect.x0 + 26.0 + chrome::est_width(kind.label(), 12.0);
+            if let ButtonKind::Theme { kind, .. } = &b.kind {
+                let label_right = b.rect.x0 + 26.0 + app.chrome_metrics.width(kind.label(), editor_chrome::Measure::Button { icon: true }) - 26.0;
                 assert!(
                     label_right <= b.rect.x1 + 0.5,
                     "'{}' pill is wide enough for its full label (label right {:.1} <= pill right {:.1})",
@@ -416,8 +457,9 @@ fn chrome_density_follows_measured_text_at_every_width() {
                 .collect();
 
             assert_eq!(segments.len(), TextAlign::ALL.len());
-            let left = chrome.inspector.x0 + 16.0;
-            let right = chrome.inspector.x1 - 16.0;
+            let inset = f64::from(Theme::dark().tokens.spacing.s3);
+            let left = chrome.inspector.x0 + inset;
+            let right = chrome.inspector.x1 - inset;
             assert_eq!(segments[0].x0, left);
             assert_eq!(segments.last().unwrap().x1, right);
             let width = segments[0].width();
@@ -449,7 +491,7 @@ fn rail_docks_wide_and_overlays_narrow() {
             // The rail occupies the full left column and the canvas starts past it.
             assert!((chrome.rail.x0 - app.rect.x0).abs() < 1e-6);
             assert!(
-                chrome.rail.width() > RAIL_W - 1.0,
+                chrome.rail.width() > app.rail_drawer.resolved_docked_width() - 1.0,
                 "docked rail is full width"
             );
             assert!(
@@ -459,11 +501,11 @@ fn rail_docks_wide_and_overlays_narrow() {
             assert_eq!(chrome.scrim.width(), 0.0, "no scrim while docked");
             // No hamburger when the rail is docked + fully open.
             assert!(
-                !chrome
+                chrome
                     .buttons
                     .iter()
-                    .any(|b| matches!(b.kind, ButtonKind::Hamburger)),
-                "no hamburger needed when the rail is docked open"
+                    .any(|b| matches!(b.hit, Hit::ToggleRail)),
+                "the docked rail retains its shared hide-sidebar control"
             );
         });
     }
@@ -479,7 +521,8 @@ fn rail_docks_wide_and_overlays_narrow() {
             assert_eq!(chrome.layout, SplitLayout::Overlay);
             // Canvas spans the full width (rail no longer insets it).
             assert!(
-                (chrome.slide_dest.x0 - app.rect.x0) < (RAIL_W * 0.5),
+                (chrome.slide_dest.x0 - app.rect.x0)
+                    < (app.rail_drawer.resolved_docked_width() * 0.5),
                 "narrow canvas reclaims the rail's column"
             );
             // The closed flap is fully off the left edge, and no scrim shows.
@@ -497,7 +540,7 @@ fn rail_docks_wide_and_overlays_narrow() {
                 chrome
                     .buttons
                     .iter()
-                    .any(|b| matches!(b.kind, ButtonKind::Hamburger)),
+                    .any(|b| matches!(b.hit, Hit::ToggleRail)),
                 "narrow layout offers a hamburger to summon the rail"
             );
         });
@@ -509,15 +552,20 @@ fn rail_docks_wide_and_overlays_narrow() {
         bench.with(|app| {
             size(app, NARROW_BREAKPOINT - 200.0, 800.0);
             // Summon via the production toggle path, then settle the animation.
-            app.rail_flap.toggle(app.rail_layout());
-            app.rail_flap.snap(true);
+            app.rail_drawer.toggle();
+            app.rail_drawer.snap(true);
+            // Resolve the retained drawer's rect after changing its reveal,
+            // as the production frame does before computing the chrome.
+            app.resolve_drawers();
             assert!(app.rail_open());
             let chrome = app.compute_chrome();
             assert_eq!(chrome.layout, SplitLayout::Overlay);
-            // Fully revealed: the flap is flush with the left edge over a scrim.
+            // A fully revealed shared drawer floats at the theme's inset,
+            // leaving its dismissal scrim accessible beside the rail.
+            let inset = f64::from(Theme::dark().tokens.spacing.s2);
             assert!(
-                (chrome.rail.x0 - app.rect.x0).abs() < 1.0,
-                "open flap is flush left"
+                (chrome.rail.x0 - app.rect.x0 - inset).abs() < 1.0,
+                "open drawer retains the shared floating inset"
             );
             assert!(
                 chrome.scrim.width() > 0.0,
@@ -525,10 +573,10 @@ fn rail_docks_wide_and_overlays_narrow() {
             );
             assert!(
                 chrome.buttons.iter().any(|button| {
-                    matches!(&button.kind, ButtonKind::Text { label, .. } if label == "Close")
+                    matches!(&button.kind, ButtonKind::Icon { name, .. } if name == &tr("slides-hide-slides"))
                         && matches!(button.hit, Hit::ToggleRail)
                 }),
-                "the open overlay has a named Close control in its own header"
+                "the open overlay has a named Hide slides control in its own header"
             );
         });
     }
@@ -563,7 +611,7 @@ fn inspector_docks_wide_and_overlays_narrow() {
             // Docked inspector is a full-width right column and the canvas ends at
             // its left edge.
             assert!(
-                chrome.inspector.width() > INSPECTOR_W - 1.0,
+                chrome.inspector.width() > app.inspector_drawer.resolved_docked_width() - 1.0,
                 "docked inspector is full width"
             );
             assert!(
@@ -587,8 +635,8 @@ fn inspector_docks_wide_and_overlays_narrow() {
             );
             let chrome = app.compute_chrome();
             assert!(
-                chrome.inspector.x0 >= app.rect.x1 - 1.0,
-                "closed inspector is off-screen right"
+                chrome.inspector.area() == 0.0,
+                "closed inspector has no exposed panel geometry"
             );
             // A toggle is offered to summon it.
             assert!(
@@ -671,17 +719,17 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
         bench.with(|app| {
             size(app, NARROW_BREAKPOINT - 200.0, 800.0);
             // User opens the flap while narrow.
-            app.rail_flap.reconcile(app.rail_layout());
+            app.rail_drawer.resolve(app.rect);
             app.apply_hit(Hit::ToggleRail);
             assert!(app.rail_open());
             // Widen past the breakpoint: the stale preference drops and the rail
             // adopts the docked default (open). Then narrow again → closed default.
             app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT + 200.0, 800.0);
-            app.rail_flap.reconcile(app.rail_layout());
+            app.rail_drawer.resolve(app.rect);
             assert_eq!(app.rail_layout(), SplitLayout::Docked);
             assert!(app.rail_open(), "docked default is open");
             app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT - 200.0, 800.0);
-            app.rail_flap.reconcile(app.rail_layout());
+            app.rail_drawer.resolve(app.rect);
             assert!(
                 !app.rail_open(),
                 "overlay default is closed after re-narrowing"
@@ -707,7 +755,7 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
             // flap sync (the real path) — both panels must become overlay flaps and
             // the canvas must span the full width.
             app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-            app.sync_flaps(0.0, false);
+            app.sync_flaps(Some(&Theme::dark()));
             assert_eq!(
                 app.rail_layout(),
                 SplitLayout::Overlay,
@@ -722,7 +770,7 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
             assert_eq!(narrow.layout, SplitLayout::Overlay);
             assert_eq!(narrow.inspector_layout, SplitLayout::Overlay);
             assert!(
-                narrow.slide_dest.x1 > 560.0 - RAIL_W,
+                narrow.slide_dest.x1 > 560.0 - app.rail_drawer.resolved_docked_width(),
                 "canvas reclaims the collapsed panels' width when narrow"
             );
         });
@@ -775,7 +823,7 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
 
     // Case `wheel_scrolls_overview_and_last_slide_becomes_reachable`.
     {
-        let mut bench = Bench::sample();
+        let mut bench = Bench::open(&tall_deck(12), super::bench::WINDOW);
         bench.with(|app| {
             app.bootstrapped = true;
             app.mode = Mode::Overview;
@@ -784,7 +832,7 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
             let (_, _, max_scroll) = app.compute_overview();
             assert!(
                 max_scroll > 0.0,
-                "the 5-slide deck overflows the 800x600 overview"
+                "the 12-slide deck overflows the 800x600 overview"
             );
 
             let mut handled = false;
@@ -814,13 +862,16 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
 
     // Case `overview_scrollbar_thumb_drag_scrolls_the_grid`.
     {
-        let mut bench = Bench::sample();
+        let mut bench = Bench::open(&tall_deck(12), super::bench::WINDOW);
         bench.with(|app| {
             app.bootstrapped = true;
             app.mode = Mode::Overview;
             app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
             let (area, _, max_scroll) = app.compute_overview();
-            let (_, thumb) = scrollbar_rects(area, 0.0, max_scroll).expect("overflow ⇒ scrollbar");
+            let (_, thumb) = app
+                .overview
+                .scrollbar_rects(area, 0.0, max_scroll)
+                .expect("overflow ⇒ scrollbar");
             // Start a thumb drag (the real on_press path constructs this), then move.
             app.drag = Drag::ScrollOverview {
                 start_y: thumb.center().y,
@@ -889,7 +940,7 @@ fn inspector_scrolls_only_when_it_overflows() {
 
         // Hand the scroll model this frame's extent (as `draw` does) and scroll
         // to the end.
-        app.inspector_scroll.set_viewport_rect(inspector);
+        app.inspector_scroll.set_viewport_rect(chrome.inspector_body);
         app.inspector_scroll
             .set_content_size(inspector.width() as f32, chrome.inspector_content_h as f32);
         assert!(app.inspector_scroll.max_offset_y() > 0.0);
@@ -1046,7 +1097,7 @@ fn inspector_scrolls_only_when_it_overflows() {
 fn chrome_labels_are_fluent_resolved_text() {
     layout_bench().with(|app| {
         let _tr = measure(app, 1400.0, 1.0);
-        for (text, _, _) in app.chrome_label_set() {
+        for (text, _) in app.chrome_label_set() {
             assert!(
                 !text.starts_with("slides-"),
                 "chrome label set carries a raw key: {text}"
@@ -1058,14 +1109,14 @@ fn chrome_labels_are_fluent_resolved_text() {
             .buttons
             .iter()
             .filter_map(|b| match &b.kind {
-                ButtonKind::Text { label, .. } | ButtonKind::IconText { label, .. } => {
+                ButtonKind::Command { label, .. } | ButtonKind::Tool { label, .. } => {
                     Some(label.clone())
                 }
                 _ => None,
             })
             .collect();
         assert!(faces.iter().any(|f| f == "Present"), "{faces:?}");
-        assert!(faces.iter().any(|f| f == "Slide"), "{faces:?}");
+        assert!(faces.iter().any(|f| f == "Rectangle"), "{faces:?}");
         assert!(faces.iter().all(|f| !f.starts_with("slides-")), "{faces:?}");
         for l in &chrome.labels {
             assert!(

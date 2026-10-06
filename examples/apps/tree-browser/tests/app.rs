@@ -90,13 +90,13 @@ fn compact_windows_navigate_between_full_width_panes() {
     harness.resize((460, 820)).expect("compact layout");
     harness
         .expect(
-            &SemanticExpectation::named("notebook-shell-back")
+            &SemanticExpectation::named("nav-shell-back")
                 .role(Role::Button)
                 .name("Back"),
         )
         .expect("the compact detail exposes an accessible Back");
     harness
-        .perform_named("notebook-shell-back", &Action::Activate)
+        .perform_named("nav-shell-back", &Action::Activate)
         .expect("return to compact navigation");
     harness
         .expect(&SemanticExpectation::named("section-tree").role(Role::Tree))

@@ -20,6 +20,52 @@ use crate::theme::Theme;
 
 use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt, Text, Widget};
 
+/// The style of the boundary node a [`ModelView`] puts around its child.
+///
+/// A dynamic page is a transparent layout boundary, not an intrinsic
+/// desktop-width island: it fills its parent's width so percent-width cards
+/// and wrapping rows reflow on narrow windows. It hands its child's own
+/// claim on the parent through: a percent height (a pane that fills its
+/// column), flex growth (a `Scrollable` under a fixed bar) and its basis,
+/// so the child sizes exactly as if the boundary were not there. A child
+/// out of the flow takes the boundary out too.
+fn boundary_style(child: Option<&Style>) -> Style {
+    let mut style = Style {
+        display: taffy::Display::Flex,
+        flex_direction: taffy::FlexDirection::Column,
+        size: taffy::Size {
+            width: taffy::Dimension::percent(1.0),
+            height: taffy::Dimension::auto(),
+        },
+        min_size: taffy::Size {
+            width: taffy::Dimension::length(0.0),
+            height: taffy::Dimension::auto(),
+        },
+        flex_shrink: 1.0,
+        ..Style::default()
+    };
+    let Some(child) = child else {
+        return style;
+    };
+    if child.display == taffy::Display::None {
+        style.display = taffy::Display::None;
+        return style;
+    }
+    if child.size.height.tag() == taffy::CompactLength::PERCENT_TAG {
+        style.size.height = child.size.height;
+    }
+    if child.min_size.height.tag() == taffy::CompactLength::PERCENT_TAG {
+        style.min_size.height = child.min_size.height;
+    }
+    style.flex_grow = child.flex_grow;
+    if child.flex_grow > 0.0 {
+        style.flex_basis = child.flex_basis;
+        // The child grows into whatever the boundary is given.
+        style.min_size.height = taffy::Dimension::length(0.0);
+    }
+    style
+}
+
 type Projection<K> = Box<dyn FnMut(&AutoCommit, &ObjId) -> K>;
 type Builder<K> = Box<dyn FnMut(&K, Option<&crate::ControlDomain>) -> Element>;
 
@@ -223,26 +269,30 @@ where
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        // A dynamic page is a transparent layout boundary, not an intrinsic
-        // desktop-width island. Constrain it to its parent so percent-width
-        // cards and wrapping rows reflow correctly on narrow windows.
-        let node = taffy.parent_node(
-            Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::auto(),
-                },
-                min_size: taffy::Size {
-                    width: taffy::Dimension::length(0.0),
-                    height: taffy::Dimension::auto(),
-                },
-                flex_shrink: 1.0,
-                ..Style::default()
-            },
-            &[child],
-        );
+        let node = taffy.parent_node(boundary_style(taffy.style(child).ok()), &[child]);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// A child that left the flow (an absent element, bound text with
+    /// nothing to say) takes the boundary out with it.
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let child = taffy
+            .children(node)
+            .ok()
+            .and_then(|children| children.first().copied());
+        let Some(child) = child else {
+            return false;
+        };
+        let wanted = boundary_style(taffy.style(child).ok());
+        match taffy.style(node) {
+            Ok(style) if style.display != wanted.display => {
+                let mut style = style.clone();
+                style.display = wanted.display;
+                taffy.set_style(node, style).is_ok()
+            }
+            _ => false,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -405,8 +455,10 @@ impl<K> crate::resources::PublishesResources for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::resources::resources(self.child.as_ref(), doc)
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The host visits the admitted child after this boundary. A view
+        // owns no declarations of its own and must not publish them twice.
+        Vec::new()
     }
     fn document_action_result(
         &self,
@@ -468,6 +520,26 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn model_view_publishes_each_admitted_child_resource_once() {
+        use crate::widget::ToggleGroup;
+        use crate::widget::toggle_group::Segment;
+        let state = crate::LocalState::new(0_u8);
+        let mut view = ModelView::from_state(&state, |_| {
+            Box::new(
+                ToggleGroup::new(vec![Segment::new("One"), Segment::new("Two")], 0)
+                    .on_view("model-view-mode", |_| {}),
+            )
+        });
+        let doc = AutoCommit::new();
+        view.sync(&doc, &automerge::ROOT);
+        let resources = crate::widget::published_resources(&view, &doc);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id.as_str(), "tilo.control:model-view-mode");
+        assert_eq!(resources[0].actions.len(), 1);
+        assert_eq!(resources[0].actions[0].id, "select");
+    }
+
     fn string(doc: &AutoCommit, key: &str) -> String {
         match doc.get(&ROOT, key) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -476,6 +548,80 @@ mod tests {
             },
             _ => String::new(),
         }
+    }
+
+    fn solve(root: &mut dyn Widget, width: f32, height: f32) {
+        let theme = Theme::dark();
+        let mut tree = TaffyTree::new();
+        let mut map = std::collections::HashMap::new();
+        let node = root.build_layout(&mut tree, &theme, &mut map);
+        crate::text_render::with_layout_renderer(1.0, |text| {
+            tree.compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+                |known, available, node, _, _| {
+                    map.get(&node).map_or(taffy::Size::ZERO, |&widget| {
+                        // SAFETY: the map points into `root`, alive and not
+                        // otherwise borrowed for the duration of this solve.
+                        unsafe { (*widget).measure(known, available, text) }
+                    })
+                },
+            )
+            .expect("layout solves");
+        });
+        root.apply_layout(&tree, node, Point::ZERO);
+    }
+
+    #[test]
+    fn the_boundary_passes_percent_height_and_growth_through() {
+        use crate::widget::{Column, Scrollable, Spacer};
+        let page = || -> Element {
+            Box::new(
+                Scrollable::new_vertical()
+                    .fill_parent_height()
+                    .with_child(Box::new(
+                        Column::new()
+                            .with_intrinsic_height()
+                            .push(Box::new(Spacer::fixed(2000.0))),
+                    )),
+            )
+        };
+        let state = crate::LocalState::new(0_u8);
+        let mut root = Column::new()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(Spacer::fixed(40.0)))
+            .push(Box::new(ModelView::from_state(&state, move |_| page())));
+        let doc = AutoCommit::new();
+        root.sync(&doc, &ROOT);
+        solve(&mut root, 400.0, 300.0);
+        let view = root.children()[1].get_rect();
+        assert!(
+            view.height() > 200.0 && view.y1 <= 300.5,
+            "the scroller fills the column below the bar: {view:?}"
+        );
+
+        let absent = crate::LocalState::new(0_u8);
+        let mut root = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(10.0)
+            .push(Box::new(Spacer::fixed(10.0)))
+            .push(Box::new(ModelView::from_state(&absent, |_| {
+                crate::widget::optional(None)
+            })))
+            .push(Box::new(Spacer::fixed(10.0)));
+        root.sync(&doc, &ROOT);
+        solve(&mut root, 400.0, 300.0);
+        let children = root.children();
+        let gap = children[2].get_rect().y0 - children[0].get_rect().y1;
+        assert!(
+            (gap - 10.0).abs() < 0.01,
+            "an absent view takes no gap: {gap}"
+        );
     }
 
     #[test]

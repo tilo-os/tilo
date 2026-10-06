@@ -1,86 +1,98 @@
 //! Direct-manipulation state for the saved-places list: drag-to-reorder,
-//! swipe-to-delete, and the right-click context menu.
+//! swipe-to-delete, and the per-place menu.
 //!
-//! The weather app is a single full-bleed widget that hit-tests its own
-//! geometry (it has no child-widget tree), so these gestures are tracked
-//! locally here rather than through the toolkit's cross-widget drag/drop
-//! path. Each type is a small, self-contained state machine the app's
-//! event handler advances and its `draw` pass reads.
+//! The city list is a painted pane that hit-tests its own rows, so the press
+//! classification lives here; the reorder itself is the toolkit's
+//! `DragController` and the menu the toolkit's `ContextMenu`.
 //!
-//! ## The "swipe ⇔ context-menu" parity principle
+//! ## The "swipe ⇔ menu" parity principle
 //! Every destructive/structural gesture is reachable two ways that stay in
-//! lockstep: a swipe-left **and** a context-menu item both resolve to the
-//! same [`EntryAction`]. New per-entry actions are added once to
-//! [`EntryAction`] and surfaced in both places, so the two never drift.
+//! lockstep: a swipe-left **and** a menu row both resolve to the same
+//! [`EntryAction`]. New per-entry actions are added once to [`EntryAction`]
+//! and surfaced in both places, so the two never drift.
 
+use ui::icons::Icon;
+use ui::tokens::Metrics;
+use ui::widget::REORDER_THRESHOLD_PX;
 use vello::kurbo::Point;
 
 /// An action that can be performed on one saved place. The single source of
-/// truth shared by the swipe gesture and the context menu — add a variant
-/// here and wire it into both so they can never diverge.
+/// truth shared by the swipe gesture and the menu — add a variant here and
+/// wire it into both so they can never diverge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryAction {
-    /// Remove the place (swipe-left, context menu, or the trash drop zone).
-    Delete,
-    /// Jump this place to the top of the list.
-    MoveToTop,
     /// Re-fetch this place's forecast now.
     Refresh,
+    /// Jump this place to the top of the list.
+    MoveToTop,
+    /// Remove the place (swipe-left or the menu).
+    Delete,
 }
 
 impl EntryAction {
-    /// Human-facing label for the context menu.
+    /// The menu row's label: what happens.
     pub fn label(self) -> &'static str {
         match self {
-            EntryAction::Delete => "Delete",
+            EntryAction::Refresh => "Refresh forecast",
             EntryAction::MoveToTop => "Move to top",
-            EntryAction::Refresh => "Refresh",
+            EntryAction::Delete => "Remove place",
         }
     }
 
-    /// Whether the action is destructive (rendered in the danger colour).
+    /// The menu row's icon.
+    pub fn icon(self) -> Icon {
+        match self {
+            EntryAction::Refresh => Icon::Refresh,
+            EntryAction::MoveToTop => Icon::ArrowUp,
+            EntryAction::Delete => Icon::Trash2,
+        }
+    }
+
+    /// Whether the action is destructive (the menu letters it in danger
+    /// ink, after a separator).
     pub fn is_destructive(self) -> bool {
         matches!(self, EntryAction::Delete)
     }
 
-    /// The actions offered in the context menu, in display order. The
-    /// **first** entry is also the action bound to swipe-left — keeping the
-    /// gesture and the menu's primary item in sync by construction.
+    /// The actions offered in the menu, in display order: the destructive
+    /// one last.
     pub fn menu_for_entry() -> [EntryAction; 3] {
         [
-            EntryAction::Delete,
-            EntryAction::MoveToTop,
             EntryAction::Refresh,
+            EntryAction::MoveToTop,
+            EntryAction::Delete,
         ]
     }
 
-    /// The action a left-swipe resolves to. Defined in terms of the menu so
+    /// The action a left-swipe resolves to: the menu's destructive row, so
     /// the parity is enforced in code, not just by convention.
     pub fn swipe_left() -> EntryAction {
-        Self::menu_for_entry()[0]
+        Self::menu_for_entry()
+            .into_iter()
+            .find(|action| action.is_destructive())
+            .unwrap_or(EntryAction::Delete)
     }
 }
 
-/// Pixels of pointer travel before a press on a chip is promoted to an
-/// actual drag (so a plain click never jitters into a reorder).
-pub const DRAG_THRESHOLD: f64 = 6.0;
+/// Leftward travel past which a horizontal gesture commits the swipe on
+/// release: three pointer targets, far enough that a sloppy click never
+/// deletes.
+pub fn swipe_commit_dx(metrics: &Metrics) -> f64 {
+    f64::from(metrics.min_pointer_target) * 3.0
+}
 
-/// Leftward travel (px) past which a horizontal gesture counts as a
-/// commit-on-release swipe-to-delete.
-pub const SWIPE_COMMIT_DX: f64 = 96.0;
-
-/// A press on a saved-place chip that has not yet been classified. Tracks
+/// A press on a saved-place row that has not yet been classified. Tracks
 /// the origin so we can tell a click from a vertical reorder-drag from a
 /// horizontal delete-swipe once the pointer moves.
 #[derive(Clone, Copy, Debug)]
 pub struct PointerPress {
-    /// Index of the chip the press landed on.
+    /// Index of the row the press landed on.
     pub index: usize,
     /// Where the press started (logical coords).
     pub origin: Point,
     /// Latest pointer position.
     pub current: Point,
-    /// Has the press crossed [`DRAG_THRESHOLD`] yet?
+    /// Has the press crossed the toolkit's reorder threshold yet?
     pub moved: bool,
     /// Once classified, whether this is a vertical reorder (`true`) or a
     /// horizontal swipe (`false`). `None` until the dominant axis is known.
@@ -104,7 +116,7 @@ impl PointerPress {
         self.current = at;
         let dx = at.x - self.origin.x;
         let dy = at.y - self.origin.y;
-        if !self.moved && (dx * dx + dy * dy).sqrt() >= DRAG_THRESHOLD {
+        if !self.moved && (dx * dx + dy * dy).sqrt() >= REORDER_THRESHOLD_PX {
             self.moved = true;
             self.vertical = Some(dy.abs() >= dx.abs());
         }
@@ -126,27 +138,6 @@ impl PointerPress {
     }
 }
 
-/// An open per-entry context menu anchored at the cursor.
-#[derive(Clone, Debug)]
-pub struct ContextMenu {
-    /// The saved-place index the menu acts on.
-    pub index: usize,
-    /// Top-left anchor (logical coords).
-    pub anchor: Point,
-    /// The actions shown, top to bottom.
-    pub items: Vec<EntryAction>,
-}
-
-impl ContextMenu {
-    pub fn for_entry(index: usize, anchor: Point) -> Self {
-        Self {
-            index,
-            anchor,
-            items: EntryAction::menu_for_entry().to_vec(),
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -154,12 +145,16 @@ mod tests {
 
     #[test]
     fn gesture_classification_and_primary_actions_agree() {
-        // Case `swipe_and_menu_primary_action_match`.
+        // Case `swipe_and_menu_destructive_action_match`.
         {
-            // The parity invariant: swipe-left and the menu's first item are the
-            // same action. If someone reorders the menu, this guards the drift.
-            assert_eq!(EntryAction::swipe_left(), EntryAction::menu_for_entry()[0]);
-            assert_eq!(EntryAction::swipe_left(), EntryAction::Delete);
+            // The parity invariant: swipe-left is the menu's destructive row.
+            assert!(EntryAction::menu_for_entry().contains(&EntryAction::swipe_left()));
+            assert!(EntryAction::swipe_left().is_destructive());
+            assert_eq!(
+                EntryAction::menu_for_entry().last(),
+                Some(&EntryAction::Delete),
+                "the destructive row comes last"
+            );
         }
         // Case `press_classifies_vertical_vs_horizontal`.
         {

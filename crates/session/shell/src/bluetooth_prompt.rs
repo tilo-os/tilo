@@ -29,9 +29,10 @@ use crate::shell::i18n::{t, t_args};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use tilo_bluez::{MAX_PIN_CODE_BYTES, PairingPrompt, PairingReply, PairingRequest};
+use ui::TextRole;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget,
+    Button, ButtonRole, Card, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -217,8 +218,7 @@ impl PairingPromptView {
             .with_id(ENTRY_FIELD_ID)
             .with_external_buffer(Arc::clone(&self.entry))
             .with_spellcheck(false)
-            .with_autocorrect(false)
-            .with_font_size(15.0);
+            .with_autocorrect(false);
         if pin {
             field
                 .with_kind(TextInputKind::Code)
@@ -238,10 +238,12 @@ impl PairingPromptView {
         let mut body = Column::new()
             .with_no_padding()
             .with_gap(18.0)
-            .push(Box::new(Text::new(&self.title()).with_size(20.0)))
+            .push(Box::new(
+                Text::new(&self.title()).with_role(TextRole::Title),
+            ))
             .push(Box::new(
                 Text::new(&self.explanation())
-                    .with_size(13.0)
+                    .with_role(TextRole::Body)
                     .with_color(theme.text_dim),
             ));
 
@@ -253,7 +255,7 @@ impl PairingPromptView {
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
                         Text::new(&spaced(&code))
-                            .with_size(38.0)
+                            .with_role(TextRole::Display)
                             .with_font_family(ui::text_render::FontChoice::Monospace),
                     ))
                     .push(Box::new(Spacer::new())),
@@ -268,7 +270,7 @@ impl PairingPromptView {
                     "bluetooth-prompt-digits-entered",
                     &[("entered", (*entered).into())],
                 ))
-                .with_size(12.0)
+                .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
             ));
         }
@@ -279,7 +281,7 @@ impl PairingPromptView {
                     "bluetooth-prompt-service",
                     &[("uuid", uuid.into())],
                 ))
-                .with_size(11.0)
+                .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
             ));
         }
@@ -295,7 +297,7 @@ impl PairingPromptView {
                 Box::new(self.reject_button(&t("bluetooth-prompt-reject"))),
                 Box::new(
                     self.accept_button(&accept_label(&self.request.prompt))
-                        .with_style(ButtonStyle::Primary),
+                        .role(ButtonRole::Primary),
                 ),
             ]
         } else {

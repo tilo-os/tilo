@@ -839,7 +839,6 @@ impl Resource for RichText {
             anchor: Some(heading.id),
             title: heading.text.clone(),
             text: heading.text,
-            action: None,
             ..Default::default()
         });
         let mut on_screen: Vec<(usize, &Rc<BlockView>)> = state
@@ -854,7 +853,6 @@ impl Resource for RichText {
                 anchor: Some(view.id.clone()),
                 title: view.text.chars().take(60).collect(),
                 text: view.text.clone(),
-                action: None,
                 ..Default::default()
             }))
             .collect()

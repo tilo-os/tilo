@@ -75,6 +75,7 @@ use crate::compositor::surface_readback::{
     OwnedShmFrame, ReadbackError, buffer_to_rgba, owned_shm_to_rgba,
 };
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
+use ui::TextRole;
 
 mod sheets;
 pub use sheets::{PointRoute, SheetLink};
@@ -2019,6 +2020,14 @@ impl ForeignFrameStore {
         }
     }
 
+    /// Keep the last displayed protected buffer private when its control
+    /// connection disappears. Toplevel destruction clears this surface latch.
+    pub fn retain_surface_capture_protection(&self, id: SurfaceId, app_id: &str) {
+        if self.is_capture_protected(id, app_id) {
+            self.set_surface_capture_protected(id, true);
+        }
+    }
+
     /// The connection closed: its request goes with it.
     pub fn release_capture_protection(&self, connection: u64) {
         self.capture_protection
@@ -2857,13 +2866,7 @@ impl ForeignSurfaceWidget {
         let sy = dst.height() / f64::from(image.height.max(1));
         for (link, sheet) in &self.sheet_images {
             if link.modal {
-                crate::shell::overlay_host::fill_scrim(
-                    scene,
-                    transform,
-                    self.rect,
-                    crate::shell::overlay_host::MODAL_SCRIM_ALPHA,
-                    theme,
-                );
+                ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
             }
             let Some(local) = store().sheet_rect_in_root(self.surface_id, link.surface) else {
                 continue;
@@ -3001,7 +3004,13 @@ pub fn paint_output_presentation_surface(
     // An audience surface is deliberately opaque: its renderer may carry
     // transparent margins while loading, but projector pixels must never
     // reveal the presenter's desktop behind the slide.
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &rect);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &rect,
+    );
     let Some((image, _)) = store().frame_image(surface_id) else {
         return;
     };
@@ -3084,7 +3093,7 @@ impl Widget for ForeignSurfaceWidget {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.xl);
+        let radius = f64::from(theme.tokens.radii.tile);
         if crate::shell::capture_protection::painting_for_capture()
             && self.capture_protected_rect().is_some()
         {
@@ -3155,34 +3164,34 @@ impl Widget for ForeignSurfaceWidget {
         // Fixed ramp indices were a guess about which way round the card
         // is, not an answer: `neutral[1]` is near-black on the dark ramp
         // and the card is `#16171b`, so the app's own name measured 1.03:1 and was invisible. `on_card` derives both tiers from the card's actual luminance instead.
-        let tiers = theme.tokens.colors.on_card();
+        let tiers = theme.tokens.colors.on_content();
         let on_card = tiers.ink;
         let on_card_dim = tiers.ink_dim;
-        let size = theme.tokens.typography.scale.xl;
-        let (tw, _) = text_renderer.measure(&headline, size, None);
+        let style = theme.text(TextRole::Title);
+        let (tw, _) = text_renderer.measure_style(&headline, None, &style);
         let cx = self.rect.center().x;
-        let y = self.rect.center().y - f64::from(size) / 2.0;
-        text_renderer.draw_text(
+        let y = self.rect.center().y - f64::from(style.size) / 2.0;
+        text_renderer.draw_style(
             scene,
             &headline,
-            size,
             on_card,
             translated(transform, cx - f64::from(tw) / 2.0, y),
             None,
+            &style,
         );
-        let sm = theme.tokens.typography.scale.sm;
-        let (dw, _) = text_renderer.measure(&detail, sm, None);
-        text_renderer.draw_text(
+        let sm = theme.text(TextRole::Caption);
+        let (dw, _) = text_renderer.measure_style(&detail, None, &sm);
+        text_renderer.draw_style(
             scene,
             &detail,
-            sm,
             on_card_dim,
             translated(
                 transform,
                 cx - f64::from(dw) / 2.0,
-                y + f64::from(size) + 8.0,
+                y + f64::from(style.size) + 8.0,
             ),
             None,
+            &sm,
         );
         self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
     }
