@@ -200,6 +200,15 @@ mod qualification {
         Ok((bytes, probes))
     }
 
+    fn phase(case: &Case, phase: &str) -> Result<(), Failure> {
+        println!(
+            "SPEECH_BENCHMARK_PHASE {}",
+            serde_json::json!({"id": case.id, "phase": phase})
+        );
+        std::io::stdout().flush()?;
+        Ok(())
+    }
+
     fn probe(engine: &mut SpeechEngine, model: &str, probe: &Probe) -> Result<(), Failure> {
         let language = engine
             .language(&probe.case.language)
@@ -211,16 +220,19 @@ mod qualification {
             .samples
             .get(..(5 * SAMPLE_RATE).min(probe.samples.len()))
             .ok_or("prefix")?;
+        phase(&probe.case, "draft-fixed-language")?;
         let start = Instant::now();
         let draft = engine
             .transcribe(prefix, &language)
             .map_err(|_| "draft recognition failed")?;
         let draft_ms = start.elapsed().as_millis();
+        phase(&probe.case, "final-fixed-language")?;
         let start = Instant::now();
         let text = engine
             .transcribe(&probe.samples, &language)
             .map_err(|_| "recognition failed")?;
         let final_ms = start.elapsed().as_millis();
+        phase(&probe.case, "final-auto-language")?;
         let start = Instant::now();
         let detected = engine
             .transcribe(&probe.samples, &auto)
