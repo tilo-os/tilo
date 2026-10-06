@@ -14,6 +14,7 @@ use crate::time::{Duration, Instant};
 
 pub const RESOLVE_WINDOW: Duration = Duration::from_secs(5);
 pub const MAX_PAGES: u16 = 64;
+const ASYNC_RESPONSE_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 pub enum AgentMessageSubmission {
@@ -194,6 +195,45 @@ pub fn outcome_uncertain(actions: &RemoteActions, submission: &AgentMessageSubmi
         return false;
     };
     !call.get().is_settled() && actions.invocation_outcome_uncertain(*invocation)
+}
+
+/// Earliest pump needed by a native owner that has no callback wake scope.
+/// Catalogue replies are sampled only through the bounded discovery window;
+/// invocation replies use the transport's real receipt/Observe schedule.
+#[must_use]
+pub fn next_wake_deadline(
+    actions: &RemoteActions,
+    submission: &AgentMessageSubmission,
+    resolve_deadline: Instant,
+) -> Option<Instant> {
+    let now = crate::time::now();
+    let catalogue = |call: &LocalState<CatalogueCall>| {
+        if call.get().is_pending() {
+            Some((now + ASYNC_RESPONSE_POLL).min(resolve_deadline))
+        } else {
+            Some(now)
+        }
+    };
+    match submission {
+        AgentMessageSubmission::Providers(call)
+        | AgentMessageSubmission::LaunchConfirm { call, .. }
+        | AgentMessageSubmission::Confirm { call, .. } => catalogue(call),
+        AgentMessageSubmission::LaunchRows(state) => {
+            state.call.as_ref().map_or(Some(now), catalogue)
+        }
+        AgentMessageSubmission::LaunchInvoke { .. } | AgentMessageSubmission::Invoke { .. } => {
+            actions.next_observation_deadline()
+        }
+        AgentMessageSubmission::AwaitPublisher {
+            call,
+            retry_at,
+            until,
+        } => call.as_ref().map_or_else(
+            || Some((*retry_at).min(*until)),
+            |call| catalogue(call).map(|deadline| deadline.min(*until)),
+        ),
+        AgentMessageSubmission::Rows(state) => state.call.as_ref().map_or(Some(now), catalogue),
+    }
 }
 
 #[must_use]

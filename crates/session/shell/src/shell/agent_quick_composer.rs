@@ -77,24 +77,21 @@ impl RetainedSession {
         let message = self
             .pending_message
             .as_ref()
-            .and_then(pending_discovery_deadline);
+            .and_then(|pending| pending_wake_deadline(&self.actions, pending));
         let task = self
             .pending_work
             .is_some()
-            .then(|| self.tasks.next_refresh_deadline())
+            .then(|| self.tasks.next_wake_deadline())
             .flatten();
         earliest(message, task)
     }
 }
 
-fn pending_discovery_deadline(pending: &PendingMessage) -> Option<std::time::Instant> {
-    match &pending.state {
-        AgentMessageSubmission::Invoke { .. } | AgentMessageSubmission::LaunchInvoke { .. } => None,
-        AgentMessageSubmission::AwaitPublisher {
-            retry_at, until, ..
-        } => Some((*retry_at).min(*until)),
-        _ => Some(pending.deadline),
-    }
+fn pending_wake_deadline(
+    actions: &ui::remote_actions::RemoteActions,
+    pending: &PendingMessage,
+) -> Option<std::time::Instant> {
+    ui::agent_message_action::next_wake_deadline(actions, &pending.state, pending.deadline)
 }
 
 fn earliest(
@@ -1011,16 +1008,24 @@ impl Widget for AgentQuickComposer {
         let mut deadline = self.popover.next_wake_deadline();
         deadline = earliest(
             deadline,
-            self.pending_message
-                .as_ref()
-                .and_then(pending_discovery_deadline),
+            self.actions.as_ref().and_then(|actions| {
+                self.pending_message
+                    .as_ref()
+                    .and_then(|pending| pending_wake_deadline(actions, pending))
+            }),
         );
         if self.is_open() {
             deadline = earliest(
                 deadline,
-                self.pending_message_offer
-                    .as_ref()
-                    .map(|pending| pending.deadline),
+                self.actions.as_ref().and_then(|actions| {
+                    self.pending_message_offer.as_ref().and_then(|pending| {
+                        ui::agent_message_action::next_wake_deadline(
+                            actions,
+                            &pending.state,
+                            pending.deadline,
+                        )
+                    })
+                }),
             );
             deadline = earliest(deadline, self.next_message_offer_refresh);
         }
@@ -1029,7 +1034,7 @@ impl Widget for AgentQuickComposer {
                 deadline,
                 self.tasks
                     .as_ref()
-                    .and_then(AgentTaskFrontiers::next_refresh_deadline),
+                    .and_then(AgentTaskFrontiers::next_wake_deadline),
             );
         }
         for session in self.retained_sessions.values() {
@@ -1304,8 +1309,9 @@ mod tests {
     }
 
     #[test]
-    fn offer_expiry_is_a_real_widget_wake_deadline() {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    fn pending_offer_callbacks_get_a_bounded_native_wake_before_expiry() {
+        let now = ui::time::now();
+        let deadline = now + std::time::Duration::from_secs(5);
         let mut composer = AgentQuickComposer::default();
         composer.open_for_shots(
             "room-a",
@@ -1315,25 +1321,51 @@ mod tests {
             Rect::new(10.0, 10.0, 34.0, 34.0),
             Rect::new(0.0, 0.0, 800.0, 600.0),
         );
+        let actions = ui::remote_actions::RemoteActions::session();
         composer.pending_message_offer = Some(PendingMessageOffer {
-            state: ui::agent_message_action::begin(&ui::remote_actions::RemoteActions::session()),
+            state: ui::agent_message_action::begin(&actions),
             deadline,
             pages_remaining: 1,
         });
+        composer.actions = Some(actions);
         composer.next_message_offer_refresh = None;
 
-        assert_eq!(composer.next_wake_deadline(), Some(deadline));
+        let sampled_at = ui::time::now();
+        let wake = composer
+            .next_wake_deadline()
+            .expect("pending catalogue reply schedules a native pump");
+        assert!(wake > sampled_at);
+        assert!(wake <= ui::time::now() + std::time::Duration::from_millis(50));
+        assert!(wake < deadline);
     }
 
     #[test]
     fn an_unresolved_dispatched_message_does_not_spin_the_desktop() {
+        use ui::collaboration::CollabEvent;
+        use ui::widget::Collaborative;
+
         let invocation = InvocationId(uuid::Uuid::from_bytes([0x4f; 16]));
+        let mut actions = ui::remote_actions::RemoteActions::session();
+        let call = actions.invoke_with_id(
+            invocation,
+            RemoteActionTarget {
+                provider: "chat-provider".into(),
+                address: ActionAddress::new("chat.person:scribe", "message"),
+            },
+            InvokeArgument::Text("Review the release notes".into()),
+            None,
+        );
+        let _invoke = actions.take_collab_requests();
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Update {
+                invocation,
+                state: None,
+            },
+        });
         let composer = AgentQuickComposer {
+            actions: Some(actions),
             pending_message: Some(PendingMessage {
-                state: AgentMessageSubmission::Invoke {
-                    invocation,
-                    call: ui::LocalState::new(RemoteCall::Pending),
-                },
+                state: AgentMessageSubmission::Invoke { invocation, call },
                 deadline: std::time::Instant::now(),
                 pages_remaining: 0,
                 text: "Review the release notes".into(),

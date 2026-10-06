@@ -25,6 +25,7 @@ const DIRECT_TASK_ACTION: &str = "direct";
 const QUEUE_TASK_ACTION: &str = "queue";
 const STOP_TASK_ACTION: &str = "stop";
 const TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const ASYNC_CONTROL_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentTaskFrontier {
@@ -345,6 +346,27 @@ impl AgentTaskFrontiers {
     #[must_use]
     pub fn next_refresh_deadline(&self) -> Option<Instant> {
         self.next_refresh
+    }
+
+    /// Earliest native pump needed for either an in-flight action response or
+    /// the next owner refresh. Unlike callback wake handles, this also works
+    /// in the production compositor's deadline-driven loop.
+    #[must_use]
+    pub fn next_wake_deadline(&self) -> Option<Instant> {
+        let now = crate::time::now();
+        let control = self
+            .controls
+            .values()
+            .any(|call| call.get().is_pending())
+            .then(|| now + ASYNC_CONTROL_POLL);
+        [
+            self.next_refresh,
+            self.remote.next_observation_deadline(),
+            control,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Whether the last selected context changed and needs explicit

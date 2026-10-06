@@ -57,6 +57,14 @@ impl Drop for RemoteActionsGuard {
 
 /// How long a running invocation is left before it is observed again.
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
+/// Native shell chrome has no callback wake scope, so it revisits an
+/// outstanding reply at a bounded cadence until a receipt arrives. This can
+/// present at 20 fps, but only for the explicit response window below; an
+/// unresolved result then becomes idle instead of turning into a render loop.
+const RESPONSE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// After this bound, a missing reply is an unresolved outcome. The original
+/// invocation remains owned and is never retried under a new identity.
+const RESPONSE_WINDOW: Duration = Duration::from_secs(5);
 /// A remote publisher cannot keep an application walking an unbounded or
 /// cyclic catalogue. Sixty-four full pages still cover the largest normal
 /// application surfaces while giving every caller a deterministic refusal.
@@ -132,6 +140,8 @@ struct Running {
     cancellation: Option<LocalState<CancellationCall>>,
     /// When to observe it next, while the host is still running it.
     observe_at: Option<Instant>,
+    /// Bound for the response currently in flight (initial Invoke or Observe).
+    response_until: Option<Instant>,
     /// The host no longer has an answer for work this client dispatched.
     /// This is unresolved outcome, not proof that nothing ran, even when the
     /// original admission receipt was lost.
@@ -313,6 +323,7 @@ impl RemoteActions {
         confirmation: Option<Confirmation>,
     ) -> LocalState<InvocationCall> {
         let answer = LocalState::new(RemoteCall::Pending);
+        let now = crate::background::Background::current().now();
         let request = InvokeRequest {
             on_behalf_of: None,
             invocation,
@@ -328,6 +339,7 @@ impl RemoteActions {
                 answer: answer.writer(),
                 cancellation: None,
                 observe_at: None,
+                response_until: now.checked_add(RESPONSE_WINDOW),
                 outcome_uncertain: false,
             },
         );
@@ -351,6 +363,26 @@ impl RemoteActions {
             .invocations
             .get(&invocation)
             .is_some_and(|running| running.outcome_uncertain)
+    }
+
+    /// Earliest time a native owner without a callback wake scope must pump
+    /// this client again. Admitted work uses its real Observe deadline;
+    /// outstanding replies use a bounded cadence and unresolved work is idle.
+    #[must_use]
+    pub fn next_observation_deadline(&self) -> Option<Instant> {
+        let now = crate::background::Background::current().now();
+        self.lock()
+            .invocations
+            .values()
+            .filter(|running| !running.outcome_uncertain)
+            .filter_map(|running| {
+                running.observe_at.or_else(|| {
+                    running
+                        .response_until
+                        .map(|until| (now + RESPONSE_POLL_INTERVAL).min(until))
+                })
+            })
+            .min()
     }
 
     /// Ask the host to cancel an invocation this client is still observing.
@@ -414,15 +446,24 @@ impl RemoteActions {
         let now = crate::background::Background::current().now();
         let due: Vec<InvocationId> = {
             let mut inner = self.lock();
-            inner
+            let due = inner
                 .invocations
                 .iter_mut()
                 .filter(|(_, running)| running.observe_at.is_some_and(|at| at <= now))
                 .map(|(id, running)| {
                     running.observe_at = None;
+                    running.response_until = now.checked_add(RESPONSE_WINDOW);
                     *id
                 })
-                .collect()
+                .collect();
+            for running in inner.invocations.values_mut().filter(|running| {
+                !running.outcome_uncertain
+                    && running.response_until.is_some_and(|until| until <= now)
+            }) {
+                running.response_until = None;
+                running.outcome_uncertain = true;
+            }
+            due
         };
         for invocation in due {
             self.send(RemoteActionMessage::Observe { invocation });
@@ -569,6 +610,7 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                     if let Some(running) = inner.invocations.get_mut(&invocation) {
                         running.outcome_uncertain = true;
                         running.observe_at = None;
+                        running.response_until = None;
                     }
                 }
             }
@@ -605,6 +647,7 @@ fn settle(inner: &mut Inner, invocation: InvocationId, update: InvocationUpdate)
         return;
     };
     running.outcome_uncertain = false;
+    running.response_until = None;
     running.answer.set(RemoteCall::Done(update));
     let background = crate::background::Background::current();
     running.observe_at = Some(background.now() + OBSERVE_INTERVAL);

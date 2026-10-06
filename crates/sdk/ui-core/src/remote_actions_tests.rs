@@ -542,6 +542,53 @@ fn an_unknown_invocation_before_admission_remains_owned_without_retry() {
 }
 
 #[test]
+fn an_idle_native_owner_gets_bounded_response_and_observation_deadlines() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x5f; 16]));
+    let actions = RemoteActions::session();
+    let started = crate::time::now();
+    let _call = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+
+    let receipt = actions
+        .next_observation_deadline()
+        .expect("the native loop revisits an outstanding initial receipt");
+    assert!(receipt > started);
+    assert!(receipt <= crate::time::now() + RESPONSE_POLL_INTERVAL);
+    actions.receive(&RemoteActionMessage::Receipt(InvocationReceipt {
+        invocation,
+        status: ReceiptStatus::Accepted,
+    }));
+    let now = crate::time::now();
+    let observe = actions
+        .next_observation_deadline()
+        .expect("an admitted invocation exposes its real Observe deadline");
+    assert!(observe > now);
+    assert!(observe <= now + OBSERVE_INTERVAL);
+}
+
+#[test]
+fn a_missing_initial_receipt_becomes_idle_uncertainty_without_retry() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x60; 16]));
+    let mut actions = RemoteActions::session();
+    let call = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+    let _invoke = actions.take_collab_requests();
+
+    clock.advance(RESPONSE_WINDOW);
+    actions.poll();
+
+    assert!(matches!(call.get(), RemoteCall::Pending));
+    assert!(actions.invocation_outcome_uncertain(invocation));
+    assert_eq!(actions.next_observation_deadline(), None);
+    assert!(
+        actions.take_collab_requests().is_empty(),
+        "uncertainty never retries the effect or spins on Observe"
+    );
+}
+
+#[test]
 fn the_session_transport_carries_requests_out_and_answers_back() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());

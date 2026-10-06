@@ -12896,6 +12896,124 @@ mod tests {
     }
 
     #[test]
+    fn native_park_wakes_for_action_receipts_but_not_uncertain_outcomes() {
+        use tilo_actions::remote::{InvokeArgument, RemoteActionMessage, RemoteActionTarget};
+        use tilo_actions::{ActionAddress, InvocationId};
+        use ui::collaboration::{CollabEvent, CollabRequest};
+        use ui::widget::Collaborative;
+
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x61; 16]));
+        let mut actions = ui::remote_actions::RemoteActions::session();
+        let _call = actions.invoke_with_id(
+            invocation,
+            RemoteActionTarget {
+                provider: "chat-provider".into(),
+                address: ActionAddress::new("chat.person:scribe", "message"),
+            },
+            InvokeArgument::Text("Review the release notes".into()),
+            None,
+        );
+        assert!(matches!(
+            actions.take_collab_requests().as_slice(),
+            [CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            }] if request.invocation == invocation
+        ));
+        let deadline = actions
+            .next_observation_deadline()
+            .expect("an outstanding receipt owns a bounded native deadline");
+        let now = Instant::now();
+        let (park, owner) = native_loop_park_named(
+            now,
+            true,
+            false,
+            false,
+            now + Duration::from_secs(1),
+            [(
+                "widget",
+                widget_deadline_for_presenter(true, Some(deadline)),
+            )],
+        );
+        assert_eq!(owner, Some("widget"));
+        assert!(park.is_some_and(|delay| delay <= Duration::from_millis(50)));
+
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Update {
+                invocation,
+                state: None,
+            },
+        });
+        assert_eq!(actions.next_observation_deadline(), None);
+        assert_eq!(
+            native_loop_park_named(
+                now,
+                true,
+                false,
+                false,
+                now + Duration::from_secs(1),
+                [("widget", widget_deadline_for_presenter(true, None))],
+            ),
+            (None, None),
+            "an unresolved owned invocation waits for inbound/manual reconciliation without spinning"
+        );
+    }
+
+    #[test]
+    fn native_park_revisits_async_agent_discovery_without_input() {
+        use tilo_actions::remote::{CataloguePage, RemoteActionMessage};
+        use ui::collaboration::{CollabEvent, CollabRequest};
+        use ui::widget::Collaborative;
+
+        let mut actions = ui::remote_actions::RemoteActions::session();
+        let submission = ui::agent_message_action::begin(&actions);
+        let requests = actions.take_collab_requests();
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::CatalogueRequest { correlation, .. },
+            },
+        ] = requests.as_slice()
+        else {
+            panic!("one certified provider discovery request")
+        };
+        let deadline = ui::agent_message_action::next_wake_deadline(
+            &actions,
+            &submission,
+            ui::time::now() + Duration::from_secs(5),
+        )
+        .expect("pending discovery owns a bounded native deadline");
+        let now = Instant::now();
+        let (park, owner) = native_loop_park_named(
+            now,
+            true,
+            false,
+            false,
+            now + Duration::from_secs(1),
+            [(
+                "widget",
+                widget_deadline_for_presenter(true, Some(deadline)),
+            )],
+        );
+        assert_eq!(owner, Some("widget"));
+        assert!(park.is_some_and(|delay| delay <= Duration::from_millis(50)));
+
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CatalogueResponse {
+                correlation: *correlation,
+                result: Ok(CataloguePage::default()),
+            },
+        });
+        assert!(
+            ui::agent_message_action::next_wake_deadline(
+                &actions,
+                &submission,
+                ui::time::now() + Duration::from_secs(5),
+            )
+            .is_some_and(|deadline| deadline <= ui::time::now()),
+            "the timer-driven pump consumes the completed callback without pointer or key input"
+        );
+    }
+
+    #[test]
     fn an_animation_ends_on_a_painted_resting_frame() {
         let mut settle = AnimationSettle::default();
         assert!(!settle.due(false), "nothing moving owes nothing");
