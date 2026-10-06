@@ -222,6 +222,7 @@ fn paint_nav_row_paints_what_the_list_paints() {
             &mut text,
             &theme,
             &NavRowFace::new(home, "Home")
+                .under_section()
                 .icon(Icon::Home)
                 .count(NavCount::Neutral(4)),
         );
@@ -231,6 +232,7 @@ fn paint_nav_row_paints_what_the_list_paints() {
             &mut text,
             &theme,
             &NavRowFace::new(music, "Music")
+                .under_section()
                 .icon(Icon::Music)
                 .count(NavCount::Live(2))
                 .state(SelectionState::active(true)),
@@ -1162,4 +1164,25 @@ fn focused_navigation_target_stays_at_its_painted_row_after_population() {
         frame.root::<NavList>().selected_id().as_deref(),
         Some("Auth:first")
     );
+}
+
+#[test]
+fn labelled_section_insets_items_without_inventing_tree_depth() {
+    let h = harness(NavList::new(mailboxes()), Theme::dark());
+    let list = h.root::<NavList>();
+    for (id, grouped, depth) in [("inbox", false, 0), ("work", true, 0), ("design", true, 1)] {
+        let node = list.tree().model().item_id(id).unwrap();
+        let Some(NavRowSpec::Item(spec)) = list.tree().nav_spec(node) else {
+            panic!("real navigation item");
+        };
+        assert_eq!(spec.under_section, grouped, "{id}");
+        assert_eq!(spec.depth, depth, "real tree depth for {id}");
+        let rect = list.row_rect(id).unwrap();
+        assert_eq!(rect.x0, 0.0);
+        assert_eq!(
+            rect.width(),
+            280.0,
+            "the full row remains the pointer target"
+        );
+    }
 }

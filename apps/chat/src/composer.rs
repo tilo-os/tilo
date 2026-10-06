@@ -13,13 +13,14 @@ use automerge::AutoCommit;
 use tilo_actions::ActionError;
 use tilo_document::{RichText, RichTextAction, RichTextState};
 use tilo_rich_text::{
-    Draft, FieldOutcome, RichTextField, RichTextSource, RichTextSurface, SubmitKey,
+    Draft, FieldOutcome, RichTextComposer, RichTextField, RichTextSource, RichTextSurface,
+    SubmitKey,
 };
 use ui::PresenceCtx;
 use ui::framework::Dispatcher;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockContent, BlockEditor, Embedded, PresenceKeyFn, Widget};
+use ui::widget::{BlockContent, BlockEditor, PresenceKeyFn, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -117,7 +118,7 @@ impl RichTextSource for DraftField {
 
 /// The SDK editor as a chat composer.
 pub struct Composer<S: RichTextSource + 'static> {
-    host: Embedded<RichTextSurface<S>>,
+    host: RichTextComposer<S>,
     /// What the mention colours were last built from.
     painted: Option<u64>,
 }
@@ -135,7 +136,7 @@ impl DraftComposer {
     /// A composer over the draft named by its key ([`Self::set_key`]).
     pub fn shared() -> Self {
         Self {
-            host: Embedded::new(
+            host: RichTextComposer::new(
                 RichTextSurface::over(DraftField::new())
                     .with_editor(editor())
                     .with_submit(SubmitKey::Enter),
@@ -175,7 +176,7 @@ impl MessageEditor {
     /// An editor for one sent message, empty until [`Self::load`].
     pub fn local() -> Self {
         Self {
-            host: Embedded::new(
+            host: RichTextComposer::new(
                 RichTextSurface::over(Draft::new())
                     .with_editor(editor())
                     .with_submit(SubmitKey::Enter),
@@ -266,6 +267,21 @@ impl<S: RichTextSource + 'static> Composer<S> {
 
     pub fn is_focused(&self) -> bool {
         Widget::is_focused(self.host.widget())
+    }
+
+    /// Measure the canonical paragraphs before reserving the composer band.
+    pub fn measure(
+        &mut self,
+        width: f64,
+        max_height: f32,
+        theme: &Theme,
+        text: &mut TextRenderer,
+    ) -> f64 {
+        self.host.measure(width, max_height, theme, text)
+    }
+
+    pub fn measured_height(&self) -> f64 {
+        self.host.measured_height()
     }
 
     /// Lay the editor out in `rect`; returns its height.

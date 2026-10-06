@@ -249,7 +249,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let result_query = city_query.clone();
     let add = controls.dispatcher.clone();
     let choices = ModelView::from_state(&city_query, move |query| {
-        let mut choices = Row::new();
+        let mut choices = Row::new().with_padding_rhythm(None, None);
         for zone in timezone_results(query) {
             let add = add.clone();
             let clear = result_query.clone();
@@ -269,6 +269,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     });
     Box::new(
         Column::new()
+            .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Section)
             .push(Box::new(
                 Text::new("World clocks")
@@ -601,9 +602,9 @@ fn timers_screen(
     // default size but allowed its values and arrow targets to collide at 200%
     // text, which made setting a duration unreliable with touch or a screen
     // magnifier.
-    let custom_hours = ui::LocalState::new("00".to_string());
-    let custom_minutes = ui::LocalState::new("10".to_string());
-    let custom_seconds = ui::LocalState::new("00".to_string());
+    let custom_hours = ui::LocalState::new(0.0_f64);
+    let custom_minutes = ui::LocalState::new(10.0_f64);
+    let custom_seconds = ui::LocalState::new(0.0_f64);
     let custom_label = ui::LocalState::new(String::new());
     let preset_specs = [
         ("Tea", "Tea for 5 minutes", 300),
@@ -616,14 +617,18 @@ fn timers_screen(
         .with_intrinsic_height()
         .with_rhythm(ui::tokens::Rhythm::Related);
     for preset_row in preset_specs.chunks(2) {
-        let mut row = Row::new();
+        let mut row = Row::new().with_padding_rhythm(None, None);
         for &(label, button_label, secs) in preset_row {
             // A common, generous width keeps the two-column grid legible at
             // 200% text while still fitting inside the phone content rail.
             row = row.push(Box::new(
                 controls.button(
-                    Button::new(&format!("clocks.preset.{secs}"), button_label)
-                        .control_size(ui::widget::ControlSize::Large),
+                    Button::new(
+                        &format!("clocks.preset.{secs}"),
+                        &format!("{label} ({} min)", secs / 60),
+                    )
+                    .with_accessible_name(button_label)
+                    .control_size(ui::widget::ControlSize::Large),
                     Clocks::ADD_TIMER.with((label.to_owned(), secs)),
                 ),
             ));
@@ -662,54 +667,36 @@ fn timers_screen(
             },
         )
     });
-    // The grid resolves to two columns where there is room and one where
-    // there is not. Unlike the former three-spinner row, it never shrinks a
-    // control below a readable, independently targetable width.
-    let duration_fields = CardGrid::new(vec![
-        Box::new(
+    // Duration is a related cluster, not three content cards. Shared
+    // steppers measure their digits and touch targets; the row wraps whole
+    // fields at large text rather than squeezing their editable values.
+    let mut duration_fields = Row::new()
+        .with_padding_rhythm(None, None)
+        .with_rhythm(ui::tokens::Rhythm::Related)
+        .with_align_items(taffy::AlignItems::Start);
+    for (label, id, state, maximum) in [
+        ("Hours", "hours", &custom_hours, 99.0),
+        ("Minutes", "minutes", &custom_minutes, 59.0),
+        ("Seconds", "seconds", &custom_seconds, 59.0),
+    ] {
+        duration_fields = duration_fields.push(Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
+                .with_intrinsic_width()
                 .with_rhythm(ui::tokens::Rhythm::Tight)
-                .push(Box::new(Text::new("Hours").with_heading_level(4)))
+                .push(Box::new(Text::new(label).with_role(ui::TextRole::Caption)))
                 .push(Box::new(
-                    TextInput::from_state(&custom_hours)
-                        .with_id("clocks.timer.custom.hours")
-                        .with_kind(TextInputKind::Number)
-                        .with_accessible_name("Timer duration hours")
-                        .with_placeholder("00"),
+                    ui::widget::NumberInput::from_state(state)
+                        .with_id(&format!("clocks.timer.custom.{id}"))
+                        .with_range(0.0, maximum)
+                        .with_step(1.0)
+                        .with_precision(0)
+                        .control_size(ui::widget::ControlSize::Large)
+                        .with_accessible_name(format!("Timer duration {id}")),
                 )),
-        ),
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_rhythm(ui::tokens::Rhythm::Tight)
-                .push(Box::new(Text::new("Minutes").with_heading_level(4)))
-                .push(Box::new(
-                    TextInput::from_state(&custom_minutes)
-                        .with_id("clocks.timer.custom.minutes")
-                        .with_kind(TextInputKind::Number)
-                        .with_accessible_name("Timer duration minutes")
-                        .with_placeholder("10"),
-                )),
-        ),
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_rhythm(ui::tokens::Rhythm::Tight)
-                .push(Box::new(Text::new("Seconds").with_heading_level(4)))
-                .push(Box::new(
-                    TextInput::from_state(&custom_seconds)
-                        .with_id("clocks.timer.custom.seconds")
-                        .with_kind(TextInputKind::Number)
-                        .with_accessible_name("Timer duration seconds")
-                        .with_placeholder("00"),
-                )),
-        ),
-    ])
-    .with_card_width(ui::widget::CardWidth::Compact);
+        ));
+    }
     let setup = CardGrid::new(vec![
         Box::new(clock_card(
             "Quick starts",
@@ -728,6 +715,7 @@ fn timers_screen(
             "Custom timer",
             Box::new(
                 Column::new()
+                    .with_no_padding()
                     .with_intrinsic_height()
                     .push(Box::new(
                         TextInput::from_state(&custom_label)
@@ -742,9 +730,9 @@ fn timers_screen(
                         "Start timer",
                         move || {
                             let Some(secs) = custom_timer_duration_seconds(
-                                &add_hours.get(),
-                                &add_minutes.get(),
-                                &add_seconds.get(),
+                                &add_hours.get().to_string(),
+                                &add_minutes.get().to_string(),
+                                &add_seconds.get().to_string(),
                             ) else {
                                 add_error.set(Some(
                                     "Use whole numbers: hours 0–99 and minutes and seconds 0–59."
@@ -912,24 +900,32 @@ fn surface(
         notice.as_ref().map_or_else(
             || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
             |(title, body)| {
-                Box::new(clock_card(
-                    title,
-                    Box::new(
-                        Row::new()
-                            .push(Box::new(Text::new(body)))
-                            .push(Box::new(Spacer::new()))
-                            .push(button("clocks.notice.dismiss", "Dismiss", {
-                                let dismiss_notice = dismiss_notice.clone();
-                                move || dismiss_notice.set(None)
-                            })),
-                    ),
-                ))
+                Box::new(
+                    Column::new()
+                        .with_intrinsic_height()
+                        .push(Box::new(clock_card(
+                            title,
+                            Box::new(
+                                Row::new()
+                                    .with_padding_rhythm(None, None)
+                                    .push(Box::new(Text::new(body)))
+                                    .push(Box::new(Spacer::new()))
+                                    .push(button("clocks.notice.dismiss", "Dismiss", {
+                                        let dismiss_notice = dismiss_notice.clone();
+                                        move || dismiss_notice.set(None)
+                                    })),
+                            ),
+                        ))),
+                )
             },
         )
     });
+    // Each page already owns its one content gutter. An empty notice
+    // must not add another gutter and a large section gap above its title.
     let page = Column::new()
+        .with_no_padding()
         .with_intrinsic_height()
-        .with_rhythm(ui::tokens::Rhythm::Group)
+        .with_rhythm(ui::tokens::Rhythm::Tight)
         .push(Box::new(due_notice))
         .push(Box::new(page));
     let mode_state = mode.clone();
@@ -1053,13 +1049,18 @@ impl ClocksApp {
         }
     }
 
+    pub(crate) fn set_mode(&self, mode: usize) {
+        self.mode.set(mode);
+        self.selection.set(Some(mode.to_string()));
+    }
+
     /// Show `clocks`. The first time, open the section that most likely
     /// brought the person back; a quiet first launch begins with the
     /// at-a-glance world view.
     pub(crate) fn show(&mut self, clocks: &Clocks) {
         if !self.opened {
             self.opened = true;
-            self.mode.set(if !clocks.timers.is_empty() {
+            self.set_mode(if !clocks.timers.is_empty() {
                 TIMERS
             } else if clocks.stopwatch.is_running() || clocks.stopwatch.accumulated_ms > 0 {
                 STOPWATCH
@@ -1303,8 +1304,8 @@ impl ClocksApp {
             .unwrap_or_default();
         for uri in uris {
             match uri.as_str() {
-                TIMERS_URI => self.mode.set(TIMERS),
-                ALARMS_URI => self.mode.set(ALARMS),
+                TIMERS_URI => self.set_mode(TIMERS),
+                ALARMS_URI => self.set_mode(ALARMS),
                 _ => {}
             }
         }

@@ -2347,25 +2347,12 @@ impl ChatApp {
             self.rect.y0 + self.chrome.header_h,
         )
     }
-    /// The composer field's height for a draft `text` wrapped at `width`:
-    /// one line at rest, growing with the draft up to the cap.
-    fn composer_field_height(&self, tr: &mut TextRenderer, text: &str, width: f64) -> f64 {
+    /// Reserve the height measured by the same editor that will be drawn.
+    pub(crate) fn composer_height(&self, _tr: &mut TextRenderer) -> f64 {
         let chrome = &self.chrome;
-        let wrap = width.max(40.0) as f32;
-        let probe = if text.is_empty() { "Ag" } else { text };
-        let (_, h) = tr.measure_style(probe, Some(wrap), &chrome.body);
         let pad = chrome.composer_min_h - chrome.body_line;
-        (f64::from(h) + pad).clamp(chrome.composer_min_h, chrome.composer_max_h)
-    }
-    /// The width the composer's draft wraps at inside a field `field_w`
-    /// wide: the field less its buttons (attach, emoji, send).
-    fn composer_text_width(&self, field_w: f64) -> f64 {
-        field_w - 4.0 * self.chrome.composer_min_h
-    }
-    pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
-        let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
-        let text_w = self.composer_text_width(field_w);
-        self.composer_field_height(tr, &self.draft_main, text_w)
+        (self.composer_main.measured_height() + pad)
+            .clamp(chrome.composer_min_h, chrome.composer_max_h)
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let h = self.composer_height(tr);
@@ -2380,11 +2367,12 @@ impl ChatApp {
 
     /// The thread's composer: the same control and height rule as the main
     /// composer, at the bottom of the thread panel `panel`.
-    pub(crate) fn thread_composer_rect(&self, tr: &mut TextRenderer, panel: Rect) -> Rect {
+    pub(crate) fn thread_composer_rect(&self, panel: Rect) -> Rect {
         let pad = self.chrome.composer_pad;
-        let field_w = panel.width() - 2.0 * pad;
-        let text_w = self.composer_text_width(field_w);
-        let h = self.composer_field_height(tr, &self.composer_thread.value(), text_w);
+        let chrome = &self.chrome;
+        let inset = chrome.composer_min_h - chrome.body_line;
+        let h = (self.composer_thread.measured_height() + inset)
+            .clamp(chrome.composer_min_h, chrome.composer_max_h);
         Rect::new(
             panel.x0 + pad,
             panel.y1 - h - pad,

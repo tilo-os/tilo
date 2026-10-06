@@ -11,21 +11,6 @@ use ui::text_render::TextStyle;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{AvatarSize, ButtonFace, ChipFace, ControlSize};
-use vello::kurbo::Rect;
-
-/// A band of `content_h + 2 * pad` centred vertically inside `container`,
-/// spanning the container's full width. When the padded content is taller
-/// than the container the band is the container itself (the content owner
-/// scrolls or grows; it never leaks past the box).
-///
-/// The composer uses this so a one-line draft sits on the same centre line as
-/// the attach / emoji / send buttons instead of hugging the box's top edge.
-pub(crate) fn centered_band(container: Rect, content_h: f64, pad: f64) -> Rect {
-    let wanted = (content_h + 2.0 * pad).max(0.0);
-    let h = wanted.min(container.height());
-    let y0 = container.y0 + (container.height() - h) / 2.0;
-    Rect::new(container.x0, y0, container.x1, y0 + h)
-}
 
 /// How a column header shares its row between a title and an optional
 /// trailing chip (the sidebar's "3 online"). The chip yields first: it is
@@ -133,24 +118,6 @@ mod tests {
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
-    }
-
-    #[test]
-    fn centered_band_and_line_top_centre_inside_their_container() {
-        // Phase: centered_band_shares_the_container_centre.
-        {
-            let box_ = Rect::new(0.0, 100.0, 400.0, 176.0);
-            let band = centered_band(box_, 19.0, 8.0);
-            assert!(approx(band.height(), 35.0));
-            assert!(approx(band.center().y, box_.center().y));
-            assert_eq!((band.x0, band.x1), (box_.x0, box_.x1));
-        }
-        // Phase: centered_band_never_exceeds_its_container.
-        {
-            let box_ = Rect::new(0.0, 0.0, 400.0, 60.0);
-            let band = centered_band(box_, 200.0, 8.0);
-            assert_eq!(band, box_);
-        }
     }
 
     #[test]
