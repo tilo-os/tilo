@@ -12,8 +12,9 @@ use tilo_desktop_model::{
     MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
     MAX_WORKSPACE_TASK_SUMMARY_BYTES, WorkspaceTask, WorkspaceTaskActiveRun,
     WorkspaceTaskAuditEvent, WorkspaceTaskControl, WorkspaceTaskDirection,
-    WorkspaceTaskDirectionApplied, WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult,
-    WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTaskDirectionApplied, WorkspaceTaskExecution, WorkspaceTaskExecutionPhase,
+    WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,
+    WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 
 pub const TASK_CONTROL_KEY: &str = "task_control_v1";
@@ -136,6 +137,15 @@ pub enum WorkspaceTaskCommand {
     Retry {
         task_id: String,
         run_epoch: u64,
+    },
+    /// Public milestone for one exact run and authenticated report sequence.
+    /// Appended to preserve existing encoded command variant indices. Private
+    /// instructions, progress strings and model reasoning are not accepted.
+    ExecutionPhase {
+        task_id: String,
+        run_epoch: u64,
+        sequence: u64,
+        phase: WorkspaceTaskExecutionPhase,
     },
 }
 
@@ -275,19 +285,9 @@ fn dispatch(
             text,
             context.now,
         ),
-        WorkspaceTaskCommand::AppliedAck {
-            task_id,
-            run_epoch,
-            revision,
-        } => applied(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            *run_epoch,
-            *revision,
-            context.now,
-        ),
+        WorkspaceTaskCommand::AppliedAck { .. } | WorkspaceTaskCommand::ExecutionPhase { .. } => {
+            dispatch_agent_report(tasks, controls, context, command)
+        }
         WorkspaceTaskCommand::Finish {
             task_id,
             run_epoch,
@@ -332,6 +332,43 @@ fn dispatch(
         WorkspaceTaskCommand::Retry { task_id, run_epoch } => {
             dispatch_retry(tasks, controls, context, task_id, *run_epoch)
         }
+    }
+}
+
+fn dispatch_agent_report(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    match command {
+        WorkspaceTaskCommand::AppliedAck {
+            task_id,
+            run_epoch,
+            revision,
+        } => applied(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            *run_epoch,
+            *revision,
+            context.now,
+        ),
+        WorkspaceTaskCommand::ExecutionPhase {
+            task_id,
+            run_epoch,
+            sequence,
+            phase,
+        } => report_execution(
+            tasks,
+            controls,
+            context,
+            task_id,
+            (*run_epoch, *sequence),
+            *phase,
+        ),
+        _ => Err("command is not an agent report".into()),
     }
 }
 
@@ -491,6 +528,7 @@ fn start_run(
         started_at: now,
         applied_direction_revision: 0,
     });
+    control.execution = None;
     task.status = WorkspaceTaskStatus::InProgress;
     task.updated_at = now;
     task.audit.push(WorkspaceTaskAuditEvent {
@@ -503,6 +541,59 @@ fn start_run(
         WorkspaceTaskMutationResult::RunStarted {
             task_id: task_id.to_owned(),
             epoch,
+        },
+    ))
+}
+
+fn report_execution(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    fence: (u64, u64),
+    phase: WorkspaceTaskExecutionPhase,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Agent { id: agent_id, .. } = context.actor else {
+        return Err("only the assigned agent may report execution".into());
+    };
+    let task = task_mut(tasks, task_id)?;
+    let control = controls
+        .get_mut(task_id)
+        .ok_or("task has no execution control")?;
+    let run = control
+        .active_run
+        .as_ref()
+        .ok_or("task has no active run")?;
+    if task.status != WorkspaceTaskStatus::InProgress
+        || task.assigned_agent.as_deref() != Some(agent_id)
+        || run.agent_id != *agent_id
+        || run.epoch != fence.0
+        || (fence.1 == 0 && phase != WorkspaceTaskExecutionPhase::Accepted)
+        || (control.execution.is_none() && phase != WorkspaceTaskExecutionPhase::Accepted)
+        || control
+            .execution
+            .as_ref()
+            .is_some_and(|value| value.sequence >= fence.1)
+        || (phase == WorkspaceTaskExecutionPhase::Accepted
+            && control
+                .execution
+                .as_ref()
+                .is_some_and(|value| value.phase != phase))
+    {
+        return Err("task execution report is stale or does not own the active run".into());
+    }
+    control.execution = Some(WorkspaceTaskExecution {
+        run_epoch: fence.0,
+        sequence: fence.1,
+        phase,
+        updated_at: context.now,
+    });
+    task.updated_at = context.now;
+    Ok((
+        task_id.to_owned(),
+        WorkspaceTaskMutationResult::ExecutionReported {
+            task_id: task_id.to_owned(),
+            sequence: fence.1,
         },
     ))
 }
@@ -692,6 +783,7 @@ fn finish(
         WorkspaceTaskFinish::Cancelled => WorkspaceTaskStatus::Cancelled,
     };
     control.active_run = None;
+    control.execution = None;
     task.updated_at = now;
     task.audit.push(WorkspaceTaskAuditEvent {
         at: now,
@@ -729,6 +821,7 @@ fn abandon(
         return Err("task abandonment names a stale run".into());
     }
     control.active_run = None;
+    control.execution = None;
     task.status = WorkspaceTaskStatus::Waiting;
     task.updated_at = now;
     task.audit.push(WorkspaceTaskAuditEvent {
@@ -826,10 +919,19 @@ pub fn controls_of(
         let ScalarValue::Bytes(bytes) = value.as_ref() else {
             return Err("task control entry is not bytes".into());
         };
-        controls.insert(
-            key,
-            serde_json::from_slice(bytes).map_err(|error| error.to_string())?,
-        );
+        let control: WorkspaceTaskControl =
+            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        if let Some(execution) = &control.execution
+            && (control
+                .active_run
+                .as_ref()
+                .is_none_or(|run| run.epoch != execution.run_epoch)
+                || (execution.sequence == 0
+                    && execution.phase != WorkspaceTaskExecutionPhase::Accepted))
+        {
+            return Err("task execution phase has no matching active run".into());
+        }
+        controls.insert(key, control);
     }
     Ok(controls)
 }
@@ -947,6 +1049,216 @@ mod tests {
         )
         .unwrap();
         (doc, task_id)
+    }
+
+    fn phase_command(
+        task: &str,
+        epoch: u64,
+        sequence: u64,
+        phase: WorkspaceTaskExecutionPhase,
+    ) -> WorkspaceTaskCommand {
+        WorkspaceTaskCommand::ExecutionPhase {
+            task_id: task.into(),
+            run_epoch: epoch,
+            sequence,
+            phase,
+        }
+    }
+
+    #[test]
+    fn execution_phase_distinguishes_lease_from_acceptance_and_replays_after_reopen() {
+        let (mut doc, task) = task_with_applied_direction();
+        assert!(snapshot(&doc).unwrap().controls[&task].execution.is_none());
+        let command = phase_command(&task, 1, 0, WorkspaceTaskExecutionPhase::Accepted);
+        let accepted = run(&mut doc, 5, 5, &agent(), &command).unwrap();
+        assert!(accepted.changed);
+        let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+        let replay = run(&mut reopened, 5, 5, &agent(), &command).unwrap();
+        assert!(!replay.changed);
+        assert_eq!(replay.result, accepted.result);
+        assert_eq!(
+            snapshot(&reopened).unwrap().controls[&task].execution,
+            Some(WorkspaceTaskExecution {
+                run_epoch: 1,
+                sequence: 0,
+                phase: WorkspaceTaskExecutionPhase::Accepted,
+                updated_at: 5,
+            })
+        );
+        run(
+            &mut reopened,
+            6,
+            6,
+            &agent(),
+            &phase_command(&task, 1, 1, WorkspaceTaskExecutionPhase::Planning),
+        )
+        .unwrap();
+        run(
+            &mut reopened,
+            7,
+            7,
+            &agent(),
+            &phase_command(&task, 1, 2, WorkspaceTaskExecutionPhase::Executing),
+        )
+        .unwrap();
+        let before = reopened.get_heads();
+        for (sequence, phase) in [
+            (1, WorkspaceTaskExecutionPhase::Planning),
+            (3, WorkspaceTaskExecutionPhase::Accepted),
+        ] {
+            assert!(
+                run(
+                    &mut reopened,
+                    8,
+                    8,
+                    &agent(),
+                    &phase_command(&task, 1, sequence, phase)
+                )
+                .is_err()
+            );
+            assert_eq!(reopened.get_heads(), before);
+        }
+        assert_eq!(
+            snapshot(&reopened).unwrap().controls[&task]
+                .execution
+                .as_ref()
+                .unwrap()
+                .phase,
+            WorkspaceTaskExecutionPhase::Executing
+        );
+        assert!(
+            run(&mut reopened, 5, 9, &agent(), &command).is_err(),
+            "a UUID cannot be reused with another admitted digest"
+        );
+    }
+
+    #[test]
+    fn execution_phase_refuses_other_actors_epochs_and_unaccepted_progress() {
+        let (mut doc, task) = task_with_applied_direction();
+        let before = doc.get_heads();
+        let other = AdmittedTaskActor::Agent {
+            id: "other".into(),
+            device: [2; 32],
+        };
+        for actor in [person(), host(), other] {
+            assert!(
+                run(
+                    &mut doc,
+                    5,
+                    5,
+                    &actor,
+                    &phase_command(&task, 1, 0, WorkspaceTaskExecutionPhase::Accepted)
+                )
+                .is_err()
+            );
+            assert_eq!(doc.get_heads(), before);
+        }
+        for command in [
+            phase_command(&task, 2, 0, WorkspaceTaskExecutionPhase::Accepted),
+            phase_command(&task, 1, 0, WorkspaceTaskExecutionPhase::Planning),
+            phase_command(&task, 1, 1, WorkspaceTaskExecutionPhase::Executing),
+        ] {
+            assert!(run(&mut doc, 5, 5, &agent(), &command).is_err());
+            assert_eq!(doc.get_heads(), before);
+        }
+    }
+
+    #[test]
+    fn execution_phase_is_cleared_on_finish_and_cannot_follow_a_replacement_run() {
+        let (mut doc, task) = task_with_applied_direction();
+        run(
+            &mut doc,
+            5,
+            5,
+            &agent(),
+            &phase_command(&task, 1, 0, WorkspaceTaskExecutionPhase::Accepted),
+        )
+        .unwrap();
+        run(
+            &mut doc,
+            6,
+            6,
+            &agent(),
+            &WorkspaceTaskCommand::Finish {
+                task_id: task.clone(),
+                run_epoch: 1,
+                outcome: WorkspaceTaskFinish::Waiting,
+                summary: "Needs a decision".into(),
+            },
+        )
+        .unwrap();
+        assert!(snapshot(&doc).unwrap().controls[&task].execution.is_none());
+        run(
+            &mut doc,
+            7,
+            7,
+            &person(),
+            &WorkspaceTaskCommand::Retry {
+                task_id: task.clone(),
+                run_epoch: 1,
+            },
+        )
+        .unwrap();
+        run(
+            &mut doc,
+            8,
+            8,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task.clone(),
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        assert!(snapshot(&doc).unwrap().controls[&task].execution.is_none());
+        let before = doc.get_heads();
+        assert!(
+            run(
+                &mut doc,
+                9,
+                9,
+                &agent(),
+                &phase_command(&task, 1, 3, WorkspaceTaskExecutionPhase::Executing)
+            )
+            .is_err()
+        );
+        assert_eq!(doc.get_heads(), before);
+        run(
+            &mut doc,
+            10,
+            10,
+            &agent(),
+            &phase_command(&task, 2, 0, WorkspaceTaskExecutionPhase::Accepted),
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot(&doc).unwrap().controls[&task]
+                .execution
+                .as_ref()
+                .unwrap()
+                .run_epoch,
+            2
+        );
+    }
+
+    #[test]
+    fn execution_phase_decoder_accepts_legacy_absence_but_rejects_orphaned_state() {
+        let legacy: WorkspaceTaskControl =
+            serde_json::from_str(r#"{"run_epoch":1,"directions":[],"receipts":[]}"#).unwrap();
+        assert!(legacy.execution.is_none());
+        let (mut doc, task) = task_with_applied_direction();
+        let mut controls = controls_of(&doc).unwrap();
+        controls.get_mut(&task).unwrap().execution = Some(WorkspaceTaskExecution {
+            run_epoch: 2,
+            sequence: 1,
+            phase: WorkspaceTaskExecutionPhase::Planning,
+            updated_at: 5,
+        });
+        project_controls(&mut doc, &controls).unwrap();
+        assert!(
+            snapshot(&doc).is_err(),
+            "persisted phase must match the actual active epoch"
+        );
     }
 
     #[test]

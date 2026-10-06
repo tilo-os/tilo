@@ -922,6 +922,24 @@ impl TerminalWidget {
         self.session_disconnected.load(Ordering::Acquire)
     }
 
+    /// Process exit may precede the reader's final bytes. Observe the actual
+    /// reader channel closing only after every queued chunk has been pumped.
+    #[cfg(test)]
+    pub(crate) fn pty_output_drained(&self) -> bool {
+        if let Some(bytes) = self.deferred_output.take() {
+            self.deferred_output.set(Some(bytes));
+            return false;
+        }
+        match self.output_rx.try_recv() {
+            Ok(bytes) => {
+                self.deferred_output.set(Some(bytes));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => true,
+        }
+    }
+
     fn mark_disconnected(&self, message: &str) {
         set_terminal_disconnected(
             &self.session_disconnected,
@@ -6813,6 +6831,18 @@ impl TerminalWidget {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions = crate::sessions::Sessions::hosted(services);
         Ok(widget)
+    }
+
+    /// A live hosted tab whose required supervisor is unavailable. Keep the
+    /// startup cause visible and input refused, rather than presenting it as
+    /// a capture-only terminal that was never meant to open a process.
+    pub(crate) fn without_hosted_runtime(reason: String) -> Self {
+        let mut widget = Self::without_process(ContentStore::memory());
+        widget.sessions =
+            crate::sessions::Sessions::hosted(crate::HostedProcessServices::unavailable());
+        widget.show_status(&reason);
+        widget.sessions.state = crate::sessions::OpenState::NoRuntime(reason);
+        widget
     }
 
     /// The standalone terminal. Its session opens at the first sync, on the
