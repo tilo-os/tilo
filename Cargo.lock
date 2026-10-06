@@ -14750,6 +14750,7 @@ dependencies = [
  "app-cli",
  "app-host",
  "blake3",
+ "capnp",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",

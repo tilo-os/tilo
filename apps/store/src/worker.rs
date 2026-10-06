@@ -127,12 +127,34 @@ pub struct Snapshot {
 struct QueuedRequest {
     request: Request,
     done: Option<Done>,
+    locale: LocaleContext,
+}
+
+struct LocaleContext {
+    selected: String,
+    pseudo: ui::i18n::PseudoLocale,
+}
+
+impl LocaleContext {
+    fn capture() -> Self {
+        Self {
+            selected: ui::i18n::I18nManager::current_locale(),
+            pseudo: ui::i18n::I18nManager::pseudo_locale(),
+        }
+    }
+
+    fn apply(&self) {
+        crate::resource::STORE_CATALOG.set_locale(&self.selected);
+        ui::i18n::I18nManager::set_pseudo_locale(self.pseudo);
+    }
 }
 
 pub struct StoreWorker {
     requests: mpsc::Sender<QueuedRequest>,
     snapshots: mpsc::Receiver<Snapshot>,
     pending: Arc<AtomicUsize>,
+    #[cfg(test)]
+    wake: WakeHandle,
 }
 
 impl StoreWorker {
@@ -141,25 +163,43 @@ impl StoreWorker {
     /// # Panics
     /// Panics if the OS refuses to spawn a thread (extreme resource
     /// exhaustion): a live Store without its worker has nothing to show.
+    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
+        Self::spawn_with_host(
+            directory,
+            wake,
+            app_host::client::BlockingClient::from_service,
+        )
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; the surface attaching the worker has no fallible path to report it on"
     )]
-    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
+    fn spawn_with_host(
+        directory: StoreDirectory,
+        wake: WakeHandle,
+        connect: impl FnOnce() -> Result<app_host::client::BlockingClient, String> + Send + 'static,
+    ) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
+        let locale = LocaleContext::capture();
+        #[cfg(test)]
+        let retained_wake = wake.clone();
         std::thread::Builder::new()
             .name("store-worker".into())
             .spawn({
                 let pending = Arc::clone(&pending);
                 move || {
+                    // Fluent managers are thread-local. Worker status must
+                    // use the same selected app catalogue as its live view.
+                    locale.apply();
                     let snapshots = Snapshots {
                         sender: snapshot_tx,
                         wake,
                         pending,
                     };
-                    run(&request_rx, &snapshots, directory);
+                    run(&request_rx, &snapshots, directory, connect());
                 }
             })
             .expect("spawn store worker");
@@ -167,7 +207,20 @@ impl StoreWorker {
             requests: request_tx,
             snapshots: snapshot_rx,
             pending,
+            #[cfg(test)]
+            wake: retained_wake,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_connected_host(
+        &self,
+        directory: StoreDirectory,
+        fd: std::os::fd::OwnedFd,
+    ) -> Self {
+        Self::spawn_with_host(directory, self.wake.clone(), move || {
+            app_host::client::BlockingClient::from_connected_fd(fd)
+        })
     }
 
     /// Queue `request`; whether the worker is still there to take it.
@@ -183,7 +236,15 @@ impl StoreWorker {
 
     fn queue(&self, request: Request, done: Option<Done>) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
-        if self.requests.send(QueuedRequest { request, done }).is_ok() {
+        if self
+            .requests
+            .send(QueuedRequest {
+                request,
+                done,
+                locale: LocaleContext::capture(),
+            })
+            .is_ok()
+        {
             true
         } else {
             self.pending.fetch_sub(1, Ordering::Relaxed);
@@ -250,12 +311,17 @@ struct State {
     item_index: ui::search::ListIndex,
 }
 
-fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, directory: StoreDirectory) {
+fn run(
+    requests: &mpsc::Receiver<QueuedRequest>,
+    snapshots: &Snapshots,
+    directory: StoreDirectory,
+    host: Result<app_host::client::BlockingClient, String>,
+) {
     let staging = crate::actions::tapp_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
     let mut state = State {
-        host: app_host::client::BlockingClient::from_service()
+        host: host
             .map_err(|error| {
                 tracing::error!(%error, "required app-host capability unavailable");
                 error
@@ -287,7 +353,12 @@ fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, director
     }
     loop {
         match requests.recv_timeout(REFRESH_INTERVAL) {
-            Ok(QueuedRequest { request, done }) => {
+            Ok(QueuedRequest {
+                request,
+                done,
+                locale,
+            }) => {
+                locale.apply();
                 let (alive, outcome) = handle(request, &mut state, snapshots, &staging);
                 if let (Some(done), Some(outcome)) = (done, outcome) {
                     let _ = done.send(outcome);
