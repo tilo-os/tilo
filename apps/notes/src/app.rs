@@ -1268,6 +1268,8 @@ impl NotesApp {
     }
 
     fn refresh_search_blocks(&mut self, doc: &AutoCommit) {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("search_blocks");
         let heads = doc.base_heads();
         if automerge::transaction::Transactable::pending_ops(doc) == 0
             && self.search_heads.as_ref() == Some(&heads)
@@ -1337,6 +1339,8 @@ impl NotesApp {
     /// Canonical synchronization is a projection, never an attempt to replay
     /// local rows that are absent from the document.
     fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("reconcile_canonical");
         self.workspace =
             crate::notebook::project_without_asset_rehash(doc, self.workspace.selected())?;
         if self
@@ -2243,6 +2247,8 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("surface_sync");
         self.shell.sync(state, path);
         self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
