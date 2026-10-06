@@ -130,7 +130,7 @@ use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, Collabor
 use tilo_desktop::drill_in as qs;
 use tilo_desktop::drill_in::{DrillInList, DrillInOutcome};
 use tilo_desktop::notifications::{
-    CenterLayout, CenterOutcome, NotificationCenter, NotificationStack,
+    CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationStack,
 };
 use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
@@ -600,7 +600,7 @@ pub struct ShellOverlayHost {
     /// the notification-history geometry — resolved before a frame has a
     /// theme, like the root's — measures the type it actually draws, with
     /// the ui scale and the text scale both included.
-    qs_type_lines: (f64, f64),
+    qs_type_lines: CenterMetrics,
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -2095,7 +2095,7 @@ impl ShellOverlayHost {
             content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
-            qs_type_lines: CenterLayout::type_lines(&Theme::dark()),
+            qs_type_lines: CenterLayout::metrics(&Theme::dark(), &mut TextRenderer::new()),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -17179,7 +17179,7 @@ impl Widget for ShellOverlayHost {
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
         self.qs_root.set_layout_text_scale(theme.text_scale);
-        self.qs_type_lines = CenterLayout::type_lines(theme);
+        self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
             // contents never reach the room.
