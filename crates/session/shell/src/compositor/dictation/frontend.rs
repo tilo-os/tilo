@@ -241,4 +241,62 @@ mod tests {
         assert!(!fixture.surface.is_consent());
         assert!(fixture.state.text_commit.dictation.recognition.is_none());
     }
+
+    #[test]
+    fn dictation_oversized_final_inserts_nothing_and_keeps_the_bridge_alive() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(
+                id,
+                "x".repeat(super::super::MAX_DRAFT_BYTES),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(
+            fixture.state.finish_dictation(id, Instant::now()),
+            Err(super::super::DictationError::DraftTooLarge)
+        );
+        assert!(!fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        assert!(fixture.proxy.drain_dictation_commit().is_none());
+        fixture.pump();
+        assert!(fixture.proxy.holds_focus(&fixture.state));
+    }
+
+    #[test]
+    fn dictation_native_final_drains_the_largest_frame_before_another_input_turn() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        let text = "東".repeat(super::super::MAX_COMMIT_BYTES / 3) + "x";
+        fixture
+            .state
+            .update_dictation(id, text.clone(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert_eq!(
+            fixture.state.prepare_dictation(Instant::now()),
+            Err(super::super::DictationError::Busy),
+            "a successor cannot start before the native final is consumed"
+        );
+        assert!(fixture.state.take_native_dictation_commit());
+        assert!(!fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        let events = fixture.proxy.drain_dictation_commit().unwrap();
+        let commits = events
+            .iter()
+            .filter_map(|event| match event {
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(commits, [&text]);
+        assert!(
+            fixture.proxy.drain_dictation_commit().is_none(),
+            "the final must not be delivered twice"
+        );
+    }
 }

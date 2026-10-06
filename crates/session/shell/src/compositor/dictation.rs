@@ -30,6 +30,9 @@ pub use speech::{PhononTranscript, SpeechError, SpeechUpdate};
 pub const SESSION_WINDOW: Duration = Duration::from_secs(120);
 /// A strict bound on a draft's UTF-8 bytes, independent of model output.
 pub const MAX_DRAFT_BYTES: usize = 16 * 1024;
+/// Fits the standard 4096-byte Wayland frame, including protocol overhead.
+/// Keep one final commit: splitting would lose atomic selection and undo.
+pub const MAX_COMMIT_BYTES: usize = 4000;
 
 /// An explicitly started microphone stream, owned by the trusted speech worker.
 /// Drop stops and reaps only its `PipeWire` process and joins its reader. Start
@@ -125,6 +128,7 @@ pub(crate) struct Dictation {
     preparation: Option<Preparation>,
     recognition: Option<Recognition>,
     last_failure: Option<runtime::RuntimeError>,
+    native_commit_pending: bool,
 }
 
 impl Dictation {
@@ -150,6 +154,7 @@ impl State {
         if self.text_commit.dictation.session.is_some()
             || self.text_commit.dictation.preparation.is_some()
             || self.text_commit.dictation.recognition.is_some()
+            || self.text_commit.dictation.native_commit_pending
         {
             return Err(DictationError::Busy);
         }
@@ -255,6 +260,7 @@ impl State {
         if self.text_commit.dictation.session.is_some()
             || self.text_commit.dictation.preparation.is_some()
             || self.text_commit.dictation.recognition.is_some()
+            || self.text_commit.dictation.native_commit_pending
         {
             return Err(DictationError::Busy);
         }
@@ -316,6 +322,10 @@ impl State {
             .session
             .take()
             .ok_or(DictationError::StaleSession)?;
+        if session.draft.len() > MAX_COMMIT_BYTES {
+            self.cancel_active_dictation();
+            return Err(DictationError::DraftTooLarge);
+        }
         if session.draft.is_empty() {
             self.cancel_active_dictation();
             return Ok(());
@@ -327,7 +337,15 @@ impl State {
         });
         self.seat.text_input().done(false);
         self.cancel_active_dictation();
+        // Native fields are on this same compositor thread. The native loop
+        // must drain and dispatch their bridge before another input turn can
+        // change the selected range. Keep successors out until that happens.
+        self.text_commit.dictation.native_commit_pending = self.shell_field_active;
         Ok(())
+    }
+
+    pub(crate) fn take_native_dictation_commit(&mut self) -> bool {
+        std::mem::take(&mut self.text_commit.dictation.native_commit_pending)
     }
 
     /// Cancel one request. A delayed cancellation cannot cancel its successor.

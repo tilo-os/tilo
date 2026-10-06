@@ -64,7 +64,13 @@ is for the trusted local speech service; it is not an unprivileged socket operat
 - The native service tick checks liveness and drives the owned worker actor.
   Any invalidated target stops recording/inference; callers of the low-level
   insertion API remain responsible for their own capture lifecycle.
-- A request is bounded to 120 seconds and 16 KiB of draft UTF-8. Control characters,
+- A request is bounded to 120 seconds and 16 KiB of draft UTF-8. A final
+  is limited to 4,000 UTF-8 bytes so one commit fits the standard Wayland
+  4 KiB message buffer. Larger finals fail before sending any text; splitting
+  would lose atomic selected-range replacement and undo. Native final delivery
+  drains the existing IME bridge and dispatches it in the same compositor turn,
+  before another edit can move the selection. An incomplete delivery disconnects
+  that bridge instead of retrying after a focus or selection change. Control characters,
   including line breaks, are rejected in this first boundary. Spoken paragraph
   commands require a field-aware extension; they must never submit a terminal.
 - No transcripts, audio or surrounding-text strings are logged or persisted.
