@@ -26,6 +26,7 @@ automerge.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 collab-types = { path = "../../collab/collab-types" }
 getrandom.workspace = true
+image.workspace = true
 tilo-doc = { path = "../../doc/tilo-doc" }
 serde_json.workspace = true
 taffy = { workspace = true, features = ["content_size"] }
@@ -94,3 +95,19 @@ path = "examples/manual_composition_shots.rs"
 [[example]]
 name = "block-editor-typing"
 path = "examples/block_editor_typing.rs"
+
+[[example]]
+name = "type-specimen-shots"
+path = "examples/type_specimen_shots.rs"
+
+[[example]]
+name = "reading-face-shots"
+path = "examples/reading_face_shots.rs"
+
+[[example]]
+name ="distinct-letters-shots"
+path = "examples/distinct_letters_shots.rs"
+
+[[example]]
+name = "distinct-letters-specimen"
+path = "examples/distinct_letters_specimen.rs"

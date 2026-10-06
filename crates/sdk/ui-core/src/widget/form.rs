@@ -1,8 +1,8 @@
 //! Form composition that keeps visible and accessible labels in one contract.
 
 use super::{
-    Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Row, Slider, Text, TextInput,
-    TimePicker, Toggle, Widget,
+    Autocomplete, Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Row, Slider,
+    Text, TextInput, TimePicker, Toggle, ToggleGroup, Widget,
 };
 use crate::tokens::TextRole;
 
@@ -49,6 +49,18 @@ impl FormControl for NumberInput {
 }
 
 impl FormControl for Dropdown {
+    fn with_form_accessible_name(self, name: &str) -> Self {
+        self.with_accessible_name(name)
+    }
+}
+
+impl FormControl for ToggleGroup {
+    fn with_form_accessible_name(self, name: &str) -> Self {
+        self.with_accessible_name(name)
+    }
+}
+
+impl FormControl for Autocomplete {
     fn with_form_accessible_name(self, name: &str) -> Self {
         self.with_accessible_name(name)
     }
@@ -238,6 +250,23 @@ mod tests {
                         ColorPicker::new(Color::from_rgb8(20, 40, 60)),
                     ),
                     Role::ComboBox,
+                ),
+                (
+                    labeled_field(
+                        "advanced-label",
+                        ToggleGroup::new(
+                            vec![
+                                crate::widget::Segment::new("Day"),
+                                crate::widget::Segment::new("Week"),
+                            ],
+                            0,
+                        ),
+                    ),
+                    Role::Group,
+                ),
+                (
+                    labeled_field("advanced-label", Autocomplete::new()),
+                    Role::TextInput,
                 ),
             ];
 

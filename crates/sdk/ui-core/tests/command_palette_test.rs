@@ -79,7 +79,7 @@ fn command_palette_filters_and_registers_its_panel_edge() {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
             p.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let rgba = renderer.render(&scene, theme.bg_app);
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
             dump(&format!("command_palette_{name}"), &rgba);
 
             // Left edge, mid-height: clear of the corner radius and of any

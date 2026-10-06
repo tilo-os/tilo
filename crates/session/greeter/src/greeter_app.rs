@@ -56,8 +56,10 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{NumericStyle, OpenTypeTag, TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::{
-    Avatar, Button, Dropdown, IconWidget, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget,
+    Avatar, AvatarSize, Button, ButtonRole, ControlSize, Dropdown, IconSize, IconWidget, Row,
+    Scrollable, Spacer, Spinner, Text, TextInput, Widget,
 };
 
 mod console;
@@ -85,8 +87,6 @@ const FIELD_HEIGHT: f32 = 40.0;
 /// The footer's session picker, wide enough for a session's name.
 const SESSION_PICKER_WIDTH: f32 = 200.0;
 /// Avatar diameter on a roomy display, and when space or large text is tight.
-const AVATAR_SIZE: f32 = 80.0;
-const COMPACT_AVATAR_SIZE: f32 = 56.0;
 /// The status line is reserved at this height in *every* state, so a message
 /// appearing — or a spinner replacing it — never resizes the form. Without
 /// the reservation the form jumps the moment a passcode is wrong, which is
@@ -1045,15 +1045,18 @@ impl GreeterApp {
         let size = self.clock_size(compact);
         let time = Text::new(&self.clock.time)
             .with_id("greeter.clock")
-            .with_fixed_size(size)
+            .with_content_size(size)
             .with_font_variation(OpenTypeTag::WEIGHT, CLOCK_WEIGHT)
             .with_numeric_style(NumericStyle::TabularLining)
-            .with_tracking(-0.02)
             .with_line_height(1.0)
             .with_color(theme.text_primary);
         let date = Text::new(&self.clock.date)
             .with_id("greeter.date")
-            .with_size(if compact { 15.0 } else { 19.0 })
+            .with_role(if compact {
+                TextRole::Body
+            } else {
+                TextRole::Subheading
+            })
             .with_weight(TextWeight::Medium)
             .with_color(theme.tokens.colors.text_dim);
         Box::new(Stack::column(0.0, vec![Box::new(time), Box::new(date)]).align(align))
@@ -1074,7 +1077,7 @@ impl GreeterApp {
                     .push(Box::new(
                         Text::new(&text)
                             .with_id("greeter.status")
-                            .with_size(13.0)
+                            .with_role(TextRole::Label)
                             .with_color(color)
                             .with_live(live),
                     )),
@@ -1096,13 +1099,21 @@ impl GreeterApp {
                 Politeness::Polite,
             )),
             (AuthPhase::Idle, Notice::Hint(_)) => rows.push(line(
-                Box::new(IconWidget::new(Icon::Info, 14.0).with_color(c.text_dim)),
+                Box::new(
+                    IconWidget::new(Icon::Info)
+                        .sized(IconSize::Small)
+                        .with_color(c.text_dim),
+                ),
                 self.status_text(),
                 c.text_dim,
                 Politeness::Assertive,
             )),
             (AuthPhase::Idle, Notice::Error(_)) => rows.push(line(
-                Box::new(IconWidget::new(Icon::CircleAlert, 14.0).with_color(c.semantic.danger)),
+                Box::new(
+                    IconWidget::new(Icon::CircleAlert)
+                        .sized(IconSize::Small)
+                        .with_color(c.semantic.danger),
+                ),
                 self.status_text(),
                 c.semantic.danger,
                 Politeness::Assertive,
@@ -1115,11 +1126,13 @@ impl GreeterApp {
                     .with_gap(theme.tokens.spacing.s2)
                     .no_wrap()
                     .push(Box::new(
-                        IconWidget::new(Icon::ArrowBigUp, 14.0).with_color(c.semantic.warning),
+                        IconWidget::new(Icon::ArrowBigUp)
+                            .sized(IconSize::Small)
+                            .with_color(c.semantic.warning),
                     ))
                     .push(Box::new(
                         Text::new(&t("greeter-caps-lock"))
-                            .with_size(13.0)
+                            .with_role(TextRole::Label)
                             .with_color(c.semantic.warning),
                     )),
             ));
@@ -1133,29 +1146,32 @@ impl GreeterApp {
         let c = &theme.tokens.colors;
         let mut identity: Vec<Box<dyn Widget>> = Vec::new();
         if let Some(user) = &self.login_user {
-            let initials = Some(Avatar::initials_for_name(&user.display_name))
-                .filter(|initials| !initials.is_empty())
-                .unwrap_or_else(|| Avatar::initials_for_name(&user.username));
-            let avatar = Avatar::from_initials(
-                &initials,
-                if compact {
-                    COMPACT_AVATAR_SIZE
-                } else {
-                    AVATAR_SIZE
-                },
-            );
+            let name = if user.display_name.is_empty() {
+                &user.username
+            } else {
+                &user.display_name
+            };
+            let avatar = Avatar::person(name, &user.username).size(if compact {
+                AvatarSize::Large
+            } else {
+                AvatarSize::Hero
+            });
             let mut names: Vec<Box<dyn Widget>> = vec![Box::new(
                 Text::new(&user.display_name)
                     .with_id("greeter.welcome")
                     .with_heading_level(1)
-                    .with_size(if compact { 20.0 } else { 24.0 })
+                    .with_role(if compact {
+                        TextRole::Title
+                    } else {
+                        TextRole::LargeTitle
+                    })
                     .with_weight(TextWeight::Semibold),
             )];
             if user.display_name != user.username {
                 names.push(Box::new(
                     Text::new(&user.username)
                         .with_id("greeter.account")
-                        .with_size(13.0)
+                        .with_role(TextRole::Label)
                         .with_color(c.text_dim),
                 ));
             }
@@ -1175,7 +1191,11 @@ impl GreeterApp {
                 Text::new(&t("greeter-title"))
                     .with_id("greeter.welcome")
                     .with_heading_level(1)
-                    .with_size(if compact { 20.0 } else { 24.0 })
+                    .with_role(if compact {
+                        TextRole::Title
+                    } else {
+                        TextRole::LargeTitle
+                    })
                     .with_weight(TextWeight::Semibold),
             ));
         }
@@ -1212,6 +1232,7 @@ impl GreeterApp {
                     "greeter-passcode"
                 }))
                 .with_secret(true)
+                .control_size(ControlSize::Large)
                 .with_placeholder(&t("greeter-passcode-placeholder"))
                 .disabled(busy && challenge.is_none())
         };
@@ -1231,12 +1252,11 @@ impl GreeterApp {
                 .push(Box::new(password_input))
                 .push(Box::new(
                     Button::new("greeter.login", "")
-                        .primary()
+                        .role(ui::widget::ButtonRole::Primary)
                         .with_icon(Icon::ArrowRight)
                         .with_accessible_name(&sign_in)
                         .tooltip(sign_in.clone())
-                        .content_sized()
-                        .with_min_height(FIELD_HEIGHT)
+                        .control_size(ControlSize::Large)
                         .on_click(move || requests.sign_in.set(true)),
                 )),
         ));
@@ -1245,7 +1265,7 @@ impl GreeterApp {
             let requests = Rc::clone(&self.requests);
             form.push(Box::new(
                 Button::new("greeter.cancel-authentication", &t("greeter-auth-cancel"))
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .with_enabled(
                         self.auth_session
                             .as_ref()
@@ -1265,10 +1285,9 @@ impl GreeterApp {
                     0.0,
                     vec![Box::new(
                         Button::new("greeter.fingerprint", &t("greeter-use-fingerprint"))
-                            .ghost()
+                            .role(ui::widget::ButtonRole::Plain)
                             .with_icon(Icon::Fingerprint)
-                            .content_sized()
-                            .with_min_height(FIELD_HEIGHT)
+                            .control_size(ControlSize::Large)
                             .on_click(move || requests.fingerprint.set(true)),
                     )],
                 )
@@ -1302,10 +1321,9 @@ impl GreeterApp {
                     &format!("greeter.account.{}", user.username),
                     &user.display_name,
                 )
-                .ghost()
+                .role(ButtonRole::Plain)
                 .with_icon(Icon::User)
-                .content_sized()
-                .with_min_height(FIELD_HEIGHT)
+                .control_size(ControlSize::Large)
                 .with_enabled(!busy)
                 .on_click(move || requests.account.set(Some(index))),
             ));
@@ -1335,9 +1353,13 @@ impl GreeterApp {
                 .with_icon(icon)
                 .with_accessible_name(&label)
                 .tooltip(label)
-                .with_size(FIELD_HEIGHT, FIELD_HEIGHT)
+                .control_size(ControlSize::Large)
                 .on_click(move || requests.accessibility.set(Some(request)));
-            Box::new(if on { button } else { button.ghost() }) as Box<dyn Widget>
+            Box::new(if on {
+                button
+            } else {
+                button.role(ButtonRole::Plain)
+            }) as Box<dyn Widget>
         };
         let leading = Stack::row(
             s.s1,
@@ -1401,14 +1423,11 @@ impl GreeterApp {
                     s.s1,
                     vec![
                         Box::new(
-                            IconWidget::new(
-                                if charging {
-                                    Icon::BatteryCharging
-                                } else {
-                                    Icon::Battery
-                                },
-                                18.0,
-                            )
+                            IconWidget::new(if charging {
+                                Icon::BatteryCharging
+                            } else {
+                                Icon::Battery
+                            })
                             .with_color(if low {
                                 c.semantic.danger
                             } else {
@@ -1418,7 +1437,7 @@ impl GreeterApp {
                         Box::new(
                             Text::new(&format!("{percent}%"))
                                 .with_id("greeter.battery")
-                                .with_size(13.0)
+                                .with_role(TextRole::Label)
                                 .with_numeric_style(NumericStyle::TabularLining)
                                 .with_color(c.text_dim),
                         ),
@@ -1429,7 +1448,7 @@ impl GreeterApp {
         }
         if let Some(connected) = self.device.wifi {
             trailing.push(Box::new(
-                IconWidget::new(if connected { Icon::Wifi } else { Icon::WifiOff }, 18.0)
+                IconWidget::new(if connected { Icon::Wifi } else { Icon::WifiOff })
                     .with_color(c.text_dim),
             ));
         }
@@ -2819,7 +2838,6 @@ mod tests {
                 vec![
                     "greeter.username",
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.larger-text",
@@ -3121,19 +3139,32 @@ mod tests {
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let base = focus_shape(&app);
+            let card = card_of(&app);
+            let reveal = find(card.as_ref(), "greeter.password_reveal")
+                .expect("the shared field retains an addressable reveal control");
+            let accessible = reveal.accessibility().expect("reveal is accessible");
+            assert_eq!(accessible.role, ui::a11y::Role::Button);
+            assert_eq!(accessible.name.as_deref(), Some("Show password"));
+            assert!(
+                accessible.value.is_none(),
+                "the reveal control exposes no passcode"
+            );
+            assert!(
+                !reveal.is_focusable(),
+                "Tab continues from field to sign-in"
+            );
             assert_eq!(
                 base,
                 vec![
-                    "TextInput",      // username
-                    "TextInput",      // passcode
-                    "PasswordReveal", // show/hide passcode
-                    "Button",         // sign in
-                    "Button",         // fingerprint
-                    "Button",         // larger text
-                    "Button",         // high contrast
-                    "Button",         // screen reader
-                    "Dropdown",       // session
-                    "Dropdown",       // power
+                    "TextInput", // username
+                    "TextInput", // passcode
+                    "Button",    // sign in
+                    "Button",    // fingerprint
+                    "Button",    // larger text
+                    "Button",    // high contrast
+                    "Button",    // screen reader
+                    "Dropdown",  // session
+                    "Dropdown",  // power
                 ]
             );
             app.selected_session = 1;
@@ -3170,7 +3201,6 @@ mod tests {
                 focusables(&app),
                 vec![
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.larger-text",

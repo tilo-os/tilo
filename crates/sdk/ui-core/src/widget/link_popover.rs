@@ -22,10 +22,10 @@ use winit::keyboard::{Key, NamedKey};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -411,12 +411,8 @@ impl LinkPopover {
                 filter_rect.x1 - 6.0,
                 filter_rect.y1,
             ),
-            &TextStyle::new(tokens.typography.scale.sm),
-            QueryInk::accented(
-                tokens.colors.text_primary,
-                tokens.colors.text_dim,
-                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            ),
+            &theme.text(TextRole::Caption),
+            QueryInk::of(&tokens.colors),
         );
     }
 
@@ -431,17 +427,17 @@ impl LinkPopover {
         rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let font_style = tokens.typography.style(TextRole::Caption);
         if self.visible.is_empty() {
-            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
+            let (_, hint_h) = text_renderer.measure_style("No matches", None, &font_style);
             let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 "No matches",
-                font_size,
                 tokens.colors.text_dim,
                 transform.pre_translate(Vec2::new(rect.x0 + PADDING_X, y)),
                 None,
+                &font_style,
             );
             return;
         }
@@ -460,34 +456,28 @@ impl LinkPopover {
             let y0 = self.rows_top() + count_f64(i) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             let armed = visible_index == self.cursor;
-            if armed {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.sm));
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                    None,
-                    &hl,
-                );
-            }
-            // Ink resolved against the accent fill (as `Popover` / `Dropdown`
-            // do), and centred on the measured line rather than the font size.
+            // The armed row is the panel's strong lift, as in every menu;
+            // its ink is measured on it. Centred on the measured line.
             let ink = if armed {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                crate::widget::floating_surface::paint_armed_row(
+                    scene,
+                    transform,
+                    row_rect,
+                    row_rect.x0 - rect.x0,
+                    theme,
+                )
             } else {
                 tokens.colors.text_primary
             };
-            let (_, title_h) = text_renderer.measure(&row.title, font_size, None);
+            let (_, title_h) = text_renderer.measure_style(&row.title, None, &font_style);
             let text_y = row_rect.y0 + (row_rect.height() - f64::from(title_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &row.title,
-                font_size,
                 ink,
                 transform.pre_translate(Vec2::new(row_rect.x0 + PADDING_X, text_y)),
                 None,
+                &font_style,
             );
         }
     }

@@ -76,7 +76,6 @@ pub(crate) fn answer(
     match effect {
         ShortcutEffect::BindShortcut { shortcut, chord } => {
             let action = ShortcutAction::from_id(&shortcut)
-                .filter(|action| action.rebindable())
                 .ok_or_else(|| format!("`{shortcut}` is not a shortcut that can be changed"))?;
             let chord = KeyChord::parse(&chord).map_err(|error| format!("`{chord}`: {error}"))?;
             let document = host.storage().settings_document();
@@ -98,9 +97,7 @@ pub(crate) fn answer(
 
 /// Every rebindable action, in catalogue order.
 fn rebindable() -> impl Iterator<Item = ShortcutAction> {
-    ShortcutAction::ALL
-        .into_iter()
-        .filter(|action| action.rebindable())
+    ShortcutAction::ALL.into_iter()
 }
 
 /// Every shortcut the page lists, with its name, in page order — what a pen
@@ -417,8 +414,8 @@ mod tests {
         let listed: Vec<&str> = rebindable_ids().collect();
         assert!(listed.contains(&"quick-settings"));
         assert!(
-            !listed.contains(&"lock"),
-            "the lock chord is shown, not offered for editing"
+            listed.contains(&"lock"),
+            "the system catalogue offers the lock chord for editing"
         );
         for entry in catalogue(&ShortcutConfig::default()) {
             assert_ne!(
@@ -449,14 +446,18 @@ mod tests {
             "Super+Shift+q"
         );
         assert!(
-            !bind(&mut app, "quick-settings", "Super+k"),
-            "Super+K opens search"
+            !bind(&mut app, "quick-settings", "Super+Space"),
+            "Super+Space opens search"
         );
         assert_eq!(
             stored(&document).bindings[&ShortcutAction::QuickSettings].display(),
             "Super+Shift+q"
         );
-        assert!(!bind(&mut app, "lock", "Super+Shift+L"));
+        assert!(bind(&mut app, "lock", "Super+Shift+L"));
+        assert_eq!(
+            stored(&document).bindings[&ShortcutAction::Lock].display(),
+            "Super+Shift+l"
+        );
 
         app.effect(&SettingsEffect::from(ShortcutEffect::SetVimMode {
             on: true,
@@ -473,7 +474,7 @@ mod tests {
         let mut pane = ShortcutPane::new(cx.clone());
         assert_eq!(
             pane.chords[&ShortcutAction::Search].get(),
-            "Super+k",
+            "Super+Space",
             "the default binding"
         );
         let mut config = ShortcutConfig::default();

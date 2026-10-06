@@ -44,7 +44,7 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
         .slow()
         .saturating_add(theme.tokens.motion.durations.base());
     let (mut frame, calls) = fixture(viewport, theme)?;
-    frame.render_window_png(&out.join("before.png"));
+    frame.render_png(&out.join("before.png"));
     frame.invoke_action(
         &tilo_actions::ActionAddress::new("first", "edit"),
         &serde_json::Map::new(),
@@ -81,10 +81,10 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
     if !frame.poll_frame()? {
         return Err("the production host did not paint the new presence".into());
     }
-    frame.render_window_png(&out.join("approaching.png"));
+    frame.render_png(&out.join("approaching.png"));
     std::thread::sleep(travel);
     frame.relayout();
-    frame.render_window_png(&out.join("after.png"));
+    frame.render_png(&out.join("after.png"));
     if calls.get() != 1 {
         return Err("presence replayed or failed to execute the semantic action".into());
     }

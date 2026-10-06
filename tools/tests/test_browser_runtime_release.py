@@ -268,6 +268,7 @@ class BrowserRuntimeRelease(unittest.TestCase):
                                 + f'id = "{release.PACKAGE}"\nversion = "{version}"\n'
                                 + f'provides = "{proof["runtime"]}"\nkind = "runtime"\n'
                                 + f'[package.isa]\n{architecture} = "{isa}"\n'
+                                + '[entrypoint]\ntype = "cli"\nbin = "lib/chromium/tilo-chromium-host"\nsplash-budget = 150\n'
                                 + '--- payload (0 files) ---\n')
                 proof['files'] = {tapp.name: release.digest(tapp)}
                 (package / 'provenance.json').write_text(json.dumps(proof))
@@ -276,6 +277,12 @@ class BrowserRuntimeRelease(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'publisher differs'):
                         release.verify_package(out, architecture, source, '9', 'c' * 64)
                     baseline = tapp.read_text()
+                    for invalid_host in ('bin = \"missing-host\"', 'bin = \"../host\"', ''):
+                        tapp.write_text(baseline.replace('bin = \"lib/chromium/tilo-chromium-host\"', invalid_host))
+                        proof['files'] = {tapp.name: release.digest(tapp)}
+                        (package / 'provenance.json').write_text(json.dumps(proof))
+                        with self.assertRaisesRegex(ValueError, 'declare its executable host'):
+                            release.verify_package(out, architecture, source, '9', key)
                     other = 'x86_64' if architecture == 'aarch64' else 'aarch64'
                     other_isa = 'v3' if other == 'x86_64' else 'armv8-a'
                     for invalid in (f'{architecture} = "v4"' if architecture == 'x86_64'
@@ -287,7 +294,7 @@ class BrowserRuntimeRelease(unittest.TestCase):
                         (package / 'provenance.json').write_text(json.dumps(proof))
                         with self.assertRaisesRegex(ValueError, 'architecture differs'):
                             release.verify_package(out, architecture, source, '9', key)
-            self.assertEqual(trace.read_text().splitlines(), ['verify', 'inspect'] * 8)
+            self.assertEqual(trace.read_text().splitlines(), ['verify', 'inspect'] * 14)
 
     def test_publication_wrong_event_stops_before_tools_credentials_or_network(self):
         for event, ref in (('push', 'refs/heads/main'), ('workflow_dispatch', 'refs/heads/task')):
