@@ -32,6 +32,7 @@ pub mod native_libs;
 mod pack;
 pub mod portability;
 mod resource_kinds;
+pub use resource_kinds::declared_by_app as declared_resource_kinds;
 pub mod size;
 pub mod standalone;
 pub mod targets;

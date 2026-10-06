@@ -2871,16 +2871,25 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn foreign_frames_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let store = crate::compositor::foreign::store();
+        let keyboard_focus = self
+            .seat
+            .and_then(|seat| seat.client_input.keyboard_focus());
+        let rect_json = |rect: Rect| {
+            serde_json::json!({
+                "x": rect.x0, "y": rect.y0,
+                "w": rect.width(), "h": rect.height(),
+            })
+        };
         let mut frames: Vec<serde_json::Value> =
             crate::compositor::foreign::foreign_tabs(&chrome.tree())
                 .into_iter()
                 .map(|tab| {
                     // The rect the widget tree laid this tab into, so a harness can aim at it.
-                    let placement = store.placement(tab.surface_id).map(|r| {
-                        serde_json::json!({
-                            "x": r.x0, "y": r.y0,
-                            "w": r.width(), "h": r.height(),
-                        })
+                    let placement = store.placement(tab.surface_id);
+                    let content_rect = placement.map(|rect| store.target_box(tab.surface_id, rect));
+                    let content_origin = placement.map(|rect| {
+                        let (x, y) = store.surface_origin(tab.surface_id, rect);
+                        serde_json::json!({ "x": x, "y": y })
                     });
                     // What the client actually drew, beside the tab it was drawn into — an
                     // opening-then-resizing window is those two disagreeing for a moment.
@@ -2901,8 +2910,14 @@ impl ControlState for FrameBuilderControlState<'_> {
                         }).collect::<Vec<_>>(),
                         "frame_seq": store.frame_seq(tab.surface_id),
                         "last_error": store.last_error(tab.surface_id),
-                        "rect": placement,
+                        "rect": placement.map(&rect_json),
+                        // The exact content box and surface-local origin used by
+                        // `client_input::route_tile_point`. These are observation
+                        // only: they carry no connection or input authority.
+                        "content_rect": content_rect.map(&rect_json),
+                        "content_origin": content_origin,
                         "buffer": buffer,
+                        "keyboard_focused": keyboard_focus == Some(tab.surface_id),
                         // Whether the shell is painting this window yet.
                         "presented": store.is_presented(tab.surface_id),
                         "pixels_ready": store.presentation_pixels(tab.surface_id).is_some(),
@@ -2931,10 +2946,16 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "x": surface.rect.x0, "y": surface.rect.y0,
                         "w": surface.rect.width(), "h": surface.rect.height(),
                     },
+                    "content_rect": rect_json(surface.content_rect),
+                    "content_origin": {
+                        "x": surface.content_rect.x0,
+                        "y": surface.content_rect.y0,
+                    },
                     "buffer": store.frame_size(surface.surface_id)
                         .map(|(w, h)| serde_json::json!({ "w": w, "h": h })),
                     "presented": visible,
                     "pixels_ready": pixels.is_some(),
+                    "keyboard_focused": keyboard_focus == Some(surface.surface_id),
                     "suspended": surface.suspended,
                     "transferring": surface.transfer_source.is_some(),
                 })
@@ -15814,6 +15835,80 @@ mod tests {
                 .expect("observed frame rows")
                 .iter()
                 .all(|row| row["surface_id"] != surface_id)
+        );
+        store.forget(surface_id);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn foreign_frames_observes_exact_content_route_and_unfocused_seat() {
+        use crate::compositor::foreign::WindowGeometry;
+        use crate::compositor::tab_binding::{self, Placement};
+
+        let event_loop: calloop::EventLoop<State> =
+            calloop::EventLoop::try_new().expect("event loop");
+        let display: Display<State> = Display::new().expect("display");
+        let seat = State::new(event_loop.handle(), display.handle());
+        let fb = FrameBuilder::new((1200, 700));
+        let surface_id = 984_772;
+        {
+            let chrome = fb.chrome();
+            let tree_handle = chrome.tree_handle();
+            drop(chrome);
+            let _tab = tab_binding::adopt_toplevel_at(
+                &mut tree_handle.write(),
+                surface_id,
+                Some("so.tilo.chat".into()),
+                Placement::NewGroup,
+            );
+        }
+        let placement = Rect::new(100.0, 50.0, 1100.0, 650.0);
+        let store = crate::compositor::foreign::store();
+        store.forget(surface_id);
+        store.note_placement(surface_id, placement);
+        store.note_size_limits(surface_id, (0, 0), (600, 0));
+        assert_eq!(store.take_pending_configure(surface_id), Some((600, 600)));
+        store.publish_rgba(surface_id, &vec![0; 600 * 600 * 4], 600, 600);
+        store.note_window_geometry(
+            surface_id,
+            Some(WindowGeometry {
+                x: 20,
+                y: 20,
+                width: 560,
+                height: 560,
+                logical_size: Some((600, 600)),
+                buffer_scale: 1,
+            }),
+        );
+
+        let observe = |seat: &State| {
+            FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+                seat: Some(seat),
+            }
+            .foreign_frames_json()
+        };
+        let row = |rows: serde_json::Value| {
+            rows.as_array()
+                .expect("observed frame rows")
+                .iter()
+                .find(|row| row["surface_id"] == surface_id)
+                .cloned()
+                .expect("Chat frame")
+        };
+
+        let before = row(observe(&seat));
+        assert_eq!(before["keyboard_focused"], false);
+        assert_eq!(
+            before["content_rect"],
+            serde_json::json!({"x": 300.0, "y": 50.0, "w": 600.0, "h": 600.0})
+        );
+        assert_eq!(
+            before["content_origin"],
+            serde_json::json!({"x": 280.0, "y": 30.0})
         );
         store.forget(surface_id);
     }

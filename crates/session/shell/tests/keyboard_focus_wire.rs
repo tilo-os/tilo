@@ -15,13 +15,16 @@
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::{
+    wl_buffer, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
@@ -82,6 +85,55 @@ fn captured_key_event(logical: Key, pressed: bool) -> WindowEvent {
         device_id: unsafe { std::mem::zeroed() },
         event,
         is_synthetic: false,
+    }
+}
+
+struct EmptyControlState;
+
+impl shell::shell::test_control::ControlState for EmptyControlState {
+    fn widget_registry(&self) -> std::collections::HashMap<String, vello::kurbo::Rect> {
+        std::collections::HashMap::new()
+    }
+}
+
+fn route_test_control_actions(
+    h: &mut Harness,
+    frame: &mut shell::compositor::frame::FrameBuilder,
+    actions: Vec<shell::shell::test_control::PlannedAction>,
+    modifiers: Modifiers,
+) {
+    use shell::shell::test_control::{KeyTag, NamedKeyTag, PlannedAction};
+
+    for action in actions {
+        let event = match action {
+            PlannedAction::CursorMoved { x, y } => WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            },
+            PlannedAction::MouseLeftButton { pressed } => WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: if pressed {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                },
+                button: winit::event::MouseButton::Left,
+            },
+            PlannedAction::KeyboardKey {
+                key: KeyTag::Named(NamedKeyTag::ArrowLeft),
+                pressed,
+            } => shell::shell::test_control::keyboard_input_event(
+                &Key::Named(NamedKey::ArrowLeft),
+                pressed,
+            ),
+            unexpected => panic!("test control planned an unexpected action: {unexpected:?}"),
+        };
+        assert!(shell::compositor::client_input::route_input(
+            &mut h.state,
+            frame,
+            &event,
+            &modifiers,
+        ));
     }
 }
 
@@ -158,6 +210,9 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_seat::WlSeat);
+delegate_noop!(Client: ignore wl_shm::WlShm);
+delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
+delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 
 struct Harness {
@@ -302,6 +357,108 @@ fn focus_change_transfers_a_held_key_then_releases_it_once_at_the_new_focus() {
             },
         ],
         "focus replacement must hand the held key to the new surface, then exactly one release follows there"
+    );
+}
+
+#[test]
+fn clicking_a_foreign_window_gives_the_next_injected_key_to_that_client() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h
+        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+        .expect("compositor");
+    let wm = h
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+        .expect("xdg shell");
+    let shm = h.bind::<wl_shm::WlShm>("wl_shm", 1).expect("shared memory");
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("org.example.ClickThenType".into());
+    xdg.set_window_geometry(1, 1, 2, 2);
+    h.pump();
+    let pixels = tempfile::tempfile().expect("temporary mapped pixels");
+    pixels.set_len(4 * 4 * 4).expect("size mapped pixels");
+    let pool = shm.create_pool(pixels.as_fd(), 4 * 4 * 4, &qh, ());
+    let buffer = pool.create_buffer(0, 4, 4, 4 * 4, wl_shm::Format::Argb8888, &qh, ());
+    surface.attach(Some(&buffer), 0, 0);
+    surface.damage_buffer(0, 0, 4, 4);
+    surface.commit();
+    h.pump();
+
+    let foreign_surface_id = foreign_id(&h.state, "org.example.ClickThenType");
+    let mut frame = shell::compositor::frame::FrameBuilder::with_handle(
+        h.state.workspace_tree.clone(),
+        false,
+        (1600, 900),
+    );
+    let _ = frame.paint_settled();
+    let target = {
+        let chrome = frame.chrome();
+        shell::shell::input_policy::foreign_tiles(&chrome.tree(), frame.host())
+            .into_iter()
+            .find(|hit| hit.surface_id == foreign_surface_id)
+            .expect("the adopted foreign window is visibly tiled")
+            .rect
+            .center()
+    };
+    assert_eq!(h.state.client_input.keyboard_focus(), None);
+    let store = shell::compositor::foreign::store();
+    let placement = store
+        .placement(foreign_surface_id)
+        .expect("paint publishes the authoritative foreign placement");
+    let content = store.target_box(foreign_surface_id, placement);
+    let origin = store.surface_origin(foreign_surface_id, placement);
+    assert!(content.contains(target));
+    assert_eq!(
+        origin,
+        (content.x0 - 1.0, content.y0 - 1.0),
+        "the route transform retains the client's one-pixel window geometry offset"
+    );
+    let modifiers = Modifiers::default();
+    let (_, click) = shell::shell::test_control::dispatch_command(
+        &shell::shell::test_control::Command::ClickAt {
+            x: target.x,
+            y: target.y,
+        },
+        &EmptyControlState,
+    );
+    route_test_control_actions(&mut h, &mut frame, click, modifiers);
+    h.pump();
+    assert_eq!(
+        h.state.client_input.keyboard_focus(),
+        Some(foreign_surface_id),
+        "the real mapped click must transfer the compositor keyboard seat"
+    );
+    h.client.keyboard.clear();
+
+    let (_, key) = shell::shell::test_control::dispatch_command(
+        &shell::shell::test_control::Command::Key {
+            key: "ArrowLeft".into(),
+        },
+        &EmptyControlState,
+    );
+    route_test_control_actions(&mut h, &mut frame, key, modifiers);
+    h.pump();
+
+    assert_eq!(
+        h.client.keyboard,
+        vec![
+            KeyboardWire::Key {
+                key: 105,
+                pressed: true,
+            },
+            KeyboardWire::Key {
+                key: 105,
+                pressed: false,
+            },
+        ],
+        "a physical click must establish the compositor seat focus used by the next key"
     );
 }
 

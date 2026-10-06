@@ -11,6 +11,10 @@ pub struct Trace {
 }
 
 impl Trace {
+    pub(crate) fn requested(profile: Option<&str>) -> bool {
+        profile == Some("1")
+    }
+
     pub(crate) fn observes(event: &WindowEvent) -> bool {
         matches!(event,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
@@ -156,6 +160,14 @@ fn safe_chat_agent_task(value: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observer_requires_the_exact_fixed_presentation_flag() {
+        assert!(Trace::requested(Some("1")));
+        for value in [None, Some(""), Some("0"), Some("true"), Some("1\n")] {
+            assert!(!Trace::requested(value));
+        }
+    }
 
     #[test]
     fn chat_trace_keeps_only_the_content_free_owner_task_frontier() {

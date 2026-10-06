@@ -3932,6 +3932,19 @@ impl App {
                 .flatten()
         };
 
+        let presentation_profile = std::env::var("TILO_PROFILE_PRESENTATION").ok();
+        let physical_input_trace =
+            crate::physical_input_trace::Trace::requested(presentation_profile.as_deref())
+                .then(crate::physical_input_trace::Trace::default);
+        if presentation_profile.is_some() {
+            crate::native_scenario::log::emit_json(
+                "tilo-physical-input-observer",
+                serde_json::json!({
+                    "app_id": self.window.app_id.as_deref(),
+                    "enabled": physical_input_trace.is_some(),
+                }),
+            );
+        }
         let mut handler = AppHandler {
             app: self,
             window: None,
@@ -3960,9 +3973,7 @@ impl App {
             pointer_unsettled: false,
             native_scenario,
             native_input_ids: Vec::new(),
-            physical_input_trace: std::env::var("TILO_PROFILE_PRESENTATION")
-                .is_ok_and(|value| value == "1")
-                .then(crate::physical_input_trace::Trace::default),
+            physical_input_trace,
             native_input_origin: None,
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,
