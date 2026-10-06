@@ -1682,6 +1682,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "hello",
                 wanted: &[ResourceKind::File],
                 chrome: &cs,
@@ -1985,6 +1987,8 @@ mod tests {
             let state = c.borrow();
             let doc = AutoCommit::new();
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "sheets",
                 wanted: &[ResourceKind::Application],
                 chrome: &state,
@@ -2023,6 +2027,8 @@ mod tests {
         let doc = AutoCommit::new();
         for needle in ["Dateien", "dateien", "Files"] {
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Application],
                 chrome: &state,
@@ -2150,6 +2156,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "unique-tail",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2198,6 +2206,8 @@ mod tests {
         });
         let page = provider.query_page(
             SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "unique-tail",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome,
@@ -2225,6 +2235,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "anything",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2288,6 +2300,8 @@ mod tests {
         {
             let chrome = chrome.borrow();
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome,
@@ -2398,6 +2412,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "unique-source-tail",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2564,6 +2580,8 @@ mod native_application_tests {
                 HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),
@@ -2658,6 +2676,8 @@ mod native_application_tests {
 
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),

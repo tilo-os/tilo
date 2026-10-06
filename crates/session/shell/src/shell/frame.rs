@@ -4061,6 +4061,8 @@ mod tests {
                 let state = chrome.borrow();
                 ActionsProvider::new()
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "bring record",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -6868,6 +6870,8 @@ mod tests {
                 let state = chrome.borrow();
                 provider
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,

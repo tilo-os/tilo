@@ -3291,6 +3291,8 @@ mod tests {
         let document = AutoCommit::new();
         let state = chrome.borrow();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "",
             wanted: &[ResourceKind::Action],
             chrome: &state,
@@ -3446,6 +3448,8 @@ mod tests {
             let out = {
                 let cs = c.borrow();
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "activity",
                     wanted: &[ResourceKind::Action],
                     chrome: &cs,
@@ -3484,6 +3488,8 @@ mod tests {
             let out = {
                 let cs = c.borrow();
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "do not disturb",
                     wanted: &[ResourceKind::Action],
                     chrome: &cs,
@@ -3536,6 +3542,8 @@ mod tests {
                 let state = chrome.borrow();
                 provider
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "record.bring",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -3590,6 +3598,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "open",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
@@ -3608,6 +3618,8 @@ mod tests {
             let doc = AutoCommit::new();
             let score = |needle: &str| {
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle,
                     wanted: &[ResourceKind::Action],
                     chrome: &cs,
@@ -3636,6 +3648,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
@@ -3657,6 +3671,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "open",
                 wanted: &[ResourceKind::File],
                 chrome: &cs,
@@ -3673,6 +3689,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "workspace setings",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
@@ -3692,6 +3710,8 @@ mod tests {
         let cs = c.borrow();
         let doc = AutoCommit::new();
         let out = p.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "open",
             wanted: &[ResourceKind::Action],
             chrome: &cs,
@@ -3730,6 +3750,8 @@ mod tests {
         c.borrow_mut().peer_sync_enabled = true;
         let chrome = c.borrow();
         let ctx = || SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "",
             wanted: &[ResourceKind::Action],
             chrome: &chrome,
@@ -3757,6 +3779,8 @@ mod tests {
         let doc = AutoCommit::new();
         let state = chrome.borrow();
         let out = provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "activity",
             wanted: &[ResourceKind::Action],
             chrome: &state,
@@ -3784,6 +3808,8 @@ mod tests {
         let state = chrome.borrow();
         let query = |needle| {
             provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -3811,6 +3837,8 @@ mod tests {
         let state = chrome.borrow();
         let query = |needle| {
             provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -3862,6 +3890,8 @@ mod tests {
         let switch = |needle| {
             provider
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle,
                     wanted: &[ResourceKind::Action],
                     chrome: &chrome.borrow(),
@@ -3908,6 +3938,8 @@ mod tests {
             let chrome = chrome_rc();
             let doc = AutoCommit::new();
             let results = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "search source",
                 wanted: &[ResourceKind::Action],
                 chrome: &chrome.borrow(),
@@ -3939,6 +3971,8 @@ mod tests {
                 .borrow_mut()
                 .set_provider_enabled("files", false);
             let disabled = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "files search",
                 wanted: &[ResourceKind::Action],
                 chrome: &chrome.borrow(),
@@ -3961,6 +3995,8 @@ mod tests {
             let out = {
                 let state = c.borrow();
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "workspace privacy",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -3997,6 +4033,8 @@ mod tests {
             let results = {
                 let state = chrome.borrow();
                 provider.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "status privacy",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -4043,6 +4081,8 @@ mod tests {
             let results = {
                 let state = chrome.borrow();
                 provider.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "desktop tour",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -4105,6 +4145,8 @@ mod tests {
         let query = |needle: &str| {
             let state = chrome.borrow();
             provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -4209,6 +4251,8 @@ mod tests {
             let doc = AutoCommit::new();
             provider
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "language",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -4263,6 +4307,8 @@ mod tests {
             let doc = AutoCommit::new();
             let query = |chrome: &ChromeState, needle: &str| {
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle,
                     wanted: &[ResourceKind::Action],
                     chrome,
@@ -4310,6 +4356,8 @@ mod tests {
             let doc = AutoCommit::new();
             let offered = |chrome: &ChromeState| {
                 p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "agent",
                     wanted: &[ResourceKind::Action],
                     chrome,
@@ -4548,6 +4596,8 @@ mod tests {
             let state = chrome.borrow();
             let doc = AutoCommit::new();
             let results = ActionsProvider::new().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "ownership",
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -4593,6 +4643,8 @@ mod tests {
                 let state = chrome.borrow();
                 provider
                     .query(SearchContext {
+                        query_scope: None,
+                        include_programmatic: false,
                         needle: "do not disturb",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
@@ -4699,6 +4751,8 @@ mod tests {
             let state = chrome.borrow();
             let doc = AutoCommit::new();
             let results = ActionsProvider::new().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -4724,6 +4778,8 @@ mod tests {
             let state = chrome.borrow();
             let doc = AutoCommit::new();
             let results = ActionsProvider::new().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "quick-settings.",
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
@@ -4798,6 +4854,8 @@ mod tests {
             let chrome = chrome_with_room();
             let doc = AutoCommit::new();
             let results = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "quick-settings.",
                 wanted: &[ResourceKind::Action],
                 chrome: &chrome.borrow(),
@@ -4924,6 +4982,8 @@ mod tests {
             let chrome = chrome_with_room();
             let mut doc = AutoCommit::new();
             let results = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "quick-settings.",
                 wanted: &[ResourceKind::Action],
                 chrome: &chrome.borrow(),
@@ -5170,6 +5230,8 @@ mod tests {
             let state = chrome.borrow();
             provider
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "profile.save",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -5207,6 +5269,8 @@ mod tests {
             let state = chrome.borrow();
             provider
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "assign permission role",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
