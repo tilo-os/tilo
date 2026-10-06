@@ -2,7 +2,7 @@
  * The source provider is required: resource ids are record-local, not global.
  * This is a fresh authorized read, never a URL capability or an invocation.
  */
-export async function resolveResourceReference({reference, provider, actions, current}) {
+export async function resolveResourceReference({reference, provider, actions, current, scope}) {
   const bounded = (value, size) => typeof value === 'string' && value.trim().length > 0
     && value.length <= size && !/[\u0000-\u001f\u007f]/u.test(value);
   if (!bounded(provider, 2048) || !provider.startsWith('record:')
@@ -12,8 +12,11 @@ export async function resolveResourceReference({reference, provider, actions, cu
   // Caller-owned mutable objects cannot change the address during authentication.
   const address = {id: reference.id, kind: reference.kind};
   if (!actions || !current()) throw Error('Shared resource requires the current admitted room');
-  const page = await actions.catalogue({provider, needle: address.id, max_results: 256});
+  const page = await actions.catalogue({provider, view_resource: address, max_results: 256});
   if (!current()) throw Error('Shared resource connection changed');
+  if (scope && (!page.locator || page.locator.origin !== scope.origin
+    || page.locator.room !== scope.room || page.locator.hostDevice !== scope.hostDevice
+    || page.locator.provider !== provider)) throw Error('Shared resource host locator changed or unavailable');
   if (page.next_cursor?.length) throw Error('Shared resource lookup exceeds the catalogue budget');
   const rows = page.rows.filter(row => row.provider === provider
     && row.resource?.id === address.id && row.resource?.kind === address.kind);
@@ -22,7 +25,7 @@ export async function resolveResourceReference({reference, provider, actions, cu
   if (!app || rows.some(row => row.app_id !== app)) throw Error('Ambiguous shared resource publisher');
   // Labels and action contracts come from the authorized live publisher, never
   // from the untrusted message. Navigation still uses its own view door.
-  return {provider, app, revision: page.revision, resource: rows[0].resource,
+  return {provider, app, revision: page.revision, locator: page.locator, resource: rows[0].resource,
     availableActions: rows.map(row => row.action).filter(Boolean),
     views: rows.filter(row => row.action?.kind === 'View' && row.action.view?.open_action === row.action.address?.action).map(row => row.action)};
 }
@@ -30,14 +33,14 @@ export async function resolveResourceReference({reference, provider, actions, cu
 /** Explicitly open a reference in a standalone native-rendered browser app.
  * The caller selects a published view action, never a label-derived app.
  */
-export async function openResourceReference({reference, provider, action, actions, current, waitRecord, mount, signal}) {
+export async function openResourceReference({reference, provider, action, actions, current, scope, waitRecord, mount, signal}) {
   signal?.throwIfAborted();
   const span = reference?.span == null ? null : {...reference.span};
   if (span && (!Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)
     || span.start < 0 || span.end < span.start || !['Chars', 'Bytes'].includes(span.unit))) {
     throw Error('Invalid shared resource range');
   }
-  const resolved = await resolveResourceReference({reference, provider, actions, current});
+  const resolved = await resolveResourceReference({reference, provider, actions, current, scope});
   signal?.throwIfAborted();
   const prefix = `record:${resolved.app}:`;
   if (!provider.startsWith(prefix)) throw Error('Shared resource record does not match its publisher');
@@ -59,7 +62,7 @@ export async function openResourceReference({reference, provider, action, action
     // The mounted app resolves the same exact address again with current
     // permissions. Read metadata does not authorize a later view invocation.
     const fresh = await resolveResourceReference({reference: {id: resolved.resource.id,
-      kind: resolved.resource.kind}, provider, actions, current});
+      kind: resolved.resource.kind}, provider, actions, current, scope});
     signal?.throwIfAborted();
     const freshView = fresh.views.find(view => view.address?.resource === resolved.resource.id
       && view.address.action === action);

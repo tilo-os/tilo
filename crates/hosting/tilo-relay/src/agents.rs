@@ -148,6 +148,8 @@ impl crate::AppServingPlane for HostActionsPlane {
 struct RelayRecordsLink {
     user_public_key: [u8; 32],
     member: RoomMember,
+    rooms: Option<crate::rooms::Rooms>,
+    browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
 }
 
 impl RoomRecordsLink for RelayRecordsLink {
@@ -157,6 +159,34 @@ impl RoomRecordsLink for RelayRecordsLink {
 
     fn member(&self) -> RoomMember {
         self.member.clone()
+    }
+
+    fn view_read_policy(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        app: &str,
+        record: &str,
+    ) -> Option<tilo_agent_participant::room_actions::ViewReadPolicy> {
+        self.member.runtime.block_on(
+            self.rooms
+                .as_ref()?
+                .resource_view_policy(workspace, caller, app, record),
+        )
+    }
+
+    fn view_locator(
+        &self,
+        room: &str,
+        provider: &str,
+    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
+        let origin = self.browser_origin.read().ok()?.clone()?;
+        Some(tilo_actions::remote::ResourceViewLocator {
+            origin: (*origin).clone(),
+            room: room.to_owned(),
+            host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
+            provider: provider.to_owned(),
+        })
     }
 }
 
@@ -193,6 +223,8 @@ pub async fn start(
         .rooms
         .attach(Arc::new(RelayRecordsLink {
             user_public_key: relay.room_records().user_public_key(),
+            rooms: relay.rooms().cloned(),
+            browser_origin: Arc::clone(&relay.browser_origin),
             member: RoomMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.room_records().signing_key().clone(),

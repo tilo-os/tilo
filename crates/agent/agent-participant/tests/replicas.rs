@@ -17,6 +17,59 @@ use tilo_agent_participant::{Replica, Seed};
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
+#[test]
+fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
+    use ui::permissions::{Actor, PermissionContext, Role};
+    let catalogue = catalogue();
+    let app = "so.tilo.chat";
+    let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
+    let mut doc = page.read(Clone::clone).unwrap();
+    let workspace = chat::doc::ChatDoc::create_workspace(&mut doc, "Resource view fixture");
+    page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
+    let resource = format!("chat.workspace:{workspace}");
+    let before = body(&page);
+    let viewer = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Viewer), "ada").in_room(ROOM),
+        Vec::new(),
+    );
+    let denied = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Denied), "ada").in_room(ROOM),
+        Vec::new(),
+    );
+    let views = page.resource_views(&resource, "chat.workspace", &viewer);
+    assert!(
+        !views.is_empty(),
+        "the actual Chat resource declares a viewer navigation door"
+    );
+    assert!(
+        views
+            .iter()
+            .all(|view| view.kind == tilo_actions::OperationKind::View)
+    );
+    assert!(
+        page.resource_views(&resource, "chat.workspace", &denied)
+            .is_empty()
+    );
+    assert!(
+        page.resource_views("missing", "chat.workspace", &viewer)
+            .is_empty()
+    );
+    assert!(
+        page.resource_views(&resource, "wrong.kind", &viewer)
+            .is_empty()
+    );
+    assert!(
+        page.survey()
+            .iter()
+            .all(|action| action.kind == tilo_actions::OperationKind::Document)
+    );
+    assert_eq!(
+        body(&page),
+        before,
+        "metadata discovery writes no CRDT changes"
+    );
+}
+
 fn body(app: &Replica) -> String {
     app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
         .unwrap()

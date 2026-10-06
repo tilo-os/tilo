@@ -39,6 +39,11 @@ export async function createResourceLink({peer, page, reference, provider, actio
   const scope = peer.resourceScope;
   if (!scope || scope.origin !== address.origin || scope.room !== address.room
     || scope.hostDevice !== address.hostDevice) throw Error('Resource link connection changed');
+  const locator = resolved.locator;
+  if (!locator || locator.origin !== address.origin || locator.room !== address.room
+    || locator.hostDevice !== address.hostDevice || locator.provider !== address.provider) {
+    throw Error('Resource link requires a current host-issued locator');
+  }
   const view = resolved.views.find(view => view.address.action === address.action);
   if (!view || (address.reference.span != null && !view.view.range)) throw Error('Resource view unavailable');
   const url = new URL(page);

@@ -163,42 +163,146 @@ A changed block discards the pending selection. Neither view rewrites document t
 These are positional offsets, not CRDT anchors: an in-bounds historical offset alone
 cannot detect an earlier edit that shifted its intended meaning.
 
-Notes keeps blocks lazily addressable through its native action door rather than
-publishing every block into the bounded room catalogue. The browser reference resolver
-currently reads that catalogue; Notes block browser routing therefore remains
-unsupported until authorized exact-resource discovery is available. A native range
-contract does not establish a complete native-to-browser sharing journey. Word
-Processor's existing character navigation is not yet a declared block resource view;
-its search/caret operations must not be advertised as a browser range contract.
-Other apps without an explicit range binding refuse ranged browser navigation.
+Notes keeps blocks lazily addressable through its registered resource kind. Exact
+read-only discovery resolves that child without initializing an app or expanding the
+ordinary document-operation catalogue. Word Processor's character navigation is not
+yet a declared block resource view; apps without a range binding refuse ranged links.
 
-The runtime page now shares a tested navigation lifecycle. Leave during connection
-or hydration disposes late results, does not close a replacement session, and still
-disposes the peer if app cleanup fails. Fixtures cover the page's production lifecycle
-and resolver refusal, but do not provide native host-route or account-picker APIs.
+The browser page uses an explicit account picker over the existing Settings-owned
+`tilo.accounts` record. Only enabled `tilo.identity` entries with the selected public
+root and exact HTTPS host appear. Its projection reads the canonical record key and
+checks the document stamp and person-room scope; it neither opens a vault nor creates
+custody. Account selection is checked again before connection and after hydration.
+Leave closes the mount, peer and custody; a changed account cannot replace the old
+profile during an outstanding request.
 
-Three existing ownership boundaries prevent finishing the essential sharing path:
+The continuation adds `CatalogueQuery::view_resource` to the existing authenticated
+remote-action exchange. The relay checks current certified Read on the exact source
+record; its worker replays bounded existing changes and surveys registered local
+views without mounting Chat as a duplicate room record. The ordinary document door
+retains its owner gate. Fresh role/capability checks precede returning any descriptors
+or the host-issued HTTPS origin, room, device and provider locator.
 
-- The browser room action service (`agent-participant/src/room_actions.rs`) builds
-  its catalogue from `Replica::survey`, which intentionally exposes document
-  operations only. It accepts the host user's devices, not arbitrary admitted
-  collaborators (`RoomActions::authorized`). The browser resolver's local-view rows
-  are exercised by frame fixtures, not currently supplied by that production service.
-  Exact `CatalogueQuery::target` filters an existing snapshot; it does not synthesize
-  lazy resources or view metadata. A read-only, role-filtered resource/view discovery
-  endpoint is needed. Do not expand document invocation privileges to enable it.
-- The host's HTTPS origin is owned by `tilo-relay::web::WebHandle`; native app/broker
-  resource metadata currently has no host-issued browser locator carrying origin,
-  room, host device and source provider. A label, local path or caller-supplied URL
-  cannot supply this authority binding. Chat's native Copy/Open chip is incomplete.
-- Settings owns `accounts::person::PersonAccounts` (`tilo.accounts`). Contacts owns
-  recipient associations, which explicitly convey neither identity proof nor browser
-  admission. The browser entry has no read-only account enumeration/selection bridge
-  to that shared record; root-identity state is in-memory and device custody is keyed
-  by an already selected identity profile. The entry still asks for a public key.
-  An owner-provided account projection and identity-profile mapping are needed before
-  replacing this with a picker. No second account registry is introduced.
+The native broker uses its existing certified-channel read context and the shell's
+existing remote-action transport to request that metadata, checking source Read and
+current selected host/device before and after the request. A locator is navigation
+metadata, never admission or an invitation.
 
-The held PR must remain held until those contracts are integrated and a fixture proves
-native Copy/Open through the browser entry, including revocation and Leave. Existing
-browser and HTTPS admission fixtures are supporting checks, not that acceptance test.
+The native Copy/Open chip and fully paired browser journey remain incomplete. The
+relay's HTTPS API does not serve the browser bundle, and no deployed browser-entry
+URL is configured in this repository. The host/browser deployment owner must supply
+that destination; it cannot be inferred from the source label or API origin. Settings
+also needs its normal identity sign-in flow to publish the public `tilo.identity`
+account entry. The picker must not invent an account or certify a device on link open.
+
+The governed HTTPS fixture currently reports an authenticated, encrypted, durable
+source publication, but the host's duplicate peer waits for MLS keys. It uses the
+same governor device identity with empty member state while the governor already
+holds its own steward state. A proposed exact-source read adapter reuses those
+existing keys and the shared signed-frame verifier, with certified Read before
+key access and after bounded replay. Automatic approval review rejected that
+security-sensitive production access change; it is pending explicit approval.
+A mocked catalogue, a duplicate certificate, or a plaintext downgrade would not
+prove the native-to-browser journey.
+
+## Approved integration contract and authorization invariants
+
+The following narrow adapters complete navigation; they do not change document
+invocation authorization, enrollment, membership, or credential custody.
+
+1. The relay authenticates user/device from the verified connection, never request
+   JSON. Discovery requires an active certified device, current governed room
+   admission, and current Read capability for the source app and requested resource.
+   Owner, Editor, Commenter and Viewer can read only where that same capability
+   engine allows it. Denied, unknown, removed, revoked, expired, detached and withdrawn
+   devices receive no view metadata or locator. Agents retain their delegated scope;
+   an ordinary person lookup cannot convert an agent into a person.
+2. A request names one existing source provider, resource id and kind. The host
+   resolves the current record and lazy resource through the publishing resource's
+   existing door. It returns declared View descriptors only. It does not execute
+   a view remotely, launch an app, create a record, expose document operations,
+   or implicitly join a room. The existing document action catalogue stays intact.
+3. Authorization is checked before reading and again before delivering metadata.
+   The browser checks again after hydration. Revocation, session replacement or
+   a changed record/source invalidates the operation, including cached local views.
+   Permission checks use the canonical capability model and current policy time.
+4. A locator contains only the configured HTTPS browser origin, current room, host
+   certificate's device public key, exact record provider, resource kind/id, declared
+   open action and optional range. It contains no account id, private state, label,
+   invitation, token or certificate. Wildcard listener addresses are not public
+   locators. A host without a routable configured browser origin refuses issuance.
+5. The browser picker reads only a bounded public projection of Settings' existing
+   shared accounts; it never enumerates vaults or invents a separate identity store.
+   Selected account id and identity profile must still agree with a fresh projection
+   before opening. Removed, disabled, changed or ambiguous accounts refuse. Account
+   switching aborts pending navigation, closes the old mount/peer/custody, clears
+   old account presentation and cannot reuse old admission or cached document state.
+   Missing certification or membership still follows the existing governed flow.
+6. Native Copy/Open and the painted resource chip use one public semantic action
+   path. Copy mints only a navigation address; Open asks the existing URI host
+   service. The external recipient opens the browser app. Leave is explicit,
+   visible and cancels late results; this path requests neither live following,
+   microphone permission nor video capture.
+
+Affected owners/files, kept separate from the UI crate split:
+
+- `crates/collab/actions/src/remote{,/catalogue}.rs`: bounded read-only request/reply
+  vocabulary and public locator DTO, without modifying invocation semantics.
+- `crates/sdk/tilo-resource/src/kind.rs`: existing-resource metadata lookup,
+  including the publisher's lazy children, without executing effects or refactoring
+  the SDK participant.
+- `crates/agent/agent-participant/src/{apps,room_actions}.rs`: record-backed metadata
+  resolution, capability filtering and two current authorization checks.
+- `crates/hosting/tilo-relay/src/{agents,rooms,daemon,web/mod}.rs`: authenticated
+  governed-room policy adapter and listener-owned locator origin. Existing admission
+  and document-action authorization remain the authority.
+- `crates/system/accounts/src/` and Settings' existing account projection: a public
+  browser navigation projection of the same record, no Contacts schema/editor change.
+- `crates/browser/tilo-browser-runtime/web/`: the account-picker adapter, lookup,
+  native/browser link codec and cancellable page lifecycle.
+- `crates/collab/tilo-action-broker/src/{services,collab_broker_capnp}.rs` and its
+  `committed_document.rs`: reuse the original admitted channel for native queries.
+- `crates/session/shell/src/shell/{broker_services,network/governor_actions}.rs`:
+  current-owner Read authorization and the existing authenticated remote-action link.
+- Chat's existing effects/resources/rendering: the future visible chip Copy/Open
+  controls must use the same public action surface; these controls are incomplete.
+
+The acceptance fixture must originate an actual Chat typed reference, obtain its
+locator through authenticated production discovery, choose an existing projected
+account, hydrate the same existing record, and invoke the browser's declared local
+view. Companion fixtures refuse unauthorized roles/devices and changed sources,
+revoke while discovery/hydration is pending, switch accounts mid-operation, and
+leave before/after mounting. Fixtures alone use temporary governed identities;
+no external grants or hosting deployment are authorized by this work.
+
+### Pending host-reader adapter review
+
+The failing fixture is
+`an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host`.
+Its sender has one durable operation, no failures, no outgoing work and no missing
+keys. The service's duplicate governor peer has one sealed operation waiting for
+keys. This is an MLS state ownership mismatch, not an absent caller grant.
+
+The proposed implementation is confined to these owners:
+
+- `rooms.rs`: authenticate the current caller and exact record Read again while
+  holding the governed room lock, before accessing any key or retained payload.
+  Filter the exact app/room/record, require encrypted signed frames, use the existing
+  browser-peer `open_frame` and reassembly implementation, and replay at most 16 MiB.
+  Refuse incomplete transfers and recheck certified Read before returning an internal
+  snapshot and revision. No plaintext document is returned as a browser API response.
+- `rooms/stewardship.rs`: expose existing content keys for an already-open exact
+  channel to the host's reader; absence refuses. Never call `open_or_create`, create
+  a channel, change membership, or issue a certificate from this read path.
+- `browser-peer`: reuse its existing content-key cipher through a narrow exported
+  adapter. Do not implement a second signature or encryption protocol.
+- `agents.rs` and `RoomRecordsLink`: pass the already-authorized internal snapshot
+  to exact view discovery instead of opening a second peer with empty MLS state.
+  Default implementations refuse. The worker still surveys only inert declared
+  views through the registered resource kind and checks fresh canonical capabilities.
+
+Automatic approval review rejected applying this production access adapter. The
+proposal is pending explicit approval; no part of the rejected command was executed.
+Before it is published, the governed HTTPS fixture must pass, with additional
+unauthorized/revoked-device and missing-source refusals. The ordinary document action
+service and its invocation authority must remain unchanged.

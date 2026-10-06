@@ -6669,6 +6669,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                     Err(refusal) => return reply_frame(*refusal, results),
                 }
             };
+        if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
+            &request.message
+            && query.view_resource.is_some()
+        {
+            return self.resource_view_query(*correlation, query.clone(), results);
+        }
+
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,

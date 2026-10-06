@@ -14,14 +14,15 @@
   <main id="entry">
     <h1>Open a shared resource</h1>
     <p id="destination"></p>
-    <p>Use the public identity key of your existing browser account. This link does not grant access. Sign in and obtain workspace admission through the usual identity flow first.</p>
+    <p>Choose an existing account from Settings. This link does not grant access; workspace admission and a certified browser device are required.</p>
     <form id="open">
-      <label>Your public identity key <input name="account" required pattern="[a-fA-F0-9]{64}" autocomplete="off"></label>
+      <label>Account <select name="account" required></select></label>
       <button>Open resource</button>
     </form>
   </main>
   <p id="status" role="status"></p>
   <button id="leave" hidden>Leave</button>
+  <button id="accounts">Choose account / refresh accounts</button>
   <div id="surface"></div>
   <script type="module" src="./resource-page.mjs"></script>
 </body>
