@@ -5,6 +5,13 @@ executable stand-alone; the higher-level flow is described below.
 
 ## Measure
 
+- `shm_swizzle_bench` — a Cargo example calling the production SHM pixel
+  conversion on reused storage, with pixel/capacity checks and raw timing
+  samples. Run it on a remote builder with `rcargo --on-builder run --locked
+  -p shell --release --example shm_swizzle_bench`. The
+  [paired comparison](../../docs/shm-conversion-benchmark.md) records its scope,
+  results and remaining system measurements.
+
 - `frame-loop-bench.py` — run the real compositor loop with cadence and
   input-to-present instrumentation. Its `--gate` mode is the quick desktop
   acceptance test: use `--refresh-hz 144 --input-hz 30 --launch-app
