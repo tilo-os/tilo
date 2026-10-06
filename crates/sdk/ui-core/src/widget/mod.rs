@@ -2621,7 +2621,7 @@ pub use resize_handle::{
 mod group_row;
 pub use group_row::{
     CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan, StripLane,
-    TabDropTarget, WheelJumpAccum, wheel_jump_detents,
+    TabDropTarget, WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
 };
 mod strip_view;
 pub use strip_view::{STRIP_COOLDOWN_MS, StripView};

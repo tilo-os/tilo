@@ -165,6 +165,75 @@ pub struct FramePaint {
     /// composites materials blurs these before rendering the scene; any
     /// other shows the surfaces opaque.
     pub backdrop: Option<Arc<BackdropFrame>>,
+    /// Optional separable canvases; the screen-space scene remains authoritative.
+    pub cache: Option<FrameCache>,
+}
+
+/// A strip drawn in canvas coordinates. The presenter shows the workspace
+/// layer `scroll_x` pixels to the right of `dest_*`, in scene pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StripBlit {
+    pub dest_x: u32,
+    pub dest_y: u32,
+    pub dest_w: u32,
+    pub dest_h: u32,
+    pub scroll_x: u32,
+}
+
+/// A frame as layers a presenter retains between frames.
+#[derive(Clone)]
+pub struct FrameCache {
+    /// Width of the workspace layer in scene pixels: wider than the screen
+    /// when a strip is drawn in canvas coordinates and its content is wider
+    /// than its viewport.
+    pub width: u32,
+    /// Where each panned strip reads the workspace layer. A strip at rest
+    /// reads it in place and is not listed.
+    pub strips: Vec<StripBlit>,
+    pub layers: FrameLayers,
+}
+
+/// The desktop's sections as layers, bottom to top. Drawing them over each
+/// other in order (source over), the workspace read at each strip's pan,
+/// gives the frame's scene, so a presenter can rasterize each into its own
+/// retained buffer and composite the buffers: a strip's pan then moves the
+/// workspace layer over a backdrop and chrome that stay put, without drawing
+/// any of them again.
+#[derive(Clone)]
+pub struct FrameLayers {
+    /// The wallpaper and anything drawn behind every window.
+    pub backdrop: Scene,
+    /// Strips, their floating surfaces and the docked wheel, in canvas
+    /// coordinates when [`FrameCache::strips`] pans them.
+    pub workspace: Scene,
+    /// Everything above: notices over the desktop, the top bar, quick
+    /// settings and every overlay above them.
+    pub chrome: Scene,
+}
+
+/// Widest workspace layer, in scene pixels. Past this the strips keep their
+/// pan in the scene.
+const MAX_CANVAS_WIDTH: u32 = 16384;
+
+/// Layer composition is a Linux DRM capability; other presenters retain their dense path.
+fn separable_layer(scene: &Scene) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !tilo_cpu_raster::reads_backdrop(scene.encoding())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = scene;
+        false
+    }
+}
+
+/// How the strips of one frame are drawn.
+struct StripPlan {
+    /// The strips are drawn in canvas coordinates.
+    unbake: bool,
+    width: u32,
+    strips: Vec<StripBlit>,
 }
 
 impl FramePaint {
@@ -181,12 +250,16 @@ impl FramePaint {
             workspace_clip: None,
             hdr_layers: Vec::new(),
             backdrop: None,
+            cache: None,
         }
     }
 
     /// The same frame, with its floating surfaces drawn over `backdrop`.
     #[must_use]
     pub fn with_backdrop(mut self, backdrop: Option<Arc<BackdropFrame>>) -> Self {
+        if backdrop.is_some() {
+            self.cache = None;
+        }
         self.backdrop = backdrop;
         self
     }
@@ -194,6 +267,9 @@ impl FramePaint {
     /// The same frame, with `layers` composited where HDR is shown.
     #[must_use]
     pub fn with_hdr_layers(mut self, layers: Vec<crate::shell::hdr_surface::HdrLayer>) -> Self {
+        if !layers.is_empty() {
+            self.cache = None;
+        }
         self.hdr_layers = layers;
         self
     }
@@ -207,6 +283,10 @@ impl FramePaint {
         self.damage_regions = None;
         self.previous_revision = None;
         self.overview_patch = None;
+        self.cache = None;
+        // The appended commands are in the scene only; a presenter drawing
+        // the layers would miss them.
+        self.cache = None;
     }
 }
 
@@ -216,6 +296,9 @@ struct ProducedSections {
     backdrop: Scene,
     topbar: Scene,
     workspace: Scene,
+    workspace_overlays: Scene,
+    /// Strips drawn in canvas coordinates, as the scene showed them.
+    strips: Option<Vec<StripBlit>>,
     topbar_bounds: Option<Rect>,
     quick_settings: Scene,
     above_quick_settings: Scene,
@@ -500,6 +583,8 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// Capacity of this builder's actual presenter; absent for dense captures.
+    retained_layer_width: Option<u32>,
     /// HDR layers of the latest [`Self::paint`], until taken.
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
     /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
@@ -741,6 +826,7 @@ impl FrameBuilder {
             native_focus_ordinal: None,
             last_produced_sections: None,
             next_scene_revision: 1,
+            retained_layer_width: None,
             painted_hdr_layers: Vec::new(),
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
@@ -1488,6 +1574,8 @@ impl FrameBuilder {
     /// every display draws its part of the desktop at its own scale. Caller
     /// hands it to a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
+        // Dense captures must not inherit a surrounding presenter's canvas draw.
+        let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
@@ -1739,6 +1827,7 @@ impl FrameBuilder {
             workspace_clip,
             hdr_layers: Vec::new(),
             backdrop: None,
+            cache: None,
         })
     }
 
@@ -1750,6 +1839,8 @@ impl FrameBuilder {
         reason = "Retained-damage metadata must be derived alongside the exact scene composition; splitting this transaction risks draw-order or damage-region divergence."
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
+        // This producer owns the policy even when invoked during another draw.
+        let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
@@ -1757,9 +1848,18 @@ impl FrameBuilder {
             return frame;
         }
         self.host.dense_scene_covers_content_rebuild();
+        let global_filter = self.global_filter();
+        let layered = self.retained_layer_width.is_some();
+        // A presenter that composites layers cannot composite HDR layers, and
+        // they would be recorded in canvas coordinates.
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+        let plan = (layered && !global_filter)
+            .then(|| self.strip_plan())
+            .flatten();
+        let unbake = plan.as_ref().is_some_and(|plan| plan.unbake);
+        let retained_scope = ui::retained_present::RetainedScene::begin(unbake);
         let foreign_recording = super::foreign_damage::Recording::begin();
         let backdrop_recording = BackdropRecording::begin();
         let mut sections = self.host.draw_scene_sections(
@@ -1816,6 +1916,7 @@ impl FrameBuilder {
                 &self.presence,
             );
         }
+        drop(retained_scope);
 
         let backdrop_surfaces = backdrop_recording.finish();
         let foreign_images = foreign_recording.finish();
@@ -1824,6 +1925,14 @@ impl FrameBuilder {
                 .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
                 .unwrap_or_default(),
         );
+        if unbake && (!backdrop_surfaces.is_empty() || !hdr_layers.is_empty()) {
+            // Material sampling needs the original screen-space sections.
+            // Discard this provisional retained draw and produce those sections.
+            let capacity = self.retained_layer_width.take();
+            let frame = self.paint_with_damage();
+            self.retained_layer_width = capacity;
+            return frame;
+        }
         let revision = self.next_scene_revision;
         self.next_scene_revision = self.next_scene_revision.saturating_add(1);
         let previous_revision = self
@@ -1838,18 +1947,62 @@ impl FrameBuilder {
                 )
                 || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair);
-        let damage_regions = (!global_filter)
+        let strips = unbake.then(|| {
+            plan.as_ref()
+                .map(|plan| plan.strips.clone())
+                .unwrap_or_default()
+        });
+        let strips_kept = self
+            .last_produced_sections
+            .as_ref()
+            .is_some_and(|previous| previous.strips == strips);
+        // Section and foreign-image bounds are in canvas coordinates while
+        // a strip is unbaked. They cannot authorize sparse screen damage.
+        let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
+        let damage_regions = (!global_filter && strips_kept && screen_space_damage)
             .then(|| {
                 self.damage_from_sections_with_images(&sections, global_filter, &foreign_images)
             })
             .flatten();
         let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
+        // A backdrop-dependent section is never independently composited.
+        let separable = backdrop_surfaces.is_empty()
+            && hdr_layers.is_empty()
+            && [
+                &sections.workspace,
+                &sections.workspace_overlays,
+                &sections.topbar,
+                &sections.quick_settings,
+                &sections.above_quick_settings,
+            ]
+            .into_iter()
+            .all(separable_layer);
+        let cache = plan.filter(|_| separable).map(|plan| {
+            let mut chrome = Scene::new();
+            chrome.append(&sections.workspace_overlays, None);
+            chrome.append(&sections.topbar, None);
+            chrome.append(&sections.quick_settings, None);
+            chrome.append(&sections.above_quick_settings, None);
+            FrameCache {
+                width: plan.width,
+                strips: plan.strips,
+                layers: FrameLayers {
+                    backdrop: self.to_scene(sections.backdrop.clone()),
+                    workspace: self.to_scene(sections.workspace.clone()),
+                    chrome: self.to_scene(chrome),
+                },
+            }
+        });
         let backdrop =
             self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
 
         let mut scene = Scene::new();
         scene.append(&sections.backdrop, None);
-        scene.append(&sections.workspace, None);
+        match &strips {
+            Some(strips) => self.append_panned(&mut scene, &sections.workspace, strips),
+            None => scene.append(&sections.workspace, None),
+        }
+        scene.append(&sections.workspace_overlays, None);
         // OS chrome owns this layer. Its normal controls stay inside the
         // reserved top-bar band, while anchored surfaces such as the center
         // widget editor must remain above app tabs and client content.
@@ -1885,6 +2038,8 @@ impl FrameBuilder {
             backdrop: sections.backdrop,
             topbar: sections.topbar,
             workspace: sections.workspace,
+            workspace_overlays: sections.workspace_overlays,
+            strips,
             topbar_bounds: sections.topbar_bounds,
             quick_settings: sections.quick_settings,
             above_quick_settings: sections.above_quick_settings,
@@ -1907,6 +2062,7 @@ impl FrameBuilder {
             workspace_clip,
             hdr_layers,
             backdrop,
+            cache,
         }
     }
 
@@ -1939,6 +2095,7 @@ impl FrameBuilder {
         let old_scenes = [
             &previous.backdrop,
             &previous.workspace,
+            &previous.workspace_overlays,
             &previous.topbar,
             &previous.quick_settings,
             &previous.above_quick_settings,
@@ -1946,6 +2103,7 @@ impl FrameBuilder {
         let new_scenes = [
             &current.backdrop,
             &current.workspace,
+            &current.workspace_overlays,
             &current.topbar,
             &current.quick_settings,
             &current.above_quick_settings,
@@ -1958,6 +2116,7 @@ impl FrameBuilder {
         let mut image_regions = Vec::new();
         for (old, new) in [
             (&previous.workspace, &current.workspace),
+            (&previous.workspace_overlays, &current.workspace_overlays),
             (
                 &previous.above_quick_settings,
                 &current.above_quick_settings,
@@ -1973,6 +2132,129 @@ impl FrameBuilder {
             }
         }
         Some(image_regions)
+    }
+
+    /// Update only this producer's presenter capacity. Captures keep the default dense path.
+    pub fn set_retained_layer_width(&mut self, width: Option<u32>) {
+        let width = width.filter(|width| *width > 0);
+        if self.retained_layer_width != width {
+            self.retained_layer_width = width;
+            self.last_produced_sections = None;
+        }
+    }
+
+    /// A filter over the whole desktop (night light, a colour filter, the
+    /// magnifier, the crosshair) transforms every pixel of the scene.
+    fn global_filter(&self) -> bool {
+        self.watch_configured_theme
+            && (self.night_light
+                || !matches!(
+                    self.visual_accessibility.color_filter,
+                    DesktopColorFilter::None
+                )
+                || self.visual_accessibility.magnifier.is_on()
+                || self.visual_accessibility.cursor_crosshair)
+    }
+
+    /// How the strips are drawn for a presenter that composites layers, in
+    /// scene pixels, or `None` when the desktop cannot be drawn as layers:
+    /// on several displays each draws it at its own place and scale.
+    fn strip_plan(&self) -> Option<StripPlan> {
+        if self
+            .outputs
+            .as_ref()
+            .is_some_and(|outputs| !output_scene::is_identity(outputs))
+        {
+            return None;
+        }
+        let screen_w = scene_px(self.scene_size.0).max(1);
+        let max_width = self.retained_layer_width?.min(MAX_CANVAS_WIDTH);
+        if screen_w > max_width {
+            return None;
+        }
+        let mut plan = StripPlan {
+            unbake: true,
+            width: screen_w,
+            strips: Vec::new(),
+        };
+        for (id, scroll, max_scroll) in self.host.strip_scroll_offsets() {
+            let Some(rect) = self.host.strip_row_rect(crate::shell::state::StripId(id)) else {
+                continue;
+            };
+            let dest_x = scene_px(rect.x0);
+            let dest_w = scene_px(rect.width()).max(1);
+            let right = dest_x
+                .saturating_add(dest_w)
+                .saturating_add(scene_px(max_scroll.ceil()));
+            if right > max_width {
+                // Too wide for the presenter: the pans stay in the scene.
+                return Some(StripPlan {
+                    unbake: false,
+                    width: screen_w,
+                    strips: Vec::new(),
+                });
+            }
+            plan.width = plan.width.max(right);
+            // Fractional pans keep their exact screen-space drawing.
+            if scroll.fract() != 0.0 {
+                return Some(StripPlan {
+                    unbake: false,
+                    width: screen_w,
+                    strips: Vec::new(),
+                });
+            }
+            if scroll > 0.0 && ui::widget::pan_within_canvas(scroll, max_scroll) {
+                let pans = self
+                    .host
+                    .strip_pan_rect(crate::shell::state::StripId(id))
+                    .unwrap_or(rect);
+                let dest_y = scene_px(pans.y0);
+                let dest_y1 = scene_px(pans.y1);
+                plan.strips.push(StripBlit {
+                    dest_x,
+                    dest_y,
+                    dest_w,
+                    dest_h: dest_y1.saturating_sub(dest_y).max(1),
+                    scroll_x: scene_px(scroll),
+                });
+            }
+        }
+        Some(plan)
+    }
+
+    /// Append a workspace drawn in canvas coordinates as it appears on
+    /// screen: inside each panned strip read at the strip's pan, everywhere
+    /// else in place, as a presenter compositing the layers shows it.
+    fn append_panned(&self, scene: &mut Scene, workspace: &Scene, strips: &[StripBlit]) {
+        use vello::kurbo::Shape as _;
+        if strips.is_empty() {
+            scene.append(workspace, None);
+            return;
+        }
+        let dest = |strip: &StripBlit| {
+            Rect::new(
+                f64::from(strip.dest_x),
+                f64::from(strip.dest_y),
+                f64::from(strip.dest_x) + f64::from(strip.dest_w),
+                f64::from(strip.dest_y) + f64::from(strip.dest_h),
+            )
+        };
+        for strip in strips {
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &dest(strip));
+            scene.append(
+                workspace,
+                Some(Affine::translate((-f64::from(strip.scroll_x), 0.0))),
+            );
+            scene.pop_layer();
+        }
+        let (w, h) = self.scene_size;
+        let mut rest = Rect::new(0.0, 0.0, w, h).to_path(0.1);
+        for strip in strips {
+            rest.extend(dest(strip).path_elements(0.1));
+        }
+        scene.push_clip_layer(Fill::EvenOdd, Affine::IDENTITY, &rest);
+        scene.append(workspace, None);
+        scene.pop_layer();
     }
 
     #[cfg(test)]
@@ -4630,49 +4912,60 @@ mod tests {
             crate::shell::foreign::store().forget(SURFACE);
         }
 
-        fn hdr_surfaces_are_recorded_as_frame_layers() {
-            const SURFACE: u64 = 9_900_702;
-            let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
-                crate::collab::colorimetry::Colorimetry::hdr10(),
-                crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
-            )
-            .expect("PQ");
-            let plane =
-                crate::shell::hdr_surface::HdrPlane::from_signal_rgb(2, 2, [[0.6; 3]; 4], signal)
-                    .expect("plane");
-            let plane_id = plane.id();
-            crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
-            let mut fb = FrameBuilder::new((1600, 900));
-            fb.set_osk_surface(Some(SURFACE), None, None, true);
-
-            let frame = fb.paint_with_damage();
-            let [layer] = frame.hdr_layers.as_slice() else {
-                panic!("one HDR layer, got {}", frame.hdr_layers.len());
-            };
-            assert_eq!(layer.plane.id(), plane_id);
-            assert_eq!(layer.channel, 0);
-            assert!(
-                layer.bounds.width() > 2.0 && layer.bounds.y1 <= 900.0,
-                "the keyboard's surface is scaled into its bottom panel: {:?}",
-                layer.bounds
-            );
-            let _ = fb.paint();
-            assert_eq!(fb.take_hdr_layers().len(), 1, "the dense paint records too");
-            assert!(fb.take_hdr_layers().is_empty(), "taken once");
-
-            crate::shell::foreign::store().publish_rgba(SURFACE, &[40; 16], 2, 2);
-            assert!(
-                fb.paint_with_damage().hdr_layers.is_empty(),
-                "an SDR frame has none"
-            );
-            crate::shell::foreign::store().forget(SURFACE);
-        }
-
+        let _env_lock = tilo_test_env::lock();
         native_damage_covers_clip_tiles_and_clamps_the_viewport();
         transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist();
         night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin();
         osk_overlay_is_bottom_anchored_and_active_only();
-        hdr_surfaces_are_recorded_as_frame_layers();
+    }
+
+    #[test]
+    fn hdr_surfaces_are_recorded_as_frame_layers() {
+        const SURFACE: u64 = 9_900_702;
+        let _env_lock = tilo_test_env::lock();
+        let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+            crate::collab::colorimetry::Colorimetry::hdr10(),
+            crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+        )
+        .expect("PQ");
+        let plane =
+            crate::shell::hdr_surface::HdrPlane::from_signal_rgb(2, 2, [[0.6; 3]; 4], signal)
+                .expect("plane");
+        let plane_id = plane.id();
+        crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
+        let mut fb = FrameBuilder::new((1600, 900));
+        fb.set_osk_surface(Some(SURFACE), None, None, true);
+
+        let frame = fb.paint_with_damage();
+        let [layer] = frame.hdr_layers.as_slice() else {
+            panic!("one HDR layer, got {}", frame.hdr_layers.len());
+        };
+        assert_eq!(layer.plane.id(), plane_id);
+        assert_eq!(layer.channel, 0);
+        assert!(
+            layer.bounds.width() > 2.0 && layer.bounds.y1 <= 900.0,
+            "the keyboard's surface is scaled into its bottom panel: {:?}",
+            layer.bounds
+        );
+        let _ = fb.paint();
+        assert_eq!(fb.take_hdr_layers().len(), 1, "the dense paint records too");
+        assert!(fb.take_hdr_layers().is_empty(), "taken once");
+
+        fb.set_retained_layer_width(Some(8192));
+        let retained = fb.paint_with_damage();
+        assert!(
+            retained.cache.is_none(),
+            "HDR keeps the dense compositor path"
+        );
+        assert_eq!(retained.hdr_layers.len(), 1);
+        assert_eq!(retained.hdr_layers[0].plane.id(), plane_id);
+
+        crate::shell::foreign::store().publish_rgba(SURFACE, &[40; 16], 2, 2);
+        assert!(
+            fb.paint_with_damage().hdr_layers.is_empty(),
+            "an SDR frame has none"
+        );
+        crate::shell::foreign::store().forget(SURFACE);
     }
 
     fn key_press(key: Key) -> WindowEvent {
@@ -7085,3 +7378,19 @@ mod tests {
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
+
+/// A non-negative scene coordinate as whole pixels, rounded down.
+fn scene_px(value: f64) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    let value = value.min(f64::from(u32::MAX));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scene pixel edges are finite, non-negative, and clamped to u32"
+    )]
+    {
+        value as u32
+    }
+}
