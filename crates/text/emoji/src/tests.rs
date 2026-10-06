@@ -26,7 +26,7 @@ fn loads_every_group_in_unicode_order() {
             "flags",
         ]
     );
-    assert_eq!(cat.groups()[0].label(), "Smileys & Emotion");
+    assert_eq!(cat.groups()[0].label(), "Smileys & emotion");
     // Every tab icon is a real catalogue entry.
     assert!(cat.groups().iter().all(|g| cat.get(g.icon()).is_some()));
     assert!(cat.emoji().len() > 1800, "{}", cat.emoji().len());
@@ -241,7 +241,7 @@ fn untranslated_entries_keep_their_english_names() {
     // Italian CLDR inherits the smileys label, so it stays English.
     assert_eq!(
         Catalogue::for_locale("it").groups()[0].label(),
-        "Smileys & Emotion"
+        "Smileys & emotion"
     );
 }
 

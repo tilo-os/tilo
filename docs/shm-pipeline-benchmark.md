@@ -87,3 +87,13 @@ cargo run --locked -j 8 -p shell --release --example shm_pipeline_bench
 No new production optimization, hardware test, reboot, release or deployment was
 performed for this investigation. PR #2919 remains draft and held during the
 rendering redesign.
+
+## Redesign integration
+
+The feature branch incorporates the merged unified SDK redesign at
+`fc91d3bb78` using a merge from main. The merge required no changes to the
+conversion implementation, CPU fixture or Wayland SHM test. It preserves the
+redesign's frame-store and UI changes; Contacts, Messages and the ongoing UI
+crate split remain outside this change's ownership. Integration checks establish
+API and pixel correctness on that base, not a new performance comparison. The
+timings above remain tied to their recorded source and binary identities.

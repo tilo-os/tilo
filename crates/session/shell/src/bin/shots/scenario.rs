@@ -405,6 +405,9 @@ pub enum Action {
     ShowHostDesktopOnboarding,
     SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState),
     SetLockVisual(super::driver::LockVisualState),
+    /// Turn the reduced-transparency setting on or off: floating chrome is
+    /// then the opaque material instead of the blurred one.
+    ReduceTransparency(bool),
     /// Create the person's "Research" workspace on the shown device, the way
     /// the laptop has it, and look at it.
     SeedOwnWorkspace,
@@ -610,7 +613,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::OpenPalette => {
-            // Drive the default Super+K binding through the host's keyboard branch instead
+            // Drive the default Super+Space binding through the host's keyboard branch instead
             // of `set_palette_visible(true)` directly — the hotkey path
             // calls `toggle_palette()` which also focuses the palette
             // input + clears the residual query (see ShellOverlayHost::
@@ -618,7 +621,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             // actions would fall through because the palette ignores
             // characters when `!is_focused`.
             driver.set_modifiers(ModifiersState::SUPER);
-            driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
+            driver.press_key(&Key::Named(winit::keyboard::NamedKey::Space));
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::CaptureRecordingActive(active) => {
@@ -676,6 +679,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
         Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
+        Action::ReduceTransparency(on) => driver.set_reduce_transparency(*on),
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
@@ -3095,6 +3099,32 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickAt(Point::new(744.0, 103.0)),
                 Action::Wait(2),
                 Action::Snapshot("04-browser-active"),
+            ],
+        },
+        Scenario {
+            name: "floating_material",
+            description: "Quick settings, then the palette, over a long note: floating chrome is the blurred material.",
+            actions: vec![
+                Action::SeedLongNotes(0),
+                Action::Wait(2),
+                Action::Relayout,
+                Action::Snapshot("01-document"),
+                Action::PushQsLevel(QsLevel::Root),
+                Action::Wait(30),
+                Action::Snapshot("02-quick-settings"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(30),
+                Action::OpenPalette,
+                Action::Wait(30),
+                Action::Snapshot("03-palette"),
+                // The same two surfaces under reduced transparency: opaque.
+                Action::ReduceTransparency(true),
+                Action::Snapshot("04-palette-opaque"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(30),
+                Action::PushQsLevel(QsLevel::Root),
+                Action::Wait(30),
+                Action::Snapshot("05-quick-settings-opaque"),
             ],
         },
         Scenario {

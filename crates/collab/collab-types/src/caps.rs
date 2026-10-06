@@ -11,6 +11,7 @@
 //! a matching `Restrict` removes authority even if a `Grant` would allow it.
 
 use serde::{Deserialize, Serialize};
+pub mod action_authority;
 
 use crate::channel::ArtifactId;
 use crate::crypto::Ed25519PublicKey;

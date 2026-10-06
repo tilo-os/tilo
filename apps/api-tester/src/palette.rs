@@ -1,40 +1,26 @@
-//! Theme-derived colours and short labels shared by the app chrome and the
-//! focusable list rows (`navrow`). Every colour is read from the `Theme` so
-//! it tracks the OS light/dark/high-contrast track and accent.
+//! Small presentation helpers shared by the views: which tone a status
+//! reads as, the JSON token inks, and the short label of a URL.
 
 use ui::theme::Theme;
+use ui::widget::Tone;
 use vello::peniko::Color;
 
-use crate::model::{HttpMethod, StatusClass};
+use crate::model::StatusClass;
 use crate::vars;
 
-/// The accent colour for an HTTP method, derived from the theme's semantic
-/// palette so it tracks the OS theme.
-pub fn method_color(theme: &Theme, m: HttpMethod) -> Color {
-    let c = &theme.tokens.colors;
-    match m {
-        HttpMethod::Get => c.semantic.success,
-        HttpMethod::Post => c.semantic.info,
-        HttpMethod::Put => c.semantic.warning,
-        HttpMethod::Patch => c.accent[6],
-        HttpMethod::Delete => c.semantic.danger,
-        HttpMethod::Head | HttpMethod::Options => c.text_dim,
-    }
-}
-
-pub fn status_color(theme: &Theme, class: StatusClass) -> Color {
-    let c = &theme.tokens.colors;
+/// What a response status means, as the toolkit's status tone.
+pub fn status_tone(class: StatusClass) -> Tone {
     match class {
-        StatusClass::Success => c.semantic.success,
-        StatusClass::Redirect => c.semantic.info,
-        StatusClass::ClientError => c.semantic.warning,
-        StatusClass::ServerError => c.semantic.danger,
-        StatusClass::Other => c.text_dim,
+        StatusClass::Success => Tone::Success,
+        StatusClass::Redirect => Tone::Info,
+        StatusClass::ClientError => Tone::Warning,
+        StatusClass::ServerError => Tone::Danger,
+        StatusClass::Other => Tone::Neutral,
     }
 }
 
 /// Colour for a highlighted JSON token, from the theme's shared syntax
-/// palette so request bodies read like every other code surface.
+/// palette so response bodies read like every other code surface.
 pub fn token_color(theme: &Theme, kind: vars::TokenKind) -> Color {
     let syntax = &theme.tokens.syntax;
     match kind {
@@ -43,19 +29,6 @@ pub fn token_color(theme: &Theme, kind: vars::TokenKind) -> Color {
         vars::TokenKind::Number | vars::TokenKind::Keyword => syntax.number,
         vars::TokenKind::Punctuation => syntax.operator,
         vars::TokenKind::Plain => syntax.text,
-    }
-}
-
-/// A compact tag for a method, used on sidebar / history rows.
-pub fn method_short(m: HttpMethod) -> &'static str {
-    match m {
-        HttpMethod::Get => "GET",
-        HttpMethod::Post => "POST",
-        HttpMethod::Put => "PUT",
-        HttpMethod::Patch => "PTCH",
-        HttpMethod::Delete => "DEL",
-        HttpMethod::Head => "HEAD",
-        HttpMethod::Options => "OPT",
     }
 }
 

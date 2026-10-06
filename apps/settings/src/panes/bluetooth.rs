@@ -576,36 +576,30 @@ impl BluetoothModel {
             let path = d.path.clone();
             block.push(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        self.cx.bind(
-                            Button::new(
-                                &format!("settings.bluetooth.rename.{}", token(&d.path)),
-                                &t("settings-bluetooth-rename"),
-                            )
-                            .content_sized(),
-                            effect(BluetoothEffect::RENAME_DEVICE).map(move |()| {
-                                (
-                                    path.clone(),
-                                    alias
-                                        .lock()
-                                        .map(|name| name.trim().to_owned())
-                                        .unwrap_or_default(),
-                                )
-                            }),
+                    .push(Box::new(self.cx.bind(
+                        Button::new(
+                            &format!("settings.bluetooth.rename.{}", token(&d.path)),
+                            &t("settings-bluetooth-rename"),
                         ),
-                    ))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("settings.bluetooth.forget.{}", token(&d.path)),
-                                &t("settings-bluetooth-forget"),
+                        effect(BluetoothEffect::RENAME_DEVICE).map(move |()| {
+                            (
+                                path.clone(),
+                                alias
+                                    .lock()
+                                    .map(|name| name.trim().to_owned())
+                                    .unwrap_or_default(),
                             )
-                            .content_sized(),
-                            BluetoothEffect::ForgetDevice {
-                                device: d.path.clone(),
-                            },
+                        }),
+                    )))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("settings.bluetooth.forget.{}", token(&d.path)),
+                            &t("settings-bluetooth-forget"),
                         ),
-                    ))
+                        BluetoothEffect::ForgetDevice {
+                            device: d.path.clone(),
+                        },
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
         }
@@ -618,18 +612,15 @@ impl BluetoothModel {
     fn device_row(&self, d: &DeviceInfo) -> El {
         let (label, primary) = self.primary_action(d);
         let top = Row::new()
-            .push(Box::new(Text::new(&d.name).with_size(13.0)))
+            .push(Box::new(Text::new(&d.name).with_role(ui::TextRole::Body)))
             .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.bluetooth.primary.{}", token(&d.path)),
-                        &label,
-                    )
-                    .content_sized(),
-                    primary,
+            .push(Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.bluetooth.primary.{}", token(&d.path)),
+                    &label,
                 ),
-            ));
+                primary,
+            )));
         let status = Self::device_status_line(d);
         let mut block: Vec<El> = vec![Box::new(top), caption(&status)];
         if d.paired {
@@ -653,11 +644,11 @@ impl BluetoothModel {
         let mut body: Vec<El> = vec![Box::new(
             Row::new()
                 .push(Box::new(self.cx.bind_invocation(
-                    Button::new("settings.bluetooth.scan", &scan).content_sized(),
+                    Button::new("settings.bluetooth.scan", &scan),
                     BluetoothEffect::SetDiscovering { on: !self.scanning },
                 )))
                 .push(Box::new(self.cx.bind_invocation(
-                    Button::new("settings.bluetooth.refresh", &refresh).content_sized(),
+                    Button::new("settings.bluetooth.refresh", &refresh),
                     BluetoothEffect::RefreshBluetooth,
                 )))
                 .push(Box::new(Spacer::new())),

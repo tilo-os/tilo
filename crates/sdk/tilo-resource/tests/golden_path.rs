@@ -27,7 +27,7 @@ pub enum Stage {
 impl Board {
     /// Rename the board.
     #[action]
-    pub fn rename(&mut self, #[param("New title")] title: String) {
+    pub fn rename(&mut self, #[param("New title", example = "A shared board")] title: String) {
         self.title = title;
     }
 
@@ -509,4 +509,23 @@ fn an_action_without_arguments_is_built_when_it_is_taken() {
         matches!(&refused, Err(tilo_actions::DoorError::InvalidArguments(reason)) if reason == "nothing to clear"),
         "{refused:?}"
     );
+}
+
+#[test]
+fn action_parameter_examples_are_guidance_not_a_value_restriction() {
+    let rename = Board::declarations()
+        .into_iter()
+        .find(|decl| decl.id == "rename")
+        .unwrap();
+    assert_eq!(
+        rename.params[0].schema.as_ref().unwrap()["examples"][0],
+        "A shared board"
+    );
+    let supplied = serde_json::json!({"title": "Another valid title"});
+    let bound =
+        tilo_actions::ActionArgs::bind_json(&rename.params, supplied.as_object().unwrap()).unwrap();
+    let action = (rename.build)(&bound, 0).unwrap();
+    let mut replica = Replica::<Board>::new();
+    replica.apply_action(&action, "Rename").unwrap();
+    assert_eq!(replica.state().unwrap().title, "Another valid title");
 }

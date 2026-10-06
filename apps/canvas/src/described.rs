@@ -129,7 +129,7 @@ fn area_or_artwork(action: &CanvasAction) -> Option<String> {
             } else if set.crop.is_some() || set.fit.is_some() {
                 "Crop the artwork".to_owned()
             } else if let (Some(width), Some(height)) = (set.width, set.height) {
-                format!("Artwork size {width:.0} × {height:.0}")
+                format!("Artwork size {width:.0} by {height:.0}")
             } else if set.texture.is_some() || set.ground_colour.is_some() {
                 "Change the ground".to_owned()
             } else {
