@@ -459,6 +459,9 @@ block-editor-replace = Ersetzen
 block-editor-replace-all = Alle ersetzen
 block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
 
+widget-sidebar-resize = Breite der Seitenleiste ändern
+widget-inspector-resize = Breite des Inspektors ändern
+
 dictation-record-once = Einmal aufnehmen
 dictation-finish = Fertig
 dictation-cancel = Abbrechen
