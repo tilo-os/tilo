@@ -389,7 +389,8 @@ Settings action before the corresponding browser picker entry is available.
 Cloud's separate change inventories `resource.html` and `resource.css`, with a
 stable external-module redirect to one immutable runtime release. It explicitly
 accepts the native Tilo desktop bindings, canonical fonts, app inventory and
-attested data payloads, while retaining the legacy Cloud console entry. The source
+attested data payloads, while preserving current native runtime aliases and
+producer provenance/cache policies. The source
 build now truthfully records `builtFromSource` in its existing hash manifest.
 Packaging fixtures preserve the resource fragment, licenses and existing CSP.
 Native navigation correlations fit JSON's exact integer range so browser peers
