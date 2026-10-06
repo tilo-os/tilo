@@ -695,7 +695,15 @@ if [ "$ROOTFS" = ext4 ] && [ "$COMPOSEFS" = yes ]; then
     || die "ext4 root is missing its fs-verity filesystem feature"
 fi
 mkdir -p "$MNT"
-sudo -n mount "$root_dev" "$MNT"
+if [ "$ROOTFS" = btrfs ]; then
+  # Compress objects while bootc installs them, before a small board disk fills.
+  # The inherited inode property also applies to objects created after reboot;
+  # the installation mount option alone would only cover this mount's lifetime.
+  sudo -n mount -o compress=zstd:1 "$root_dev" "$MNT"
+  sudo -n btrfs property set "$MNT" compression zstd
+else
+  sudo -n mount "$root_dev" "$MNT"
+fi
 if [ "$BOOT_IS_ESP" = yes ]; then ESP_AT="$MNT/boot"; else ESP_AT="$MNT/boot/efi"; fi
 sudo -n mkdir -p "$ESP_AT"
 if [ "${TILO_DISK_FORCE_MTOOLS_ESP:-0}" != 1 ] \
@@ -792,6 +800,14 @@ fi
 msg "3/4 bootc install ${install_args[*]}"
 if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
        "$RUNREF" "${bootc_argv[@]}" install "${install_args[@]}" 2>&1 | tee "$LOG"; then
+  # Report both the target and its sparse backing filesystem: either can
+  # exhaust space, and the composefs object writer does not identify which.
+  msg "failed install storage: target and raw-image backing filesystem"
+  sudo -n df -h "$MNT" "$OUTDIR" >&2 || true
+  sudo -n df -i "$MNT" "$OUTDIR" >&2 || true
+  if [ "$ROOTFS" = btrfs ]; then
+    sudo -n btrfs filesystem usage "$MNT" >&2 || true
+  fi
   # The two failures that are specific to dropping bib get named, because
   # neither message says what to do about it.
   if grep -q 'Invalid splitstream content type' "$LOG"; then

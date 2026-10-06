@@ -6,23 +6,24 @@
 use std::path::PathBuf;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{Actions, Button, Card, CardGrid, Container, Element, Scrollable, Text};
 
 // The automatic authoring surface contains no dimensions or viewport branches.
 fn cards() -> Element {
-    Box::new(CardGrid::content_sized(vec![
-        Box::new(Card::composed(Box::new(Text::new("A focused terminal for everyday work.")))
+    Box::new(CardGrid::new(vec![
+        Box::new(Card::new(Box::new(Text::new("A focused terminal for everyday work.")))
             .with_title("Terminal")
-            .with_footer(Box::new(Actions::new(Button::new("terminal-open", "Open").primary())))),
-        Box::new(Card::composed(Box::new(Text::new("Keep your documents and projects together. Search shared folders, review recent changes, and continue working with your team across connected devices.")))
+            .with_footer(Actions::new(Button::new("terminal-open", "Open").role(ButtonRole::Primary)))),
+        Box::new(Card::new(Box::new(Text::new("Keep your documents and projects together. Search shared folders, review recent changes, and continue working with your team across connected devices.")))
             .with_title("Workspace")
-            .with_footer(Box::new(Actions::new(Button::new("workspace-install", "Install workspace").primary())
-                .secondary(Button::new("workspace-details", "Details"))))),
-        Box::new(Card::composed(Box::new(Text::new("Your connections are ready. Refresh remote services to discover updates and sync changes from your other devices.")))
+            .with_footer(Actions::new(Button::new("workspace-install", "Install workspace").role(ButtonRole::Primary))
+                .secondary(Button::new("workspace-details", "Details")))),
+        Box::new(Card::new(Box::new(Text::new("Your connections are ready. Refresh remote services to discover updates and sync changes from your other devices.")))
             .with_title("Remote connections")
-            .with_footer(Box::new(Actions::new(Button::new("remote-refresh", "Refresh all connections")
-                .with_icon(tilo_ui::icons::Icon::Refresh).primary())
-                .secondary(Button::new("remote-details", "View details"))))),
+            .with_footer(Actions::new(Button::new("remote-refresh", "Refresh all connections")
+                .with_icon(tilo_ui::icons::Icon::Refresh).role(ButtonRole::Primary))
+                .secondary(Button::new("remote-details", "View details")))),
     ]))
 }
 
@@ -54,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             viewport,
             shot_theme().with_text_scale(scale),
         );
-        harness.render_window_png(&output.join(format!("{name}.png")));
+        harness.render_png(&output.join(format!("{name}.png")));
         std::fs::write(
             output.join(format!("{name}.json")),
             harness.inspection_json()?,
@@ -62,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if name == "narrow-large-text" {
             harness.click_at(5.0, 5.0);
             harness.scroll(0.0, -1000.0);
-            harness.render_window_png(&output.join("narrow-large-text-end.png"));
+            harness.render_png(&output.join("narrow-large-text-end.png"));
             std::fs::write(
                 output.join("narrow-large-text-end.json"),
                 harness.inspection_json()?,
@@ -72,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut resized =
         FrameHarness::new_with_theme(tilo_ui::State::new(), page(), (1080, 640), shot_theme());
     resized.resize((340, 900))?;
-    resized.render_window_png(&output.join("resized-narrow.png"));
+    resized.render_png(&output.join("resized-narrow.png"));
     std::fs::write(
         output.join("resized-narrow.json"),
         resized.inspection_json()?,

@@ -164,6 +164,16 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
 
 #[test]
 fn applying_reports_what_the_registry_answered() {
+    fn notice_detail(node: &ui::headless::InspectionNode) -> Option<&str> {
+        if node.test_id.as_deref() == Some("notice") {
+            return node
+                .semantics
+                .as_ref()
+                .and_then(|node| node.description.as_deref());
+        }
+        node.children.iter().find_map(notice_detail)
+    }
+
     let _home = home();
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.effect_confirmed(&KeyEffect::CreateKey)
@@ -175,11 +185,13 @@ fn applying_reports_what_the_registry_answered() {
         matches!(&nothing, Err(DoorError::Failed(message)) if message.contains("name a domain or a forge account")),
         "the job answers its caller: {nothing:?}"
     );
-    app.harness()
-        .expect(
-            &SemanticExpectation::named("notice").name_contains("name a domain or a forge account"),
-        )
-        .expect("an application with nothing to claim says so");
+    let inspection = app.harness().inspection();
+    let detail =
+        notice_detail(&inspection.root).expect("the actual status banner publishes its detail");
+    assert!(
+        detail.contains("name a domain or a forge account"),
+        "the application explains why it failed: {detail}"
+    );
 
     app.invoke(Publisher::SET_DOMAIN.with("example.com".into()))
         .expect("domain");
@@ -189,10 +201,8 @@ fn applying_reports_what_the_registry_answered() {
     );
     app.harness()
         .wait_until(Duration::from_secs(10), |driver| {
-            driver.a11y_nodes().iter().any(|(_, node)| {
-                node.label()
-                    .is_some_and(|label| label.contains("127.0.0.1:9"))
-            })
+            notice_detail(&driver.inspection().root)
+                .is_some_and(|detail| detail.contains("127.0.0.1:9"))
         })
         .then_some(())
         .expect("an unreachable registry is named in the notice");
@@ -218,6 +228,6 @@ fn a_capture_shows_a_key_without_reading_the_machine_s() {
     app.harness()
         .expect(&SemanticExpectation::named("proof-line").name_contains("tilo-publisher="))
         .expect("the scenario's key is shown");
-    assert_eq!(app.state().domain, "example.com");
+    assert_eq!(app.state().domain, "lovelace.dev");
     assert!(home.key().is_none(), "a capture writes no key");
 }

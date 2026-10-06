@@ -2082,6 +2082,22 @@ fn decorate_tag_actions(resource: &mut Resource, ctx: &NotesResourceCtx) {
     }
 }
 
+/// What a control that browses `tag` invokes: the published tag's "open".
+#[must_use]
+pub fn open_tag_binding(tag: TagId, name: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    let open = NotesEffect::OpenTag { tag }.offered("open", "Browse tagged notes");
+    let resource = Resource::new(tag_resource_id(tag), "notes.tag", name).with_action(open);
+    tilo_actions::ActionBinding::unit_for(&resource, "open").ok()
+}
+
+/// What a control that opens `page` invokes: the published note's "open".
+#[must_use]
+pub fn open_page_binding(page: PageId, title: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    let open = NotesEffect::Open { page, block: None }.offered("open", "Open note");
+    let resource = Resource::new(page_resource_id(page), "notes.page", title).with_action(open);
+    tilo_actions::ActionBinding::unit_for(&resource, "open").ok()
+}
+
 fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
     let tag_id = tag.id;
     let tag_name = if tag.name.trim().is_empty() {

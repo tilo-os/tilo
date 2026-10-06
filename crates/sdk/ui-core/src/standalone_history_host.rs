@@ -32,32 +32,10 @@ use crate::standalone_history_pane::{HistoryPaneIntent, StandaloneHistoryPane};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::layout::CompositionFocus;
+use crate::widget::window_header::HistoryControl;
 use crate::widget::{Button, HistoryEntryId, TaffyTreeExt, Widget};
 
-pub(crate) const SEARCH_OPERATION: &str = "tilo.host.search.view";
-pub(crate) const SEARCH_RESOURCE: &str = "tilo.host:search";
-
-#[expect(
-    clippy::expect_used,
-    reason = "fixed nullary View payload serializes infallibly"
-)]
-pub(crate) fn search_resource() -> Resource {
-    Resource::new(
-        SEARCH_RESOURCE,
-        "tilo.host.search",
-        I18nManager::lookup_plain("standalone-search-title"),
-    )
-    .with_action(
-        ActionSpec::operation(
-            "open",
-            I18nManager::lookup_plain("standalone-search-title"),
-            OperationKind::View,
-            SEARCH_OPERATION,
-            &(),
-        )
-        .expect("unit Search operation serializes"),
-    )
-}
+use crate::search::search_resource;
 
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
 pub(crate) const HISTORY_RESOURCE: &str = "tilo.host:history";
@@ -134,6 +112,9 @@ pub(crate) struct StandaloneHistoryHost {
     toolbar: Option<Button>,
     search: Option<Button>,
     search_enabled: bool,
+    /// The app draws the window's header row, which holds the History
+    /// control, so the window draws no bar of its own.
+    app_presents_button: bool,
     pane: StandaloneHistoryPane,
     content_target: Result<HistoryTarget, HistoryError>,
     content_focus: Option<CompositionFocus>,
@@ -166,23 +147,16 @@ fn restore_message(result: &Result<bool, HistoryError>) -> &'static str {
 }
 
 impl StandaloneHistoryHost {
-    #[expect(
-        clippy::expect_used,
-        reason = "fixed unit View operation and its nullary binding serialize infallibly"
-    )]
     pub(crate) fn new() -> Self {
-        let resource = open_resource();
-        let binding = ActionBinding::unit_for(&resource, "open").expect("unit history action");
         Self {
             session: None,
             session_id: None,
             toolbar: Some(
-                Button::new("standalone-history-open", "standalone-history-title")
-                    .on_action(binding)
-                    .with_enabled(false),
+                history_control_button(BAR_BUTTON_ID, HistoryControl::Closed).with_enabled(false),
             ),
             search: None,
             search_enabled: false,
+            app_presents_button: false,
             pane: StandaloneHistoryPane::new(),
             content_target: Err(HistoryError::Unavailable),
             content_focus: None,
@@ -312,6 +286,35 @@ impl StandaloneHistoryHost {
         self.session
             .as_ref()
             .map_or(0, |session| session.selection().len())
+    }
+
+    /// What the window's History control shows, or `None` where the host's
+    /// own chrome (a menu bar, the Tilo shell) presents History.
+    fn control(&self) -> Option<HistoryControl> {
+        self.toolbar
+            .as_ref()
+            .map(|_| HistoryControl::of(self.is_open()))
+    }
+
+    /// Offer the History control to the app's header row before the app is
+    /// built. Where the app draws one, the window draws no bar of its own.
+    pub(crate) fn place_in_app_header(&mut self, root: &mut dyn Widget) {
+        self.app_presents_button =
+            crate::widget::window_header::offer_history_control(root, self.control());
+    }
+
+    /// Keep the window's own History control in step with the session: on
+    /// and closing while History shows, opening otherwise.
+    fn sync_control(&mut self) {
+        let open = self.is_open();
+        let can_open = self.can_open();
+        if let Some(toolbar) = &mut self.toolbar
+            && toolbar.is_toggled() != open
+        {
+            *toolbar = history_control_button(BAR_BUTTON_ID, HistoryControl::of(open))
+                .with_enabled(open || can_open);
+            self.structure_dirty = true;
+        }
     }
 
     /// The host's own chrome presents History and Search: drop the in-window
@@ -489,6 +492,7 @@ impl StandaloneHistoryHost {
             self.session = Some(session);
             self.session_id = Some(uuid::Uuid::new_v4());
             self.revision = self.revision.wrapping_add(1);
+            self.sync_control();
             return Ok(());
         }
         self.refresh(context)?;
@@ -611,6 +615,7 @@ impl StandaloneHistoryHost {
         self.pane.clear();
         self.restore_focus = self.content_focus.take();
         self.revision = self.revision.wrapping_add(1);
+        self.sync_control();
     }
 
     /// Drain after canonical widget operation/semantic dispatch. Both pointer
@@ -795,9 +800,11 @@ impl StandaloneHistoryHost {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         viewport_width: f64,
     ) -> HostHistoryLayout {
+        let app_presents_button = self.app_presents_button;
         let toolbar = self
             .toolbar
             .as_mut()
+            .filter(|_| !app_presents_button)
             .map(|button| button.build_layout(taffy, theme, nodes));
         let search = self
             .search
@@ -811,12 +818,15 @@ impl StandaloneHistoryHost {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
-                    padding: crate::chrome::bar_padding(theme),
+                    padding: crate::widget::toolbar::band_padding(theme),
                     gap: Size {
                         width: taffy::LengthPercentage::length(theme.gap_standard),
                         height: taffy::LengthPercentage::length(0.0),
                     },
                     align_items: Some(taffy::AlignItems::Center),
+                    // Window controls stand at the trailing edge, where a
+                    // header row holds them.
+                    justify_content: Some(taffy::JustifyContent::FlexEnd),
                     ..Default::default()
                 },
                 &buttons,
@@ -978,11 +988,15 @@ impl StandaloneHistoryHost {
         presence: &PresenceCtx,
     ) -> Result<(), HistoryHostError> {
         self.refresh(context)?;
-        if self.toolbar.is_some() {
-            crate::chrome::paint_bar(scene, transform, theme, self.bar_rect);
+        let toolbar_shown = self.toolbar.is_some() && !self.app_presents_button;
+        if toolbar_shown || self.search.is_some() {
+            bar_edge(scene, transform, theme, self.bar_rect);
         }
-        for button in self.in_window_controls_mut() {
+        if toolbar_shown && let Some(button) = self.toolbar.as_mut() {
             button.draw(scene, transform, text, theme, presence);
+        }
+        if let Some(search) = self.search.as_mut() {
+            search.draw(scene, transform, text, theme, presence);
         }
         if self.is_open() {
             self.pane.draw(scene, transform, text, theme, presence);
@@ -991,6 +1005,26 @@ impl StandaloneHistoryHost {
             self.canvas.draw(scene, transform, text, theme, presence);
         }
         Ok(())
+    }
+
+    /// The History chrome's part of the window's top layer: the restore
+    /// review is a modal, painted over everything else in the window.
+    pub(crate) fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.is_open() {
+            self.pane
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+        if self.preview_visible {
+            self.canvas
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
     }
 }
 
@@ -1040,6 +1074,71 @@ impl Widget for PresentationRoots<'_> {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
+
+/// The test id of the window's own History control, in its bar.
+pub(crate) const BAR_BUTTON_ID: &str = "standalone-history-open";
+
+/// The look of the window's History control: the History glyph as a Plain
+/// icon button, announced and tooltipped as "History" with its shortcut,
+/// reading as on while History shows. Every History host draws this one
+/// control, wherever it stands.
+pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button {
+    let platform = crate::platform::PlatformConventions::default();
+    let shortcut = crate::platform::HostShortcut::History
+        .shortcut(platform)
+        .label(platform);
+    Button::icon_only(id, crate::icons::Icon::History, "standalone-history-title")
+        .tooltip(format!(
+            "{} ({shortcut})",
+            I18nManager::lookup_plain("standalone-history-title")
+        ))
+        .toggled(control.is_open())
+}
+
+/// The window's History control, bound to the History door: closed it
+/// opens History, open it closes it, exactly as the History shortcut and
+/// the palette do.
+#[must_use]
+pub(crate) fn history_control_button(id: &str, control: HistoryControl) -> Button {
+    history_control_face(id, control).on_action(history_control_binding(control))
+}
+
+/// The History door a press of the window's History control goes through:
+/// Open while History is closed, Hide while it shows.
+///
+/// # Panics
+///
+/// Never: Open and Hide are fixed unit operations whose bindings always
+/// serialize.
+#[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "fixed unit View operations and their nullary bindings serialize infallibly"
+)]
+pub(crate) fn history_control_binding(control: HistoryControl) -> ActionBinding<()> {
+    match control {
+        HistoryControl::Closed => ActionBinding::unit_for(&open_resource(), "open"),
+        HistoryControl::Open => ActionBinding::unit_for(&history_resource(true, true), "hide"),
+    }
+    .expect("unit history action")
+}
+
+/// The edge under a bar of window chrome: the bar stands on the content
+/// ground and is told from the app by one hairline at its bottom, never by
+/// a raised fill.
+pub(crate) fn bar_edge(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule <= 0.0 || bar.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        crate::surface::edge_on(theme.tokens.colors.surfaces.content),
+        None,
+        &Rect::new(bar.x0, bar.y1 - rule, bar.x1, bar.y1),
+    );
 }
 
 #[expect(
@@ -1448,7 +1547,10 @@ mod tests {
             .into_iter()
             .map(|resource| resource.id.as_str().to_owned())
             .collect();
-        assert_eq!(ids, [HISTORY_RESOURCE, SEARCH_RESOURCE]);
+        assert_eq!(
+            ids,
+            [HISTORY_RESOURCE, crate::search::request::SEARCH_RESOURCE]
+        );
 
         let mut app = Text::new("app");
         let mut tree = TaffyTree::new();
@@ -1472,6 +1574,79 @@ mod tests {
             host.session.as_ref().unwrap().selection(),
             [decode_entry(&entry).unwrap()]
         );
+    }
+
+    #[test]
+    fn an_app_header_row_takes_the_history_control() {
+        use crate::widget::window_header::offer_history_control;
+
+        // Case `the_header_row_is_found_anywhere_in_the_app_tree`.
+        {
+            let mut plain = crate::widget::Row::new().push(Box::new(Text::new("app")));
+            assert!(!offer_history_control(
+                &mut plain,
+                Some(HistoryControl::Closed)
+            ));
+            let shell = crate::widget::NavShell::new().content(Box::new(Text::new("Notes")));
+            let mut app = crate::widget::Column::new().push(Box::new(shell));
+            assert!(offer_history_control(
+                &mut app,
+                Some(HistoryControl::Closed)
+            ));
+        }
+
+        // Case `the_window_draws_no_bar_while_the_app_has_a_header_row`.
+        {
+            let mut host = StandaloneHistoryHost::new();
+            let mut app = Text::new("app");
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            host.place_in_app_header(&mut app);
+            let app_node = app.build_layout(&mut tree, &Theme::light(), &mut nodes);
+            let with_bar =
+                host.build_layout(app_node, &mut tree, &Theme::light(), &mut nodes, 1100.0);
+            assert!(with_bar.toolbar.is_some(), "the window's own History bar");
+
+            let mut shell = crate::widget::NavShell::new().content(Box::new(Text::new("app")));
+            host.place_in_app_header(&mut shell);
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let app_node = shell.build_layout(&mut tree, &Theme::light(), &mut nodes);
+            let layout =
+                host.build_layout(app_node, &mut tree, &Theme::light(), &mut nodes, 1100.0);
+            assert!(layout.toolbar.is_none(), "no stacked bar above the app");
+            assert_eq!(tree.children(layout.root).unwrap(), vec![layout.content]);
+        }
+
+        // Case `the_control_is_one_named_glyph_that_reads_as_on_while_open`.
+        {
+            for control in [HistoryControl::Closed, HistoryControl::Open] {
+                let button = history_control_button(BAR_BUTTON_ID, control);
+                let node = Widget::accessibility(&button).unwrap();
+                assert_eq!(
+                    node.name,
+                    Some(I18nManager::lookup_plain("standalone-history-title")),
+                    "an icon-only control named History"
+                );
+                assert_eq!(node.state.checked, Some(control.is_open()));
+                assert!(
+                    Widget::tooltip(&button).is_some_and(|tip| tip.starts_with("History (")),
+                    "the tooltip names it and its shortcut"
+                );
+                let address = crate::widget::controls::control_action_bindings(&button)
+                    .into_iter()
+                    .find_map(|binding| match binding.kind {
+                        crate::widget::ControlBindingKind::Action(address) => Some(address),
+                        _ => None,
+                    })
+                    .unwrap();
+                let action = if control.is_open() { "hide" } else { "open" };
+                assert_eq!(
+                    address,
+                    tilo_actions::ActionAddress::new(HISTORY_RESOURCE, action)
+                );
+            }
+        }
     }
 
     use super::*;

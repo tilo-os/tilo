@@ -208,7 +208,8 @@ mod tests {
             .collect();
         let ws = with_blocks(populated(), 0, &refs);
         let source = search(&ws);
-        let first = source.search_page("ordinary", None, 7, 3);
+        let first =
+            source.search_page(&ui::search::SearchQuery::parse("ordinary", &[]), None, 7, 3);
         assert!(first.next.is_some(), "a broad query continues");
         assert!(first.results.len() <= 3);
         assert!(

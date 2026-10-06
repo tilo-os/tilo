@@ -275,6 +275,233 @@ pub fn contrast_ratio(a: Color, b: Color) -> f64 {
     (hi + 0.05) / (lo + 0.05)
 }
 
+/// A colour in OKLCH: perceptual lightness `l` in `[0, 1]`, chroma `c`
+/// (0 is grey; sRGB tops out near 0.37) and hue `h` in degrees.
+///
+/// The design language states every neutral and identity colour here,
+/// because equal `l` reads as equal lightness whatever the hue: a theme can
+/// rotate its temperature, or a palette its hues, without moving contrast.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Oklch {
+    pub l: f32,
+    pub c: f32,
+    pub h: f32,
+}
+
+impl Oklch {
+    #[must_use]
+    pub const fn new(l: f32, c: f32, h: f32) -> Self {
+        Self { l, c, h }
+    }
+
+    /// The opaque sRGB colour, gamut-mapped by lowering chroma: lightness
+    /// and hue are kept exactly, and only as much chroma is given up as the
+    /// sRGB cube demands (a light cyan cannot carry the chroma a light
+    /// violet can).
+    #[must_use]
+    pub fn to_color(self) -> Color {
+        let l = f64::from(self.l.clamp(0.0, 1.0));
+        let h = f64::from(self.h);
+        let c = f64::from(self.c.max(0.0));
+        let fits = |c: f64| {
+            let (r, g, b) = oklch_to_linear(l, c, h);
+            [r, g, b].iter().all(|v| (-1e-4..=1.0 + 1e-4).contains(v))
+        };
+        let c = if fits(c) {
+            c
+        } else {
+            let (mut lo, mut hi) = (0.0, c);
+            for _ in 0..24 {
+                let mid = f64::midpoint(lo, hi);
+                if fits(mid) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            lo
+        };
+        let (r, g, b) = oklch_to_linear(l, c, h);
+        Color::from_rgb8(encode_srgb(r), encode_srgb(g), encode_srgb(b))
+    }
+
+    /// The OKLCH coordinates of an sRGB colour (alpha ignored). A grey's hue
+    /// is meaningless and comes back as 0.
+    #[must_use]
+    pub fn from_color(color: Color) -> Self {
+        let (l, a, b) = linear_to_oklab(
+            decode_srgb(color.r()),
+            decode_srgb(color.g()),
+            decode_srgb(color.b()),
+        );
+        let c = a.hypot(b);
+        let h = if c < 1e-6 {
+            0.0
+        } else {
+            b.atan2(a).to_degrees().rem_euclid(360.0)
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "OKLCH coordinates are bounded (l in 0..=1, c below 0.4, h in 0..360); f32 holds them well past 8-bit precision"
+        )]
+        Self {
+            l: l as f32,
+            c: c as f32,
+            h: h as f32,
+        }
+    }
+}
+
+/// Shorthand for [`Oklch::to_color`].
+#[must_use]
+pub fn oklch(l: f32, c: f32, h: f32) -> Color {
+    Oklch::new(l, c, h).to_color()
+}
+
+fn decode_srgb(v: u8) -> f64 {
+    let s = f64::from(v) / 255.0;
+    if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn encode_srgb(v: f64) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let s = if v <= 0.003_130_8 {
+        12.92 * v
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "s is within 0.0..=1.0, so the product rounds into 0..=255 before the narrowing step"
+    )]
+    channel_u8(s as f32)
+}
+
+#[allow(
+    clippy::many_single_char_names,
+    reason = "l/a/b and l/m/s are the names the OKLab paper gives these axes"
+)]
+fn oklch_to_linear(l: f64, c: f64, h: f64) -> (f64, f64, f64) {
+    let (sin, cos) = h.to_radians().sin_cos();
+    let a = c * cos;
+    let b = c * sin;
+    let l_ = l + 0.396_337_777_4 * a + 0.215_803_757_3 * b;
+    let m_ = l - 0.105_561_345_8 * a - 0.063_854_172_8 * b;
+    let s_ = l - 0.089_484_177_5 * a - 1.291_485_548_0 * b;
+    let (l3, m3, s3) = (l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_);
+    (
+        4.076_741_662_1 * l3 - 3.307_711_591_3 * m3 + 0.230_969_929_2 * s3,
+        -1.268_438_004_6 * l3 + 2.609_757_401_1 * m3 - 0.341_319_396_5 * s3,
+        -0.004_196_086_3 * l3 - 0.703_418_614_7 * m3 + 1.707_614_701_0 * s3,
+    )
+}
+
+#[allow(
+    clippy::many_single_char_names,
+    reason = "l/a/b and l/m/s are the names the OKLab paper gives these axes"
+)]
+fn linear_to_oklab(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
+    let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
+    let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
+    (
+        0.210_454_255_3 * l + 0.793_617_785_0 * m - 0.004_072_046_8 * s,
+        1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s,
+        0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s,
+    )
+}
+
+/// Pixels a dominant-hue estimate looks at, at most. The estimate is a
+/// histogram, so a few thousand evenly spread samples find the same peak a
+/// full scan would.
+const HUE_SAMPLES: usize = 4096;
+
+/// Hue bins of the dominant-hue histogram, 10° each.
+const HUE_BINS: usize = 36;
+
+/// Below this summed chroma per sampled pixel an image has no hue worth
+/// following (a grey or near-grey photograph).
+const HUE_MIN_MEAN_CHROMA: f64 = 0.012;
+
+/// The dominant OKLCH hue of an RGBA8 image (`pixels.len()` a multiple of
+/// four), or `None` for an image with no hue to speak of.
+///
+/// Cheap and deterministic: a fixed stride of at most [`HUE_SAMPLES`] pixels,
+/// each voting for its hue with its chroma (greys do not vote, transparent
+/// pixels do not vote), into a 10° histogram smoothed over its neighbours.
+/// The peak bin's chroma-weighted circular mean is the answer. Only the hue
+/// is reported: a caller deriving a neutral temperature from a wallpaper
+/// takes its hue and never its chroma.
+#[must_use]
+pub fn dominant_hue(pixels: &[u8]) -> Option<f32> {
+    let count = pixels.len() / 4;
+    if count == 0 {
+        return None;
+    }
+    let stride = count.div_ceil(HUE_SAMPLES).max(1);
+    let mut weight = [0.0_f64; HUE_BINS];
+    let mut sin = [0.0_f64; HUE_BINS];
+    let mut cos = [0.0_f64; HUE_BINS];
+    let mut sampled = 0_u32;
+    let mut total = 0.0_f64;
+    for px in pixels.chunks_exact(4).step_by(stride) {
+        let &[r, g, b, a] = px else {
+            continue;
+        };
+        if a < 128 {
+            continue;
+        }
+        sampled += 1;
+        let (_, oa, ob) = linear_to_oklab(decode_srgb(r), decode_srgb(g), decode_srgb(b));
+        let chroma = oa.hypot(ob);
+        if chroma < 0.02 {
+            continue;
+        }
+        let hue = ob.atan2(oa).rem_euclid(std::f64::consts::TAU);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "hue is in 0..TAU, so the bin index is in 0..HUE_BINS and the cast is exact"
+        )]
+        let bin = ((hue / std::f64::consts::TAU * HUE_BINS as f64) as usize).min(HUE_BINS - 1);
+        if let (Some(w), Some(s), Some(c)) =
+            (weight.get_mut(bin), sin.get_mut(bin), cos.get_mut(bin))
+        {
+            *w += chroma;
+            *s += chroma * hue.sin();
+            *c += chroma * hue.cos();
+        }
+        total += chroma;
+    }
+    if sampled == 0 || total / f64::from(sampled) < HUE_MIN_MEAN_CHROMA {
+        return None;
+    }
+    let at = |values: &[f64; HUE_BINS], i: usize| values.get(i % HUE_BINS).copied().unwrap_or(0.0);
+    let smoothed =
+        |i: usize| at(&weight, i + HUE_BINS - 1) * 0.5 + at(&weight, i) + at(&weight, i + 1) * 0.5;
+    let mut peak = 0;
+    for i in 1..HUE_BINS {
+        if smoothed(i) > smoothed(peak) {
+            peak = i;
+        }
+    }
+    let (mut s, mut c) = (0.0, 0.0);
+    for i in [peak + HUE_BINS - 1, peak, peak + 1] {
+        s += at(&sin, i);
+        c += at(&cos, i);
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a hue in degrees, 0..360, fits f32 far below its precision limit"
+    )]
+    Some(s.atan2(c).to_degrees().rem_euclid(360.0) as f32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

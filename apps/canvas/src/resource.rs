@@ -17,6 +17,14 @@ use crate::actions::{
 };
 use crate::model::Artwork;
 
+/// Resolved path, matte, combination mode and feather of a finder result.
+pub type FoundSelection = (
+    Option<String>,
+    Option<crate::model::Matte>,
+    Option<String>,
+    Option<f64>,
+);
+
 /// The operation type the canvas surface answers views and effects under.
 pub const VIEW_TYPE: &str = "canvas.view";
 
@@ -135,6 +143,9 @@ impl ArtworkResource {
     /// `use-selection`: what to make of it, on a layer, in a colour.
     pub const USE_SELECTION: ActionRef<Self, (String, Option<String>, Option<String>)> =
         ActionRef::new("use-selection", &["do", "layer", "colour"]);
+    /// A completed finder selects through the declared document action.
+    pub const SELECT_FOUND: ActionRef<Self, FoundSelection> =
+        ActionRef::new("select", &["d", "matte", "mode", "feather"]);
     /// `select` inverting the selection.
     pub const SELECT_INVERT: ActionRef<Self, bool> = ActionRef::new("select", &["invert"]);
     /// `select` growing (or, negative, shrinking) the selection by units.
@@ -171,6 +182,8 @@ impl ArtworkResource {
     pub const SET_CROP: ActionRef<Self, (Vec<String>, Vec<f64>)> =
         ActionRef::new("edit-marks", &["ids", "crop"]);
     /// `edit-marks` straightening a picture, in degrees.
+    pub const SET_PIXELATED: ActionRef<Self, (Vec<String>, bool)> =
+        ActionRef::new("edit-marks", &["ids", "pixelated"]);
     pub const SET_STRAIGHTEN: ActionRef<Self, (Vec<String>, f64)> =
         ActionRef::new("edit-marks", &["ids", "straighten"]);
     /// `edit-marks` mirroring marks `horizontal` or `vertical`.
@@ -208,6 +221,9 @@ pub struct Look {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Inspect {
+    /// Include literal fill, stroke and gradient colours with mark counts,
+    /// scoped by region/layer, independent of the newest-mark limit.
+    pub palette: Option<bool>,
     /// Only marks touching `[x, y, width, height]`.
     pub region: Option<[f64; 4]>,
     /// Only marks on this layer.
@@ -244,6 +260,8 @@ pub struct Compare {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
+    /// Omit the artwork ground for a transparent PNG or WebP.
+    pub transparent: Option<bool>,
     /// Pixels per artwork unit, 0.05 to 4 (default 1).
     pub scale: Option<f64>,
     /// `png` (default, or the path's), `jpeg` or `webp` (lossless).
@@ -253,6 +271,38 @@ pub struct Export {
     pub quality: Option<u8>,
     /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
     pub path: Option<String>,
+}
+
+/// Find an image's subject or fit the selected edge to the image.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FindArea {
+    /// Find the main subject on-device; with at, the object there.
+    pub subject: Option<bool>,
+    /// Edge reach in artwork units; subject defaults to 6 image pixels.
+    pub refine: Option<f64>,
+    /// Subject point `[x, y]` in artwork units.
+    pub at: Option<[f64; 2]>,
+    /// Find on this layer alone; otherwise use all visible layers.
+    pub layer: Option<String>,
+    /// `replace` (default), `add`, `subtract` or `intersect`.
+    pub mode: Option<String>,
+    /// Feather in artwork units.
+    pub feather: Option<f64>,
+}
+
+impl From<FindArea> for crate::selection::Select {
+    fn from(area: FindArea) -> Self {
+        Self {
+            subject: area.subject,
+            refine: area.refine,
+            at: area.at,
+            layer: area.layer,
+            mode: area.mode,
+            feather: area.feather,
+            ..Self::default()
+        }
+    }
 }
 
 /// Export the artwork, or some of its marks, as SVG.
@@ -289,6 +339,7 @@ pub enum ViewOp {
     ExportSvg(ExportSvg),
     Compare(Compare),
     SaveArtwork(SaveArtwork),
+    FindArea(FindArea),
 }
 
 /// What changed between two versions of the artwork.
@@ -352,7 +403,14 @@ pub fn params_of<T: JsonSchema>() -> Vec<ActionParam> {
                     } else {
                         ActionParam::optional_owned(name.clone(), ty, description).nullable()
                     };
-                    param.with_schema(property.clone())
+                    // The host already publishes the description beside the
+                    // schema. Keep nested field guidance, without repeating
+                    // this same paragraph in the agent's context.
+                    let mut shape = property.clone();
+                    if let Value::Object(fields) = &mut shape {
+                        fields.remove("description");
+                    }
+                    param.with_schema(shape)
                 })
                 .collect()
         })
@@ -512,7 +570,7 @@ fn document_declarations() -> Vec<ActionDecl<ArtworkResource>> {
         decl::<NewArtwork>(
             "new-artwork",
             "New artwork",
-            "Start over on a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
+            "Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
             CanvasAction::NewArtwork,
         ),
         ActionDecl::new("open-artwork", "Open artwork", params_of::<OpenArtwork>(), |args, _now| {
@@ -805,7 +863,7 @@ fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
             let select: crate::selection::Select = read_args(args)?;
             crate::author::resolve(select)
         })
-        .describe("Select an area: shapes, marks, magic wand (at), colour or subject; add, subtract, intersect, grow, feather, invert, refine. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it")
+        .describe("Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it")
         .answering(),
         ActionDecl::new("use-selection", "Use selection", params_of::<crate::selection::UseSelection>(), |args, _now| {
             let using: crate::selection::UseSelection = read_args(args)?;
@@ -835,7 +893,14 @@ struct Declared {
 /// artwork: views read it as it is or was, effects write a picture or a
 /// file of it. Each takes its fields as named arguments, as its schema
 /// describes them, and answers with JSON.
-const DECLARED: [Declared; 8] = [
+const DECLARED: [Declared; 9] = [
+    Declared {
+        id: "find-area",
+        label: "Find image area",
+        description: "Find a photo's subject (subject: true) or refine the selected edge (refine: units) in the background, with progress and one undo step. Then use-selection mask or fill. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
+        params: params_of::<FindArea>,
+        view: false,
+    },
     Declared {
         id: "look",
         label: "Look at the artwork",
@@ -846,7 +911,7 @@ const DECLARED: [Declared; 8] = [
     Declared {
         id: "inspect",
         label: "Inspect marks",
-        description: "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer; measure weighs marks' ink as the eye does, to balance icons and type.",
+        description: "List layers and newest marks (ids, bounds, colours), scoped by region/layer. palette: true also counts literal fill, stroke and gradient colours across all matching marks, independent of limit (first 32 colours, palette_colours is the total). Named pigments come from media. measure weighs ink to balance icons and type.",
         params: params_of::<Inspect>,
         view: true,
     },
@@ -920,14 +985,22 @@ impl ui::tilo_resource::Effect for ViewOp {
                     OperationKind::Effect
                 },
                 row: false,
-                answers: ui::tilo_resource::Answers::Value,
+                answers: if matches!(declared.id, "look" | "export" | "find-area") {
+                    ui::tilo_resource::Answers::Later { cancellable: false }
+                } else {
+                    ui::tilo_resource::Answers::Value
+                },
                 risk: if declared.view {
                     ui::tilo_actions::RiskLevel::None
                 } else {
                     ui::tilo_actions::RiskLevel::Low
                 },
                 idempotent: declared.view,
-                permission: PermissionRequirement::Read,
+                permission: if declared.id == "find-area" {
+                    PermissionRequirement::Write
+                } else {
+                    PermissionRequirement::Read
+                },
                 device_only: false,
                 risk_of: None,
                 programmatic: false,
@@ -943,6 +1016,8 @@ impl ui::tilo_resource::Effect for ViewOp {
             .into_iter()
             .map(|declared| {
                 let mut spec = declared.spec(Self::OPERATION);
+                // Background execution and the terminal value are separate:
+                // these jobs finish with the same JSON/content as a view.
                 spec.contract.result = ResultSpec::Json {
                     schema: serde_json::json!({"type": "object"}),
                 };
@@ -961,6 +1036,7 @@ impl ui::tilo_resource::Effect for ViewOp {
             Self::ExportSvg(_) => "export-svg",
             Self::Compare(_) => "compare",
             Self::SaveArtwork(_) => "save-artwork",
+            Self::FindArea(_) => "find-area",
         }
     }
 
@@ -974,6 +1050,7 @@ impl ui::tilo_resource::Effect for ViewOp {
             Self::ExportSvg(export) => Self::fields(export),
             Self::Compare(compare) => Self::fields(compare),
             Self::SaveArtwork(save) => Self::fields(save),
+            Self::FindArea(select) => Self::fields(select),
         }
     }
 
@@ -994,6 +1071,7 @@ impl ui::tilo_resource::Effect for ViewOp {
             "export-svg" => Self::ExportSvg(read(arguments)?),
             "compare" => Self::Compare(read(arguments)?),
             "save-artwork" => Self::SaveArtwork(read(arguments)?),
+            "find-area" => Self::FindArea(read(arguments)?),
             other => return Err(format!("there is no canvas view `{other}`")),
         })
     }

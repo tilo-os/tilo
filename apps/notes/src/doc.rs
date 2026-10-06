@@ -317,13 +317,7 @@ impl NotesDoc {
                 _ => None,
             };
 
-            let order = match doc.get(&page, "order") {
-                Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                    automerge::ScalarValue::Str(s) => s.to_string(),
-                    _ => String::new(),
-                },
-                _ => String::new(),
-            };
+            let order = crate::notebook::page_order(doc, &page).unwrap_or_default();
 
             out.push(PageMeta {
                 id,

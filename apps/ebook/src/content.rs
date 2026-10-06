@@ -117,7 +117,7 @@ fn tint_for(id: &str) -> usize {
 /// budget or the EPUB container/content cannot be parsed safely.
 pub fn parse_path_detailed(path: &Path) -> Result<Book, String> {
     let bytes = read_epub_bytes(path)
-        .ok_or_else(|| "the file could not be read or exceeds the 128 MiB limit".to_string())?;
+        .ok_or_else(|| "The file couldn’t be read, or it’s larger than 128 MiB.".to_string())?;
     parse_epub(&bytes, 0, "").map_err(|error| error.to_string())
 }
 
@@ -137,7 +137,7 @@ pub fn parse_path_detailed(path: &Path) -> Result<Book, String> {
 /// Returns a reader-safe message when the source cannot be read or parsed.
 pub fn parse_shared_path_detailed(path: &Path) -> Result<(Book, PathBuf), String> {
     let bytes = read_epub_bytes(path)
-        .ok_or_else(|| "the file could not be read or exceeds the 128 MiB limit".to_string())?;
+        .ok_or_else(|| "The file couldn’t be read, or it’s larger than 128 MiB.".to_string())?;
     // Never place a corrupt EPUB in the shared collection. Parsing before the
     // copy also means a malformed file has no externally visible side effect.
     let book = parse_epub(&bytes, 0, "").map_err(|error| error.to_string())?;
@@ -688,7 +688,7 @@ mod tests {
 
     /// The bundled sample and real files parse; junk is rejected and detailed imports keep the parser reason.
     #[test]
-    fn epub_sources_parse_or_report_the_parser_reason() {
+    fn epub_sources_parse_or_report_a_plain_reason() {
         // --- phase: bundled_sample_parses_into_a_real_book ---
         {
             let b = bundled_sample().expect("the embedded starter epub parses");
@@ -718,7 +718,7 @@ mod tests {
             );
         }
 
-        // --- phase: detailed_import_keeps_the_parser_reason_for_the_visible_error_state ---
+        // --- phase: detailed_import_keeps_a_plain_reason_for_the_visible_error_state ---
         {
             let tmp = tempfile::tempdir().unwrap();
             let bad = tmp.path().join("damaged.epub");
@@ -726,8 +726,8 @@ mod tests {
 
             let error = parse_path_detailed(&bad).expect_err("a corrupt EPUB does not import");
             assert!(
-                error.contains("open epub zip"),
-                "the UI receives the actual parse reason, not a generic failure: {error}"
+                error == crate::epub::OpenProblem::Damaged.to_string(),
+                "the UI receives the specific plain-language damaged-container reason: {error}"
             );
         }
     }
@@ -1069,6 +1069,12 @@ mod tests {
                 .is_err(),
             "the action refuses a hash that does not name its book"
         );
-        assert!(open_handed_book(b"not a zip", Some(&store)).is_err());
+        // A failed open says why in a plain sentence, not the parser's words.
+        assert_eq!(
+            open_handed_book(b"not a zip", Some(&store))
+                .err()
+                .as_deref(),
+            Some("The file is damaged or isn’t an EPUB book.")
+        );
     }
 }

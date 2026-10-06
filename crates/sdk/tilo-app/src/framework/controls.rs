@@ -7,13 +7,14 @@
 //! pieces: an [`ActionControl`] (the control accepts an action binding) and
 //! [`Actions`] (the resource's published actions, kept by the view).
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
 use tilo_actions::ActionBinding;
 use tilo_resource::{Binds, Effect, Invoke, Resource};
 use ui_core::widget::{
-    Button, Checkbox, Dropdown, EditableLabel, NumberInput, Slider, TextInput, Toggle,
+    Button, Checkbox, Dropdown, EditableLabel, EmptyState, NumberInput, Slider, TextInput, Toggle,
 };
 
 /// A toolkit control whose committed value `I` can invoke an action.
@@ -50,6 +51,7 @@ action_control! {
     NumberInput => f64, |control| control.with_enabled(false);
     Dropdown => String, |control| control.with_enabled(false);
     Button => (), |control| control.with_enabled(false);
+    EmptyState => (), |control| control.with_enabled(false);
     // Unavailable, an inline rename stays a label that is never committed.
     EditableLabel => String, |control| control;
 }
@@ -58,7 +60,7 @@ action_control! {
 /// outside the view function: rows a table, list or tree creates on demand.
 /// Cheap to clone; clones share the published descriptor.
 pub struct Actions<R: Resource> {
-    published: Rc<tilo_actions::Resource>,
+    published: Rc<RefCell<tilo_actions::Resource>>,
     marker: PhantomData<fn() -> R>,
 }
 
@@ -74,8 +76,19 @@ impl<R: Resource> Clone for Actions<R> {
 impl<R: Resource> Actions<R> {
     pub(crate) fn new(published: Rc<tilo_actions::Resource>) -> Self {
         Self {
-            published,
+            published: Rc::new(RefCell::new(Rc::unwrap_or_clone(published))),
             marker: PhantomData,
+        }
+    }
+
+    /// Follow the canonical publication of this same hosted resource.
+    pub(crate) fn update(&self, published: tilo_actions::Resource) {
+        let mut current = self.published.borrow_mut();
+        // A handle belongs to one root; a replacement gets its own handle.
+        if current.id == published.id && current.kind == published.kind {
+            *current = published;
+        } else {
+            tracing::error!("action publication changed resource identity");
         }
     }
 
@@ -83,26 +96,22 @@ impl<R: Resource> Actions<R> {
     /// the resource does not publish it.
     pub fn binding<I: 'static>(&self, action: impl Binds<R, I>) -> Option<ActionBinding<I>> {
         let id = action.action_id();
-        let spec = self
-            .published
-            .actions
-            .iter()
-            .find(|spec| spec.id == id)?
-            .clone();
-        ActionBinding::new(&self.published, &spec, move |input| action.arguments(input))
+        let published = self.published.borrow();
+        let spec = published.actions.iter().find(|spec| spec.id == id)?.clone();
+        ActionBinding::new(&published, &spec, move |input| action.arguments(input))
             .map_err(|error| tracing::warn!(%error, action = id, "control not bound"))
             .ok()
     }
 
     /// The binding of one fully specified invocation, for a button.
     pub fn invocation(&self, invoke: Invoke<R>) -> Option<ActionBinding<()>> {
-        let spec = self
-            .published
+        let published = self.published.borrow();
+        let spec = published
             .actions
             .iter()
             .find(|spec| spec.id == invoke.id)?
             .clone();
-        ActionBinding::static_json(&self.published, &spec, invoke.arguments)
+        ActionBinding::static_json(&published, &spec, invoke.arguments)
             .map_err(|error| tracing::warn!(%error, action = invoke.id, "control not bound"))
             .ok()
     }
@@ -128,10 +137,11 @@ impl<R: Resource> Actions<R> {
     /// view or surface registers, not by the resource type.
     fn exporting<E: Effect>(&self, id: &str) -> Option<tilo_actions::Resource> {
         let spec = E::specs().into_iter().find(|spec| spec.id == id)?;
+        let published = self.published.borrow();
         Some(tilo_actions::Resource {
-            id: self.published.id.clone(),
-            kind: self.published.kind.clone(),
-            label: self.published.label.clone(),
+            id: published.id.clone(),
+            kind: published.kind.clone(),
+            label: published.label.clone(),
             presentation: None,
             children: Vec::new(),
             actions: vec![spec],

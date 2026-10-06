@@ -132,10 +132,16 @@ restarts. App installs are not generations: `rollback` does not undo them.
 |---|---|---|
 | `session` (shell, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in. A laptop's `device` slot (the owner's login) instead merges VM-wide and restarts the desktop and the component's user services in place; the owner stays logged in (`tilo-vm guide devices`) |
 | app (`app:<dir>`) | your slot's app store | nothing restarts; live at next app launch |
-| `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its units restart, and **every slot's session restarts** |
+| `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its active units and the live owner's active user services restart, and **every slot's session restarts** |
 | `boot`, swappable (the kernel: `dev_swap = "reboot"`) | the `vm` slot, plus a boot entry | modules merge with `systemd-sysext refresh`, the kernel becomes the next boot entry, **the VM reboots**; confirmed, it becomes the default (`tilo-vm guide kernel`) |
 | `boot`, scenario-only (UKI, bootloader, initramfs, installer, rollback) | nothing | refused; use the scenario driver the error names (the installer: `tilo-vm scenario install`, `tilo-vm guide scenarios`) |
 | not a component (Containerfile, units, `/etc`, packages) | the VM's image | `tilo-vm vm upgrade --from local`: new image, reboot (`tilo-vm guide images`) |
+
+Component services use `try-restart`: an installed inactive optional service
+stays inactive. Missing, masked or unloadable declared units and manager/restart
+errors still fail the swap. Explicit slot/session restart continues to start its
+required session and user manager; it is a separate lifecycle operation.
+
 
 A VM-wide swap interrupts other agents' sessions, and a kernel swap reboots
 the VM under them, so prefer session components in your own slot.

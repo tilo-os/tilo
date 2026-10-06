@@ -66,21 +66,17 @@ pub enum PasswordsEffect {
     /// Asks for confirmation, then writes every item unencrypted to a file
     /// the person chooses.
     Export,
-    /// Search vault.
-    #[effect(permission = "read")]
-    Search {
-        #[param("Text to find in titles, usernames, origins, or tags")]
-        query: Option<String>,
-    },
     /// Filter vault.
     #[effect(permission = "read")]
     Filter {
         #[param("all | favorites | login | api-key | note | wifi | other")]
         filter: String,
     },
-    /// Select item.
+    /// Open.
+    ///
+    /// Shows the item in the window, clearing a filter that hides it.
     #[effect(permission = "read")]
-    Select {
+    Open {
         #[param("Opaque id of the vault item")]
         item: String,
     },
@@ -89,6 +85,11 @@ pub enum PasswordsEffect {
 /// The published id of the vault item `id`.
 pub fn item_resource_id(id: &str) -> String {
     format!("{ITEM_PREFIX}{id}")
+}
+
+/// The action a search hit for `id` runs: show the item.
+pub fn open_item_address(id: &accounts::SecretId) -> ui::tilo_actions::ActionAddress {
+    ui::tilo_actions::ActionAddress::new(item_resource_id(&id.0), PasswordsEffect::OPEN.id)
 }
 
 /// One vault item as a live row. Rows feed system-wide search and
@@ -134,6 +135,7 @@ pub fn item_row(item: &SecretItem) -> LiveRow {
     let mut reveal_spec = PasswordsEffect::Reveal { item: id.clone() }.bound();
     reveal.clone_into(&mut reveal_spec.label);
     LiveRow::new(item_resource_id(&id), kind, name)
+        .operation(PasswordsEffect::Open { item: id.clone() }.bound())
         .operation(PasswordsEffect::Edit { item: id.clone() }.bound())
         .operation(copy_spec)
         .operation(reveal_spec)
@@ -167,7 +169,7 @@ mod tests {
             assert!(!public.contains(private), "resource leaked {private:?}");
         }
         let ids: Vec<&str> = resource.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["edit", "copy", "reveal", "delete"]);
+        assert_eq!(ids, ["open", "edit", "copy", "reveal", "delete"]);
         assert!(public.contains("Reveal password"));
         let delete = resource.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(

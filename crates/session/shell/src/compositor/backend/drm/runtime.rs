@@ -1219,13 +1219,21 @@ impl DrmDispatchState {
         self.events.push(ev);
     }
 
-    /// Report the class of a physical event when it differs from the last
-    /// one. Emitted ahead of the event itself, so the compositor has already
-    /// switched modality when it handles that event.
+    /// Report a physical modality change, or deliberate pointer activation.
+    /// Pointer activation also follows hover, which shares its modality.
+    /// Emitted ahead of the event, so the compositor switches modality first.
     fn note_input_used(&mut self, modality: ui::InputModality) {
-        if self.last_input_used != Some(modality) {
+        if self.last_input_used != Some(modality) || modality == ui::InputModality::Pointer {
             self.last_input_used = Some(modality);
             self.push(BackendEvent::InputUsed(modality));
+        }
+    }
+
+    /// Coalesce hover reports without losing a later touch or click transition.
+    fn note_pointer_motion(&mut self) {
+        if self.last_input_used != Some(ui::InputModality::Pointer) {
+            self.last_input_used = Some(ui::InputModality::Pointer);
+            self.push(BackendEvent::PointerMotionUsed);
         }
     }
 
@@ -2662,10 +2670,11 @@ impl DrmDispatchState {
             InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
                 self.handle_libinput_device_event(event);
             }
-            InputEvent::PointerMotionAbsolute { .. }
-            | InputEvent::PointerMotion { .. }
-            | InputEvent::PointerButton { .. }
-            | InputEvent::PointerAxis { .. } => {
+            InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerMotion { .. } => {
+                self.note_pointer_motion();
+                self.handle_libinput_pointer_event(event);
+            }
+            InputEvent::PointerButton { .. } | InputEvent::PointerAxis { .. } => {
                 self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_pointer_event(event);
             }
@@ -2989,6 +2998,36 @@ impl DrmDispatchState {
         }
         for code in codes.iter().rev() {
             self.process_keyboard_key(evdev_to_xkb(*code), false);
+        }
+    }
+
+    /// Adopt already queued startup devices without waiting for the first key
+    /// or touch to make libinput's fd readable. Keep physical event translation
+    /// in the registered Smithay backend.
+    fn adopt_initial_input_devices(&mut self, context: &Libinput) -> Result<(), DrmBackendError> {
+        use smithay::reexports::input::{AsRaw, event::EventTrait as _, ffi};
+        let mut context = context.clone();
+        // Do not dispatch or consume a key, contact or switch here: Smithay's
+        // registered backend remains the sole translator of physical input.
+        // This peek preserves any non-device event for that normal route.
+        loop {
+            // SAFETY: the live context is exclusively driven on this thread;
+            // peeking changes neither its queue nor any event's ownership.
+            let next = unsafe { ffi::libinput_next_event_type(context.as_raw_mut()) };
+            if next != ffi::libinput_event_type_LIBINPUT_EVENT_DEVICE_ADDED {
+                return Ok(());
+            }
+            let Some(smithay::reexports::input::Event::Device(
+                smithay::reexports::input::event::DeviceEvent::Added(event),
+            )) = context.next()
+            else {
+                return Err(DrmBackendError::Libinput(
+                    "queued input device could not be adopted".into(),
+                ));
+            };
+            self.handle_libinput_device_event(InputEvent::DeviceAdded {
+                device: event.device(),
+            });
         }
     }
 
@@ -3878,6 +3917,10 @@ impl DrmRuntime {
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
         let scanouts = dispatch.finalize_startup_scanouts(scanout_builds);
+        // Seat assignment queues the attached devices immediately, before the
+        // libinput fd becomes readable. Publish/configure those devices through
+        // the ordinary handler before waiting for physical input.
+        dispatch.adopt_initial_input_devices(&libinput)?;
 
         Ok(Self {
             event_loop,

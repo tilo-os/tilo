@@ -50,13 +50,13 @@
 
 pub mod actions;
 pub mod app;
-pub mod art;
 pub mod audio;
 pub mod backend;
 pub mod commands;
 pub mod doc;
 mod files;
-pub mod icon;
+#[cfg(test)]
+pub mod live_search;
 pub mod local_file;
 pub mod lyrics;
 pub mod model;

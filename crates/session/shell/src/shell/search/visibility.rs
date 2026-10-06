@@ -29,7 +29,9 @@ pub fn required_capability(
     resource: &ResourceRef,
     kind: &ResourceKind,
 ) -> Option<(CapResource, Verb)> {
-    if resource.provider == super::providers::permission_prompts::PROVIDER_ID {
+    if resource.provider == super::providers::permission_prompts::PROVIDER_ID
+        || resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+    {
         return Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
@@ -149,6 +151,27 @@ impl ActionVisibility for CapabilityVisibility<'_> {
         {
             return false;
         }
+        if resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+            && (self.actor.principals.iter().any(|principal| {
+                matches!(
+                    principal,
+                    crate::shell::state::Principal::App(_)
+                        | crate::shell::state::Principal::Agent(_)
+                        | crate::shell::state::Principal::Token(_)
+                )
+            }) || !self
+                .actor
+                .principals
+                .iter()
+                .any(|principal| match principal {
+                    crate::shell::state::Principal::Person(user) => {
+                        self.workspace.may_administer(user)
+                    }
+                    _ => false,
+                }))
+        {
+            return false;
+        }
         match required_capability(resource, kind) {
             None => true,
             Some((cap_resource, verb)) => self.workspace.allows(&self.actor, &cap_resource, verb),
@@ -216,6 +239,53 @@ mod tests {
                 }
             )
             .can_see(&decision, &ResourceKind::Action)
+        );
+    }
+
+    #[test]
+    fn device_shell_selection_is_never_an_agent_admin_override() {
+        let owner = "owner".to_string();
+        let mut workspace = Workspace::new(WorkspaceId::new(), "host-gate");
+        workspace.owner = Some(owner.clone());
+        let resource = resource(
+            super::super::providers::terminal_device_shell::PROVIDER_ID,
+            "request@9",
+        );
+        assert!(
+            CapabilityVisibility::new(&workspace, workspace.actor_for_person(&owner))
+                .can_see(&resource, &ResourceKind::Action)
+        );
+        let agent = Principal::Agent("helper".into());
+        let _ = workspace.grant_capability(CapOverride::grant(
+            Subject::Principal(agent.clone()),
+            Scope::Workspace,
+            Verb::Admin,
+        ));
+        assert!(
+            !CapabilityVisibility::new(
+                &workspace,
+                Actor {
+                    principals: vec![agent],
+                    ..Actor::default()
+                }
+            )
+            .can_see(&resource, &ResourceKind::Action)
+        );
+    }
+
+    #[test]
+    fn an_agent_cannot_attach_the_owner_principal_to_a_device_shell_request() {
+        let owner = "owner".to_string();
+        let mut workspace = Workspace::new(WorkspaceId::new(), "host-gate");
+        workspace.owner = Some(owner.clone());
+        let resource = resource(
+            super::super::providers::terminal_device_shell::PROVIDER_ID,
+            "request@9",
+        );
+        let mut actor = workspace.actor_for_person(&owner);
+        actor.principals.push(Principal::Agent("helper".into()));
+        assert!(
+            !CapabilityVisibility::new(&workspace, actor).can_see(&resource, &ResourceKind::Action)
         );
     }
 

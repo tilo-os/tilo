@@ -16,8 +16,8 @@
 //!
 //! ## What is *not* an action
 //!
-//! Presentation stays local: selection, scroll, search text, filter tabs,
-//! playback and cache/download policy.
+//! Presentation stays local: selection, scroll, playback and cache/download
+//! policy.
 //! The stable top-level destinations are still exported as idempotent `View`
 //! operations, so history, search hosts and agents can address a screen without
 //! guessing a local widget path. Stream resolution, audio output, artwork
@@ -78,8 +78,8 @@ pub const NAVIGATION_VIEWS: &[(&str, &str)] = &[
     ("artists", "Artists"),
     ("playlists", "Playlists"),
     ("downloads", "Downloads"),
-    ("liked", "Liked Songs"),
-    ("search", "Search"),
+    ("liked", "Liked songs"),
+    ("browse", "Browse"),
     ("queue", "Queue"),
     ("lyrics", "Lyrics"),
 ];
@@ -227,6 +227,117 @@ pub enum Place {
 #[derive(Debug, Clone, PartialEq, Effect)]
 #[effect(operation = "music.effects")]
 pub enum MusicEffect {
+    /// Choose music source
+    ///
+    /// Opens the source picker without starting sign-in or changing a grant.
+    #[effect(device_only)]
+    Sources,
+    /// Connect Spotify
+    ///
+    /// Opens Spotify's PKCE sign-in in the system browser; grants stay in system custody.
+    #[effect(job, device_only)]
+    ConnectSpotify,
+    /// Authorize Spotify playback
+    ///
+    /// Separately grants native streaming for the same Premium account.
+    #[effect(job, device_only)]
+    ConnectSpotifyPlayback,
+    /// Refresh Spotify devices
+    #[effect(job, device_only)]
+    SpotifyDevices,
+    /// Show Spotify's remote queue
+    ///
+    /// Reads a provider snapshot; never replaces this device's queue.
+    #[effect(job, device_only)]
+    SpotifyQueue,
+    /// Load more Spotify library collections
+    #[effect(job, device_only)]
+    SpotifyLibraryMore,
+    /// Name a new private Spotify playlist
+    #[effect(device_only)]
+    NewSpotifyPlaylist,
+    /// Create private Spotify playlist
+    ///
+    /// Creates an empty private playlist. Refresh before retrying an uncertain result.
+    #[effect(job, device_only)]
+    SpotifyCreatePlaylist {
+        #[param("Playlist name")]
+        name: String,
+    },
+    /// Transfer Spotify playback
+    #[effect(job, device_only)]
+    SpotifyTransfer {
+        #[param("Spotify Connect device ID")]
+        device: String,
+    },
+    /// Play on a Spotify device
+    #[effect(job, device_only)]
+    SpotifyRemotePlay {
+        #[param("Spotify Connect device ID")]
+        device: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
+    /// Pause a Spotify device
+    #[effect(job, device_only)]
+    SpotifyRemotePause {
+        #[param("Spotify Connect device ID")]
+        device: String,
+    },
+    /// Save to Spotify library
+    #[effect(job, device_only)]
+    SpotifySave {
+        #[param("Spotify track, album, artist or playlist URI")]
+        uri: String,
+    },
+    /// Remove from Spotify library
+    #[effect(job, device_only)]
+    SpotifyUnsave {
+        #[param("Spotify track, album, artist or playlist URI")]
+        uri: String,
+    },
+    /// Rename Spotify playlist
+    #[effect(job, device_only)]
+    SpotifyRenamePlaylist {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("New name")]
+        name: String,
+    },
+    /// Add to Spotify playlist
+    #[effect(job, device_only)]
+    SpotifyPlaylistAdd {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
+    /// Remove from Spotify playlist
+    ///
+    /// Removes every occurrence of the track from this Spotify playlist.
+    #[effect(job, device_only)]
+    SpotifyPlaylistRemove {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
+    /// Disconnect Spotify
+    ///
+    /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
+    #[effect(job, device_only)]
+    DisconnectSpotify,
+    /// Browse Spotify
+    #[effect(job, device_only)]
+    BrowseSpotify,
+    /// Browse `YouTube` Music
+    #[effect(job, device_only)]
+    BrowseYouTube,
+
+    /// Search the remote catalogue
+    /// Results join the canonical search index after the worker answers.
+    #[effect(job, device_only, permission = "read")]
+    Search { query: String },
     /// Open audio file
     ///
     /// Plays a local audio file the person chooses on this device.
@@ -250,6 +361,9 @@ pub enum MusicEffect {
         track: String,
         queued: Option<usize>,
     },
+    /// Like or unlike a catalogue song, importing its real metadata first.
+    #[effect(row)]
+    ToggleLike { track: String },
     /// Add to queue
     #[effect(row)]
     AddToQueue { track: String },
@@ -325,7 +439,7 @@ pub(crate) fn effect_payload(effect: &MusicEffect) -> Vec<u8> {
 }
 
 /// `effect` bound to the row it acts on, under the row's own `label`.
-fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
+pub(crate) fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
     let mut spec = effect.bound();
     label.clone_into(&mut spec.label);
     spec
@@ -544,6 +658,10 @@ impl Action for MusicAction {
             }
             MusicAction::SetFollowedArtist { artist, followed } => {
                 require(
+                    !artist.starts_with("spotify:artist:"),
+                    "Spotify following requires a provider-authorized effect",
+                )?;
+                require(
                     mdoc::has_artist(doc, artist),
                     "artist is no longer in the library",
                 )?;
@@ -761,6 +879,8 @@ pub fn set_followed_artist_action(artist: &str, followed: bool) -> MusicAction {
 pub struct TrackRef {
     pub id: String,
     pub label: String,
+    /// Who performs the song: the row's secondary line in search.
+    pub artist: String,
     pub liked: bool,
     pub rank: i64,
 }
@@ -813,6 +933,8 @@ impl PlaylistResource {
 pub struct CatalogTrackResource {
     pub id: String,
     pub label: String,
+    /// Who performs the song: the row's secondary line in search.
+    pub artist: String,
     /// Canonical parent targets retained on the track resource, so an agent
     /// can navigate from a song to its exact album or artist without parsing a
     /// display label or guessing an id.
@@ -857,6 +979,8 @@ pub struct QueueItemResource {
     pub index: usize,
     pub track: String,
     pub label: String,
+    /// Who performs the song: the row's secondary line in search.
+    pub artist: String,
     pub current: bool,
 }
 
@@ -883,18 +1007,14 @@ impl MusicResourceCtx {
     /// publishes. Playback, queue and local-file stay on the widget: they are
     /// device-local and are not in the Automerge library.
     pub fn from_library(lib: &crate::model::Library) -> Self {
-        let track_label = |track_id: &str| -> String {
-            match lib.track(track_id) {
-                Some(track) => {
-                    let artist = lib.artist_name(&track.artist_id);
-                    if artist.is_empty() {
-                        track.title.clone()
-                    } else {
-                        format!("{} — {artist}", track.title)
-                    }
-                }
-                None => track_id.to_string(),
-            }
+        let track_title = |track_id: &str| -> String {
+            lib.track(track_id)
+                .map_or_else(|| track_id.to_string(), |track| track.title.clone())
+        };
+        let track_artist = |track_id: &str| -> String {
+            lib.track(track_id)
+                .map(|track| lib.artist_name(&track.artist_id).to_string())
+                .unwrap_or_default()
         };
         let mut playlists = lib.playlists.iter().collect::<Vec<_>>();
         playlists.sort_by(|a, b| a.id.cmp(&b.id));
@@ -910,7 +1030,8 @@ impl MusicResourceCtx {
                     .take(OPEN_PLAYLIST_TRACK_LIMIT)
                     .map(|tid| TrackRef {
                         id: tid.clone(),
-                        label: track_label(tid),
+                        label: track_title(tid),
+                        artist: track_artist(tid),
                         liked: lib.is_liked(tid),
                         rank: playlist.track_ranks.get(tid).copied().unwrap_or_default(),
                     })
@@ -930,7 +1051,8 @@ impl MusicResourceCtx {
                 .take(OPEN_RESOURCE_CATEGORY_LIMIT)
                 .map(|track| CatalogTrackResource {
                     id: track.id.clone(),
-                    label: track_label(&track.id),
+                    label: track_title(&track.id),
+                    artist: track_artist(&track.id),
                     album_id: track.album_id.clone(),
                     artist_id: track.artist_id.clone(),
                     // What this device keeps offline is not library state.
@@ -980,6 +1102,7 @@ impl MusicResourceCtx {
         let catalog_track = |track: &crate::model::Track| CatalogTrackResource {
             id: track.id.clone(),
             label: track_label(track),
+            artist: lib.artist_name(&track.artist_id).to_owned(),
             album_id: track.album_id.clone(),
             artist_id: track.artist_id.clone(),
             offline: false,
@@ -1020,6 +1143,7 @@ impl MusicResourceCtx {
                 track: TrackRef {
                     id: track.id.clone(),
                     label: track_label(track),
+                    artist: lib.artist_name(&track.artist_id).to_owned(),
                     liked: lib.is_liked(&track.id),
                     rank: playlist
                         .track_ranks
@@ -1338,6 +1462,19 @@ fn open_queue() -> ActionSpec {
     )
 }
 
+/// A song as search shows it: its title as the row's label and its artist
+/// as the secondary line, one fact each.
+fn song_resource(id: String, kind: &str, title: &str, artist: &str) -> Resource {
+    let resource = Resource::new(id, kind, title);
+    if artist.is_empty() {
+        return resource;
+    }
+    resource.with_presentation(tilo_actions::ResourcePresentation {
+        detail: Some(artist.to_string()),
+        ..tilo_actions::ResourcePresentation::default()
+    })
+}
+
 fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
     let index = item.index;
     let track = item.track.clone();
@@ -1351,10 +1488,11 @@ fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
         track: track.clone(),
     }
     .bound();
-    Resource::new(
+    song_resource(
         queue_item_resource_id(index, &track),
         "music.queue-item",
-        item.label.clone(),
+        &item.label,
+        &item.artist,
     )
     .with_action(open_queue())
     .with_action(bound(
@@ -1491,10 +1629,11 @@ fn playlist_track_resource(
     up_rank: i64,
     down_rank: i64,
 ) -> Resource {
-    Resource::new(
+    song_resource(
         playlist_track_resource_id(playlist, &track.id),
         "music.playlist-track",
-        track.label.clone(),
+        &track.label,
+        &track.artist,
     )
     .with_action(bound(
         &MusicEffect::Open {
@@ -1565,7 +1704,12 @@ pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> Resource {
         },
         "Play track",
     ))
-    .with_action(if track.offline {
+    .with_action(if track.id.starts_with("spotify:") {
+        MusicEffect::KeepOffline { tracks }.bound().unavailable(
+            "spotify_offline_unsupported",
+            "Spotify protected audio cannot be downloaded through Tilo",
+        )
+    } else if track.offline {
         MusicEffect::RemoveOffline { tracks }.bound()
     } else {
         MusicEffect::KeepOffline { tracks }.bound()
@@ -1591,6 +1735,21 @@ pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> Resource {
         }
         .bound(),
     );
+    if track.id.starts_with("spotify:track:") {
+        resource = resource
+            .with_action(
+                MusicEffect::SpotifySave {
+                    uri: track.id.clone(),
+                }
+                .bound(),
+            )
+            .with_action(
+                MusicEffect::SpotifyUnsave {
+                    uri: track.id.clone(),
+                }
+                .bound(),
+            );
+    }
     if !track.album_id.is_empty() {
         resource = resource.with_action(
             MusicEffect::OpenAlbum {
@@ -1633,8 +1792,32 @@ fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
     ))
 }
 
+/// An album, artist or playlist the live catalogue found and the library
+/// does not hold, labelled `label`: opening its page at `address` is all it
+/// offers. `None` for any other address.
+pub fn live_catalogue_resource(address: &ActionAddress, label: &str) -> Option<Resource> {
+    if address.action != "open" {
+        return None;
+    }
+    let resource = address.resource.as_str();
+    let (kind, place) = if let Some(id) = resource.strip_prefix("music.album:") {
+        ("music.album", Place::Album(id.to_owned()))
+    } else if let Some(id) = resource.strip_prefix("music.artist:") {
+        ("music.artist", Place::Artist(id.to_owned()))
+    } else {
+        (
+            "music.playlist",
+            Place::Playlist(resource.strip_prefix("music.playlist:")?.to_owned()),
+        )
+    };
+    Some(
+        Resource::new(resource, kind, label)
+            .with_action(bound(&MusicEffect::Open { place }, "Open")),
+    )
+}
+
 fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
-    Resource::new(
+    let resource = Resource::new(
         artist_resource_id(&artist.id),
         "music.artist",
         artist.label.clone(),
@@ -1644,8 +1827,26 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
             place: Place::Artist(artist.id.clone()),
         },
         "Open artist",
-    ))
-    .with_action(immediate_spec(
+    ));
+    if artist.id.starts_with("spotify:artist:") {
+        return resource.with_action(bound(
+            &if artist.followed {
+                MusicEffect::SpotifyUnsave {
+                    uri: artist.id.clone(),
+                }
+            } else {
+                MusicEffect::SpotifySave {
+                    uri: artist.id.clone(),
+                }
+            },
+            if artist.followed {
+                "Unfollow artist"
+            } else {
+                "Follow artist"
+            },
+        ));
+    }
+    resource.with_action(immediate_spec(
         "toggle-follow",
         if artist.followed {
             "Unfollow artist"
@@ -2092,6 +2293,7 @@ mod tests {
                 let id = format!("track-{number:03}");
                 ctx.tracks.push(CatalogTrackResource {
                     label: format!("Track {number}"),
+                    artist: String::new(),
                     id,
                     album_id: String::new(),
                     artist_id: String::new(),
@@ -2131,7 +2333,8 @@ mod tests {
         {
             let track = CatalogTrackResource {
                 id: "track-1".into(),
-                label: "Song — Artist".into(),
+                label: "Song".into(),
+                artist: String::new(),
                 album_id: "album-9".into(),
                 artist_id: "artist-2".into(),
                 offline: false,
@@ -2380,6 +2583,7 @@ mod tests {
             let track = CatalogTrackResource {
                 id: "track-2".into(),
                 label: "Track 2".into(),
+                artist: String::new(),
                 album_id: String::new(),
                 artist_id: String::new(),
                 offline: false,
@@ -2417,18 +2621,21 @@ mod tests {
                     index: 0,
                     track: "track-1".into(),
                     label: "First track".into(),
+                    artist: String::new(),
                     current: true,
                 },
                 QueueItemResource {
                     index: 1,
                     track: "track-1".into(),
                     label: "Second occurrence".into(),
+                    artist: String::new(),
                     current: false,
                 },
                 QueueItemResource {
                     index: 2,
                     track: "track-2".into(),
                     label: "Third track".into(),
+                    artist: String::new(),
                     current: false,
                 },
             ];
@@ -2535,6 +2742,7 @@ mod tests {
                     .map(|number| TrackRef {
                         id: format!("track:{number}:🎧"),
                         label: format!("Track {number}"),
+                        artist: String::new(),
                         liked: false,
                         rank: i64::try_from(number).unwrap_or(i64::MAX / 1_048_576) * 1_048_576,
                     })

@@ -156,9 +156,9 @@ impl Widget for SegChoice {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &outer);
         for (i, seg) in self.segment_rects.iter().enumerate() {
             let fill = if i == self.selected {
-                theme.accent_primary
+                theme.tokens.colors.intent.inverted
             } else {
-                theme.bg_primary
+                theme.tokens.colors.surfaces.raised
             };
             scene.fill(Fill::NonZero, transform, fill, None, seg);
         }

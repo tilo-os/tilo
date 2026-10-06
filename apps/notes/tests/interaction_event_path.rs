@@ -681,6 +681,17 @@ fn block_event(editor: &mut Framed<ui::widget::BlockEditor>, event: WindowEvent)
     Framed::harness_mut(editor).dispatch_to_root_with(&event, &Modifiers::default());
 }
 
+/// Where every block's text starts: past the editor's handle column and
+/// the line's own inset.
+fn content_edge(editor: &Framed<ui::widget::BlockEditor>) -> f64 {
+    editor.get_rect().x0 + editor.text_inset(&Theme::dark())
+}
+
+/// The x of a drag handle's centre, left of the content edge.
+fn handle_x(editor: &Framed<ui::widget::BlockEditor>) -> f64 {
+    content_edge(editor) - 14.0
+}
+
 /// Run a frame and return the scene it drew.
 fn block_scene(editor: &mut Framed<ui::widget::BlockEditor>) -> Scene {
     let harness = Framed::harness_mut(editor);
@@ -696,6 +707,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         let mut editor = block_gesture_fixture();
         let idle = block_scene(&mut editor).encoding().draw_tags.len();
         let row = editor.blocks()[0].line.get_rect();
+        let handle = handle_x(&editor);
         block_event(&mut editor, cursor_moved(row.center().x, row.center().y));
         let hovered = block_scene(&mut editor).encoding().draw_tags.len();
         assert_eq!(
@@ -703,7 +715,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             idle + 6,
             "only the hovered block gets six handle dots"
         );
-        block_event(&mut editor, cursor_moved(row.x0 - 14.0, row.center().y));
+        block_event(&mut editor, cursor_moved(handle, row.center().y));
         assert_eq!(
             block_scene(&mut editor).encoding().draw_tags.len(),
             hovered + 1,
@@ -771,11 +783,12 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         let first = editor.blocks()[0].line.get_rect();
         let second = editor.blocks()[1].line.get_rect();
         let third = editor.blocks()[2].line.get_rect();
-        block_event(&mut editor, cursor_moved(first.x0 - 14.0, first.center().y));
+        let handle = handle_x(&editor);
+        block_event(&mut editor, cursor_moved(handle, first.center().y));
         block_event(&mut editor, mouse_press());
         let before = block_scene(&mut editor).encoding().draw_tags.len();
         let gap = f64::midpoint(second.y0, first.y1);
-        block_event(&mut editor, cursor_moved(first.x0 - 14.0, gap));
+        block_event(&mut editor, cursor_moved(handle, gap));
         let preview = block_scene(&mut editor);
         assert!(
             preview.encoding().draw_tags.len() > before + 2,
@@ -785,7 +798,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         marker_brush.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,
-            Theme::dark().tokens.colors.accent[5],
+            Theme::dark().tokens.colors.intent.you,
             None,
             &Rect::new(0.0, 0.0, 1.0, 1.0),
         );
@@ -798,7 +811,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             "the insertion marker must remain visible above the opaque drag preview"
         );
         let transforms = format!("{:?}", preview.encoding().transforms);
-        block_event(&mut editor, cursor_moved(first.x0 - 10.0, gap));
+        block_event(&mut editor, cursor_moved(handle, gap + 2.0));
         assert_ne!(
             transforms,
             format!("{:?}", block_scene(&mut editor).encoding().transforms),
@@ -839,18 +852,19 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             Block::bullet(1, "Child B"),
         ]);
         let mut editor = layout_block_editor(editor, 400.0);
-        let root_x = editor.get_rect().x0;
+        let root_x = content_edge(&editor);
+        let handle = handle_x(&editor);
         let first = editor.blocks()[0].line.get_rect();
         let last = editor.blocks()[3].line.get_rect();
-        block_event(&mut editor, cursor_moved(root_x - 14.0, first.center().y));
+        block_event(&mut editor, cursor_moved(handle, first.center().y));
         block_event(&mut editor, mouse_press());
-        block_event(&mut editor, cursor_moved(root_x - 14.0, last.center().y));
+        block_event(&mut editor, cursor_moved(handle, last.center().y));
         let scene = block_scene(&mut editor);
         let mut expected_marker = Scene::new();
         expected_marker.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,
-            Theme::dark().tokens.colors.accent[5],
+            Theme::dark().tokens.colors.intent.you,
             None,
             &Rect::new(root_x - 4.0, last.y1 - 1.0, last.x1, last.y1 + 1.0),
         );
@@ -869,9 +883,10 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             let mut editor = block_gesture_fixture();
             let first = editor.blocks()[0].line.get_rect();
             let last = editor.blocks()[3].line.get_rect();
-            block_event(&mut editor, cursor_moved(first.x0 - 14.0, first.center().y));
+            let handle = handle_x(&editor);
+            block_event(&mut editor, cursor_moved(handle, first.center().y));
             block_event(&mut editor, mouse_press());
-            block_event(&mut editor, cursor_moved(first.x0 - 14.0, last.center().y));
+            block_event(&mut editor, cursor_moved(handle, last.center().y));
             block_scene(&mut editor);
             block_event(&mut editor, cancel);
             block_event(
@@ -1168,9 +1183,42 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let btn = n(&mut app).sidebar_new_page_btn_center_for_test();
         dispatch(&mut app, no_mods, &cursor_moved(btn.x, btn.y));
         let handled = dispatch(&mut app, no_mods, &mouse_press());
+        let mut release = mouse_press();
+        if let WindowEvent::MouseInput { state, .. } = &mut release {
+            *state = ElementState::Released;
+        }
+        // Keep the direct root press diagnostic above, then admit its
+        // release through the host that owns queued native control actions.
+        app.harness().send(&release);
+        app.settle();
 
         assert!(handled, "clicking the + button must be consumed");
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
+        );
         let pages = n(&mut app).workspace_pages_for_test();
+        if pages.len() != 2 {
+            let resources = app.harness().resources();
+            eprintln!(
+                "new-note target {:?}; native controls {:?}; contract violations {:?}",
+                app.harness().targets().get("new-note"),
+                resources
+                    .iter()
+                    .filter(|resource| resource.kind == "tilo.control")
+                    .map(|resource| (
+                        &resource.id,
+                        resource
+                            .actions
+                            .iter()
+                            .map(|action| &action.id)
+                            .collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>(),
+                app.harness().component_contract_violations()
+            );
+        }
         assert_eq!(pages.len(), 2, "the + button must add exactly one page");
         let new_id = n(&mut app).selected_for_test().unwrap();
         let new_meta = pages.iter().find(|p| p.id == new_id).unwrap();

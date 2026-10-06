@@ -27,8 +27,13 @@ Most user-facing design questions reduce to that one decision:
 - **Accessibility and automation are the same door.** A screen-reader user, a script and an
   agent browse resources and invoke actions; none touch the UI. A capability reachable only
   by clicking is not finished.
-- **Search is a system service.** Apps register a search provider *and* a renderer per
-  resource type, so a hit opens the app at that position.
+- **Search is a system service.** Apps register a search provider per resource type and
+  say what each hit is (a message, a video, a file match — `ui::search::SearchRow`); they
+  never draw a search field. A hit opens the app at that position through the resource's
+  `open` view action with the hit's anchor (`ViewCx::on_open` in a framework app), so a
+  person's click and an agent's call land in the same place. Apps open the platform search
+  narrowed to themselves or one of their parts (`ui::search::SearchRequest`), and narrow
+  lists or find in documents only through the framework's filter field and find bar.
 - **Undo, history, device sync and theming are system services**, not forty implementations.
 - **Collaboration reduces to transport.** Invite someone to a workspace, give them a role per
   app; each machine draws natively and state syncs as a CRDT. Agents are ordinary

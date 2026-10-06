@@ -238,26 +238,44 @@ fn device_control_socket(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/tilo-session/test-control.sock"))
 }
 
-/// A component layer may change its owned unit as well as its executable.
-/// Reload the live owner's manager before asking it to start that new unit.
-fn restart_user_unit_with(
-    user: &str,
+/// A component update preserves the operator's service activation state.
+/// Validate the installed unit first: try-restart alone can be a successful
+/// no-op for an absent unit on some systemd versions.
+fn try_restart_unit_with(
+    user: Option<&str>,
     unit: &str,
     mut execute: impl FnMut(&str, &mut Command) -> Result<String, DaemonError>,
 ) -> Result<(), DaemonError> {
-    execute(
-        &format!("systemctl --user daemon-reload as {user}"),
-        Command::new("systemctl")
-            .arg(format!("--machine={user}@"))
-            .args(["--user", "daemon-reload"]),
+    if user.is_some() {
+        execute(
+            "reload component user manager",
+            &mut manager_command(user, &["daemon-reload"]),
+        )?;
+    }
+    let loaded = execute(
+        "validate component unit",
+        &mut manager_command(user, &["show", "--property=LoadState", "--value", unit]),
     )?;
+    if !matches!(loaded.trim(), "loaded" | "merged") {
+        return Err(DaemonError::Apply {
+            step: format!("validate component unit {unit}"),
+            detail: format!("unit is not loadable ({})", loaded.trim()),
+        });
+    }
     execute(
-        &format!("systemctl --user restart {unit} as {user}"),
-        Command::new("systemctl")
-            .arg(format!("--machine={user}@"))
-            .args(["--user", "restart", unit]),
+        &format!("systemctl try-restart {unit}"),
+        &mut manager_command(user, &["try-restart", unit]),
     )
     .map(drop)
+}
+
+fn manager_command(user: Option<&str>, args: &[&str]) -> Command {
+    let mut command = Command::new("systemctl");
+    if let Some(user) = user {
+        command.arg(format!("--machine={user}@")).arg("--user");
+    }
+    command.args(args);
+    command
 }
 
 fn run(step: &str, command: &mut Command) -> Result<String, DaemonError> {
@@ -501,6 +519,10 @@ impl Apply for SystemdApply {
         systemctl("restart", unit)
     }
 
+    fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        try_restart_unit_with(None, unit, run)
+    }
+
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError> {
         let step = format!("restart {}'s desktop", session.user);
         let fail = |detail: String| DaemonError::Apply {
@@ -536,7 +558,7 @@ impl Apply for SystemdApply {
     }
 
     fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError> {
-        restart_user_unit_with(user, unit, run)
+        try_restart_unit_with(Some(user), unit, run)
     }
 
     fn unit_state(&mut self, unit: &str) -> String {
@@ -1158,7 +1180,7 @@ mod tests {
     fn changed_user_unit_is_reloaded_before_restart_and_reload_failure_stops_it() {
         let mut calls = Vec::new();
         let mut loaded_pin = false;
-        restart_user_unit_with("bob", "tilo-ush.service", |_, command| {
+        try_restart_unit_with(Some("bob"), "tilo-ush.service", |_, command| {
             assert_eq!(command.get_program(), "systemctl");
             let args: Vec<_> = command
                 .get_args()
@@ -1168,7 +1190,11 @@ mod tests {
             calls.push(args[2].clone());
             match args[2].as_str() {
                 "daemon-reload" => loaded_pin = true,
-                "restart" => {
+                "show" => {
+                    assert!(loaded_pin);
+                    return Ok("loaded\n".into());
+                }
+                "try-restart" => {
                     assert!(
                         loaded_pin,
                         "restart must observe the newly layered service definition"
@@ -1180,10 +1206,10 @@ mod tests {
             Ok(String::new())
         })
         .unwrap();
-        assert_eq!(calls, ["daemon-reload", "restart"]);
+        assert_eq!(calls, ["daemon-reload", "show", "try-restart"]);
 
         let mut calls = 0;
-        let error = restart_user_unit_with("bob", "tilo-ush.service", |_, _| {
+        let error = try_restart_unit_with(Some("bob"), "tilo-ush.service", |_, _| {
             calls += 1;
             Err(DaemonError::Apply {
                 step: "reload".into(),
@@ -1192,6 +1218,81 @@ mod tests {
         });
         assert!(error.is_err());
         assert_eq!(calls, 1, "a failed reload cannot restart the stale unit");
+    }
+
+    #[test]
+    fn component_restart_validates_units_and_preserves_manager_failures() {
+        for user in [None, Some("bob")] {
+            for state in ["not-found", "masked", "error", ""] {
+                let mut tried = false;
+                let result = try_restart_unit_with(user, "optional.service", |_, command| {
+                    let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
+                    if args.iter().any(|a| a == "try-restart") {
+                        tried = true;
+                    }
+                    Ok(if args.iter().any(|a| a == "show") {
+                        state.into()
+                    } else {
+                        String::new()
+                    })
+                });
+                assert!(result.is_err(), "invalid installed-unit state {state}");
+                assert!(
+                    !tried,
+                    "missing or unloadable units cannot be silently skipped"
+                );
+            }
+            let error = try_restart_unit_with(user, "active.service", |step, command| {
+                if command.get_args().any(|a| a == "try-restart") {
+                    return Err(DaemonError::Apply {
+                        step: step.into(),
+                        detail: "restart denied".into(),
+                    });
+                }
+                Ok("loaded".into())
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("restart denied"));
+        }
+    }
+
+    #[test]
+    fn component_restart_uses_conditional_operation_for_both_managers() {
+        for user in [None, Some("bob")] {
+            let mut verbs = Vec::new();
+            try_restart_unit_with(user, "optional.service", |_, command| {
+                let args: Vec<_> = command
+                    .get_args()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                let offset = if user.is_some() { 2 } else { 0 };
+                let verb = &args[offset];
+                verbs.push(verb.clone());
+                if verb == "show" {
+                    assert_eq!(
+                        &args[offset..],
+                        [
+                            "show",
+                            "--property=LoadState",
+                            "--value",
+                            "optional.service"
+                        ]
+                    );
+                    return Ok("loaded\n".into());
+                }
+                if verb == "try-restart" {
+                    assert_eq!(
+                        args.iter().skip(offset).nth(1).map(String::as_str),
+                        Some("optional.service")
+                    );
+                } else {
+                    assert_eq!(verb, "daemon-reload");
+                }
+                Ok(String::new())
+            })
+            .unwrap();
+            assert_eq!(verbs.last().map(String::as_str), Some("try-restart"));
+        }
     }
 
     /// The board session tilo-vmd looks for is the one the board layer

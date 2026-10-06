@@ -374,7 +374,7 @@ impl RemoteAccountSearch {
                     .invoking(remote_account_open_address(account))
                     .grouped(self.kind.clone())
                     .subtitled(format!(
-                        "{} · {} · {}",
+                        "{} on {} ({})",
                         account.kind.label(),
                         account.host,
                         account.health.label()
@@ -628,10 +628,15 @@ mod tests {
                 .collect();
             let remote = RemoteAccountSearch::new(&accounts);
             let provider = source(remote.entries());
-            let first = provider.search_page("record", None, 3, 3);
+            let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 3, 3);
             assert_eq!(first.inspected, 3);
             assert_eq!(first.results.len(), 3);
-            let second = provider.search_page("record", first.next.as_ref(), 3, 3);
+            let second = provider.search_page(
+                &ui::search::SearchQuery::new("record"),
+                first.next.as_ref(),
+                3,
+                3,
+            );
             assert_eq!(second.inspected, 3);
             assert!(
                 second
@@ -712,7 +717,8 @@ mod tests {
                 format!("ordinary record 2999 {LATE_HIT_NEEDLE}-文書")
             );
 
-            let page = provider.search_page("needle-文書", None, 1, 1);
+            let page =
+                provider.search_page(&ui::search::SearchQuery::new("needle-文書"), None, 1, 1);
             assert_eq!(page.inspected, 1);
             assert_eq!(page.results, vec![hit]);
             assert!(
@@ -721,10 +727,15 @@ mod tests {
             );
 
             // Broad searches remain bounded and carry an explicit continuation.
-            let first = provider.search_page("record", None, 7, 7);
+            let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 7, 7);
             assert_eq!(first.inspected, 7);
             assert_eq!(first.results.len(), 7);
-            let second = provider.search_page("record", first.next.as_ref(), 7, 7);
+            let second = provider.search_page(
+                &ui::search::SearchQuery::new("record"),
+                first.next.as_ref(),
+                7,
+                7,
+            );
             assert_eq!(second.inspected, 7);
             assert!(
                 second

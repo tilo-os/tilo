@@ -14,7 +14,7 @@ pub fn entries(state: &SlidesResourceCtx) -> Vec<SearchEntry> {
         let slide = &slide.data;
         let number = index + 1;
         let title = slide_title(slide, index);
-        let place = format!("{title} · Slide {number}");
+        let place = format!("slide {number}, {title}");
         entries.push(
             SearchEntry::new(title.clone(), slide_haystack(slide))
                 .anchored(actions::slide_resource_id(&slide.id))
@@ -24,7 +24,7 @@ pub fn entries(state: &SlidesResourceCtx) -> Vec<SearchEntry> {
             let kind = ElementKind::from_str(&element.kind);
             entries.push(
                 SearchEntry::new(
-                    format!("{} · {place}", kind.label()),
+                    format!("{} in {place}", kind.label()),
                     element_haystack(kind, element),
                 )
                 .anchored(actions::element_resource_id(&element.id))
@@ -41,7 +41,7 @@ pub fn entries(state: &SlidesResourceCtx) -> Vec<SearchEntry> {
         if !slide.notes.trim().is_empty() {
             entries.push(
                 SearchEntry::new(
-                    format!("{} · {place}", preview(&slide.notes)),
+                    format!("{} in {place}", preview(&slide.notes)),
                     slide.notes.clone(),
                 )
                 .anchored(actions::notes_resource_id(&slide.id))

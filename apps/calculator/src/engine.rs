@@ -580,7 +580,42 @@ pub fn prettify(expr: &str) -> String {
     s = s.replace("pi", "π");
     s = s.replace('*', "×");
     s = s.replace('/', "÷");
-    s
+    superscript_powers(&s)
+}
+
+/// `x^2` → `x²`: a `^` followed by a plain integer exponent (optionally
+/// negative) becomes superscript digits. A power with a bracketed or symbolic
+/// exponent keeps its `^`, since it has no single-glyph form.
+fn superscript_powers(expr: &str) -> String {
+    const DIGITS: [char; 10] = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+    let mut out = String::with_capacity(expr.len());
+    let mut chars = expr.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '^' {
+            out.push(c);
+            continue;
+        }
+        let mut exponent = String::new();
+        if chars.peek() == Some(&'-') {
+            exponent.push('⁻');
+            chars.next();
+        }
+        let mut digits = 0;
+        while let Some(d) = chars.peek().and_then(|d| d.to_digit(10)) {
+            exponent.extend(DIGITS.get(d as usize));
+            digits += 1;
+            chars.next();
+        }
+        if digits == 0 {
+            out.push('^');
+            if exponent.starts_with('⁻') {
+                out.push('-');
+            }
+        } else {
+            out.push_str(&exponent);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -739,5 +774,29 @@ mod tests {
         ] {
             assert_eq!(format_number(x), want, "formatting case {x}");
         }
+    }
+}
+
+#[cfg(test)]
+mod prettify_tests {
+    use super::prettify;
+
+    /// A power with a plain integer exponent reads as a superscript; one with
+    /// a bracketed or symbolic exponent keeps its caret.
+    #[test]
+    fn integer_powers_become_superscripts() {
+        assert_eq!(prettify("2^10"), "2¹⁰");
+        assert_eq!(prettify("x^2+1"), "x²+1");
+        assert_eq!(prettify("2^-3"), "2⁻³");
+        assert_eq!(prettify("2^(1/2)"), "2^(1÷2)");
+        assert_eq!(prettify("2^x"), "2^x");
+        assert_eq!(prettify("5^"), "5^");
+        assert_eq!(prettify("2^-x"), "2^-x");
+    }
+
+    #[test]
+    fn operators_and_functions_take_their_pretty_forms() {
+        assert_eq!(prettify("12*(4+3)"), "12×(4+3)");
+        assert_eq!(prettify("sqrt(2)/pi"), "√(2)÷π");
     }
 }

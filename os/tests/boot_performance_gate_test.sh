@@ -426,6 +426,12 @@ cmp -s "$app_host_service" "$repo/crates/packaging/app-host/systemd/tilo-app-hos
 cmp -s "$app_host_socket" "$repo/crates/packaging/app-host/systemd/tilo-app-host.socket" || {
   fail 'source-packaged and OS app-host activation sockets have drifted'
 }
+grep -Fqx 'ProtectHome=read-only' "$app_host_service" \
+  || fail 'app-host exposes writable home outside its scoped broker state'
+grep -Fqx 'ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_host_service" \
+  || fail 'app-host broker state is not provisioned before confinement'
+grep -Fqx 'ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_host_service" \
+  || fail 'app-host checkpoint and account package-manager writes lack exact scoped storage'
 app_host_source="$repo/crates/packaging/app-host/src/main.rs"
 app_host_rpc="$repo/crates/packaging/app-host/src/service.rs"
 grep -Fqx 'ListenStream=%t/tilo/services/app-host.sock' "$app_host_socket"

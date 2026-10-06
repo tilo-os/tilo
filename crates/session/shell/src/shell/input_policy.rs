@@ -296,11 +296,14 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     if matches!(
         key,
         ChordKey::Tab
+            | ChordKey::Space
             | ChordKey::ArrowLeft
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f' | '.')
+            | ChordKey::Char(
+                'k' | 'l' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f' | '.'
+            )
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -1707,8 +1710,8 @@ mod tests {
         fn only_immutable_super_chords_are_static_client_firewall_rules() {
             let m = mods(ModifiersState::SUPER);
             for key in [
-                Key::Character(SmolStr::new("l")),
-                Key::Named(NamedKey::Space),
+                Key::Character(SmolStr::new("w")),
+                Key::Named(NamedKey::Enter),
             ] {
                 let ev = key_event(key.clone(), true);
                 assert!(
@@ -1718,6 +1721,8 @@ mod tests {
             }
             for key in [
                 Key::Character(SmolStr::new("k")),
+                Key::Character(SmolStr::new("l")),
+                Key::Named(NamedKey::Space),
                 Key::Named(NamedKey::Tab),
                 Key::Named(NamedKey::ArrowUp),
                 Key::Named(NamedKey::ArrowDown),
@@ -2292,19 +2297,6 @@ pub fn is_lock_chord(
     modifiers: Modifiers,
     shortcuts: &settings_store::hardware::ShortcutConfig,
 ) -> bool {
-    let WindowEvent::KeyboardInput { event: key, .. } = event else {
-        return false;
-    };
-    // Super+L is a fixed alias: it locks whatever the editable Lock
-    // binding is, exactly as the shell dispatcher behind the router does.
-    if key.state == ElementState::Pressed
-        && crate::shell::fixed_chords::fixed_action(
-            chord_key_for_logical(&key.logical_key),
-            ChordMods::from(&modifiers),
-        ) == Some(crate::shell::fixed_chords::FixedChordAction::LockSession)
-    {
-        return true;
-    }
     shortcuts
         .bindings
         .get(&settings_store::hardware::ShortcutAction::Lock)
@@ -2397,13 +2389,13 @@ mod lock_chord_tests {
             "a custom lock chord only locks while the snapshot assigns it"
         );
         assert!(
-            is_lock_chord(&l, mods_with_super(true), &rebound),
-            "Super+L is a fixed lock alias alongside the editable binding"
+            !is_lock_chord(&l, mods_with_super(true), &rebound),
+            "rebinding Lock screen replaces Super+L"
         );
 
         let mut unbound = ShortcutConfig::default();
         unbound.bindings.remove(&ShortcutAction::Lock);
-        assert!(is_lock_chord(&l, mods_with_super(true), &unbound));
+        assert!(!is_lock_chord(&l, mods_with_super(true), &unbound));
         assert!(!is_lock_chord(&l, ctrl_alt, &unbound));
     }
 

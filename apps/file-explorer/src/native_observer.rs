@@ -7,8 +7,10 @@ fn rect(value: Rect) -> [f64; 4] {
     [value.x0, value.y0, value.x1, value.y1]
 }
 
-/// Carry the nearest Scrollable ancestor, avoiding the independent sidebar's
-/// viewport. No downcast, mutation, widget pointer, or thumbnail request.
+/// Carry the nearest Scrollable ancestor (the grid's), avoiding the independent
+/// sidebar's viewport. The list is a table that scrolls itself, so it has no
+/// such ancestor and is its own viewport. No downcast, mutation, widget
+/// pointer, or thumbnail request.
 fn file_geometry(widget: &dyn Widget, viewport: Option<Rect>) -> Option<(Rect, Rect)> {
     let viewport = if widget.name() == "Scrollable" {
         Some(widget.get_rect())
@@ -16,7 +18,8 @@ fn file_geometry(widget: &dyn Widget, viewport: Option<Rect>) -> Option<(Rect, R
         viewport
     };
     if widget.test_id() == Some("file_view") {
-        return viewport.map(|viewport| (widget.get_rect(), viewport));
+        let content = widget.get_rect();
+        return Some((content, viewport.unwrap_or(content)));
     }
     let mut found = None;
     widget.for_each_child(&mut |child| {
@@ -28,7 +31,28 @@ fn file_geometry(widget: &dyn Widget, viewport: Option<Rect>) -> Option<(Rect, R
 }
 
 pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
-    let geometry = file_geometry(widget, None);
+    let list = widget.view_mode == crate::model::ViewMode::List;
+    let scroll = f64::from(widget.list_slot.scroll_y());
+    let geometry = file_geometry(widget, None).map(|(content, viewport)| {
+        if list {
+            // The list's viewport is its table, which ends above the status
+            // lane; its content is the view as if unscrolled, so (as for the
+            // grid under its Scrollable) the content's top moves up by the
+            // offset.
+            let extent = f64::from(widget.list_slot.max_scroll_y());
+            (
+                Rect::new(
+                    content.x0,
+                    content.y0 - scroll,
+                    content.x1,
+                    content.y1 - scroll + extent,
+                ),
+                widget.list_slot.rect(),
+            )
+        } else {
+            (content, viewport)
+        }
+    });
     let root = widget.get_rect();
     let valid = |rect: Rect| rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0;
     let ready = !widget.is_loading
@@ -41,7 +65,11 @@ pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
         .filter_map(|&index| widget.entries.get(index))
         .map(|entry| entry.name.as_str())
         .collect();
-    let (offset_x, offset_y) = widget.scroll_offset.get();
+    let (offset_x, offset_y) = if list {
+        (0.0, widget.list_slot.scroll_y())
+    } else {
+        widget.scroll_offset.get()
+    };
     serde_json::json!({
         "app": "so.tilo.file-explorer",
         "view_id": "file_view",

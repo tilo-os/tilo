@@ -220,7 +220,8 @@ impl BooksDoc {
         let f64_value = |key| maps.iter().find_map(|map| read_number(doc, map, key));
         let str_value = |key| maps.iter().find_map(|map| read_str(doc, map, key));
         if let Some(v) = f64_value("font_scale") {
-            s.font_scale = (v as f32).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
+            s.font_scale =
+                (v as f32).clamp(Settings::READING_SCALE_MIN, Settings::READING_SCALE_MAX);
         }
         if let Some(v) = f64_value("line_spacing") {
             s.line_spacing = (v as f32).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);
@@ -630,7 +631,7 @@ impl BooksDoc {
     pub(crate) fn write_progress(doc: &mut AutoCommit, book_id: &str, p: &Progress) {
         for entry in Self::get_or_make_keyed_maps(doc, "progress", book_id) {
             let _ = doc.put(&entry, "chapter", p.chapter as i64);
-            let _ = doc.put(&entry, "page", p.page as i64);
+            let _ = doc.put(&entry, "block", p.block as i64);
             let _ = doc.put(&entry, "fraction", f64::from(p.fraction));
             // Preserve a previously recorded open time; only advance it (0 = never).
             if p.opened > 0 {
@@ -646,7 +647,7 @@ impl BooksDoc {
             .into_iter()
             .map(|entry| Progress {
                 chapter: Self::scalar_i64(doc, &entry, "chapter").unwrap_or(0).max(0) as usize,
-                page: Self::scalar_i64(doc, &entry, "page").unwrap_or(0).max(0) as usize,
+                block: Self::scalar_i64(doc, &entry, "block").unwrap_or(0).max(0) as usize,
                 fraction: (read_number(doc, &entry, "fraction").unwrap_or(0.0) as f32)
                     .clamp(0.0, 1.0),
                 opened: Self::scalar_i64(doc, &entry, "opened").unwrap_or(0).max(0) as u64,
@@ -659,7 +660,7 @@ impl BooksDoc {
                     .cmp(&right.opened)
                     .then_with(|| left.fraction.total_cmp(&right.fraction))
                     .then_with(|| left.chapter.cmp(&right.chapter))
-                    .then_with(|| left.page.cmp(&right.page))
+                    .then_with(|| left.block.cmp(&right.block))
             })
             .unwrap_or_default()
     }
@@ -1020,14 +1021,14 @@ mod tests {
             let mut doc = AutoCommit::new();
             let p = Progress {
                 chapter: 2,
-                page: 5,
+                block: 5,
                 fraction: 0.42,
                 opened: 1_720_000_000_000,
             };
             BooksDoc::write_progress(&mut doc, "book:x", &p);
             let back = BooksDoc::read_progress(&doc, "book:x");
             assert_eq!(back.chapter, 2);
-            assert_eq!(back.page, 5);
+            assert_eq!(back.block, 5);
             assert!((back.fraction - 0.42).abs() < 0.001);
             assert_eq!(
                 back.opened, 1_720_000_000_000,
@@ -1260,7 +1261,7 @@ mod tests {
                 "book:shared-progress",
                 &Progress {
                     chapter: 1,
-                    page: 3,
+                    block: 3,
                     fraction: 0.25,
                     opened: 10,
                 },
@@ -1272,7 +1273,7 @@ mod tests {
                 "book:shared-progress",
                 &Progress {
                     chapter: 4,
-                    page: 9,
+                    block: 9,
                     fraction: 0.75,
                     opened: 20,
                 },
@@ -1302,7 +1303,7 @@ mod tests {
                     BooksDoc::read_progress(peer, "book:shared-progress"),
                     Progress {
                         chapter: 4,
-                        page: 9,
+                        block: 9,
                         fraction: 0.75,
                         opened: 20,
                     }

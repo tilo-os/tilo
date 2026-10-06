@@ -49,6 +49,8 @@ mod container_update_forwarding;
 mod context_menu_test;
 #[path = "control_row_alignment.rs"]
 mod control_row_alignment;
+#[path = "copy_audit.rs"]
+mod copy_audit;
 #[cfg(unix)]
 #[path = "cross_process_presence_pump.rs"]
 mod cross_process_presence_pump;
@@ -157,6 +159,8 @@ mod tooltip_test;
 mod touch_gestures_test;
 #[path = "typography_baseline_geometry.rs"]
 mod typography_baseline_geometry;
+#[path = "typography_token_audit.rs"]
+mod typography_token_audit;
 #[path = "typography_visual_regression.rs"]
 mod typography_visual_regression;
 #[path = "undo_per_author.rs"]

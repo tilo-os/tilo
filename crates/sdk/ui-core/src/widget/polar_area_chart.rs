@@ -19,6 +19,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
 };
@@ -221,6 +222,76 @@ impl PolarAreaChart {
             radius,
         )
     }
+    /// Each sector's label inside its sector, centred on the sector's
+    /// middle, largest sector first: shortened to the room the sector has
+    /// there and dropped (the tooltip names it) where it would spill out of
+    /// the sector or collide with a label already placed.
+    fn draw_sector_labels(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        labels: &[(String, f64, f64, f64)],
+    ) {
+        let (center, inner, _) = self.geometry();
+        let style = theme.text(TextRole::Caption);
+        let mut placer = crate::widget::chart_labels::LabelPlacer::new(self.rect, theme);
+        if let Some(((_, title), subtitle)) = crate::widget::chart_labels::centre_label_layout(
+            tr,
+            theme,
+            center,
+            inner,
+            &self.center_title,
+            &self.center_subtitle,
+        ) {
+            placer.block(subtitle.map_or(title, |sub| title.union(sub)));
+        }
+        let mut order: Vec<&(String, f64, f64, f64)> = labels.iter().collect();
+        order.sort_by(|a, b| b.3.total_cmp(&a.3));
+        for (label, start, sweep, radius) in order {
+            let angle = start + sweep / 2.0;
+            let mid_r = inner.midpoint(*radius);
+            let anchor = Point::new(
+                center.x + mid_r * angle.cos(),
+                center.y + mid_r * angle.sin(),
+            );
+            // The chord of the sector through its middle bounds the width.
+            let room = (2.0 * mid_r * (sweep / 2.0).sin()).min(radius - inner);
+            let Some((shown, w, h)) =
+                crate::widget::chart_labels::fit_label(tr, label, room, &style)
+            else {
+                continue;
+            };
+            let rect = Rect::from_center_size(anchor, (w, h));
+            let inside = [
+                Point::new(rect.x0, rect.y0),
+                Point::new(rect.x1, rect.y0),
+                Point::new(rect.x0, rect.y1),
+                Point::new(rect.x1, rect.y1),
+            ]
+            .iter()
+            .all(|corner| {
+                let dx = corner.x - center.x;
+                let dy = corner.y - center.y;
+                let r = dx.hypot(dy);
+                let a = (dy.atan2(dx) - start).rem_euclid(TAU);
+                r >= inner && r <= *radius && a <= *sweep
+            });
+            if !inside || !placer.place(rect) {
+                continue;
+            }
+            tr.draw_style(
+                scene,
+                &shown,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((rect.x0, rect.y0)),
+                None,
+                &style,
+            );
+        }
+    }
+
     fn max(&self) -> f64 {
         self.style
             .max
@@ -238,21 +309,9 @@ impl PolarAreaChart {
         self.data.iter().find(|d| d.id == id)
     }
     fn color(datum: &PolarAreaDatum, index: usize, theme: &Theme) -> Color {
-        let colors = &theme.tokens.colors;
-        let palette = [
-            colors.accent.stops[5],
-            colors.semantic.success,
-            colors.semantic.warning,
-            colors.semantic.info,
-            colors.semantic.danger,
-            colors.accent.stops[7],
-        ];
-        datum.color.unwrap_or_else(|| {
-            palette
-                .get(index % palette.len())
-                .copied()
-                .unwrap_or(colors.accent.stops[5])
-        })
+        datum
+            .color
+            .unwrap_or_else(|| theme.tokens.colors.presence.series(index))
     }
     fn hit(&self, point: Point) -> Option<&str> {
         let (center, _, _) = self.geometry();
@@ -330,14 +389,13 @@ impl Widget for PolarAreaChart {
         _presence: &PresenceCtx,
     ) {
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         let (center, inner, outer) = self.geometry();
@@ -367,6 +425,7 @@ impl Widget for PolarAreaChart {
         let slot = TAU / count;
         let gap = self.style.angular_gap.clamp(0.0, slot * 0.7);
         let exponent = self.style.radius_exponent.max(0.01);
+        let mut labels: Vec<(String, f64, f64, f64)> = Vec::new();
         for (index, datum) in self
             .data
             .iter()
@@ -398,50 +457,28 @@ impl Widget for PolarAreaChart {
                 inner,
                 outer: radius,
             });
-            if self.style.show_labels && radius - inner > 32.0 {
-                let angle = start + sweep / 2.0;
-                let label_r = inner + (radius - inner) * 0.68;
+            if self.style.show_labels {
                 let label = if self.style.show_values {
                     format!("{}  {}", datum.label, format_value(datum.value))
                 } else {
                     datum.label.clone()
                 };
-                tr.draw_text(
-                    scene,
-                    &label,
-                    theme.tokens.typography.scale.xs,
-                    theme.tokens.colors.text_primary,
-                    transform
-                        * Affine::translate((
-                            angle.cos().mul_add(label_r, center.x) - 22.0,
-                            angle.sin().mul_add(label_r, center.y) - 6.0,
-                        )),
-                    Some(58.0),
-                );
+                labels.push((label, start, sweep, radius));
             }
         }
-        if !self.center_title.is_empty() {
-            let (title_width, _) =
-                tr.measure(&self.center_title, theme.tokens.typography.scale.lg, None);
-            tr.draw_text_weighted(
-                scene,
-                &self.center_title,
-                theme.tokens.typography.scale.lg,
-                theme.tokens.colors.text_primary,
-                transform
-                    * Affine::translate((center.x - f64::from(title_width) / 2.0, center.y - 15.0)),
-                None,
-                TextWeight::Bold,
-            );
-            tr.draw_text(
-                scene,
-                &self.center_subtitle,
-                theme.tokens.typography.scale.xs,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((center.x - 30.0, center.y + 12.0)),
-                Some(60.0),
-            );
-        }
+        self.draw_sector_labels(scene, transform, tr, theme, &labels);
+        // The centre copy at the largest size the hole holds; left out
+        // where even a heading does not fit.
+        let _ = crate::widget::chart_labels::paint_centre_label(
+            scene,
+            transform,
+            tr,
+            theme,
+            center,
+            inner,
+            &self.center_title,
+            &self.center_subtitle,
+        );
         if self.keyboard_inspection {
             self.update_inspection_anchor();
         }
@@ -456,8 +493,9 @@ impl Widget for PolarAreaChart {
             } else {
                 format!("{} · {}", format_value(datum.value), datum.detail)
             };
-            let (label_width, _) = tr.measure(&datum.label, theme.tokens.typography.scale.sm, None);
-            let (detail_width, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+            let (label_width, _) =
+                tr.measure_style(&datum.label, None, &theme.text(TextRole::Caption));
+            let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
             let width = f64::from(label_width.max(detail_width)).max(140.0) + 28.0;
             let x = (self.pointer.x + 16.0)
                 .min(self.rect.x1 - width - 8.0)
@@ -471,24 +509,25 @@ impl Widget for PolarAreaChart {
                 transform,
                 theme.tokens.colors.surfaces.overlay,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.md)),
+                &vello::kurbo::RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.control)),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &datum.label,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((x + 14.0, y + 11.0)),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x + 14.0, y + 37.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
     }

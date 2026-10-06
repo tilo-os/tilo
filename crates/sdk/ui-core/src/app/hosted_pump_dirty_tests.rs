@@ -526,3 +526,35 @@ fn hosted_pump_cost_idle_before_after() {
         eprintln!("hosted pump {name}: {per:?} per idle pump ({PUMPS} pumps, 3x40 actions)");
     }
 }
+
+#[test]
+fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
+    use crate::permissions::{Actor, PermissionContext, Role};
+    use std::sync::{Arc, Mutex};
+    let current = Arc::new(Mutex::new(Some(Role::Owner)));
+    let sample = current.clone();
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture.app.permission_ctx = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Editor), "fixture-user"),
+        vec![],
+    )
+    .with_action_authority(
+        "test.directory".into(),
+        Arc::new(move || {
+            Ok(PermissionContext::from_capabilities(
+                Actor::person(*sample.lock().unwrap(), "fixture-user"),
+                vec![],
+            ))
+        }),
+    );
+    assert!(fixture.pump().synced);
+    fixture.assert_idle();
+    *current.lock().unwrap() = None;
+    let generation = fixture.app.actions.resource_generation.get();
+    assert!(
+        fixture.pump().synced,
+        "ordinary worker observes revoked owner authority"
+    );
+    assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+    fixture.assert_idle();
+}

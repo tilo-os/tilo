@@ -78,6 +78,34 @@ fn semantic(app: &mut TestApp<NotesShell>, target: &str, action: &ui::a11y::Acti
         .unwrap();
 }
 
+#[test]
+fn the_note_actions_button_opens_the_note_menu_anchored_to_itself() {
+    for width in [480, 1200] {
+        let (mut app, _) = note_at(width, "Welcome to Notes");
+        let button = surface(&mut app, |notes| notes.note_menu_button_center_for_test());
+        assert!(
+            button.x > 0.0,
+            "the header lays the button out, width {width}"
+        );
+        app.harness().click_at(button.x, button.y);
+        assert!(menu_open(&mut app), "width {width}");
+        // The menu lays its rows out when it paints.
+        let _ = app.harness().render_rgba();
+        let (menu, anchor) = surface(&mut app, |notes| notes.note_menu_rects_for_test())
+            .expect("an open menu has a rect");
+        assert!(
+            menu.y0 >= anchor.y1 - 1.0 && menu.y0 <= anchor.y1 + 16.0,
+            "the menu opens just under its button: {menu:?} vs {anchor:?}"
+        );
+        assert!(
+            menu.x1 >= anchor.x1 - 1.0 && menu.x0 < anchor.x1,
+            "the menu hangs from the button's edge: {menu:?} vs {anchor:?}"
+        );
+        dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Escape));
+        assert!(!menu_open(&mut app));
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "single interaction test follows selection and shortcut isolation through the menu lifecycle"
@@ -210,16 +238,12 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
         let second = add_note(&mut app, "Second", "");
         open(&mut app, second);
         let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
-        dispatch(
-            &mut app,
-            Modifiers::default(),
-            &cursor_moved(toggle.x, toggle.y),
+        app.harness().click_at(toggle.x, toggle.y);
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
         );
-        let mut left = mouse_press_right();
-        if let WindowEvent::MouseInput { button, .. } = &mut left {
-            *button = MouseButton::Left;
-        }
-        dispatch(&mut app, Modifiers::default(), &left);
         assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
         app.harness().relayout_at((480, 800)).unwrap();
         let row = surface(&mut app, |notes| notes.sidebar_row_center_for_test(0)).unwrap();

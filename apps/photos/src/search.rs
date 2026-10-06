@@ -17,10 +17,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError,
-    SearchCursor, SearchResult,
-};
+#[cfg(test)]
+use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor};
+use ui::search::{SearchCatalog, SearchCatalogError, SearchResult};
 use ui::tilo_resource::SearchEntry;
 
 use crate::actions::{
@@ -228,6 +227,28 @@ impl LibraryRow {
         if let Some(anchor) = &self.anchor {
             entry = entry.anchored(anchor.clone());
         }
+        if let MaterializationSeed::Photo(photo) = &self.seed {
+            for person in &photo.people {
+                entry = entry.facet("person", crate::strings::tr("photos-people"), person);
+            }
+            for tag in &photo.tags {
+                entry = entry.facet("tag", crate::strings::tr("photos-tags"), tag);
+            }
+            if let Some(place) = &photo.location {
+                entry = entry.facet(
+                    "place",
+                    crate::strings::tr("photos-place"),
+                    place.display_name(),
+                );
+            }
+            entry.row = Some(
+                ui::tilo_resource::SearchRow::shaped(ui::tilo_resource::SearchRowShape::Media {
+                    byline: Some(self.subtitle.clone()),
+                    duration: None,
+                })
+                .icon(self.icon),
+            );
+        }
         entry
     }
 }
@@ -276,7 +297,10 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         LibraryRow::open(
             "photos.timeline",
             crate::strings::tr("photos-timeline"),
-            format!("{} photographs · chronological", library.photos.len()),
+            format!(
+                "{} photographs in chronological order",
+                library.photos.len()
+            ),
         )
         .found_by(format!(
             "Timeline\0photos.timeline\0chronological\0{} photographs\0open",
@@ -291,7 +315,7 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         let id = timeline_month_resource_id(month);
         insert(
             id.clone(),
-            LibraryRow::open(&id, month, format!("Timeline month · {count} photographs"))
+            LibraryRow::open(&id, month, format!("{count} photographs in this month"))
                 .found_by(format!("timeline\0month\0{count} photographs\0open"))
                 .seeded(MaterializationSeed::TimelineMonth {
                     month: month.clone(),
@@ -303,7 +327,7 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         let id = timeline_day_resource_id(day);
         insert(
             id.clone(),
-            LibraryRow::open(&id, day, format!("Timeline day · {count} photographs"))
+            LibraryRow::open(&id, day, format!("{count} photographs on this day"))
                 .found_by(format!("timeline\0day\0{count} photographs\0open"))
                 .seeded(MaterializationSeed::TimelineDay {
                     day: day.clone(),
@@ -326,7 +350,7 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         LibraryRow::open(
             "photos.places",
             "Places",
-            format!("Offline map · {located_count} located photographs"),
+            format!("Offline map with {located_count} located photographs"),
         )
         .found_by(format!(
             "photos.places\0map\0location\0{located_count} photographs\0open"
@@ -415,7 +439,7 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
             LibraryRow::open(
                 &id,
                 label.clone(),
-                format!("Place · {count} photographs · offline map"),
+                format!("{count} photographs at this place, available on the offline map"),
             )
             .found_by(format!(
                 "photos.place\0place\0{count} photographs\0map\0open"
@@ -425,13 +449,16 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
     }
     for (folder, count) in folders {
         let id = folder_resource_id(&folder);
-        let mut row =
-            LibraryRow::open(&id, folder.clone(), format!("Folder · {count} photographs"))
-                .found_by(format!("photos.folder\0folder\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Folder {
-                    label: folder,
-                    count,
-                });
+        let mut row = LibraryRow::open(
+            &id,
+            folder.clone(),
+            format!("Folder containing {count} photographs"),
+        )
+        .found_by(format!("photos.folder\0folder\0{count} photographs\0open"))
+        .seeded(MaterializationSeed::Folder {
+            label: folder,
+            count,
+        });
         row.icon = "folder";
         insert(id, row);
     }
@@ -439,19 +466,23 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         let id = person_resource_id(&person);
         insert(
             id.clone(),
-            LibraryRow::open(&id, person.clone(), format!("Person · {count} photographs"))
-                .found_by(format!("photos.person\0person\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Person {
-                    label: person,
-                    count,
-                }),
+            LibraryRow::open(
+                &id,
+                person.clone(),
+                format!("Person identified in {count} photographs"),
+            )
+            .found_by(format!("photos.person\0person\0{count} photographs\0open"))
+            .seeded(MaterializationSeed::Person {
+                label: person,
+                count,
+            }),
         );
     }
     for (tag, count) in tags {
         let id = tag_resource_id(&tag);
         insert(
             id.clone(),
-            LibraryRow::open(&id, tag.clone(), format!("Tag · {count} photographs"))
+            LibraryRow::open(&id, tag.clone(), format!("Tag used on {count} photographs"))
                 .found_by(format!("photos.tag\0tag\0{count} photographs\0open"))
                 .seeded(MaterializationSeed::Tag { label: tag, count }),
         );
@@ -460,21 +491,29 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         let id = object_resource_id(&object);
         insert(
             id.clone(),
-            LibraryRow::open(&id, object.clone(), format!("Object · {count} photographs"))
-                .found_by(format!("photos.object\0object\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Object {
-                    label: object,
-                    count,
-                }),
+            LibraryRow::open(
+                &id,
+                object.clone(),
+                format!("Object identified in {count} photographs"),
+            )
+            .found_by(format!("photos.object\0object\0{count} photographs\0open"))
+            .seeded(MaterializationSeed::Object {
+                label: object,
+                count,
+            }),
         );
     }
     for (pet, count) in pets {
         let id = pet_resource_id(&pet);
         insert(
             id.clone(),
-            LibraryRow::open(&id, pet.clone(), format!("Pet · {count} photographs"))
-                .found_by(format!("photos.pet\0pet\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Pet { label: pet, count }),
+            LibraryRow::open(
+                &id,
+                pet.clone(),
+                format!("Pet identified in {count} photographs"),
+            )
+            .found_by(format!("photos.pet\0pet\0{count} photographs\0open"))
+            .seeded(MaterializationSeed::Pet { label: pet, count }),
         );
     }
     rows
@@ -530,11 +569,7 @@ impl LibraryIndex {
         Some(seed.materialize())
     }
 
-    /// One bounded page of canonical photograph ids matching the same
-    /// filename, metadata, OCR and description index used by system search.
-    /// The in-app timeline consumes these pages incrementally instead of
-    /// rebuilding and scanning a lowercase string for every photo on every
-    /// frame.
+    #[cfg(test)]
     pub(crate) fn photo_matches_page(
         &self,
         query: &str,
@@ -566,6 +601,7 @@ impl LibraryIndex {
         (ids, page.next, page.inspected)
     }
 
+    #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
         self.state
             .read()
@@ -610,7 +646,6 @@ impl LibraryIndex {
             .iter()
             .map(|(id, row)| (id.clone(), row.seed.clone()))
             .collect();
-
         // Build postings, grams, and tokens without holding the public
         // snapshot lock. A large import must not turn Ctrl+K or an exact
         // resource lookup into a wait for a 100k-row index rebuild. The
@@ -685,9 +720,10 @@ mod tests {
         PhotoLibrary, PhotoLocation,
     };
     use tilo_actions::ActionAddress;
+    use ui::search::SearchQuery;
 
-    use ui::search::SearchProvider;
     use ui::search::testing::assert_late_hit_reachable;
+    use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
     /// The app's search source over the library `doc` holds, as the
     /// framework builds it from the resource's entries.
@@ -801,7 +837,7 @@ mod tests {
                 ),
             ] {
                 let page = provider.search_page(
-                    query,
+                    &SearchQuery::new(query),
                     None,
                     DEFAULT_SEARCH_CANDIDATE_LIMIT,
                     DEFAULT_SEARCH_RESULT_LIMIT,
@@ -883,10 +919,20 @@ mod tests {
     fn search_pages_and_caller_limits_are_bounded_and_target_exported_actions() {
         let doc = open_doc("harbour.png");
         let provider = source(&doc);
-        assert!(provider.search_page("", None, 0, 1).results.is_empty());
-        assert!(provider.search_page("", None, 1, 0).results.is_empty());
+        assert!(
+            provider
+                .search_page(&SearchQuery::new(""), None, 0, 1)
+                .results
+                .is_empty()
+        );
+        assert!(
+            provider
+                .search_page(&SearchQuery::new(""), None, 1, 0)
+                .results
+                .is_empty()
+        );
 
-        let page = provider.search_page("harbour", None, 1, 1);
+        let page = provider.search_page(&SearchQuery::new("harbour"), None, 1, 1);
         assert_eq!(page.inspected, 1);
         assert_eq!(page.results.len(), 1);
         let address = page.results[0].action_address().unwrap();
@@ -904,7 +950,7 @@ mod tests {
             let doc = open_doc("harbour.png");
             let provider = source(&doc);
             let page = provider.search_page(
-                "harbour",
+                &SearchQuery::new("harbour"),
                 None,
                 DEFAULT_SEARCH_CANDIDATE_LIMIT,
                 DEFAULT_SEARCH_RESULT_LIMIT,
@@ -987,7 +1033,7 @@ mod tests {
             }
             PhotosDoc::set_library(&mut doc, &library);
             let hit = source(&doc)
-                .search_page("NEEDLE-夏", None, 2, 1)
+                .search_page(&SearchQuery::new("NEEDLE-夏"), None, 2, 1)
                 .results
                 .pop()
                 .expect("late album remains searchable outside the contextual snapshot");
@@ -1059,7 +1105,7 @@ mod tests {
                     )));
             }
             PhotosDoc::set_library(&mut doc, &library);
-            let page = source(&doc).search_page("NEEDLE-夏", None, 2, 1);
+            let page = source(&doc).search_page(&SearchQuery::new("NEEDLE-夏"), None, 2, 1);
             assert_eq!(page.results.len(), 1);
             assert!(page.inspected <= 2, "query work exceeded its hard budget");
             assert_eq!(page.results[0].title, "旅行-needle-夏.png");
@@ -1097,7 +1143,7 @@ mod tests {
             );
             let index = LibraryIndex::from_library(&AutoCommit::new(), &built).unwrap();
             assert_eq!(index.stats().records, expected_records);
-            let page = provider.search_page("needle-夏", None, 2, 1);
+            let page = provider.search_page(&SearchQuery::new("needle-夏"), None, 2, 1);
             assert_eq!(page.results, vec![hit.clone()]);
             assert!(page.inspected <= 2);
             let address = hit.action_address().unwrap();

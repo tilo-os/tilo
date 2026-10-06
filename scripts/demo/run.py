@@ -768,7 +768,7 @@ class Session:
                  f"catalogue an empty query builds, so it is opened from "
                  f"the palette instead — searching {search!r}")
             self.modifiers(logo=True)
-            self.key("k")
+            self.key("Space")
             self.modifiers()
             self.settle(0.4)
             self.type_text(search)
@@ -946,7 +946,7 @@ class Session:
     def run_palette_command(self, query: str, expect_id: str | None = None) -> None:
         """Open the palette, type `query`, activate the top row."""
         self.modifiers(logo=True)
-        self.key("k")
+        self.key("Space")
         self.modifiers()
         self.settle(0.35)
         self.type_text(query)
@@ -3701,7 +3701,7 @@ def beat_five(ada: Session, registry, shots: str) -> dict | None:
 
     step("he searches for it, and the row is offered like any other")
     ada.modifiers(logo=True)
-    ada.key("k")
+    ada.key("Space")
     ada.modifiers()
     ada.settle(0.4)
     ada.type_text("word processor")

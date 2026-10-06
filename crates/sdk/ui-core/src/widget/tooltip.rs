@@ -9,7 +9,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::text_metrics::renderer_type_size;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 
 /// Middle of the 400-600ms comfort band: shows help promptly on a
@@ -46,13 +46,11 @@ fn px_f32(v: f64) -> f32 {
     v as f32
 }
 
-pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, text_size: f32) -> (f64, f64) {
-    // `text_size` is the theme-resolved size: it sizes the box in theme
-    // space and is divided back out once for the renderer's own measure.
-    let (tw, _th) =
-        text_renderer.measure(label, renderer_type_size(text_renderer, text_size), None);
+/// The chip's size for `label`: a `Caption` line plus the chip's pads.
+pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
+    let (tw, th) = text_renderer.measure_style(label, None, &theme.text(TextRole::Caption));
     let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
-    let h = (f64::from(text_size) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
+    let h = (f64::from(th) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
     (w, h)
 }
 
@@ -124,8 +122,10 @@ pub fn chip_rect(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
-/// `surfaces.overlay` — the same opaque tier the context menu and dropdown
-/// use — so the chip never bleeds the content beneath it, in either theme.
+/// The floating material every floating surface is made of (blurred where
+/// the renderer runs the backdrop pass, the opaque panel ground otherwise),
+/// with the panel edge, at the control radius: a tooltip is a small
+/// floating Panel, not a card.
 pub fn draw_chip(
     scene: &mut Scene,
     transform: Affine,
@@ -134,45 +134,45 @@ pub fn draw_chip(
     rect: Rect,
     label: &str,
 ) {
-    let radius = f64::from(theme.tokens.radii.sm);
+    let radius = f64::from(theme.tokens.radii.control);
 
     // The elevation token's own blur, following the chip's radius — the same
     // painter every other raised surface uses, rather than two hand-offset
     // translucent copies approximating it.
-    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
+    crate::surface::shadow(
+        scene,
+        transform,
+        rect,
+        radius,
+        &theme.tokens.elevation.floating,
+    );
 
-    // Fill + a rest edge derived from the fill itself (HIG §9.5 "Tooltip:
-    // as today, `edge_on(fill)`"), as a crisp 1 px inset stroke. The chip is
-    // centred under its anchor and so usually lands on a half pixel; snap
-    // the painted box to the grid or the hairline smears across two
-    // columns at half strength and stops registering on the dark preset.
+    // The Panel row: material, panel edge and, on a dark material, the
+    // inner light edge. The chip is centred under its anchor and so usually
+    // lands on a half pixel; snap the painted box to the grid or the
+    // hairline smears across two columns at half strength.
     let snapped = Rect::new(
         rect.x0.round(),
         rect.y0.round(),
         rect.x1.round(),
         rect.y1.round(),
     );
-    crate::surface::card(
-        scene,
-        transform,
-        snapped,
-        radius,
-        theme.tokens.colors.surfaces.overlay,
-    );
+    crate::surface::panel(scene, transform, snapped, radius, theme);
+    let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
 
-    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let text_style = theme.text(TextRole::Caption);
     // Centre on the measured line, not the font size: the chip's box is
     // sized from the font size, so the label otherwise sits low by half the
     // face's ascent/descent difference.
-    let (_, label_h) = text_renderer.measure(label, text_size, None);
+    let (_, label_h) = text_renderer.measure_style(label, None, &text_style);
     let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         label,
-        text_size,
-        theme.tokens.colors.text_primary,
+        on_panel.tokens.colors.text_primary,
         translated(transform, rect.x0 + CHIP_PAD_X, text_y),
         None,
+        &text_style,
     );
 }
 
@@ -208,8 +208,7 @@ pub fn draw_hover_tooltip_on(
     label: &str,
     viewport: Rect,
 ) {
-    let text_size = theme.tokens.typography.scale.sm;
-    let size = chip_size(label, text_renderer, text_size);
+    let size = chip_size(label, text_renderer, theme);
     let rect = chip_rect_on(anchor.1, anchor.0, size, viewport);
     draw_chip(scene, transform, text_renderer, theme, rect, label);
 }
@@ -369,8 +368,7 @@ impl Widget for Tooltip {
             return;
         }
 
-        let text_size = theme.tokens.typography.scale.sm;
-        let size = chip_size(&self.label, text_renderer, text_size);
+        let size = chip_size(&self.label, text_renderer, theme);
         // Generous fallback so an unclamped chip still renders in bare test
         // harnesses that never push a viewport.
         let viewport = presence

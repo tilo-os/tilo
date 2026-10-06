@@ -1380,6 +1380,12 @@ pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
     }
 }
 
+/// Locale-sensitive modified date without the time of day, for a narrow
+/// column; `None` when unknown.
+pub fn format_modified_date(modified: Option<DateTime<Local>>) -> Option<String> {
+    modified.map(crate::i18n::format_date)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
     Name,

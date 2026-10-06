@@ -25,7 +25,6 @@ use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::link_popover::PageEntry;
@@ -151,7 +150,12 @@ impl PageJumpPalette {
             self.search_cursor = None;
             self.cursor = 0;
         }
-        let page = provider.search_page(&self.query, self.search_cursor.as_ref(), 512, 64);
+        let page = provider.search_page(
+            &crate::search::SearchQuery::new(self.query.as_str()),
+            self.search_cursor.as_ref(),
+            512,
+            64,
+        );
         self.items.retain(|entry| !entry.id.is_nil());
         for result in page.results {
             let Some(address) = result.action_address() else {
@@ -486,7 +490,7 @@ impl PageJumpPalette {
             rect.x1 - PADDING * scale,
             rect.y0 + (PADDING + INPUT_HEIGHT) * scale,
         );
-        let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.md));
+        let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -517,11 +521,7 @@ impl PageJumpPalette {
                 input_rect.y1,
             ),
             &tokens.typography.style(TextRole::Body),
-            QueryInk::accented(
-                tokens.colors.text_primary,
-                tokens.colors.text_dim,
-                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            ),
+            QueryInk::of(&tokens.colors),
         );
         input_rect
     }
@@ -543,7 +543,8 @@ impl PageJumpPalette {
     ) {
         let tokens = &theme.tokens;
         let scale = f64::from(theme.text_scale);
-        let selected_ink = tokens.colors.on_accent(ON_FILL_MIN_CONTRAST);
+        // The armed row is the panel's strong lift, as in every menu.
+        let selected_ink = crate::widget::floating_surface::armed_row(theme).1;
         let list_top = input_rect.y1 + PADDING * scale;
         // Result rows use `TextRenderer`, which owns the global accessibility
         // multiplier. Keep the requested size at the unscaled design token so
@@ -587,13 +588,12 @@ impl PageJumpPalette {
                 y0 + self.row_height() * scale,
             );
             if visible_index == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                crate::widget::floating_surface::paint_armed_row(
+                    scene,
                     transform,
-                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                    None,
-                    &hl,
+                    row_rect,
+                    row_rect.x0 - rect.x0,
+                    theme,
                 );
             }
             let subtitle = self.subtitles.get(&row.id);
@@ -821,13 +821,12 @@ mod tests {
         {
             for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
                 let colors = &theme.tokens.colors;
-                let ratio = crate::a11y::contrast_ratio(
-                    colors.on_accent(ON_FILL_MIN_CONTRAST),
-                    colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                );
+                let ratio =
+                    crate::a11y::contrast_ratio(colors.intent.on_inverted, colors.intent.inverted);
+                let floor = crate::tokens::colors::ON_FILL_MIN_CONTRAST;
                 assert!(
-                    ratio >= ON_FILL_MIN_CONTRAST,
-                    "selected result contrast {ratio:.2}:1 is below {ON_FILL_MIN_CONTRAST}:1"
+                    ratio >= floor,
+                    "selected result contrast {ratio:.2}:1 is below {floor}:1"
                 );
             }
         }
@@ -1039,13 +1038,13 @@ mod tests {
                 }
                 fn search_page(
                     &self,
-                    query: &str,
+                    query: &crate::search::SearchQuery,
                     cursor: Option<&crate::search::SearchCursor>,
                     budget: usize,
                     limit: usize,
                 ) -> crate::search::SearchPage {
                     assert_eq!((budget, limit), (512, 64));
-                    self.0.query_page(query, cursor, budget, limit)
+                    self.0.query_page(query.text(), cursor, budget, limit)
                 }
             }
             let catalog = SearchCatalog::new("Notes");

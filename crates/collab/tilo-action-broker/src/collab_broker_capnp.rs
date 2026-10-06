@@ -16,6 +16,7 @@
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
+mod observed_launch;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 #[cfg(test)]
@@ -258,6 +259,7 @@ mod device_continuity_service_boundary_tests {
             NEARBY_TRANSFER_APP_ID,
             "workspace-7",
             CrdtRoute::app(NEARBY_TRANSFER_APP_ID, "workspace-7").channel_key(),
+            Some("local-person".into()),
         )
     }
 
@@ -351,6 +353,7 @@ mod device_continuity_service_boundary_tests {
             "so.tilo.browser",
             "workspace-7",
             CrdtRoute::app("so.tilo.browser", "workspace-7").channel_key(),
+            Some("local-person".into()),
         );
         let refused =
             delegate_nearby_transfer_command(&services, &other_app, "so.tilo.browser", &snapshot())
@@ -372,6 +375,49 @@ mod device_continuity_service_boundary_tests {
         );
         assert!(invalid.is_err(), "malformed command refused");
         assert_eq!(service.calls.lock().expect("calls").len(), 1);
+    }
+
+    #[test]
+    fn airdrop_delegation_seals_person_and_rejects_application_trust_claims() {
+        use runtime_collab::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
+        let service = Arc::new(RecordingNearby::answering(Reply::Accepted));
+        let services = HostServices {
+            nearby_transfer: Some(service.clone()),
+            ..Default::default()
+        };
+        let context = files_context();
+        let command = Command::SendAirDrop {
+            source_path: b"/approved/report".to_vec(),
+            address: "127.0.0.1".into(),
+            port: 443,
+        };
+        let json = serde_json::to_vec(&command).unwrap();
+        delegate_nearby_transfer_command(&services, &context, NEARBY_TRANSFER_APP_ID, &json)
+            .unwrap();
+        let calls = service.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.person(), Some("local-person"));
+        assert_eq!(calls[0].1, command);
+        drop(calls);
+        let mut spoof = serde_json::from_slice::<serde_json::Value>(&json).unwrap();
+        for key in ["person", "certificate_sha256", "verified", "remember"] {
+            spoof[key] = "app claim".into();
+            assert!(
+                delegate_nearby_transfer_command(
+                    &services,
+                    &context,
+                    NEARBY_TRANSFER_APP_ID,
+                    &serde_json::to_vec(&spoof).unwrap()
+                )
+                .is_err()
+            );
+            spoof.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(
+            service.calls.lock().unwrap().len(),
+            1,
+            "spoofed authority never reaches the service"
+        );
     }
 
     #[test]
@@ -1095,6 +1141,26 @@ pub struct PublishedSurface {
     /// closes. Only actions that explicitly opted into launchable/durable
     /// discovery are ever retained this way.
     pub live: bool,
+}
+
+impl PublishedSurface {
+    /// Copy only the selected descriptor and its routing metadata.
+    fn action_projection(&self, resource: &str, action: &str) -> Option<(Self, PublishedAction)> {
+        let descriptor = self
+            .actions
+            .iter()
+            .find(|descriptor| descriptor.resource == resource && descriptor.action == action)?;
+        Some((
+            Self {
+                peer_id: self.peer_id,
+                app_id: self.app_id.clone(),
+                route: self.route.clone(),
+                actions: Vec::new(),
+                live: self.live,
+            },
+            descriptor.clone(),
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -3483,6 +3549,37 @@ impl CapnpBrokerState {
         result
     }
 
+    /// Resolve against the current selected source, independently of the
+    /// asynchronous search snapshot. A live source shadows its retained
+    /// launchable catalogue even when it no longer offers the selected action.
+    pub fn published_action(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        let surfaces = self.surfaces.lock().ok()?;
+        let mut live_route = false;
+        for surface in surfaces
+            .values()
+            .filter(|surface| surface.app_id == route.app_id && surface.route == *route)
+        {
+            live_route = true;
+            if let Some(selected) = surface.action_projection(resource, action) {
+                return Some(selected);
+            }
+        }
+        let selected = if live_route {
+            None
+        } else {
+            self.launchable.action_for(route, resource, action)
+        };
+        // Keep live-source shadowing coherent with the archive lookup; a
+        // publisher must not install a live replacement between those reads.
+        drop(surfaces);
+        selected
+    }
+
     /// Check one live action route without cloning the published catalogue.
     pub fn has_live_published_action(
         &self,
@@ -5717,6 +5814,7 @@ impl CapnpBrokerState {
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::PublishedInvocationResult { .. }
+            | CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
             | CollabEvent::WorkspaceControl { .. }
@@ -6942,6 +7040,10 @@ impl channel_handle::Server for CapnpChannelHandle {
             route.app_id.clone(),
             route.cluster_id.clone(),
             route.channel_key(),
+            self.verified_identity
+                .agent_id
+                .is_none()
+                .then(|| self.verified_identity.principal_id.clone()),
         );
         let request = match params.get() {
             Ok(request) => request,
@@ -8555,22 +8657,34 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::LaunchPublishedApplicationParams,
         mut results: channel_handle::LaunchPublishedApplicationResults,
     ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
         let request = match params.get() {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
+        };
+        let parent = match request
+            .get_on_behalf_of()
+            .and_then(observed_launch::launch_parent)
+        {
+            Ok(parent) => parent,
+            Err(error) => return Promise::err(error),
+        };
+        let actor = match self.launch_actor(parent) {
+            Ok(actor) => actor,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let app_id = match request.get_app_id() {
             Ok(value) => match value.to_str() {
                 Ok(value) => value.to_owned(),
                 Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
             },
+            Err(error) => return Promise::err(error),
+        };
+        let package_root = match request.get_package_root().and_then(|root| {
+            root.to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+                .and_then(observed_launch::package_root)
+        }) {
+            Ok(root) => root,
             Err(error) => return Promise::err(error),
         };
         let Some(membership) = self.state.membership.as_ref() else {
@@ -8598,7 +8712,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 Ok(now) => now / 1_000_000_000,
                 Err(error) => return Promise::err(capnp::Error::failed(error)),
             };
-            let caller = current.policy_actor(&workspace, now);
+            let caller = actor.policy_in(&workspace, now);
             if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
                 != CapDecision::Allow
             {
@@ -8609,44 +8723,35 @@ impl channel_handle::Server for CapnpChannelHandle {
             workspace
         };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match self
+        let now = match self.state.policy_now_ns() {
+            Ok(now) => now / 1_000_000_000,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let author = observed_launch::launch_author(&actor, &workspace, now);
+        let started = self
             .state
             .services
             .launcher
             .as_ref()
             .ok_or_else(|| "application launch unsupported".to_string())
-            .and_then(|service| service.launch(&app_id, &workspace))
-        {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "launch_failed".into(),
-                    message: error,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        };
-        self.state.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: current.broker_actor().id,
-            },
-            update.clone(),
-        );
-        match serde_json::to_string(&update) {
-            Ok(json) => {
-                results.get().set_id(id);
-                results.get().set_update_json(&json);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-        }
+            .and_then(|service| {
+                service.begin_launch(
+                    &app_id,
+                    package_root.as_deref(),
+                    &workspace,
+                    author.as_deref(),
+                )
+            });
+        let actor = actor.id().to_owned();
+        Promise::from_future(async move {
+            let outcome = observed_launch::wait_for_startup(started).await;
+            let update = self.finish_observed_launch(&app_id, actor, parent, id, outcome);
+            let json = serde_json::to_string(&update)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_id(id);
+            results.get().set_update_json(&json);
+            Ok(())
+        })
     }
 
     fn report_continuation(
@@ -10018,7 +10123,7 @@ impl context_stream::Server for ContextStreamServer {
                     let mut slot = collabs.reborrow().get(idx);
                     slot.set_user_id(&c.id);
                     slot.set_display_name(&c.name);
-                    slot.set_color(pack_color(c.color));
+                    slot.set_color(c.packed_colour());
                     slot.set_is_agent(c.is_agent);
                     slot.set_is_self(c.is_self);
                 }
@@ -10036,26 +10141,6 @@ impl context_stream::Server for ContextStreamServer {
             Ok(())
         })
     }
-}
-
-/// Convert `[f32; 3]` RGB in 0..=1 to the wire's `0x00RRGGBB`.
-fn pack_color(rgb: [f32; 3]) -> u32 {
-    let clamp = |c: f32| -> u32 {
-        let scaled = (c.clamp(0.0, 1.0) * 255.0).round();
-        // `scaled` is clamped to 0.0..=255.0 immediately above, so this
-        // cast is always exact and never negative.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "scaled is clamped to 0.0..=255.0 on the line above, so the u32 cast is always exact and non-negative"
-        )]
-        let result = scaled as u32;
-        result
-    };
-    let r = clamp(rgb[0]);
-    let g = clamp(rgb[1]);
-    let b = clamp(rgb[2]);
-    (r << 16) | (g << 8) | b
 }
 
 // Listener wiring
@@ -13970,6 +14055,52 @@ pub mod tests {
         assert!(!subscribers.contains_key(&3));
         drop(subscribers);
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn exact_published_action_uses_current_live_routes_before_archived_descriptors() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let state = broker.state();
+        let mut retained = catalogue_surface(7, "room", "notebook");
+        retained.actions[0].contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        state.launchable.retain(&retained);
+        let route = retained.route.clone();
+        let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+        assert!(!archived.live);
+        assert!(
+            archived.actions.is_empty(),
+            "lookup must not clone the source inventory"
+        );
+        assert_eq!(descriptor.resource, "notebook");
+
+        let mut empty = retained.clone();
+        empty.actions.clear();
+        state.replace_published_surfaces_for_test(vec![empty.clone()]);
+        assert!(state.published_action(&route, "notebook", "open").is_none());
+
+        let mut other_peer = retained;
+        other_peer.peer_id = 8;
+        other_peer.actions[0].action_label = "Current live action".into();
+        state.replace_published_surfaces_for_test(vec![empty, other_peer]);
+        let (live, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+        assert!(live.live);
+        assert_eq!(live.peer_id, 8);
+        assert!(live.actions.is_empty());
+        assert_eq!(descriptor.action_label, "Current live action");
+        let foreign = CrdtRoute::record(&route.app_id, "another-room", &route.record_id);
+        assert!(
+            state
+                .published_action(&foreign, "notebook", "open")
+                .is_none()
+        );
+        state.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            !state
+                .published_action(&route, "notebook", "open")
+                .unwrap()
+                .0
+                .live
+        );
     }
 
     #[allow(

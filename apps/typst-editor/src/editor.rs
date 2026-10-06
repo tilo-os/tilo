@@ -15,8 +15,7 @@
 
 use automerge::AutoCommit;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::framework::{Dispatcher, TextControl};
@@ -24,12 +23,10 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::PlainText;
 use ui::widget::Widget;
-use ui::widget::code_editor::{CodeEditor, Language};
+use ui::widget::code_editor::{CodeEditor, Diagnostic as CodeDiagnostic, Language, Severity};
 
 use crate::compile::{DiagKind, Diagnostic};
 
-/// Monospace point size of the editor text.
-pub const FONT_SIZE: f32 = 13.0;
 /// Tab expands to this many spaces (soft tabs).
 const TAB_WIDTH: usize = 2;
 
@@ -57,7 +54,6 @@ impl SourceEditor {
             code: TextControl::view_only(
                 CodeEditor::local()
                     .with_language(Language::Typst)
-                    .with_font_size(FONT_SIZE)
                     .with_tab_width(TAB_WIDTH),
                 locate,
             ),
@@ -80,7 +76,7 @@ impl SourceEditor {
     }
 
     pub fn line_height(&self) -> f64 {
-        self.code.control().line_height().max(f64::from(FONT_SIZE))
+        self.code.control().line_height()
     }
 
     /// Submit the edits of the open file's source through `dispatcher`.
@@ -238,6 +234,11 @@ impl SourceEditor {
 
     // ----- rendering -------------------------------------------------------
 
+    /// Paint the pane. The editor stands on the window ground: it fills
+    /// nothing of its own. The shared widget paints the gutter, line numbers,
+    /// current-line band, selection, highlighted text and caret, and the
+    /// compiler's diagnostics: a severity mark in the gutter and a squiggle
+    /// under each span, in the theme's status colours.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -246,175 +247,47 @@ impl SourceEditor {
         theme: &Theme,
         diags: &[Diagnostic],
     ) {
-        let c = &theme.tokens.colors;
-        // Pane background (slightly darker than chrome for an "editor" feel).
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-
-        // The shared widget paints the gutter, line numbers, current-line band,
-        // selection, highlighted text, and caret.
         self.code.control_mut().set_focused(self.focused);
         self.code.control_mut().set_rect(self.rect);
+        let text = self.code.control().value().to_string();
+        let spans = diags
+            .iter()
+            .filter_map(|d| {
+                let (b0, b1) = diag_byte_span(d, &text)?;
+                let severity = match d.kind {
+                    DiagKind::Error => Severity::Error,
+                    DiagKind::Warning => Severity::Warning,
+                };
+                let message = match d.hints.first() {
+                    Some(hint) => format!("{}\n{hint}", d.message),
+                    None => d.message.clone(),
+                };
+                Some(CodeDiagnostic::new(b0..b1, severity, message))
+            })
+            .collect();
+        self.code.control_mut().set_diagnostics(spans);
+        self.code
+            .control_mut()
+            .set_pointer(self.hover.filter(|p| self.rect.contains(*p)));
         self.code
             .control_mut()
             .draw_embedded(scene, transform, tr, theme);
-
-        // Diagnostics overlay, drawn on top using the widget's geometry, clipped
-        // to the pane so squiggles/markers never spill past it.
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &self.rect,
-        );
-        self.draw_diagnostics(scene, transform, tr, theme, diags);
-        scene.pop_layer();
-
-        // Hover tooltip for a diagnostic squiggle — drawn last and outside the
-        // clip so it floats above the source and can overflow the pane.
-        if let Some(hp) = self.hover
-            && self.rect.contains(hp)
-        {
-            let byte = self.code.control_mut().byte_at_point(hp);
-            let text = self.code.control_mut().value().to_string();
-            if let Some(d) = diags.iter().find(|d| {
-                diag_byte_span(d, &text).is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
-            }) {
-                self.draw_tooltip(scene, transform, tr, theme, hp, d);
-            }
-        }
     }
 
-    /// Gutter severity markers + inline squiggles, positioned from the shared
-    /// widget's caret / selection geometry so they track scroll, wrap, and the
-    /// gutter width exactly.
-    fn draw_diagnostics(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        _tr: &mut TextRenderer,
-        theme: &Theme,
-        diags: &[Diagnostic],
-    ) {
-        if diags.is_empty() {
-            return;
-        }
-        let text = self.code.control().value().to_string();
-        let lh = self.code.control().line_height();
-
-        // Gutter severity dot on each line a diagnostic starts on.
-        for (line0, kind) in worst_severity_by_line(diags) {
-            let byte = byte_of_line_col(&text, line0, 0);
-            let cr = self.code.control().caret_rect(theme, byte);
-            if cr.y1 < self.rect.y0 || cr.y0 > self.rect.y1 {
-                continue;
-            }
-            let cx = self.rect.x0 + 7.0;
-            let cy = cr.y0 + lh * 0.5;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                diag_color(kind, theme),
-                None,
-                &Circle::new(Point::new(cx, cy), 3.0),
-            );
-        }
-
-        // Inline squiggle under every diagnostic span, one segment per visual row.
-        for d in diags {
-            if let Some((b0, b1)) = diag_byte_span(d, &text) {
-                for r in self.code.control().selection_rects(theme, b0, b1) {
-                    let yb = r.y1 - 3.5;
-                    draw_squiggle(scene, transform, r.x0, r.x1, yb, diag_color(d.kind, theme));
-                }
-            }
-        }
-    }
-
-    /// Draw a floating tooltip card near `at` carrying a diagnostic's message
-    /// (and its first hint, dimmed). Sizing is measured from the text so the
-    /// card hugs the content.
-    fn draw_tooltip(
+    /// The hover card for the diagnostic under the pointer, drawn in the
+    /// window's top layer so it floats above the preview and can overflow
+    /// the pane.
+    pub fn draw_tooltip(
         &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        at: Point,
-        d: &Diagnostic,
+        window: Rect,
     ) {
-        let c = &theme.tokens.colors;
-        let pad = 8.0;
-        let font = 12.0;
-        let gap = 3.0;
-        let max_text_w = 360.0f64;
-        let mut lines: Vec<(String, bool)> = vec![(d.message.clone(), false)];
-        if let Some(h) = d.hints.first() {
-            lines.push((format!("hint: {h}"), true));
-        }
-        let mut w = 0.0f64;
-        let mut total_h = 0.0f64;
-        let mut heights = Vec::with_capacity(lines.len());
-        for (s, _) in &lines {
-            let (tw, th) = tr.measure(s, font, Some(max_text_w as f32));
-            w = w.max(f64::from(tw));
-            let h = f64::from(th).max(f64::from(font) * 1.2);
-            heights.push(h);
-            total_h += h + gap;
-        }
-        total_h -= gap;
-        let card_w = (w + pad * 2.0).min(max_text_w + pad * 2.0);
-        let card_h = total_h + pad * 2.0;
-        let mut x0 = at.x + 12.0;
-        let mut y0 = at.y + 18.0;
-        if x0 + card_w > self.rect.x1 - 4.0 {
-            x0 = (self.rect.x1 - 4.0 - card_w).max(self.rect.x0 + 4.0);
-        }
-        if y0 + card_h > self.rect.y1 - 4.0 {
-            y0 = (at.y - card_h - 8.0).max(self.rect.y0 + 4.0);
-        }
-        let card = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(card.inflate(2.0, 2.0), 8.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, 7.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(card, 7.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            diag_color(d.kind, theme),
-            None,
-            &Rect::new(card.x0, card.y0, card.x0 + 3.0, card.y1),
-        );
-        let mut ty = y0 + pad;
-        for ((s, dim), h) in lines.iter().zip(heights.iter()) {
-            let col = if *dim { c.text_dim } else { c.text_primary };
-            tr.draw_text(
-                scene,
-                s,
-                font,
-                col,
-                transform * Affine::translate((x0 + pad + 4.0, ty)),
-                Some((card_w - pad * 2.0 - 4.0) as f32),
-            );
-            ty += h + gap;
-        }
+        self.code
+            .control()
+            .draw_diagnostic_card(scene, transform, tr, theme, window);
     }
 
     /// The caret is a steady bar, so a focused-but-idle editor needs no
@@ -422,32 +295,6 @@ impl SourceEditor {
     pub fn wants_animation(&self) -> bool {
         false
     }
-}
-
-/// The theme colour a diagnostic severity draws in.
-fn diag_color(kind: DiagKind, theme: &Theme) -> vello::peniko::Color {
-    match kind {
-        DiagKind::Error => theme.tokens.colors.semantic.danger,
-        DiagKind::Warning => theme.tokens.colors.semantic.warning,
-    }
-}
-
-/// Map each 0-based source line that a diagnostic *starts* on to the worst
-/// severity present there (Error beats Warning), for the gutter markers.
-fn worst_severity_by_line(diags: &[Diagnostic]) -> std::collections::HashMap<usize, DiagKind> {
-    let mut map: std::collections::HashMap<usize, DiagKind> = std::collections::HashMap::new();
-    for d in diags {
-        let Some(line1) = d.line else { continue };
-        let line = line1.saturating_sub(1);
-        map.entry(line)
-            .and_modify(|k| {
-                if d.kind == DiagKind::Error {
-                    *k = DiagKind::Error;
-                }
-            })
-            .or_insert(d.kind);
-    }
-    map
 }
 
 /// The byte offset in `text` of 0-based `(line, col)` (col in chars). Clamps to
@@ -478,36 +325,6 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
         .max(b0 + 1)
         .min(text.len().max(b0 + 1));
     Some((b0, b1.min(text.len())))
-}
-
-/// Stroke a wavy underline (a squiggle) between `x0` and `x1` at baseline `y`.
-fn draw_squiggle(
-    scene: &mut Scene,
-    transform: Affine,
-    x0: f64,
-    x1: f64,
-    y: f64,
-    color: vello::peniko::Color,
-) {
-    const PERIOD: f64 = 4.0;
-    const AMP: f64 = 1.6;
-    if x1 <= x0 {
-        return;
-    }
-    let mut path = BezPath::new();
-    path.move_to(Point::new(x0, y));
-    let mut x = x0;
-    let mut up = true;
-    loop {
-        if x >= x1 {
-            break;
-        }
-        x = (x + PERIOD * 0.5).min(x1);
-        let dy = if up { -AMP } else { AMP };
-        path.line_to(Point::new(x, y + dy));
-        up = !up;
-    }
-    scene.stroke(&Stroke::new(1.3), transform, color, None, &path);
 }
 
 #[cfg(test)]
@@ -593,8 +410,28 @@ mod tests {
                 end_col: Some(6),
                 hints: vec![],
             };
-            let map = worst_severity_by_line(&[warn, err]);
-            assert_eq!(map.get(&1), Some(&DiagKind::Error));
+            let mut ed = SourceEditor::new(|_| None);
+            ed.set_text("a\nbcdefg\n");
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+            ed.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &[warn, err],
+            );
+            let severities: Vec<Severity> = ed
+                .code
+                .control()
+                .diagnostics()
+                .iter()
+                .map(|d| d.severity)
+                .collect();
+            assert_eq!(
+                severities,
+                [Severity::Warning, Severity::Error],
+                "the widget marks each span at its severity"
+            );
         }
     }
 

@@ -30,13 +30,6 @@ use crate::resource::Mail;
 /// Cheap-to-clone handle every pane holds.
 pub type Shared = Rc<RefCell<MailState>>;
 
-/// The list filter is a type-ahead control, so it must not linearly inspect a
-/// whole long-lived offline cache or lay out every broad match on each key.
-/// Global palette search has its own retained index; this bound protects the
-/// direct in-app filter's immediate feedback path.
-const LIST_SEARCH_MAX_INSPECTED: usize = 4_096;
-const LIST_SEARCH_MAX_RESULTS: usize = 200;
-
 /// A single message action, shared as the source of truth by the row context
 /// menu, the swipe gestures, and the reader's action bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -111,15 +104,16 @@ impl CtxAction {
 
     /// Shared visual treatment for the reader toolbar and its context menu.
     /// Keeping the icon mapping beside the action makes a command mean the
-    /// same thing whether it is invoked by pointer, keyboard, or AT.
-    pub fn icon(self) -> Icon {
+    /// same thing whether it is invoked by pointer, keyboard, or AT. `read`
+    /// is the message's state: marking it unread closes the envelope,
+    /// marking it read opens it.
+    pub fn icon(self, read: bool) -> Icon {
         match self {
-            // The shared icon set does not yet include reply-all/mail-open,
-            // so use the closest existing canonical glyph rather than draw a
-            // bespoke lookalike here.
-            CtxAction::Reply | CtxAction::ReplyAll => Icon::Reply,
-            CtxAction::Forward => Icon::Send,
-            CtxAction::ToggleRead => Icon::Mail,
+            CtxAction::Reply => Icon::Reply,
+            CtxAction::ReplyAll => Icon::ReplyAll,
+            CtxAction::Forward => Icon::Forward,
+            CtxAction::ToggleRead if read => Icon::Mail,
+            CtxAction::ToggleRead => Icon::MailOpen,
             CtxAction::ToggleStar => Icon::Star,
             CtxAction::Archive => Icon::Archive,
             CtxAction::Delete => Icon::Trash,
@@ -161,8 +155,8 @@ pub enum Intent {
     Forward(MessageId),
     /// Open an existing draft (a message in the Drafts folder) for editing.
     EditDraft(MessageId),
-    /// Open the row context menu at a point.
-    ContextMenu(MessageId, Point),
+    /// Open the row menu at a point, beside the row it acts on.
+    ContextMenu(MessageId, Point, Rect),
     /// Open the account setup sheet for the given account index (`None` = add).
     Settings(Option<usize>),
     /// Ask the app-owned portal boundary to save one hydrated attachment.
@@ -176,6 +170,32 @@ pub enum Intent {
     /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
     /// selection remains local; no purge action is authored until confirmed.
     ConfirmBulkPurge,
+}
+
+/// A command from the window's chrome (the sidebar, the header toolbars):
+/// queued by the control and applied by the app with the document in hand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    /// Show `folder` of account `index`.
+    OpenFolder(usize, Folder),
+    /// Open the account sheet for an account (`None` adds one).
+    AccountSettings(Option<usize>),
+    /// Start a new message.
+    Compose,
+    /// Open the platform search, narrowed to the open folder.
+    OpenSearch,
+    /// Fetch the open folder from the server again.
+    Refresh,
+    /// Enter or leave selecting several messages.
+    ToggleBulk,
+    /// Select every message the list shows.
+    SelectAllVisible,
+    /// Apply an action to the selected messages.
+    Bulk(BulkAction),
+    /// Apply an action to the open message.
+    Message(CtxAction),
+    /// Offer every action on the open message in a menu.
+    MessageMenu,
 }
 
 /// The whole app's mutable state, minus the transient overlays (composer,
@@ -203,30 +223,16 @@ pub struct MailState {
     /// the no-side-effect mode visible in the reader and prevents the normal
     /// read-on-open action from being queued.
     pub inspection: Option<MessageId>,
-    pub search: String,
     pub status: Option<String>,
 
     /// Remote avatar loader (Gravatar). No-op fetcher unless built `live`.
     pub images: ImageStore,
 
     // --- shell-derived flags the app writes each layout, panes read ---
+    /// The overview and the message are separate screens (a narrow window).
     pub narrow: bool,
+    /// The message is the front screen of a narrow window.
     pub detail_pushed: bool,
-    /// Whether the shell's sidebar is currently revealed. The list pane reads
-    /// this so it can reserve room for the collapse/hamburger toggle when the
-    /// sidebar is closed (and the list becomes the leftmost pane, with the
-    /// toggle over its header).
-    pub sidebar_open: bool,
-    /// The shell's collapse / hamburger chip as laid out this frame (app
-    /// coordinates), so pane headers align to the real chip at every text
-    /// scale. `None` while the shell shows no such chip (Back affordance, or
-    /// before the first layout); panes then fall back to the 1x mirror.
-    pub shell_chip: Option<Rect>,
-    /// The list pane owns the search field; it publishes focus here so the app
-    /// knows whether a keyboard shortcut should fire.
-    pub search_focused: bool,
-    /// Rising-edge request (from the `/` shortcut) for the list to focus search.
-    pub focus_search_request: bool,
 
     /// Whether the CRDT has been seeded from this corpus yet.
     pub seeded: bool,
@@ -243,6 +249,7 @@ pub struct MailState {
     pub(crate) dispatcher: Option<Dispatcher<Mail>>,
 
     intents: Vec<Intent>,
+    commands: Vec<Command>,
 }
 
 impl MailState {
@@ -296,20 +303,16 @@ impl MailState {
             bulk_selection: Vec::new(),
             bulk_selecting: false,
             inspection: None,
-            search: String::new(),
             status: None,
             images,
             narrow: false,
             detail_pushed: false,
-            sidebar_open: true,
-            shell_chip: None,
-            search_focused: false,
-            focus_search_request: false,
             seeded: false,
             last_mouse: Point::ZERO,
             dirty: true,
             dispatcher: None,
             intents: Vec::new(),
+            commands: Vec::new(),
         }
     }
 
@@ -414,38 +417,33 @@ impl MailState {
         std::mem::take(&mut self.intents)
     }
 
+    pub fn push_command(&mut self, command: Command) {
+        self.commands.push(command);
+        self.dirty = true;
+    }
+
+    pub fn take_commands(&mut self) -> Vec<Command> {
+        std::mem::take(&mut self.commands)
+    }
+
     // ---- derived views ----
 
     pub fn current_threads(&self) -> Vec<Thread> {
         self.mailbox.threads_in(self.folder)
     }
 
-    /// Rows to show in the list: `(message_id, thread_len)`. Search results are
-    /// flat (one row per hit); otherwise one row per thread (its newest msg).
+    /// Rows to show in the list: `(message_id, thread_len)`, one row per
+    /// thread (its newest message).
     pub fn list_rows(&self) -> Vec<(MessageId, usize)> {
-        if self.search.trim().is_empty() {
-            self.current_threads()
-                .into_iter()
-                .filter_map(|t| {
-                    t.message_ids
-                        .last()
-                        .copied()
-                        .map(|id| (id, t.message_ids.len()))
-                })
-                .collect()
-        } else {
-            self.mailbox
-                .search_page(
-                    &self.search,
-                    None,
-                    LIST_SEARCH_MAX_INSPECTED,
-                    LIST_SEARCH_MAX_RESULTS,
-                )
-                .messages
-                .into_iter()
-                .map(|m| (m.id, 1))
-                .collect()
-        }
+        self.current_threads()
+            .into_iter()
+            .filter_map(|t| {
+                t.message_ids
+                    .last()
+                    .copied()
+                    .map(|id| (id, t.message_ids.len()))
+            })
+            .collect()
     }
 
     pub fn selected_thread_messages(&self) -> Vec<&crate::model::Message> {
@@ -476,7 +474,6 @@ impl MailState {
         };
         let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
         self.folder = folder;
-        self.search.clear();
         self.selected = Some(id);
         self.inspection = None;
         // Opening is the user-visible read boundary. Use the exact same typed,
@@ -512,7 +509,6 @@ impl MailState {
 
     pub fn select_folder(&mut self, _doc: &mut ui::widget::Edits<'_>, folder: Folder) {
         self.folder = folder;
-        self.search.clear();
         self.selected = self
             .current_threads()
             .first()
@@ -529,7 +525,6 @@ impl MailState {
     /// operations use this path, so navigation does not create a document edit.
     pub fn reveal_folder(&mut self, folder: Folder) {
         self.folder = folder;
-        self.search.clear();
         self.selected = self
             .current_threads()
             .first()
@@ -550,7 +545,6 @@ impl MailState {
             return false;
         };
         self.folder = folder;
-        self.search.clear();
         self.selected = Some(id);
         self.inspection = Some(id);
         self.push_intent(Intent::ShowDetail);
@@ -563,12 +557,6 @@ impl MailState {
     /// the person no longer sees selected.
     pub fn set_bulk_selecting(&mut self, selecting: bool) {
         self.bulk_selecting = selecting;
-        if selecting {
-            // The selection toolbar replaces the search field visually and in
-            // hit testing; do not leave an invisible editor claiming focus.
-            self.search_focused = false;
-            self.focus_search_request = false;
-        }
         if !selecting {
             self.bulk_selection.clear();
         }

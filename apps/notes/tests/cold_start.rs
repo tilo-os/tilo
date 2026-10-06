@@ -74,7 +74,9 @@ fn history_of_a_long_typing_history_opens_at_its_latest_page() {
     let harness = app.harness();
 
     let started = std::time::Instant::now();
-    harness.click_named("history-open").unwrap();
+    harness
+        .open_history()
+        .expect("the published history action opens the canonical timeline");
     let opened = started.elapsed();
     eprintln!("opened History over {KEYSTROKES} typed changes in {opened:?}");
     assert!(harness.targets().contains_key("activity_timeline"));

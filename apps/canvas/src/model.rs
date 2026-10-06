@@ -247,6 +247,9 @@ pub struct Gradient {
 /// How a mark is coloured and, on a painted layer, how it is painted.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Style {
+    /// Enlarge image pixels with nearest-neighbor sampling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pixelated: bool,
     /// Fill colour: `#rrggbb`, `#rrggbbaa` or `pigment:<name>` from the
     /// layer medium's palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1353,7 +1356,7 @@ impl Mark {
     /// none of its own to pick.
     pub fn erases(&self) -> bool {
         matches!(self.shape, Shape::Stroke { .. })
-            && crate::brushes::Preset::of(&self.style) == crate::brushes::Preset::Eraser
+            && crate::brushes::Preset::of(&self.style).erases()
     }
 
     /// The area the mark is kept inside, in artwork units, if it has one.

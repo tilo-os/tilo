@@ -828,7 +828,8 @@ impl CalDoc {
     }
 
     /// Seed an item's notes with markdown-ish lines if they are still
-    /// empty: a `# ` line becomes a heading, every other line a paragraph.
+    /// empty: a `# ` line becomes a heading, a `- ` line a bullet, every
+    /// other line a paragraph.
     /// Lets the demo show real rich-text notes on first paint without a
     /// user typing.
     pub fn seed_notes_if_empty(doc: &mut AutoCommit, event_owner: bool, id: Id, lines: &[&str]) {
@@ -837,12 +838,20 @@ impl CalDoc {
         };
         let blocks: Vec<BlockContent> = lines
             .iter()
-            .map(|line| match line.strip_prefix("# ") {
-                Some(heading) => BlockContent {
-                    kind: BlockKind::Heading(1),
-                    ..BlockContent::paragraph("", heading)
-                },
-                None => BlockContent::paragraph("", *line),
+            .map(|line| {
+                if let Some(heading) = line.strip_prefix("# ") {
+                    BlockContent {
+                        kind: BlockKind::Heading(1),
+                        ..BlockContent::paragraph("", heading)
+                    }
+                } else if let Some(item) = line.strip_prefix("- ") {
+                    BlockContent {
+                        kind: BlockKind::Bullet { indent: 0 },
+                        ..BlockContent::paragraph("", item)
+                    }
+                } else {
+                    BlockContent::paragraph("", *line)
+                }
             })
             .collect();
         // Notes that already hold text are refused, and stay as they are.
@@ -1234,7 +1243,8 @@ fn read_occurrence_overrides(doc: &AutoCommit, event: &ObjId) -> Vec<OccurrenceO
 }
 
 fn parse_dt(s: &str) -> NaiveDateTime {
-    NaiveDateTime::parse_from_str(s, DT_FMT).unwrap_or_else(|_| chrono::Local::now().naive_local())
+    NaiveDateTime::parse_from_str(s, DT_FMT)
+        .unwrap_or_else(|_| ui::clock::local_now().naive_local())
 }
 
 fn parse_opt_id(s: &str) -> Option<Id> {

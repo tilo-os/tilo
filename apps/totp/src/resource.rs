@@ -9,10 +9,13 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
+use ui::icons::Icon;
+use ui::search::SearchRequest;
 use ui::secrets::SecretStore;
 use ui::tilo_actions::{ActionAddress, ResourcePresentation};
 use ui::tilo_resource::{self, Doc, Effect, Invoke, ModelError, Resource, SearchEntry};
-use ui::widget::Element;
+use ui::tokens::SpacingStep;
+use ui::widget::{ButtonRole, Element, NavShell, Spacer};
 
 use crate::actions::{
     TOTP_ACTION_TYPE, TotpAction, account_label, account_resource_id, add_account_action, register,
@@ -108,19 +111,22 @@ pub enum TotpEffect {
 /// The secrets a screenshot shows, in place of this device's store.
 pub struct ShotSecrets(pub SecretStore);
 
-/// The screenshot scenarios.
+/// The capture scenarios: the list, and each state the app has a screen for.
 pub const SCENARIOS: &[&str] = &[
     "list",
+    "hover",
+    "copied",
+    "empty",
     "add",
     "add-advanced",
-    "add-picker",
-    "empty",
     "provision",
-    "persistence-error",
     "missing-secret",
+    "persistence-error",
+    "expiring",
 ];
 
-/// Framework app: the authenticator widget over [`Totp`].
+/// Framework app: the navigation shell, whose header row carries the search
+/// and add buttons, around the authenticator surface over [`Totp`].
 pub struct TotpShell;
 
 impl ResourceApp for TotpShell {
@@ -136,7 +142,42 @@ impl ResourceApp for TotpShell {
     };
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
-        cx.surface(AuthenticatorApp::new())
+        // The header's actions are for a vault with accounts in it: with none,
+        // the empty state asks for the first one and the header stays quiet.
+        let has_accounts = cx.local(true);
+        let count = cx.local(0usize);
+        let content = cx.surface(
+            AuthenticatorApp::new()
+                .with_account_signal(has_accounts.clone())
+                .with_count_signal(count.clone()),
+        );
+        let search = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
+            if *has_accounts {
+                Box::new(cx.search_button(SearchRequest::this_app()))
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        });
+        let add = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
+            if *has_accounts {
+                // The vault's own "Add account" effect, the one the palette
+                // and agents invoke, which the surface answers by opening the
+                // add sheet.
+                Box::new(
+                    cx.effect_button("Add account", &TotpEffect::AddAccount)
+                        .with_icon(Icon::Plus)
+                        .role(ButtonRole::Primary),
+                )
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        });
+        Box::new(CountedShell {
+            shell: NavShell::new()
+                .content(content)
+                .content_header("Accounts", vec![search, add]),
+            count,
+        })
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -170,6 +211,30 @@ impl ResourceApp for TotpShell {
             .iter()
             .filter_map(|account| Invoke::apply(&add_account_action(account, account.order)).ok())
             .collect()
+    }
+}
+
+/// The navigation shell whose header says how many accounts the vault holds.
+struct CountedShell {
+    shell: NavShell,
+    count: ui::LocalState<usize>,
+}
+
+impl ui::widget::Decorator for CountedShell {
+    type Inner = NavShell;
+
+    fn inner(&self) -> &NavShell {
+        &self.shell
+    }
+
+    fn inner_mut(&mut self) -> &mut NavShell {
+        &mut self.shell
+    }
+
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let count = self.count.get();
+        self.shell.set_content_count((count > 0).then_some(count));
+        ui::widget::Widget::update(&mut self.shell, state, path)
     }
 }
 
@@ -275,9 +340,12 @@ mod tests {
     use crate::actions::{account_resource_id, move_down_action};
     use crate::secrets::flaky::Flaky;
 
-    const GITHUB: &str =
-        "otpauth://totp/GitHub:ada@example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub";
     const SECRET: &str = "JBSWY3DPEHPK3PXP";
+
+    /// Add the GitHub account through the form.
+    fn add_github(app: &mut TestApp<TotpShell>) {
+        add_through_the_form(app, "GitHub", "ada@example.com", SECRET);
+    }
 
     /// Every app's secrets in one store the test can read.
     struct Store(Arc<dyn SecretBackend>);
@@ -321,21 +389,36 @@ mod tests {
         app.settle();
     }
 
-    /// Type `text` into the field `target`.
-    fn type_into(app: &mut TestApp<TotpShell>, target: &str, text: &str) {
-        click(app, target);
-        app.harness().type_text(text);
+    /// Run frames until a sheet that just opened or closed has settled.
+    fn settle(app: &mut TestApp<TotpShell>) {
+        for _ in 0..3 {
+            app.harness().relayout();
+        }
         app.settle();
     }
 
+    /// Type `text` into the sheet's field `name`, after what it holds.
+    fn type_into(app: &mut TestApp<TotpShell>, name: &str, text: &str) {
+        app.harness()
+            .click_named(name)
+            .unwrap_or_else(|error| panic!("the sheet shows no {name}: {error}"));
+        app.harness().type_text(text);
+    }
+
+    /// Save the open sheet with Enter, as a person does.
+    fn save(app: &mut TestApp<TotpShell>) {
+        app.harness().key("Enter");
+        settle(app);
+    }
+
     /// Add an account through the protected form, as a person does.
-    fn add_through_the_form(app: &mut TestApp<TotpShell>, uri: &str) {
+    fn add_through_the_form(app: &mut TestApp<TotpShell>, issuer: &str, label: &str, secret: &str) {
         app.effect(&TotpEffect::AddAccount).unwrap();
-        app.settle();
-        click(app, "totp.dialog.link");
-        type_into(app, "totp.dialog.uri", uri);
-        click(app, "totp.dialog.fill");
-        click(app, "totp.dialog.save");
+        settle(app);
+        type_into(app, "totp-issuer", issuer);
+        type_into(app, "totp-account-name", label);
+        type_into(app, "totp-secret-key", secret);
+        save(app);
     }
 
     fn published(app: &mut TestApp<TotpShell>, id: &str) -> tilo_actions::Resource {
@@ -366,7 +449,7 @@ mod tests {
     fn an_added_account_keeps_its_secret_on_this_device_and_its_name_in_the_document() {
         let backend = ui::secrets::memory_backend();
         let (mut app, _host) = open(Arc::clone(&backend));
-        add_through_the_form(&mut app, GITHUB);
+        add_github(&mut app);
 
         let accounts = app.state();
         assert_eq!(accounts.len(), 1, "the add is one document action");
@@ -476,9 +559,9 @@ mod tests {
 
         app.call_on(&id, "set-up-local", serde_json::json!({}))
             .unwrap();
-        app.settle();
-        type_into(&mut app, "totp.dialog.secret", &secret);
-        click(&mut app, "totp.dialog.save");
+        settle(&mut app);
+        type_into(&mut app, "totp-secret-key", &secret);
+        save(&mut app);
 
         let row = published(&mut app, &id);
         assert_eq!(
@@ -503,11 +586,8 @@ mod tests {
     fn account_edits_are_undoable_document_actions_and_delete_asks_first() {
         let backend = ui::secrets::memory_backend();
         let (mut app, _host) = open(Arc::clone(&backend));
-        add_through_the_form(&mut app, GITHUB);
-        add_through_the_form(
-            &mut app,
-            "otpauth://totp/AWS:ops?secret=NB2W45DFOIZA&issuer=AWS",
-        );
+        add_github(&mut app);
+        add_through_the_form(&mut app, "AWS", "ops", "NB2W45DFOIZA");
         let [first, second] = [app.state()[0].id, app.state()[1].id];
         let row = account_resource_id(first);
 
@@ -551,7 +631,7 @@ mod tests {
     #[test]
     fn an_edit_changes_only_the_fields_it_touched() {
         let (mut app, _host) = open(ui::secrets::memory_backend());
-        add_through_the_form(&mut app, GITHUB);
+        add_github(&mut app);
         let id = app.state()[0].id;
         app.invoke(Invoke::apply(&crate::actions::set_color_action(id, 5)).unwrap())
             .unwrap();
@@ -559,22 +639,35 @@ mod tests {
         crate::doc::AuthDoc::set_label(&mut peer, id, "ada@corp.example");
 
         click(&mut app, &format!("totp.select:{id}"));
-        click(&mut app, "totp.edit");
-        click(&mut app, "totp.dialog.advanced");
-        click(&mut app, "totp.dialog.digits:8");
-        click(&mut app, "totp.dialog.save");
+        app.harness().set_modifiers(&["ctrl".to_owned()]);
+        app.harness().key("e");
+        app.harness().set_modifiers(&[]);
+        settle(&mut app);
+        app.harness()
+            .click_named("totp-issuer")
+            .expect("the sheet shows the issuer");
+        app.harness()
+            .perform_named(
+                "totp-issuer",
+                &ui::a11y::Action::SetValue("GitHub Work".into()),
+            )
+            .expect("the issuer is a field");
+        save(&mut app);
         app.merge_peer(&mut peer).unwrap();
         app.settle();
 
         let account = &app.state()[0];
-        assert_eq!(account.digits, 8, "the edit reached the document");
+        assert_eq!(
+            account.issuer, "GitHub Work",
+            "the edit reached the document"
+        );
         assert_eq!(
             account.label, "ada@corp.example",
             "the collaborator's label stands"
         );
         assert_eq!(account.color, 5, "the edit keeps the account's colour");
         assert!(app.undo(), "the edit is one undo step");
-        assert_eq!(app.state()[0].digits, 6);
+        assert_eq!(app.state()[0].issuer, "GitHub");
     }
 
     #[test]
@@ -582,10 +675,10 @@ mod tests {
         let backend = Flaky::new();
         let (mut app, _host) = open(backend.clone());
         backend.down.store(true, Ordering::SeqCst);
-        add_through_the_form(&mut app, GITHUB);
+        add_github(&mut app);
         assert_eq!(app.state().len(), 1, "the account is shared anyway");
         let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("isn't saved"), "{frame}");
+        assert!(frame.contains("Retry saving keys"), "{frame}");
         assert!(
             app.effect(&TotpEffect::RetrySave).is_err(),
             "the store still refuses"
@@ -594,7 +687,7 @@ mod tests {
         backend.down.store(false, Ordering::SeqCst);
         app.effect(&TotpEffect::RetrySave).unwrap();
         let frame = app.harness().inspection_json().unwrap();
-        assert!(!frame.contains("isn't saved"), "{frame}");
+        assert!(!frame.contains("Retry saving keys"), "{frame}");
         let retry = published(&mut app, Totp::KIND)
             .actions
             .into_iter()
@@ -611,10 +704,93 @@ mod tests {
         );
     }
 
+    /// What the window's accessibility tree names, by role.
+    fn names(app: &mut TestApp<TotpShell>) -> Vec<(String, String)> {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .map(|(_, node)| {
+                (
+                    format!("{:?}", node.role()),
+                    node.label().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_header_opens_the_sheet_and_enter_copies_the_selected_code() {
+        let (mut app, _host) = open(ui::secrets::memory_backend());
+        add_github(&mut app);
+
+        let listed = names(&mut app);
+        assert!(
+            listed
+                .iter()
+                .any(|(role, name)| role == "ListItem" && name.starts_with("GitHub")),
+            "the account is listed: {listed:?}"
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|(role, name)| role == "Button" && name == "Add account"),
+            "the header carries the add button"
+        );
+
+        // The header's add button opens the sheet.
+        app.harness()
+            .click_named("add-account")
+            .expect("the header shows the add button");
+        settle(&mut app);
+        let opened = names(&mut app);
+        assert!(
+            opened
+                .iter()
+                .any(|(role, name)| role == "Dialog" && name == "Add account"),
+            "pressing it opens the sheet: {opened:?}"
+        );
+
+        // A click puts the caret in a field, Tab moves it on.
+        type_into(&mut app, "totp-issuer", "Acme");
+        app.harness().tab(false);
+        let after_tab = app.harness().a11y_focus();
+        let focus_order = app.harness().focus_access_nodes();
+        app.harness().type_text("bob");
+        let typed: Vec<_> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| format!("{:?}", node.role()) == "TextInput")
+            .map(|(_, node)| node.value().unwrap_or_default().to_owned())
+            .collect();
+        assert!(
+            typed.iter().any(|value| value == "Acme") && typed.iter().any(|value| value == "bob"),
+            "the click and Tab each put the caret in a field: {typed:?}; after Tab {after_tab:?}; order {focus_order:?}"
+        );
+
+        // Escape closes the sheet and Enter copies the selected code.
+        app.harness().key("Escape");
+        settle(&mut app);
+        assert!(
+            !names(&mut app)
+                .iter()
+                .any(|(role, name)| role == "Dialog" && name == "Add account"),
+            "Escape closes it"
+        );
+        assert_eq!(app.state().len(), 1, "nothing was added");
+        app.harness().key("Enter");
+        app.harness().relayout();
+        let copied = names(&mut app);
+        assert!(
+            copied.iter().any(|(_, name)| name == "Copied GitHub code"),
+            "Enter copies the selected account and says so: {copied:?}"
+        );
+    }
+
     #[test]
     fn search_hits_open_the_account_they_name() {
         let (mut app, _host) = open(ui::secrets::memory_backend());
-        add_through_the_form(&mut app, GITHUB);
+        add_github(&mut app);
         let account = app.state()[0].clone();
         let entries = Totp::search(&app.state());
         assert_eq!(entries.len(), 1);
@@ -638,13 +814,12 @@ mod tests {
             let frame = app.harness().inspection_json().unwrap();
             let shows = |text: &str| frame.contains(text);
             match *scenario {
-                "add" | "add-picker" | "add-advanced" => {
+                "add" | "add-advanced" | "provision" => {
                     assert!(shows("Secret key"), "{scenario}: {frame}");
                 }
-                "provision" => assert!(shows("Secret key"), "{scenario}: {frame}"),
-                "persistence-error" => assert!(shows("Retry saving secrets"), "{frame}"),
+                "persistence-error" => assert!(shows("Retry saving keys"), "{frame}"),
                 "missing-secret" => assert!(shows("Set up GitHub"), "{frame}"),
-                "empty" => assert!(shows("No matching accounts"), "{frame}"),
+                "empty" => assert!(!shows("Copy code for"), "{frame}"),
                 _ => assert!(shows("Copy code for GitHub"), "{scenario}: {frame}"),
             }
         }

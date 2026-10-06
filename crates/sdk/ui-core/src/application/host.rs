@@ -99,6 +99,7 @@ struct NativeProcessEnvironment {
     local_app_data: Option<PathBuf>,
     user_profile: Option<PathBuf>,
     home: Option<PathBuf>,
+    action_authority: Option<tilo_host::action_authority::AuthoritySource>,
 }
 
 struct ResolvedNativeProcessHost {
@@ -139,6 +140,10 @@ impl NativeProcessEnvironment {
             local_app_data: path("LOCALAPPDATA"),
             user_profile: path("USERPROFILE"),
             home: path("HOME"),
+            action_authority: Some(tilo_host::action_authority::source(
+                collab_types::caps::action_authority::PROJECTION_PATH.into(),
+                collab_types::caps::action_authority::MAX_PROJECTION_BYTES,
+            )),
         }
     }
 
@@ -162,8 +167,26 @@ impl NativeProcessEnvironment {
             .as_deref()
             .or(self.quick_workspace_id.as_deref());
         let (workspace_id, workspace_scoped) = launcher_workspace(workspace)?;
-        let permissions =
+        let mut permissions =
             permissions_for_participation(author, workspace_scoped, self.participation.as_deref())?;
+        if workspace_scoped
+            && let Some(source) = self.action_authority
+            && source().ok().flatten().is_some()
+        {
+            let app = app_id.to_owned();
+            let room = workspace_id.clone();
+            let person = author.clone();
+            let current_source = source.clone();
+            let initial = read_action_authority_projection(&source, &room, &app, &person);
+            if initial.is_ok() {
+                permissions = permissions.with_action_authority(
+                    app.clone(),
+                    std::sync::Arc::new(move || {
+                        action_authority_context(&current_source, &room, &app, &person)
+                    }),
+                );
+            }
+        }
         let instance_id = self.continuity_instance.map_or_else(
             || Ok(stable_instance_id(&package_id)),
             |value| {
@@ -345,6 +368,51 @@ fn permissions_for_participation(
         crate::permissions::Actor::person(Some(role), author.0.clone()),
         Vec::new(),
     ))
+}
+
+fn action_authority_context(
+    source: &tilo_host::action_authority::AuthoritySource,
+    room: &str,
+    app: &str,
+    person: &UserId,
+) -> Result<PermissionContext, String> {
+    let projection = read_action_authority_projection(source, room, app, person)?;
+    let now = crate::time::wall()
+        .duration_since(crate::time::UNIX_EPOCH)
+        .map_err(|_| "host action policy time is unavailable")?;
+    let now_ms =
+        u64::try_from(now.as_millis()).map_err(|_| "host action policy time is unavailable")?;
+    if !projection.is_current_at(now_ms) {
+        return Err("host action policy is not current".into());
+    }
+    let role = tilo_desktop_model::Workspace::role_for_membership_at(
+        projection.owner.as_deref(),
+        &projection.capabilities,
+        &person.0,
+        now.as_secs(),
+    );
+    Ok(PermissionContext::from_capabilities(
+        crate::permissions::Actor::person(role, person.0.clone()).in_room(room),
+        projection.capabilities,
+    )
+    .at_unix_time(now.as_secs()))
+}
+
+fn read_action_authority_projection(
+    source: &tilo_host::action_authority::AuthoritySource,
+    room: &str,
+    app: &str,
+    person: &UserId,
+) -> Result<collab_types::caps::action_authority::AppActionAuthorityProjection, String> {
+    use collab_types::caps::action_authority::AppActionAuthorityProjection;
+    let bytes = source()?.ok_or("host action policy is unavailable")?;
+    let projection: AppActionAuthorityProjection =
+        serde_json::from_slice(&bytes).map_err(|_| "host action policy is invalid")?;
+    projection.validate().map_err(str::to_owned)?;
+    if !projection.matches(room, app, &person.0) {
+        return Err("host action policy binding mismatch".into());
+    }
+    Ok(projection)
 }
 
 fn stable_instance_id(app_id: &str) -> InstanceId {
@@ -824,6 +892,120 @@ mod native_process_tests {
             xdg_data_home: Some(root.to_owned()),
             ..NativeProcessEnvironment::default()
         }
+    }
+
+    #[test]
+    fn native_host_action_authority_is_current_scoped_and_preserves_record_participation() {
+        use crate::permissions::{ResourceRef, Verb};
+        use collab_types::caps::action_authority::AppActionAuthorityProjection;
+        use std::sync::{Arc, Mutex};
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let app = "so.tilo.store";
+        let author = UserId("person-a".into());
+        let now = crate::time::wall()
+            .duration_since(crate::time::UNIX_EPOCH)
+            .unwrap();
+        let now_ms = u64::try_from(now.as_millis()).unwrap();
+        let original = AppActionAuthorityProjection {
+            schema_version: 1,
+            room: room.into(),
+            app_id: app.into(),
+            person: author.0.clone(),
+            owner: Some(author.0.clone()),
+            capabilities: vec![],
+            issued_at_unix_ms: now_ms,
+            valid_until_unix_ms: now_ms + 3_000,
+        };
+        let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
+        let source: tilo_host::action_authority::AuthoritySource = {
+            let bytes = bytes.clone();
+            Arc::new(move || Ok(bytes.lock().unwrap().clone()))
+        };
+        let environment = NativeProcessEnvironment {
+            workspace_id: Some(room.into()),
+            participation: Some("read-only".into()),
+            action_authority: Some(source.clone()),
+            ..environment(temp.path())
+        };
+        let resolved = environment.resolve(app, &author).unwrap();
+        let permissions = resolved.permissions;
+        let own = ResourceRef::App(app.into());
+        assert_eq!(permissions.role(), Some(crate::permissions::Role::Viewer));
+        assert_eq!(
+            permissions.decide(&own, Verb::Admin),
+            crate::permissions::CapDecision::Allow
+        );
+        assert_ne!(
+            permissions.decide(&own, Verb::Write),
+            crate::permissions::CapDecision::Allow
+        );
+        assert_ne!(
+            permissions.decide(&ResourceRef::App("so.tilo.settings".into()), Verb::Admin),
+            crate::permissions::CapDecision::Allow
+        );
+        let allowed = permissions.directory_witness().unwrap();
+        let mut revoked = original.clone();
+        revoked.owner = None;
+        *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
+        assert_ne!(permissions.directory_witness().unwrap(), allowed);
+        assert_ne!(
+            permissions.decide(&own, Verb::Admin),
+            crate::permissions::CapDecision::Allow
+        );
+        {
+            let mut invalid = original.clone();
+            invalid.valid_until_unix_ms = invalid.issued_at_unix_ms;
+            *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
+            assert_ne!(
+                permissions.decide(&own, Verb::Admin),
+                crate::permissions::CapDecision::Allow
+            );
+        }
+        for (field, value) in [
+            ("room", "foreign-room"),
+            ("app_id", "so.tilo.other"),
+            ("person", "person-b"),
+        ] {
+            let mut invalid = serde_json::to_value(&original).unwrap();
+            invalid[field] = value.into();
+            *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
+            assert_ne!(
+                permissions.decide(&own, Verb::Admin),
+                crate::permissions::CapDecision::Allow
+            );
+            assert!(permissions.directory_witness().is_err());
+        }
+        for invalid in [None, Some(b"invalid".to_vec())] {
+            *bytes.lock().unwrap() = invalid;
+            assert_ne!(
+                permissions.decide(&own, Verb::Admin),
+                crate::permissions::CapDecision::Allow
+            );
+            assert!(permissions.directory_witness().is_err());
+        }
+        let mut expired = original.clone();
+        expired.issued_at_unix_ms = now_ms - 4_000;
+        expired.valid_until_unix_ms = now_ms - 1_000;
+        *bytes.lock().unwrap() = Some(serde_json::to_vec(&expired).unwrap());
+        assert_ne!(
+            permissions.decide(&own, Verb::Admin),
+            crate::permissions::CapDecision::Allow
+        );
+        let mut future = original.clone();
+        future.issued_at_unix_ms = now_ms + 30_000;
+        future.valid_until_unix_ms = now_ms + 33_000;
+        *bytes.lock().unwrap() = Some(serde_json::to_vec(&future).unwrap());
+        assert_ne!(
+            permissions.decide(&own, Verb::Admin),
+            crate::permissions::CapDecision::Allow
+        );
+        *bytes.lock().unwrap() = Some(serde_json::to_vec(&original).unwrap());
+        assert_eq!(
+            permissions.decide(&own, Verb::Admin),
+            crate::permissions::CapDecision::Allow
+        );
+        assert_eq!(permissions.directory_witness().unwrap(), allowed);
     }
 
     #[test]

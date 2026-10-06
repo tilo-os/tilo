@@ -1136,8 +1136,9 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
-/// Serve the shell's own file choosers when apps have no portal to reach: no
-/// session bus, as on a provider's headless guest. `attended` says whether an
+/// Serve the authenticated, workspace-scoped chooser connection alongside
+/// any desktop portal. Legacy runtimes may use this connection for documents
+/// while using the filtered session bus for notifications. `attended` says whether an
 /// agent is driving the screen; an unattended session (one that saves into
 /// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
 fn start_chooser_service(
@@ -1145,9 +1146,6 @@ fn start_chooser_service(
     attended: Arc<AtomicBool>,
     wake: crate::session_runtime::Wake,
 ) -> Option<crate::compositor::chooser_service::ChooserService> {
-    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
-        return None;
-    }
     let portal = portal?;
     let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
@@ -1225,6 +1223,7 @@ fn pump_floating_surface_service(
     frame_builder: &mut FrameBuilder,
     capture: &mut CaptureExecutor,
     connection_ids: &mut HashMap<u64, Vec<String>>,
+    appearance: &mut crate::compositor::floating_service::AppearanceDelivery,
     outputs: &[Output],
     fallback_size: (u32, u32),
 ) -> bool {
@@ -1233,6 +1232,14 @@ fn pump_floating_surface_service(
     for event in service.drain() {
         match event {
             FloatingServiceEvent::Connected { connection, app_id } => {
+                appearance.connected(connection, &app_id);
+                if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID
+                    && let Some(writer) = service.reply_writer(connection)
+                {
+                    frame_builder
+                        .host_mut()
+                        .connect_native_terminal(connection, writer);
+                }
                 service.send(
                     connection,
                     &ui::floating_surface::FloatingSurfaceHostMessage::DesktopBounds {
@@ -1246,6 +1253,17 @@ fn pump_floating_surface_service(
                 app_id,
                 message,
             } => match message {
+                ui::floating_surface::FloatingSurfaceClientMessage::DeviceShellOutcome {
+                    request,
+                    result,
+                } => {
+                    if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
+                        frame_builder
+                            .host_mut()
+                            .complete_native_terminal(connection, request, result);
+                    }
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
                     if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
                         if let Some(writer) = service.reply_writer(connection) {
@@ -1523,12 +1541,16 @@ fn pump_floating_surface_service(
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
                     protected,
+                    generation,
                 } => {
                     // The app id is the one the launcher vouched for, so a
                     // request can only ever withhold the asking app's own
                     // windows. It narrows what leaves the display, never
                     // widens it, so any app may ask.
                     foreign::store().request_app_capture_protection(connection, &app_id, protected);
+                    if let Some(generation) = generation {
+                        service.send(connection, &ui::floating_surface::FloatingSurfaceHostMessage::CaptureProtectionApplied { generation, protected });
+                    }
                     tracing::debug!(connection, %app_id, protected, "capture protection requested");
                     changed = true;
                 }
@@ -1611,6 +1633,24 @@ fn pump_floating_surface_service(
                 }
             },
             FloatingServiceEvent::Disconnected { connection, app_id } => {
+                frame_builder
+                    .host_mut()
+                    .disconnect_native_terminal(connection);
+                appearance.disconnected(connection);
+                // Closing the control socket does not destroy the last Wayland
+                // buffer. Preserve its protection until the toplevel dies.
+                let tabs = foreign::foreign_tabs_anywhere(&state.workspace_tree.read());
+                for tab in tabs {
+                    if tab.app_id == app_id {
+                        foreign::store().retain_surface_capture_protection(tab.surface_id, &app_id);
+                    }
+                }
+                for surface in &state.floating_toplevels {
+                    if surface.connection == connection {
+                        foreign::store()
+                            .retain_surface_capture_protection(surface.surface_id, &app_id);
+                    }
+                }
                 for id in connection_ids.remove(&connection).unwrap_or_default() {
                     capture.dismiss_external_floating(id);
                 }
@@ -2815,6 +2855,14 @@ impl ControlState for FrameBuilderControlState<'_> {
             // The input hardware and last-used modality the chrome adapts
             // to, and the language the desktop help overlay is written in.
             "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
+            "input_capture": {
+                "onboarding": self.fb.host().onboarding_active(),
+                "chrome": client_input::chrome_captures_input(self.fb),
+                "inner_surface": self.fb.host().inner_surface_captures_input(),
+                "maximized_controls": self.fb.host().maximized_chrome_captures_pointer(),
+                "shortcut_help": overlays.shortcut_help,
+                "projection": overlays.projection,
+            },
             // The on-screen keyboard: whether its service has a surface,
             // and where it is painted while it serves the focused field.
             "on_screen_keyboard": {
@@ -3109,8 +3157,8 @@ impl TestControlCtx {
             PlannedAction::KeyboardKey { pressed: true, .. } => {
                 self.input.note_used(ui::InputModality::Keyboard)
             }
-            PlannedAction::CursorMoved { .. }
-            | PlannedAction::MouseLeftButton { .. }
+            PlannedAction::CursorMoved { .. } => self.input.note_pointer_motion(),
+            PlannedAction::MouseLeftButton { .. }
             | PlannedAction::MousePointerButton { .. }
             | PlannedAction::MouseWheel { .. }
             | PlannedAction::Pen { .. }
@@ -7286,7 +7334,7 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
             };
             // Match the FrameBuilder's configured theme so the host window
             // clears to chrome background before the first frame paints.
-            b.set_base_color(ui::theme::Theme::configured().bg_app);
+            b.set_base_color(ui::theme::Theme::configured().tokens.colors.surfaces.base);
             Box::new(b)
         }
         BackendKind::Drm => match DrmBackend::new() {
@@ -7785,6 +7833,7 @@ pub fn run() {
         }
     };
     let mut external_floating_ids: HashMap<u64, Vec<String>> = HashMap::new();
+    let mut window_appearances = crate::compositor::floating_service::AppearanceDelivery::default();
     let (system_audio, microphone) = crate::compositor::capture::recording_audio_availability();
     frame_builder.set_capture_audio_available(system_audio, microphone);
     if let Some(notice) = &state_notice {
@@ -8633,6 +8682,7 @@ pub fn run() {
     let mut credit_transition_hold;
     while !close_requested {
         let iter_t0 = Instant::now();
+        crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
         if let Some(pipe) = present_pipe.as_ref() {
@@ -8722,11 +8772,20 @@ pub fn run() {
                 &mut frame_builder,
                 &mut capture_executor,
                 &mut external_floating_ids,
+                &mut window_appearances,
                 backend.outputs(),
                 initial_size,
             )
         {
             force_first_paint = true;
+        }
+        // Each app window wears the temperature of the workspace it is in
+        // and the person's colour, told again whenever either moves.
+        if let Some(service) = floating_surface_service.as_ref() {
+            window_appearances.publish(
+                |app_id| frame_builder.window_appearance_for_app(app_id),
+                |connection, message| service.send(connection, message),
+            );
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_toplevel_events(service, &mut state)
@@ -9472,6 +9531,12 @@ pub fn run() {
                 }
                 BackendEvent::TabletMode(on) => {
                     test_control_ctx.input.set_tablet_mode(on);
+                }
+                BackendEvent::PointerMotionUsed => {
+                    if test_control_ctx.input.note_pointer_motion() {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
                 }
                 BackendEvent::InputUsed(modality) => {
                     if test_control_ctx.input.note_used(modality) {
@@ -11275,7 +11340,9 @@ pub fn run() {
                     frame_builder.paint_with_damage()
                 } else {
                     let scene = frame_builder.paint();
-                    FramePaint::full(scene).with_hdr_layers(frame_builder.take_hdr_layers())
+                    FramePaint::full(scene)
+                        .with_hdr_layers(frame_builder.take_hdr_layers())
+                        .with_backdrop(frame_builder.take_backdrop())
                 };
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
@@ -11979,6 +12046,10 @@ pub fn run() {
                 ("lock-clock", lock_clock_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
+                (
+                    "app-action-authority",
+                    crate::shell::launcher::action_authority::next_deadline(),
+                ),
                 ("controller-nav", controller_nav.next_deadline(park_now)),
                 ("backend-service", backend.next_service_deadline()),
                 (
@@ -12265,6 +12336,38 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+
+    #[test]
+    fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
+        use crate::compositor::input_method::{OskInput, OskPreference, osk_wanted};
+
+        let mut ctx = TestControlCtx::new();
+        let mut fb = FrameBuilder::new((800, 600));
+        ctx.note_injected_input(
+            &PlannedAction::Touch {
+                device: "panel".into(),
+                slot: 0,
+                phase: TouchPhaseKind::Down,
+                x: 100.0,
+                y: 100.0,
+            },
+            &mut fb,
+        );
+        assert!(osk_wanted(
+            OskPreference::Auto,
+            OskInput::from_environment(&ctx.input)
+        ));
+        ctx.note_injected_input(&PlannedAction::CursorMoved { x: 110.0, y: 100.0 }, &mut fb);
+        assert!(
+            osk_wanted(OskPreference::Auto, OskInput::from_environment(&ctx.input)),
+            "incidental pointer hover must not dismiss a touch-started keyboard"
+        );
+        ctx.note_injected_input(&PlannedAction::MouseLeftButton { pressed: true }, &mut fb);
+        assert!(!osk_wanted(
+            OskPreference::Auto,
+            OskInput::from_environment(&ctx.input)
+        ));
+    }
 
     #[test]
     fn dispatched_client_requests_get_a_follow_up_tick() {

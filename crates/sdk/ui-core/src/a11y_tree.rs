@@ -676,7 +676,7 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
         });
     }
     match access.role {
-        Role::Slider | Role::SpinButton if !s.disabled => {
+        Role::Slider | Role::Separator | Role::SpinButton if !s.disabled => {
             out.push(SemanticAction {
                 name: "increment".into(),
                 label: "Increment".into(),
@@ -809,6 +809,9 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                 let mut children: Vec<SemanticId> = Vec::new();
                 let mut hosted = HostedByIndex::new();
                 for (child_index, child) in w.children().into_iter().enumerate() {
+                    if w.accessibility_represents_child(child_index) {
+                        continue;
+                    }
                     if let Some(mut path) = w.accessibility_child_path(child_index)
                         && !path.is_empty()
                     {
@@ -975,6 +978,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                 self.bound_actions.insert(
                     (id.clone(), spec.id.clone()),
                     crate::bound_dispatch::BoundActionTarget {
+                        physical_text: false,
                         binding: binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: binding.instance_id,
