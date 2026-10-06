@@ -5,7 +5,6 @@
 //! fixed-argv systemd user service. No subcommand accepts a URL, command, tag,
 //! model path, or arbitrary process argument.
 
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -20,7 +19,7 @@ use agent_provider_config::local::{
     LocalModelStatus, RuntimeDecision, RuntimeKind, select_runtime,
 };
 use clap::{Parser, Subcommand};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use local_model_service::catalog::CatalogPayload;
 use local_model_service::{
     HttpsTransport, LocalModelService, ProcessHandle, ProcessSupervisor, ServiceError,
     SignedRuntime, VllmCommand, user_model_root,
@@ -135,28 +134,6 @@ struct RpcResponse {
     ok: bool,
     output: Option<String>,
     error: Option<String>,
-}
-
-/// Signed, release-channel catalog. The signature covers canonical JSON of
-/// `payload`; model and runtime artifacts within it remain individually pinned.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct SignedCatalog {
-    schema: u16,
-    signature_domain: String,
-    key_id: String,
-    signature: Vec<u8>,
-    payload: CatalogPayload,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct CatalogPayload {
-    schema: u16,
-    models: Vec<LocalModelRelease>,
-    runtimes: Vec<SignedRuntime>,
-    recommendation: String,
-}
-#[derive(Default, Deserialize)]
-struct KeyFile {
-    keys: BTreeMap<String, String>,
 }
 
 // The JSON contract is intentionally duplicated rather than importing the
@@ -276,49 +253,9 @@ struct BootPackStatus {
     error: Option<String>,
 }
 
-fn load_catalog(path: &PathBuf, keys: &PathBuf) -> Result<CatalogPayload, String> {
-    let signed: SignedCatalog =
-        serde_json::from_slice(&std::fs::read(path).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-    if signed.schema != 1 {
-        return Err("unsupported signed catalog envelope schema".into());
-    }
-    if signed.payload.schema != 1 {
-        return Err("unsupported model catalog schema".into());
-    }
-    let keyfile: KeyFile =
-        serde_json::from_slice(&std::fs::read(keys).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-    let key_hex = keyfile
-        .keys
-        .get(&signed.key_id)
-        .ok_or_else(|| "catalog signing key is not trusted".to_string())?;
-    let bytes = hex::decode(key_hex).map_err(|_| "invalid catalog public key")?;
-    let key = VerifyingKey::from_bytes(
-        bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| "invalid catalog public key")?,
-    )
-    .map_err(|_| "invalid catalog public key")?;
-    let signature =
-        Signature::from_slice(&signed.signature).map_err(|_| "invalid catalog signature")?;
-    if signed.signature_domain != "tilo.local-model.catalog.v1" {
-        return Err("unexpected catalog signature domain".into());
-    }
-    let mut payload = b"tilo.local-model.catalog.v1\0".to_vec();
-    payload.extend(serde_json::to_vec(&signed.payload).map_err(|error| error.to_string())?);
-    key.verify(&payload, &signature)
-        .map_err(|_| "catalog signature verification failed")?;
-    for runtime in &signed.payload.runtimes {
-        runtime.validate().map_err(|error| error.to_string())?;
-    }
-    for model in &signed.payload.models {
-        model
-            .validate_shape()
-            .map_err(|error| format!("{}: {error}", model.id))?;
-    }
-    Ok(signed.payload)
+fn load_catalog(path: &Path, keys: &Path) -> Result<CatalogPayload, String> {
+    local_model_service::catalog::VerifiedCatalog::load(path, keys)
+        .map(local_model_service::catalog::VerifiedCatalog::into_payload)
 }
 
 /// Range downloader. The service already constrains URL+size+digest;
@@ -1419,8 +1356,8 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
 /// as the JSON snapshot Settings renders.
 fn local_snapshot(
     root: &PathBuf,
-    catalog_path: &PathBuf,
-    key_path: &PathBuf,
+    catalog_path: &Path,
+    key_path: &Path,
     format: &str,
 ) -> Result<String, String> {
     if format != "json" {

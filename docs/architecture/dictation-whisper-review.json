@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "production_catalogue": false,
-  "status": "review-only; no weights, dependency, installation or inference",
+  "status": "Pinned CPU source and remote public-audio inference qualified; not installed, published or connected to a microphone",
   "model": {
     "repository": "ggerganov/whisper.cpp",
     "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
@@ -32,7 +32,7 @@
       "sha256": "6986c0fe081241d391f09b9a071fbcbb59720c3563628c3c829057cf69f2a56f",
       "archive_url": "https://static.crates.io/crates/whisper-rs-sys/whisper-rs-sys-0.15.0.crate",
       "adopted": false,
-      "build_review": "build.rs accepts GGML_* flags. Prove a portable CPU baseline and audit cancellation through the raw synchronous C API before adoption."
+      "build_review": "Only unchanged MIT C++ source from this exact archive is carried. Neither the Rust sys binding nor its build script is adopted. Dedicated CMake and six-parameter bridge control the CPU floor and own-process cancellation."
     }
   },
   "release_gates": [
@@ -40,5 +40,37 @@
     "Extend the existing protected U2-Net-only release job after review; do not create a trust key.",
     "Publish exact receipt-checked weights/licence and deliver the reviewed signed catalogue through the normal image lifecycle.",
     "Audit the engine ABI, portable x86-64/Arm64 baseline, bounded cancellation and process isolation; benchmark before choosing a default."
-  ]
+  ],
+  "engine": {
+    "version": "1.8.3",
+    "receipt": "crates/agent/local-model-service/native/upstream/whisper.cpp-receipt.json",
+    "native_cpu": false,
+    "gpu": false,
+    "threads": 2,
+    "rust_callbacks": false,
+    "sandbox": "full Landlock and shared parser seccomp before native loading",
+    "worker_process": true
+  },
+  "qualification": {
+    "command": "rcargo --no-fallback --on-builder run --locked -p local-model-service --example speech_qualify",
+    "sample_url": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/2eeeba56e9edd762b4b38467bab96c2517163158/samples/jfk.wav",
+    "sample_sha256": "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e",
+    "samples": 176000,
+    "load_ms": 1441,
+    "partial_decode_ms": 524,
+    "final_decode_ms": 546,
+    "passed": [
+      "partial",
+      "final",
+      "English auto-language",
+      "independent repeated decode",
+      "silence",
+      "language vocabulary bounds"
+    ],
+    "limits": [
+      "Builder timings do not establish older-device performance.",
+      "Non-English quality and microphone latency are unmeasured.",
+      "The worker subprocess journey needs an unprivileged remote runtime; this build container rejects privileged fixture overrides and cannot drop UID."
+    ]
+  }
 }

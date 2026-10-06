@@ -1,7 +1,9 @@
 # System dictation
 
 Status: dictation components are implemented, but not assembled into a live
-feature. There is no live shortcut, model installation or recognizer connection.
+feature. There is no live shortcut or compositor-to-recognizer connection. The native
+model installation lifecycle and private CPU worker are implemented, while
+the approved image catalogue still contains no speech model.
 The microphone capture API is implemented but has not opened a real microphone.
 Do not advertise “works in any field” or enable microphone capture based on this change.
 
@@ -206,3 +208,49 @@ needs the shared host input contract before live microphone capture is enabled.
 
 No microphone was opened, permission granted, account connected, model installed,
 device rebooted, or service deployed while developing this foundation.
+
+
+## CPU worker and qualification
+
+`tilo-speech-worker` verifies the image catalogue using the existing release
+trust, the installed speech capability, exact revision, licence acceptance,
+object size and SHA-256 before loading any native bytes. It then closes model
+files, confines itself with full Landlock and the shared parser seccomp policy,
+and loads weights through a synchronous six-parameter C++ bridge. The worker
+opens no microphone or network connection. Elevated processes refuse developer
+catalogue/store overrides. Core dumps and process tracing are disabled, address
+space is bounded to 1 GiB, and parent death terminates the worker. The compositor
+must spawn it from a thread that remains alive for the session, own its process
+group, cancel/reap it off the render thread, and validate the target before each
+reply. These parent/capture responsibilities are still unassembled.
+
+The CPU source is an unchanged pinned whisper.cpp 1.8.3 subtree, with a complete
+per-file receipt and MIT notice under the model-service package. The receipt
+records the exact crates.io archive it came from; it does not claim the subtree
+was proven equal to a Git release. No whisper-rs callback helper or Rust binding
+is used. GPU, dynamic backends, OpenMP and runner-native CPU tuning are disabled;
+x86 follows the existing OS x86-64-v3 floor and Arm targets armv8-a. No local
+Cargo compilation or live microphone capture was used for qualification.
+
+The private framed protocol admits monotonically sequenced configuration,
+PCM16 mono at 16 kHz, draft replacement and one terminal Finish. It rejects
+replay, gaps, malformed/oversized frames and more than 120 seconds of audio.
+Transcript replies are bounded to 16 KiB and native diagnostics are discarded.
+The engine normalizes segment whitespace; spoken Enter is not a command. Draft
+recognition currently recomputes the bounded phrase, so the parent must allow
+only one pending draft and rate-limit updates before this is usable for long
+sessions. Language IDs are bounded by the loaded model's own vocabulary.
+
+Remote public-fixture qualification passed partial/final decoding, automatic
+English detection, independent repeat decoding, silence, and language bounds
+under production confinement. The signed worker subprocess fixture is available
+with `--worker`, but positive execution is blocked by the remote container's
+root identity and inability to drop UID. Its typed ModelUnavailable refusal was
+observed; the worker's elevated override rejection remains intact. This is not
+proof of full worker cancellation, multilingual accuracy or any live mic flow.
+
+`dist/local-models/catalog-source-speech-candidate.json` and
+`tools/release/prepare_speech_catalog.py` prepare receipt-checked review inputs
+and the complete OpenAI MIT notice without signing, publishing, changing a trust
+key or activating the image catalogue. The protected publisher remains unchanged.
+Publication and normal image delivery require their separate approval.

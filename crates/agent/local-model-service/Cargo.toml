@@ -32,12 +32,16 @@ clap.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true
 zeroize.workspace = true
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
 tar.workspace = true
 zstd.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[build-dependencies]
+cc = "=1.2.56"
 
 [lints]
 workspace = true

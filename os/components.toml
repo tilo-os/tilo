@@ -287,11 +287,12 @@ name = "model-manager"
 kind = "userspace"
 scope = "session"
 packages = ["local-model-service"]
-bins = ["tilo-model-manager"]
+bins = ["tilo-model-manager", "tilo-speech-worker"]
 user_units = ["tilo-models.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-model-manager", to = "/usr/bin/tilo-model-manager", mode = "0755" },
+  { from = "tilo-speech-worker", to = "/usr/bin/tilo-speech-worker", mode = "0755" },
 ]
 
 [[component]]
