@@ -52,6 +52,26 @@ const TEXT_SIZE: f64 = 32.0; // a size of lettering in the artwork, not on-scree
 /// How much one wheel notch of a pinch or a zoom key zooms.
 const ZOOM_STEP: f64 = 1.25;
 
+/// Whole-cell enlargement and reciprocal reductions; choosing down keeps a
+/// fitted sheet wholly visible. Rounding near exact steps avoids float drift.
+fn pixel_zoom(desired: f64, up: bool) -> f64 {
+    let desired = desired.clamp(0.05, 64.0);
+    if desired >= 1.0 {
+        if up {
+            (desired - 1e-9).ceil()
+        } else {
+            (desired + 1e-9).floor()
+        }
+    } else {
+        let inverse = 1.0 / desired;
+        1.0 / if up {
+            (inverse + 1e-9).floor()
+        } else {
+            (inverse - 1e-9).ceil()
+        }
+    }
+}
+
 pub use crate::tools::{Tool, Tools, ViewRequest};
 
 /// A pointer drag in progress.
@@ -1432,19 +1452,43 @@ impl CanvasSurface {
     }
 
     fn zoom_by(&mut self, factor: f64, focal: Option<Point>) {
+        let old = self.zoom();
+        let target = if self.tools.preset.with(|preset| preset.pixel()) {
+            pixel_zoom(old * factor, factor > 1.0)
+        } else {
+            old * factor
+        };
         match focal {
-            Some(focal) => self.viewport.zoom_at(factor, focal),
-            None => self.viewport.zoom_by(factor),
-        }
-        if self.tools.preset.with(|preset| preset.pixel()) {
-            let zoom = self.zoom();
-            self.viewport.set_zoom(if factor > 1.0 {
-                zoom.ceil()
-            } else {
-                zoom.floor().max(1.0)
-            });
+            Some(focal) => self.viewport.zoom_at(target / old, focal),
+            None => self.viewport.zoom_by(target / old),
         }
         self.moved_by_hand = true;
+    }
+
+    fn wheel(
+        &mut self,
+        delta: &ui::winit::event::MouseScrollDelta,
+        modifiers: ModifiersState,
+        scale: f64,
+    ) -> bool {
+        let before = self.zoom();
+        if !self
+            .viewport
+            .on_wheel(delta, &modifiers, self.cursor, scale)
+        {
+            return false;
+        }
+        if self.tools.preset.with(|preset| preset.pixel()) {
+            let current = self.zoom();
+            let snapped = if (current - before).abs() > 1e-9 {
+                pixel_zoom(current, current > before)
+            } else {
+                current
+            };
+            self.viewport.zoom_at(snapped / current, self.cursor);
+        }
+        self.moved_by_hand = true;
+        true
     }
 
     fn zoom_to_fit(&mut self) {
@@ -1465,6 +1509,15 @@ impl CanvasSurface {
     /// Carry out the canvas's keys pressed while something else had the
     /// focus.
     fn follow_keys(&mut self) {
+        if let Some(ids) = self.tools.pick_objects.with(Clone::clone) {
+            self.tools.pick_objects.set(None);
+            self.selection = ids
+                .into_iter()
+                .filter(|id| self.art.mark(id).is_some())
+                .collect();
+            self.tools.tool.set(Tool::Select);
+            self.tools.selection.set(self.selection.clone());
+        }
         if self.tools.keys.with(Vec::is_empty) {
             return;
         }
@@ -1485,7 +1538,7 @@ impl CanvasSurface {
                 ViewRequest::ZoomOut => self.zoom_by(1.0 / ZOOM_STEP, None),
                 ViewRequest::Fit => self.zoom_to_fit(),
                 ViewRequest::Pixel => {
-                    self.viewport.set_zoom(self.zoom().floor().max(1.0));
+                    self.viewport.set_zoom(pixel_zoom(self.zoom(), false));
                     self.moved_by_hand = true;
                 }
                 ViewRequest::Actual => {
@@ -1496,7 +1549,7 @@ impl CanvasSurface {
         }
         self.follow_width();
         if self.tools.preset.with(|preset| preset.pixel()) {
-            self.viewport.set_zoom(self.zoom().floor().max(1.0));
+            self.viewport.set_zoom(pixel_zoom(self.zoom(), false));
             let origin = self.viewport.content_point_to_screen(Point::ORIGIN);
             self.viewport
                 .pan_by(origin.x - origin.x.round(), origin.y - origin.y.round());
@@ -3196,13 +3249,7 @@ impl Widget for CanvasSurface {
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
-                if self.viewport.on_wheel(
-                    delta,
-                    &ctx.modifiers.state(),
-                    self.cursor,
-                    ctx.scale_factor,
-                ) {
-                    self.moved_by_hand = true;
+                if self.wheel(delta, ctx.modifiers.state(), ctx.scale_factor) {
                     *ctx.handled = true;
                 }
             }

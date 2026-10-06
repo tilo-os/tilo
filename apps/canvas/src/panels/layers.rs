@@ -25,6 +25,7 @@ use crate::tools::Tools;
 struct LayerRow {
     id: String,
     name: String,
+    group: String,
     medium: String,
     visible: bool,
     locked: bool,
@@ -67,6 +68,7 @@ fn rows(art: &Artwork) -> Vec<LayerRow> {
         .map(|layer| LayerRow {
             id: layer.id.clone(),
             name: layer.name.clone(),
+            group: layer.group.clone(),
             medium: engine_label(art, &layer.medium),
             visible: layer.visible,
             locked: layer.locked,
@@ -86,7 +88,7 @@ fn rows(art: &Artwork) -> Vec<LayerRow> {
 const THUMB: (f32, f32) = (44.0, 33.0); // a picture's size, not spacing
 
 /// How tall the list of layers grows before it scrolls.
-const LIST: f32 = 232.0; // about four layer rows: a share of the sidebar, not spacing
+const LIST: f32 = 160.0; // about four layer rows: a share of the sidebar, not spacing
 
 /// The panel: the layers, scrolling when there are many, and under them
 /// the chosen layer's own controls, always in view.
@@ -95,20 +97,16 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let list = {
         let tools = tools.clone();
         let known: Rc<RefCell<Vec<String>>> = Rc::default();
-        cx.switch(&rows, move |cx, rows| {
+        cx.switch(&rows, move |_cx, rows| {
             follow_new_layers(&known, rows, &tools.layer);
-            let mut list = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(2.0);
-            for row in rows {
-                list = list.push(layer_row(cx, &tools, row));
-            }
-            Box::new(list)
+            layer_tree(rows, &tools)
         })
     };
     // The chosen layer's own controls, built again when another is chosen.
-    let footer = cx.switch(&tools.layer, |cx, id| chosen_layer(cx, id));
+    let chosen_tools = tools.clone();
+    let footer = cx.switch(&tools.layer, move |cx, id| {
+        chosen_layer(cx, id, &chosen_tools)
+    });
     Box::new(
         Column::new()
             .with_no_padding()
@@ -133,6 +131,61 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .with_horizontal_padding(16.0, 12.0)
                     .push(footer),
             )),
+    )
+}
+
+/// Folder branches keep paint order: non-contiguous runs stay separate rather
+/// than suggesting a different composite order. The shared tree owns collapse,
+/// keyboard navigation, virtualisation and accessibility.
+fn layer_tree(rows: &[LayerRow], tools: &Tools) -> Element {
+    use ui::widget::{TreeNode, TreeView};
+    let mut children: Vec<TreeNode<()>> = Vec::new();
+    let mut targets = std::collections::HashMap::new();
+    let mut next = u64::try_from(rows.len()).unwrap_or(0).saturating_add(1);
+    let mut previous = "";
+    let mut folder = None;
+    for (index, row) in rows.iter().enumerate() {
+        let id = u64::try_from(index).unwrap_or(0).saturating_add(1);
+        let leaf = TreeNode::leaf(id, format!("{} · {}", row.name, row.medium), ());
+        targets.insert(id, row.id.clone());
+        if row.group != previous {
+            previous = &row.group;
+            folder = if row.group.is_empty() {
+                None
+            } else {
+                let at = children.len();
+                children.push(TreeNode::branch(next, &row.group, (), Vec::new()));
+                next = next.saturating_add(1);
+                Some(at)
+            };
+        }
+        if let Some(branch) = folder.and_then(|at| children.get_mut(at)) {
+            branch.children.push(leaf);
+        } else {
+            children.push(leaf);
+        }
+    }
+    let expanded = children
+        .iter()
+        .filter(|node| node.is_branch())
+        .map(|node| node.id)
+        .collect::<Vec<_>>();
+    let selected = targets
+        .iter()
+        .find_map(|(node, id)| (*id == tools.layer.get()).then_some(*node));
+    let chosen = tools.layer.clone();
+    Box::new(
+        TreeView::new(TreeNode::branch(0, "", (), children))
+            .hide_root()
+            .with_id("canvas-layer-tree")
+            .with_selected(selected)
+            .with_expanded(expanded)
+            .with_viewport(LIST, 32.0)
+            .on_select(move |node| {
+                if let Some(id) = targets.get(&node) {
+                    chosen.set(id.clone());
+                }
+            }),
     )
 }
 
@@ -426,7 +479,7 @@ fn masking(
 }
 
 /// The chosen layer's opacity, medium and place among the layers.
-fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str) -> Element {
+fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Element {
     let Some(row) = cx.read(|art| {
         art.and_then(|art| {
             rows(art)
@@ -495,11 +548,102 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str) -> Element {
                 .push(Box::new(lower))
                 .push(Box::new(remove)),
         ))
-        .push(Box::new(slider));
+        .push(Box::new(slider))
+        .push(layer_row(cx, tools, &row));
     if let Some(mask) = &row.mask {
         column = column.push(mask_line(cx, &row, mask));
     }
+    let id = row.id.clone();
+    let folder = cx.value(move |art: &Artwork| {
+        art.layer(&id)
+            .map(|layer| layer.group.clone())
+            .unwrap_or_default()
+    });
+    let id = row.id.clone();
+    column = column.push(cx.switch(&folder, move |cx, folder| {
+        Box::new(
+            cx.actions().bind(
+                EditableLabel::new(folder)
+                    .edits_on_click()
+                    .with_id("canvas-layer-folder")
+                    .with_placeholder(ui::i18n::I18nManager::lookup_plain("canvas-layer-folder"))
+                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
+                        "canvas-layer-folder",
+                    ))
+                    .filling(),
+                ArtworkResource::SET_LAYER_GROUP.map({
+                    let id = id.clone();
+                    move |group: String| (id.clone(), group)
+                }),
+            ),
+        )
+    }));
     Box::new(column)
+}
+
+/// Address objects independently of hit testing, including occluded members.
+pub fn objects_panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let held = tools.clone();
+    cx.switch(&tools.layer, move |cx, layer| objects(cx, layer, &held))
+}
+
+fn objects(cx: &ViewCx<ArtworkResource>, layer: &str, tools: &Tools) -> Element {
+    use ui::widget::{TreeNode, TreeView};
+    let layer = layer.to_owned();
+    let marks = cx.value(move |art: &Artwork| {
+        art.marks_of(&layer)
+            .map(|mark| (mark.id.clone(), mark.name.clone(), mark.group.clone()))
+            .collect::<Vec<_>>()
+    });
+    let tools = tools.clone();
+    cx.switch(&marks, move |_cx, marks| {
+        let mut children: Vec<TreeNode<()>> = Vec::new();
+        let mut targets: std::collections::HashMap<u64, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut folders: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        let mut next = u64::try_from(marks.len()).unwrap_or(0).saturating_add(1);
+        for (index, (id, name, group)) in marks.iter().rev().enumerate() {
+            let node = u64::try_from(index).unwrap_or(0).saturating_add(1);
+            let label = if name.is_empty() {
+                id.clone()
+            } else {
+                name.clone()
+            };
+            let leaf = TreeNode::leaf(node, label, ());
+            targets.insert(node, vec![id.clone()]);
+            if group.is_empty() {
+                children.push(leaf);
+            } else {
+                let folder = if let Some(index) = folders.get(group) {
+                    *index
+                } else {
+                    let at = children.len();
+                    folders.insert(group.clone(), at);
+                    children.push(TreeNode::branch(next, group, (), Vec::new()));
+                    next = next.saturating_add(1);
+                    at
+                };
+                if let Some(branch) = children.get_mut(folder) {
+                    targets.entry(branch.id).or_default().push(id.clone());
+                    branch.children.push(leaf);
+                }
+            }
+        }
+        let picked = tools.pick_objects.clone();
+        Box::new(
+            TreeView::new(TreeNode::branch(0, "", (), children))
+                .hide_root()
+                .with_id("canvas-objects")
+                .with_viewport(232.0, 28.0)
+                .with_heading(ui::i18n::I18nManager::lookup_plain("canvas-objects"))
+                .on_select(move |node| {
+                    if let Some(ids) = targets.get(&node) {
+                        picked.set(Some(ids.clone()));
+                    }
+                }),
+        )
+    })
 }
 
 /// Giving the chosen layer a mask, and clipping it to the layer below.

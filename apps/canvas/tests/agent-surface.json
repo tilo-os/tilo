@@ -1071,7 +1071,7 @@
     "action": "edit-layer",
     "resource_kind": "canvas.artwork",
     "label": "Edit layer",
-    "description": "Rename a layer, change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
+    "description": "Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
     "operation": "Document",
     "params": [
       {
@@ -1089,6 +1089,19 @@
         "ty": "text",
         "required": false,
         "description": "name",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "group",
+        "ty": "text",
+        "required": false,
+        "description": "Organisational folder name; empty removes the layer from its folder. Consecutive members are presented together without changing stacking.",
         "schema": {
           "type": [
             "string",
@@ -3836,6 +3849,23 @@
     "params": []
   },
   {
+    "resource": "tilo.control:canvas-tools-scope",
+    "action": "select",
+    "resource_kind": "tilo.control.segmented",
+    "label": "Select",
+    "description": null,
+    "operation": "View",
+    "params": [
+      {
+        "name": "index",
+        "ty": "integer",
+        "required": true,
+        "description": "Zero-based segment index",
+        "nullable": false
+      }
+    ]
+  },
+  {
     "resource": "tilo.control:canvas-welcome-close",
     "action": "invoke",
     "resource_kind": "tilo.control",
@@ -3861,6 +3891,23 @@
     "description": null,
     "operation": "View",
     "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-workspace",
+    "action": "select",
+    "resource_kind": "tilo.control.segmented",
+    "label": "Select",
+    "description": null,
+    "operation": "View",
+    "params": [
+      {
+        "name": "index",
+        "ty": "integer",
+        "required": true,
+        "description": "Zero-based segment index",
+        "nullable": false
+      }
+    ]
   },
   {
     "resource": "tilo.control:canvas-zoom-fit",

@@ -8,6 +8,8 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
+mod support;
+
 use canvas::model::{Mark, Shape};
 use canvas::{App, Artwork};
 use ui::prelude::{Invoke, TestApp};
@@ -1080,4 +1082,120 @@ fn area_tools_show_subject_controls_while_a_mark_stays_selected() {
         .unwrap()
         .unwrap();
     assert_eq!(current["selected"], selected["selected"]);
+}
+
+#[test]
+fn object_tree_selects_an_occluded_object_for_an_exact_edit() {
+    let mut desk = Desk::open();
+    desk.app.call("draw",serde_json::json!({"marks":[
+        {"id":"covered","name":"Hidden rectangle","shape":{"kind":"rect","x":10,"y":10,"width":100,"height":100},"fill":"#010203"},
+        {"id":"cover","shape":{"kind":"rect","x":0,"y":0,"width":200,"height":200},"fill":"#ffffff"}
+    ]})).unwrap();
+    desk.app
+        .harness()
+        .perform_semantic_named(
+            "canvas-dock",
+            Some("canvas-dock:segment:1"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    let snapshot = desk.app.harness().inspection();
+    let target = support::named_bounds(&snapshot.root, "Hidden rectangle")
+        .expect("the covered object is listed");
+    desk.app
+        .harness()
+        .click_at(target.center().x, target.center().y);
+    desk.key("ArrowRight");
+    let Shape::Rect { x, .. } = desk.mark("covered").shape else {
+        panic!("rectangle");
+    };
+    assert_eq!(
+        x, 11.0,
+        "tree selection reaches the production nudge action"
+    );
+    let Shape::Rect { x, .. } = desk.mark("cover").shape else {
+        panic!("rectangle");
+    };
+    assert_eq!(x, 0.0, "the covering object is untouched");
+    assert!(desk.app.undo());
+    let Shape::Rect { x, .. } = desk.mark("covered").shape else {
+        panic!("rectangle");
+    };
+    assert_eq!(x, 10.0);
+}
+
+#[test]
+fn pixel_pinch_zoom_keeps_the_cell_under_the_pointer() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.app
+        .harness()
+        .perform_semantic_named(
+            "canvas-workspace",
+            Some("canvas-workspace:segment:3"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    desk.key("Ctrl+1");
+    desk.key("+");
+    let focal = (desk.canvas.center().x + 60.0, desk.canvas.center().y + 45.0);
+    desk.app.harness().send(&WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: ui::winit::dpi::PhysicalPosition::new(focal.0, focal.1),
+    });
+    // Both axes overflow at 2x: no centering or scroll-edge clamp can move the anchor.
+    // Paint, zoom, and paint again at the same screen point.
+    desk.app.harness().click_at(focal.0, focal.1);
+    let first = desk.art().marks.last().unwrap().shape.clone();
+    desk.app.harness().send(&WindowEvent::PinchGesture {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: 0.25,
+        phase: ui::winit::event::TouchPhase::Moved,
+    });
+    desk.app.harness().click_at(focal.0, focal.1);
+    let after = desk.art().marks.last().unwrap().shape.clone();
+    assert_eq!(
+        first, after,
+        "the same cell stays under the zoom focal point"
+    );
+}
+
+#[test]
+fn a_large_pixel_sheet_fits_below_actual_size_and_paints_in_artwork_cells() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "new-artwork",
+        serde_json::json!({"width":4096,"height":4096}),
+    )
+    .unwrap();
+    app.harness()
+        .perform_semantic_named(
+            "canvas-workspace",
+            Some("canvas-workspace:segment:3"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.harness().key("Ctrl+0");
+    let canvas = app.harness().targets()["canvas"];
+    let center = canvas.center();
+    for x in [center.x - 30.0, center.x + 30.0] {
+        app.harness().click_at(x, center.y);
+    }
+    let art = app.state();
+    assert_eq!(art.marks.len(), 2);
+    let coordinate = |mark: &Mark| {
+        let Shape::Stroke { points, .. } = &mark.shape else {
+            panic!("pixel stroke");
+        };
+        points[0][0]
+    };
+    let cells = coordinate(&art.marks[1]) - coordinate(&art.marks[0]);
+    assert!(
+        cells >= 120.0,
+        "Fit must reduce the sheet below 100%: {cells} cells across 60 screen pixels"
+    );
+    assert!(
+        (cells / 60.0 - (cells / 60.0).round()).abs() < 1e-6,
+        "pixel reductions are reciprocal whole-cell steps"
+    );
 }

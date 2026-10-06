@@ -61,6 +61,9 @@ impl ArtworkResource {
     /// `edit-layer` renaming a layer.
     pub const RENAME_LAYER: ActionRef<Self, (String, String)> =
         ActionRef::new("edit-layer", &["id", "name"]);
+    /// `edit-layer` placing a layer in an organisational folder.
+    pub const SET_LAYER_GROUP: ActionRef<Self, (String, String)> =
+        ActionRef::new("edit-layer", &["id", "group"]);
     /// `edit-layer` locking or unlocking a layer.
     pub const SET_LAYER_LOCKED: ActionRef<Self, (String, bool)> =
         ActionRef::new("edit-layer", &["id", "locked"]);
@@ -744,7 +747,7 @@ impl Resource for ArtworkResource {
             decl::<EditLayer>(
                 "edit-layer",
                 "Edit layer",
-                "Rename a layer, change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
+                "Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
                 CanvasAction::EditLayer,
             ),
             decl::<RemoveLayer>(

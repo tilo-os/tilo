@@ -5062,9 +5062,10 @@ impl TextInput {
         handled: &mut bool,
     ) {
         let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-        if self.update_pointer_position(logical_pos) {
-            *handled = true;
-        }
+        // Hover is repaint state, not consumed input. A parent must deliver
+        // the same movement to the sibling the pointer is entering; otherwise
+        // the first click after leaving this field misses that sibling.
+        self.update_pointer_position(logical_pos);
 
         if !self.is_dragging {
             return;

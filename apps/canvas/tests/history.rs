@@ -340,3 +340,44 @@ fn history_names_each_step_by_what_it_did_for_people_and_agents_alike() {
         .collect();
     assert_eq!(layers, ["Layer 1", "Layer 2"], "a new layer is numbered");
 }
+
+#[test]
+fn a_person_names_a_checkpoint_from_the_history_panel_without_editing_the_art() {
+    let mut app = TestApp::<App>::new().unwrap();
+    sky_and_sun(&mut app);
+    let before = app.state();
+    app.harness()
+        .perform_semantic_named(
+            "canvas-dock",
+            Some("canvas-dock:segment:2"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.harness()
+        .click_named("canvas-checkpoint-label")
+        .unwrap();
+    app.harness().type_text("Before the storm");
+    assert_eq!(
+        app.state(),
+        before,
+        "typing a label does not edit the artwork"
+    );
+    app.settle();
+    app.harness().click_named("canvas-checkpoint-save").unwrap();
+    app.settle();
+    assert_eq!(app.state(), before, "naming a version is history metadata");
+    let history = app.call("history", json!({})).unwrap().unwrap();
+    assert!(
+        history["checkpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|checkpoint| checkpoint["name"] == "Before the storm"),
+        "{history}"
+    );
+    app.call("edit-marks", json!({"ids":["sky"],"fill":"#111111"}))
+        .unwrap();
+    app.call("restore", json!({"version":"Before the storm"}))
+        .unwrap();
+    assert_eq!(fill(&app, "sky"), Some("#6fa8dc".into()));
+}
