@@ -22,16 +22,19 @@ use vello::peniko::{Color, Fill};
 
 use ui::ColorCompat;
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use ui::overlay::{FocusTrap, Modal};
+use ui::overlay::FocusTrap;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace, SegmentedStyle};
+use ui::widget::{AvatarFace, BadgeFace, Button, ButtonFace, ChipStyle, SegmentedFace, Tone};
 
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::service_member::{ServiceMember, service_purpose};
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
+use ui::TextRole;
+use ui::text_render::TextStyle;
+use ui::widget::ButtonRole;
 
 pub mod overlay;
 
@@ -593,14 +596,6 @@ fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
     transform * Affine::translate((dx, dy))
 }
 
-/// A colour paired with the alpha to paint it at, bundled so a caller of
-/// [`draw_pill`] doesn't pass a bare `f32` beside a `Color`.
-#[derive(Clone, Copy)]
-struct Tint {
-    color: Color,
-    alpha: f32,
-}
-
 /// Width of the modal's left sidebar in CSS px: the docked navigation
 /// sidebar width (HIG §9.6, `Metrics::sidebar_width`), unscaled like the
 /// rest of this lens's geometry.
@@ -674,7 +669,6 @@ impl WsTab {
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
     pub active_tab: WsTab,
-    modal: Modal,
     focus_trap: FocusTrap,
 }
 
@@ -684,13 +678,8 @@ impl WorkspaceSettings {
         Self {
             ws_id,
             active_tab: WsTab::General,
-            modal: Modal::new("workspace-settings"),
             focus_trap: FocusTrap::new(members),
         }
-    }
-
-    pub fn modal(&self) -> &Modal {
-        &self.modal
     }
 
     pub fn focus_trap(&self) -> &FocusTrap {
@@ -845,18 +834,18 @@ impl WorkspaceSettings {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5],
+            colors.intent.inverted,
             None,
             &identity_card,
         );
 
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-title"),
-            tokens.typography.scale.xs,
             colors.text_dim,
             at(transform, sidebar.x0 + 24.0, identity_rect.y1 + 12.0),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
 
         for (tab, row) in self.nav_rows(modal_rect) {
@@ -881,13 +870,12 @@ impl WorkspaceSettings {
                 colors.text_dim
             };
             // Centred on the measured line, not at a fixed offset (HIG §7a).
-            let label_size = tokens.typography.scale.base;
+            let label_style = tokens.typography.style(TextRole::Body);
             let label = tab.label();
-            let (_, label_h) = text_renderer.measure(&label, label_size, None);
-            text_renderer.draw_text(
+            let (_, label_h) = text_renderer.measure_style(&label, None, &label_style);
+            text_renderer.draw_style(
                 scene,
                 &label,
-                label_size,
                 label_color,
                 at(
                     transform,
@@ -895,6 +883,7 @@ impl WorkspaceSettings {
                     row.center().y - f64::from(label_h) / 2.0,
                 ),
                 None,
+                &label_style,
             );
         }
 
@@ -938,13 +927,12 @@ impl WorkspaceSettings {
             colors.text_dim,
             LUCIDE_DEFAULT_STROKE_PX,
         );
-        let close_size = tokens.typography.scale.sm;
+        let close_style = tokens.typography.style(TextRole::Caption);
         let close_label = t("workspace-settings-close");
-        let (_, close_h) = text_renderer.measure(&close_label, close_size, None);
-        text_renderer.draw_text(
+        let (_, close_h) = text_renderer.measure_style(&close_label, None, &close_style);
+        text_renderer.draw_style(
             scene,
             &close_label,
-            close_size,
             colors.text_dim,
             at(
                 transform,
@@ -952,6 +940,7 @@ impl WorkspaceSettings {
                 footer.center().y - f64::from(close_h) / 2.0,
             ),
             None,
+            &close_style,
         );
     }
 }
@@ -1043,13 +1032,13 @@ fn draw_section_header(
         Some(n) => format!("{label} · {n}"),
         None => label.to_string(),
     };
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         &text,
-        tokens.typography.scale.xs,
         tokens.colors.text_dim,
         at(transform, origin.x, origin.y),
         None,
+        &tokens.typography.style(TextRole::Caption),
     );
 }
 
@@ -1062,7 +1051,7 @@ fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
         scene,
         transform,
         rect,
-        f64::from(theme.tokens.radii.lg),
+        f64::from(theme.tokens.radii.control),
         theme.tokens.colors.surfaces.raised,
     );
 }
@@ -1091,7 +1080,7 @@ fn draw_pane_intro(
         scene,
         transform,
         rect,
-        f64::from(tokens.radii.lg),
+        f64::from(tokens.radii.control),
         colors.surfaces.raised,
     );
 
@@ -1104,19 +1093,19 @@ fn draw_pane_intro(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.accent[5].with_alpha_factor(0.16),
+        colors.text_primary.with_alpha_factor(0.16),
         None,
-        &RoundedRect::from_rect(icon_rect, f64::from(tokens.radii.md)),
+        &RoundedRect::from_rect(icon_rect, f64::from(tokens.radii.control)),
     );
     draw_icon(
         scene,
         transform,
         icon_rect.inset(-9.0),
         icon,
-        colors.accent[4],
+        colors.intent.inverted_hover,
         LUCIDE_DEFAULT_STROKE_PX,
     );
-    let detail_size = tokens.typography.scale.xs;
+    let detail_style = tokens.typography.style(TextRole::Caption);
     let detail_max = (rect.width() - 62.0 - 124.0).max(80.0);
     #[allow(
         clippy::cast_possible_truncation,
@@ -1124,39 +1113,39 @@ fn draw_pane_intro(
     )]
     let lines = text_renderer.clamp_to_lines(
         detail,
-        detail_size,
+        &detail_style,
         detail_max as f32,
         PANE_INTRO_DETAIL_LINES,
     );
     let title_h = f64::from(
         text_renderer
-            .measure(title, tokens.typography.scale.sm, None)
+            .measure_style(title, None, &tokens.typography.style(TextRole::Caption))
             .1,
     );
-    let line_h = f64::from(detail_size) * 1.25;
+    let line_h = f64::from(detail_style.line_height_px());
     #[allow(
         clippy::cast_precision_loss,
         reason = "at most PANE_INTRO_DETAIL_LINES lines"
     )]
     let block_h = title_h + 4.0 + line_h * lines.len() as f64;
     let top = rect.y0 + ((rect.height() - block_h) / 2.0).max(8.0);
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         title,
-        tokens.typography.scale.sm,
         colors.text_primary,
         at(transform, rect.x0 + 62.0, top),
         None,
+        &tokens.typography.style(TextRole::Caption),
     );
     let mut line_y = top + title_h + 4.0;
     for line in &lines {
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             line,
-            detail_size,
             colors.text_dim,
             at(transform, rect.x0 + 62.0, line_y),
             None,
+            &detail_style,
         );
         line_y += line_h;
     }
@@ -1165,56 +1154,34 @@ fn draw_pane_intro(
         transform,
         Point::new(rect.x1 - 14.0, rect.center().y),
         status,
-        Tint {
-            color: colors.accent[5],
-            alpha: 1.0,
-        },
+        ChipStyle::Neutral,
         text_renderer,
         theme,
     );
 }
 
-/// Paint a small pill with `label` centred, tinted `tint`. Returns the
+/// Paint a badge with `label` centred, in `style`. Returns the
 /// pill's rect so callers can lay out rightwards from its left edge.
 fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
     anchor: Point,
     label: &str,
-    tint: Tint,
+    style: ChipStyle,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) -> Rect {
-    let tokens = &theme.tokens;
-    let size = tokens.typography.scale.xs;
-    let (tw, th) = text_renderer.measure(label, size, None);
-    let pad_x = 8.0;
-    let pad_y = 4.0;
-    let w = f64::from(tw) + pad_x * 2.0;
-    let h = f64::from(th) + pad_y * 2.0;
+    let w = BadgeFace::intrinsic_width(label, text_renderer, theme);
+    let h = BadgeFace::height(theme);
     let rect = Rect::new(
         anchor.x - w,
         anchor.y - h / 2.0,
         anchor.x,
         anchor.y + h / 2.0,
     );
-    // Every pill sits on a raised row or intro card; the badge picks its ink
-    // against the colour that reaches the screen, so hand it the composite.
-    let chip = tokens.colors.tinted_chip_on(
-        tokens.colors.surfaces.raised,
-        tint.color,
-        0.20 * tint.alpha,
-        ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
-    );
-    Badge::paint_at(
-        scene,
-        transform,
-        rect,
-        label,
-        chip.fill,
-        text_renderer,
-        theme,
-    );
+    BadgeFace::new(rect, label)
+        .style(style)
+        .paint(scene, transform, text_renderer, theme);
     rect
 }
 
@@ -1235,16 +1202,9 @@ fn draw_avatar(
     // retain the square document-like treatment: it distinguishes an app
     // principal from a human identity at a glance.
     if !square {
-        let initials = Avatar::initials_for_name(label);
-        let initials = if initials.is_empty() { "?" } else { &initials };
-        Avatar::draw_at(
-            scene,
-            transform,
+        AvatarFace::new(label, label).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             rect,
-            initials,
-            Avatar::color_for_initials(initials, theme),
-            theme,
-            text_renderer,
         );
         return;
     }
@@ -1255,18 +1215,17 @@ fn draw_avatar(
         transform,
         tint.with_alpha_factor(0.30),
         None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
     );
     let initial: String = label
         .chars()
         .next()
         .map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
-    let size = theme.tokens.typography.scale.sm;
-    let (tw, th) = text_renderer.measure(&initial, size, None);
-    text_renderer.draw_text(
+    let style = theme.text(TextRole::Caption);
+    let (tw, th) = text_renderer.measure_style(&initial, None, &style);
+    text_renderer.draw_style(
         scene,
         &initial,
-        size,
         colors.text_primary,
         at(
             transform,
@@ -1274,6 +1233,7 @@ fn draw_avatar(
             rect.center().y - f64::from(th) / 2.0,
         ),
         None,
+        &style,
     );
 }
 
@@ -1286,8 +1246,8 @@ fn subject_tint(label: &str, theme: &Theme) -> Color {
         .fold(0u32, |a, b| a.wrapping_add(u32::from(b))) as usize
         % 4;
     match bucket {
-        0 => colors.accent[5],
-        1 => colors.accent[4],
+        0 => colors.intent.inverted,
+        1 => colors.intent.inverted_hover,
         2 => colors.semantic.info,
         _ => colors.semantic.success,
     }
@@ -1307,7 +1267,7 @@ fn draw_cycler(
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
-    let track = RoundedRect::from_rect(rect, f64::from(tokens.radii.md));
+    let track = RoundedRect::from_rect(rect, f64::from(tokens.radii.control));
     scene.fill(
         Fill::NonZero,
         transform,
@@ -1324,15 +1284,14 @@ fn draw_cycler(
         None,
         &track,
     );
-    let size = tokens.typography.scale.sm;
+    let style = tokens.typography.style(TextRole::Caption);
     let chevron = 14.0_f64;
     let text_max = rect.width() - 12.0 - chevron - 10.0;
-    let shown = elide(label, size, text_max, text_renderer);
-    let (_, th) = text_renderer.measure(&shown, size, None);
-    text_renderer.draw_text(
+    let shown = elide(label, &style, text_max, text_renderer);
+    let (_, th) = text_renderer.measure_style(&shown, None, &style);
+    text_renderer.draw_style(
         scene,
         &shown,
-        size,
         colors.text_primary.with_alpha_factor(alpha),
         at(
             transform,
@@ -1340,6 +1299,7 @@ fn draw_cycler(
             rect.center().y - f64::from(th) / 2.0,
         ),
         None,
+        &style,
     );
     let glyph = Rect::new(
         rect.x1 - 8.0 - chevron,
@@ -1360,8 +1320,8 @@ fn draw_cycler(
 /// Truncate `text` with an ellipsis so it fits `max_w` at `size`. Text
 /// that would overflow its field is a craft defect; clipping it is not
 /// a fix, so we measure and elide through the shared renderer helper.
-fn elide(text: &str, size: f32, max_w: f64, text_renderer: &mut TextRenderer) -> String {
-    text_renderer.elide_to_width(text, size, ui::num::f32_of_f64(max_w))
+fn elide(text: &str, style: &TextStyle, max_w: f64, text_renderer: &mut TextRenderer) -> String {
+    text_renderer.elide_to_width_style(text, ui::num::f32_of_f64(max_w), style)
 }
 
 /// Paint a labelled micro-caption above a control.
@@ -1373,13 +1333,13 @@ fn draw_control_caption(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         label,
-        theme.tokens.typography.scale.xs,
         theme.tokens.colors.text_dim,
         at(transform, origin.x, origin.y),
         None,
+        &theme.text(TextRole::Caption),
     );
 }
 
@@ -1400,9 +1360,8 @@ fn draw_danger_button(
         text_renderer,
         theme,
         &ButtonFace::new(rect, label)
-            .danger()
-            .disabled(!enabled)
-            .text_size(theme.tokens.typography.scale.sm),
+            .role(ButtonRole::Destructive)
+            .disabled(!enabled),
     );
 }
 
@@ -1422,9 +1381,8 @@ fn draw_primary_button(
         text_renderer,
         theme,
         &ButtonFace::new(rect, label)
-            .primary()
-            .disabled(!enabled)
-            .text_size(theme.tokens.typography.scale.sm),
+            .role(ButtonRole::Primary)
+            .disabled(!enabled),
     );
 }
 
@@ -1459,25 +1417,25 @@ fn draw_empty_state(
         colors.text_dim,
         LUCIDE_DEFAULT_STROKE_PX,
     );
-    let h_size = tokens.typography.scale.base;
-    let (hw, _) = text_renderer.measure(headline, h_size, None);
-    text_renderer.draw_text(
+    let h_style = tokens.typography.style(TextRole::Body);
+    let (hw, _) = text_renderer.measure_style(headline, None, &h_style);
+    text_renderer.draw_style(
         scene,
         headline,
-        h_size,
         colors.text_primary,
         at(transform, cx - f64::from(hw) / 2.0, top + glyph + 14.0),
         None,
+        &h_style,
     );
-    let c_size = tokens.typography.scale.sm;
-    let (cw, _) = text_renderer.measure(caption, c_size, None);
-    text_renderer.draw_text(
+    let c_style = tokens.typography.style(TextRole::Caption);
+    let (cw, _) = text_renderer.measure_style(caption, None, &c_style);
+    text_renderer.draw_style(
         scene,
         caption,
-        c_size,
         colors.text_dim,
         at(transform, cx - f64::from(cw) / 2.0, top + glyph + 36.0),
         None,
+        &c_style,
     );
 }
 
@@ -2689,10 +2647,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
             *transform,
             Point::new(text_limit, row.row_rect.center().y),
             &t("workspace-settings-you"),
-            Tint {
-                color: colors.accent[5],
-                alpha: 1.0,
-            },
+            ChipStyle::Neutral,
             text_renderer,
             theme,
         );
@@ -2701,15 +2656,15 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
 
     let text_x = avatar.x1 + 12.0;
     let text_max = text_limit - text_x;
-    let title_size = tokens.typography.scale.sm;
-    let title_text = elide(&name, title_size, text_max, text_renderer);
-    text_renderer.draw_text(
+    let title_style = tokens.typography.style(TextRole::Caption);
+    let title_text = elide(&name, &title_style, text_max, text_renderer);
+    text_renderer.draw_style(
         scene,
         &title_text,
-        title_size,
         colors.text_primary,
         at(*transform, text_x, row.row_rect.y0 + 12.0),
         None,
+        &title_style,
     );
 
     let displayed_role = if row.role == CapRole::Owner && !row.is_workspace_owner {
@@ -2724,15 +2679,15 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
             ("count", row.grant_count.into()),
         ],
     );
-    let detail_size = tokens.typography.scale.xs;
-    let detail_text = elide(&detail, detail_size, text_max, text_renderer);
-    text_renderer.draw_text(
+    let detail_style = tokens.typography.style(TextRole::Caption);
+    let detail_text = elide(&detail, &detail_style, text_max, text_renderer);
+    text_renderer.draw_style(
         scene,
         &detail_text,
-        detail_size,
         colors.text_dim,
         at(*transform, text_x, row.row_rect.y0 + 32.0),
         None,
+        &detail_style,
     );
 
     let can_manage_row = *is_owner && !row.is_workspace_owner && &row.user != *local_user;
@@ -2743,7 +2698,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
         &displayed_role,
         row.is_workspace_owner,
         can_manage_row,
-        detail_size,
+        &detail_style,
     );
 
     draw_danger_button(
@@ -2780,7 +2735,7 @@ fn draw_member_role_chip(
     label: &str,
     structural_owner: bool,
     interactive: bool,
-    detail_size: f32,
+    detail_style: &TextStyle,
 ) {
     let (scene, transform, text_renderer, theme) =
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
@@ -2792,7 +2747,7 @@ fn draw_member_role_chip(
     } else if structural_owner {
         colors.semantic.success
     } else {
-        colors.accent[5]
+        colors.intent.inverted
     };
     let chip_alpha = if role_interactive || structural_owner {
         1.0
@@ -2804,22 +2759,21 @@ fn draw_member_role_chip(
         transform,
         chip_tint.with_alpha_factor(0.20 * chip_alpha),
         None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.control)),
     );
     scene.stroke(
         &Stroke::new(1.0),
         transform,
         chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
         None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.control)),
     );
     let role_text = label;
-    let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
+    let (rw, rh) = text_renderer.measure_style(role_text, None, detail_style);
     // text_primary, not the chip's own hue: same-hue label on fill is unreadable.
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         role_text,
-        detail_size,
         colors.text_primary.with_alpha_factor(chip_alpha),
         at(
             transform,
@@ -2827,6 +2781,7 @@ fn draw_member_role_chip(
             rect.center().y - f64::from(rh) / 2.0,
         ),
         None,
+        detail_style,
     );
     if role_interactive {
         let glyph = 12.0_f64;
@@ -3026,24 +2981,21 @@ fn draw_agent_row(
         } else {
             "workspace-settings-badge-agent"
         }),
-        Tint {
-            color: colors.accent[5],
-            alpha: 1.0,
-        },
+        ChipStyle::Neutral,
         text_renderer,
         theme,
     );
     let text_x = avatar.x1 + 12.0;
     let text_max = badge.x0 - 8.0 - text_x;
-    let title_size = tokens.typography.scale.sm;
-    let title = elide(&name, title_size, text_max, text_renderer);
-    text_renderer.draw_text(
+    let title_style = tokens.typography.style(TextRole::Caption);
+    let title = elide(&name, &title_style, text_max, text_renderer);
+    text_renderer.draw_style(
         scene,
         &title,
-        title_size,
         colors.text_primary,
         at(transform, text_x, row.row_rect.y0 + 12.0),
         None,
+        &title_style,
     );
     let admission = agent_admission_label(row.role);
     let detail = if let Some(service) = &row.service {
@@ -3058,25 +3010,22 @@ fn draw_agent_row(
             ],
         )
     };
-    let detail_size = tokens.typography.scale.xs;
-    let detail = elide(&detail, detail_size, text_max, text_renderer);
-    text_renderer.draw_text(
+    let detail_style = tokens.typography.style(TextRole::Caption);
+    let detail = elide(&detail, &detail_style, text_max, text_renderer);
+    text_renderer.draw_style(
         scene,
         &detail,
-        detail_size,
         colors.text_dim,
         at(transform, text_x, row.row_rect.y0 + 32.0),
         None,
+        &detail_style,
     );
     draw_pill(
         scene,
         transform,
         Point::new(row.role_rect.x1, row.role_rect.center().y),
         &t("workspace-settings-admitted"),
-        Tint {
-            color: colors.semantic.success,
-            alpha: 1.0,
-        },
+        ChipStyle::Tinted(Tone::Success),
         text_renderer,
         theme,
     );
@@ -3086,8 +3035,7 @@ fn draw_agent_row(
         text_renderer,
         theme,
         &ButtonFace::new(row.review_rect, &t("workspace-settings-review-access"))
-            .disabled(!is_owner)
-            .text_size(theme.tokens.typography.scale.xs),
+            .disabled(!is_owner),
     );
     draw_danger_button(
         scene,
@@ -3320,13 +3268,13 @@ fn draw_default_apps_header(
         (t("workspace-settings-workspace-choice"), workspace_x),
         (t("workspace-settings-your-choice"), user_x),
     ] {
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &caption,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             at(transform, x, heading_y + 22.0),
             None,
+            &theme.text(TextRole::Caption),
         );
     }
 }
@@ -3350,7 +3298,7 @@ fn draw_default_apps_rows(
     } = *ctx;
     for row in default_app_rows(pane, candidates) {
         draw_row_card(scene, transform, row.row_rect, theme);
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_style = theme.text(TextRole::Caption);
         let label_x = row.row_rect.x0 + DEFAULT_APP_ROW_INSET;
         let stacked = row.workspace_rect.y0 >= row.row_rect.y0 + 20.0;
         let label_max = if stacked {
@@ -3360,23 +3308,23 @@ fn draw_default_apps_rows(
         };
         let label = elide(
             &resource_kind_label(&row.resource),
-            label_size,
+            &label_style,
             label_max,
             text_renderer,
         );
-        let label_h = f64::from(text_renderer.measure(&label, label_size, None).1);
+        let label_h = f64::from(text_renderer.measure_style(&label, None, &label_style).1);
         let label_y = if stacked {
             row.row_rect.y0 + 12.0
         } else {
             row.workspace_rect.center().y - label_h / 2.0
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            label_size,
             theme.tokens.colors.text_primary,
             at(transform, label_x, label_y),
             None,
+            &label_style,
         );
         let policy = ws
             .default_apps
@@ -3482,11 +3430,10 @@ fn draw_authority_footnote(
 ) {
     let tokens = &theme.tokens;
     let note = t("workspace-settings-owner-only");
-    let size = tokens.typography.scale.xs;
-    text_renderer.draw_text(
+    let style = tokens.typography.style(TextRole::Caption);
+    text_renderer.draw_style(
         scene,
         &note,
-        size,
         tokens.colors.text_dim,
         at(
             transform,
@@ -3494,6 +3441,7 @@ fn draw_authority_footnote(
             pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
         ),
         None,
+        &style,
     );
 }
 
@@ -3918,10 +3866,9 @@ pub fn draw_permissions_pane(
             "workspace-settings-more",
             &[("count", layout.overflow.into())],
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &more,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             at(
                 transform,
@@ -3929,6 +3876,7 @@ pub fn draw_permissions_pane(
                 pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
             ),
             None,
+            &theme.text(TextRole::Caption),
         );
     } else if !is_owner {
         draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
@@ -4049,15 +3997,14 @@ fn draw_permission_composer(
                 &[("count", subject_draft.0.permission_profiles.len().into())],
             ),
         )
-        .disabled(!is_owner)
-        .text_size(tokens.typography.scale.xs),
+        .disabled(!is_owner),
     );
     let card = permission_composer_card(pane_rect);
     ui::surface::card(
         scene,
         transform,
         card,
-        f64::from(tokens.radii.lg),
+        f64::from(tokens.radii.control),
         colors.surfaces.raised,
     );
 
@@ -4148,10 +4095,7 @@ fn draw_expiry_track(
         transform,
         text_renderer,
         theme,
-        &SegmentedFace::new(&layout.expiry_rects, &labels, selected)
-            .style(SegmentedStyle::Solid)
-            .radius(f64::from(theme.tokens.radii.md))
-            .text_size(theme.tokens.typography.scale.sm),
+        &SegmentedFace::new(&layout.expiry_rects, &labels, selected),
     );
     if !is_owner {
         scene.pop_layer();
@@ -4194,25 +4138,22 @@ fn draw_permission_row(
         transform,
         Point::new(row.revoke_rect.x0 - 12.0, row.row_rect.center().y),
         &row.expiry,
-        Tint {
-            color: colors.accent[5],
-            alpha: 1.0,
-        },
+        ChipStyle::Neutral,
         text_renderer,
         theme,
     );
 
     let text_x = avatar.x1 + 12.0;
     let text_max = chip.x0 - 12.0 - text_x;
-    let title_size = tokens.typography.scale.sm;
-    let title_text = elide(title, title_size, text_max, text_renderer);
-    text_renderer.draw_text(
+    let title_style = tokens.typography.style(TextRole::Caption);
+    let title_text = elide(title, &title_style, text_max, text_renderer);
+    text_renderer.draw_style(
         scene,
         &title_text,
-        title_size,
         colors.text_primary,
         at(transform, text_x, row.row_rect.y0 + 12.0),
         None,
+        &title_style,
     );
     let detail = match &row.granted_by {
         Some(by) => t_args(
@@ -4224,15 +4165,15 @@ fn draw_permission_row(
         ),
         None => row.allows.clone(),
     };
-    let detail_size = tokens.typography.scale.xs;
-    let detail_text = elide(&detail, detail_size, text_max, text_renderer);
-    text_renderer.draw_text(
+    let detail_style = tokens.typography.style(TextRole::Caption);
+    let detail_text = elide(&detail, &detail_style, text_max, text_renderer);
+    text_renderer.draw_style(
         scene,
         &detail_text,
-        detail_size,
         colors.text_dim,
         at(transform, text_x, row.row_rect.y0 + 32.0),
         None,
+        &detail_style,
     );
 
     draw_danger_button(

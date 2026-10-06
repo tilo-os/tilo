@@ -425,6 +425,7 @@ struct ResourceOptions {
     kind: String,
     label: String,
     search: Option<syn::Path>,
+    scopes: Option<syn::Path>,
     children: Option<syn::Path>,
 }
 
@@ -433,6 +434,7 @@ fn resource_options(attr: TokenStream) -> syn::Result<ResourceOptions> {
     let mut kind = None;
     let mut label = None;
     let mut search = None;
+    let mut scopes = None;
     let mut children = None;
     for meta in metas {
         let Meta::NameValue(pair) = meta else {
@@ -459,11 +461,12 @@ fn resource_options(attr: TokenStream) -> syn::Result<ResourceOptions> {
                 }),
             ) => label = Some(text.value()),
             ("search", Expr::Path(path)) => search = Some(path.path.clone()),
+            ("scopes", Expr::Path(path)) => scopes = Some(path.path.clone()),
             ("children", Expr::Path(path)) => children = Some(path.path.clone()),
             _ => {
                 return Err(syn::Error::new(
                     pair.span(),
-                    "expected `kind = \"...\"`, `label = \"...\"`, `search = path` or `children = path`",
+                    "expected `kind = \"...\"`, `label = \"...\"`, `search = path`, `scopes = path` or `children = path`",
                 ));
             }
         }
@@ -475,6 +478,7 @@ fn resource_options(attr: TokenStream) -> syn::Result<ResourceOptions> {
         kind,
         label,
         search,
+        scopes,
         children,
     })
 }
@@ -585,6 +589,33 @@ fn is_action_cx(ty: &Type) -> bool {
         && last_ident(&reference.elem).is_some_and(|(name, _)| name == "ActionCx")
 }
 
+/// Parameter guidance does not constrain the set of valid values.
+struct ActionParamDescription {
+    description: syn::LitStr,
+    example: Option<syn::Expr>,
+}
+
+impl syn::parse::Parse for ActionParamDescription {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let description = input.parse()?;
+        let example = if input.is_empty() {
+            None
+        } else {
+            input.parse::<syn::Token![,]>()?;
+            let name: syn::Ident = input.parse()?;
+            if name != "example" {
+                return Err(syn::Error::new(name.span(), "expected `example = ...`"));
+            }
+            input.parse::<syn::Token![=]>()?;
+            Some(input.parse()?)
+        };
+        Ok(Self {
+            description,
+            example,
+        })
+    }
+}
+
 /// Turn a record's `#[action]` methods into its replayable, published action
 /// vocabulary, and implement `Resource` for it.
 ///
@@ -599,6 +630,8 @@ fn is_action_cx(ty: &Type) -> bool {
 ///
 /// Generates `NoteAction` (one variant per action), `Note::EDIT` (an
 /// `ActionRef` views bind controls to and tests apply) and `impl Resource`.
+/// `#[param("Description", example = "value")]` publishes an example
+/// callers can use without restricting other valid parameter values.
 /// An action method takes `&mut self`, optionally `cx: &mut ActionCx`, then
 /// its parameters, and returns `()` or `Result<(), impl Into<Refusal>>`.
 /// An action whose first parameter is an item `Id` is also published on each
@@ -613,8 +646,8 @@ fn is_action_cx(ty: &Type) -> bool {
 /// leaves out; `external` declares content that came from outside rather than
 /// from anyone's edit, such as fetched rows, which syncs like any content but
 /// is nobody's undo step);
-/// `#[resource(search = path, children = path)]` override search entries and
-/// nested resources.
+/// `#[resource(search = path, scopes = path, children = path)]` override
+/// search entries, the parts search can be narrowed to, and nested resources.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let options = match resource_options(attr) {
@@ -721,7 +754,8 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                         .position(|attr| attr.path().is_ident("param"))
                     {
                         let attr = typed.attrs.remove(index);
-                        described = Some(attr.parse_args::<syn::LitStr>()?.value());
+                        let guidance = attr.parse_args::<ActionParamDescription>()?;
+                        described = Some((guidance.description.value(), guidance.example));
                     }
                     let (owned, by_ref) = owned_type(&typed.ty);
                     fields.push((pat.ident.clone(), owned, described, by_ref));
@@ -823,12 +857,17 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         });
         let params = fields.iter().map(|(ident, ty, described, _)| {
             let name = ident.to_string();
-            let description = described.clone().unwrap_or_else(|| humanize(&name));
+            let description = described.as_ref().map_or_else(|| humanize(&name), |(text, _)| text.clone());
             let (param_ty, optional) = param_type(ty);
-            if optional {
+            let parameter = if optional {
                 quote!(#krate::__private::ActionParam::optional_owned(#name, #param_ty, #description))
             } else {
                 quote!(#krate::__private::ActionParam::required_owned(#name, #param_ty, #description))
+            };
+            if let Some((_, Some(example))) = described {
+                quote!(#parameter.with_schema(#krate::__private::serde_json::json!({"examples": [#example]})))
+            } else {
+                parameter
             }
         });
         let permission = match action.permission.as_deref() {
@@ -888,6 +927,10 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
     let search = options.search.as_ref().map_or_else(
         || quote!(#krate::__private::default_search(#label, state)),
+        |path| quote!(#path(state)),
+    );
+    let scopes = options.scopes.as_ref().map_or_else(
+        || quote!(::std::vec::Vec::new()),
         |path| quote!(#path(state)),
     );
     let children = options.children.as_ref().map_or_else(
@@ -1041,6 +1084,11 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
             fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {
                 #search
+            }
+
+            fn search_scopes(state: &Self) -> ::std::vec::Vec<#krate::ScopeDecl> {
+                let _ = state;
+                #scopes
             }
 
             fn shape() -> ::core::option::Option<#krate::Shape> {

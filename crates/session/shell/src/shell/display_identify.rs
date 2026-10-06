@@ -20,6 +20,7 @@ use ui::theme::Theme;
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::OutputGeometry;
+use ui::TextRole;
 
 /// One display's identify card.
 #[derive(Clone, Debug, PartialEq)]
@@ -145,7 +146,7 @@ impl DisplayIdentify {
         now: Instant,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         for label in self.labels(now) {
             let side = (label.output.height() * 0.28).clamp(120.0, 260.0);
             let card = Rect::from_center_size(label.output.center(), (side * 1.25, side));
@@ -190,17 +191,22 @@ impl DisplayIdentify {
             );
             #[allow(clippy::cast_possible_truncation, reason = "card width fits f32")]
             let name_width = (card.width() - 32.0) as f32;
-            let name = text_renderer.elide_to_width(&label.name, type_scale.lg, name_width);
-            let (lw, _) = text_renderer.measure(&name, type_scale.lg, None);
-            text_renderer.draw_text(
+            let name = text_renderer.elide_to_width_style(
+                &label.name,
+                name_width,
+                &type_scale.style(TextRole::Heading),
+            );
+            let (lw, _) =
+                text_renderer.measure_style(&name, None, &type_scale.style(TextRole::Heading));
+            text_renderer.draw_style(
                 scene,
                 &name,
-                type_scale.lg,
                 colors.text_dim,
                 transform.pre_translate(
                     (card.center().x - f64::from(lw) / 2.0, card.y1 - side * 0.22).into(),
                 ),
                 None,
+                &type_scale.style(TextRole::Heading),
             );
         }
     }

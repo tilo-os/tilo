@@ -222,7 +222,17 @@ pub(crate) fn publish_policy_document(policy: &RetentionPolicy) -> Resource {
         let mut fr = Resource::new(
             format!("backups.retention:{}", field.key()),
             "backups.retention",
-            format!("{}: keep {} ({})", field.label(), cur, field.unit()),
+            format!(
+                "{}: keep {} ({})",
+                field.label(),
+                cur,
+                match field {
+                    PolicyField::Hourly => "hours",
+                    PolicyField::Daily => "days",
+                    PolicyField::Weekly => "weeks",
+                    PolicyField::Monthly => "months",
+                }
+            ),
         );
 
         let set_label = format!("Set {} retention", field.label().to_ascii_lowercase());
@@ -293,9 +303,9 @@ fn source_rows(catalog: &Catalog) -> LiveRow {
             format!("backups.schedule:{}", source.id),
             "backups.schedule",
             format!(
-                "{} cadence · {} (observed)",
+                "Observed {} cadence: {}.",
                 source.kind.label(),
-                source.cadence.label()
+                crate::view::schedule_label(source.schedule)
             ),
         )
         .operation(offer(
@@ -309,7 +319,11 @@ fn source_rows(catalog: &Catalog) -> LiveRow {
             LiveRow::new(
                 format!("backups.source:{}", source.id),
                 "backups.source",
-                format!("{} · {}", source.kind.label(), source.cadence.label()),
+                format!(
+                    "{} with {}.",
+                    source.kind.label(),
+                    crate::view::schedule_label(source.schedule)
+                ),
             )
             .operation(offer(
                 "open",
@@ -335,7 +349,11 @@ fn destination_rows(catalog: &Catalog) -> LiveRow {
             LiveRow::new(
                 format!("backups.destination:{}", destination.id),
                 "backups.destination",
-                format!("{} · {}", destination.name, destination.kind.label()),
+                format!(
+                    "{} is a {} backup destination.",
+                    destination.name,
+                    destination.kind.label()
+                ),
             )
             .operation(offer(
                 "open",
@@ -360,7 +378,7 @@ pub(crate) fn live_rows(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<Liv
     let mut snapshots = LiveRow::new(
         "backups.snapshots",
         "backups.snapshot-set",
-        "Snapshot versions and runs · recent page",
+        "Recent snapshot versions and backup runs",
     );
     for snapshot in catalog.snapshots.iter().take(SNAPSHOT_PAGE) {
         snapshots = snapshots.row(snapshot_row(snapshot, blocked));
@@ -400,8 +418,8 @@ fn snapshot_row(snapshot: &Snapshot, blocked: Option<&Blocked>) -> LiveRow {
         format!("backups.snapshot:{}", snapshot.id),
         "backups.snapshot",
         format!(
-            "{} · {} · {}",
-            snapshot.time,
+            "{} {} snapshot containing {}.",
+            taken_label(snapshot),
             snapshot.kind.label(),
             ui::format::bytes(snapshot.size_bytes)
         ),
@@ -434,9 +452,9 @@ fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow
         format!("backups.run:{}", snapshot.id),
         "backups.run",
         format!(
-            "Completed {} run · {}",
+            "Completed {} run on {}.",
             snapshot.kind.label(),
-            snapshot.time
+            taken_label(snapshot)
         ),
     )
     .operation(labelled(
@@ -452,7 +470,7 @@ fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow
     let target = LiveRow::new(
         format!("backups.restore-target:{}", snapshot.id),
         "backups.restore-target",
-        "Restore target · choose a new or empty local folder",
+        "Restore into a new or empty local folder",
     )
     .operation(labelled(
         offer(
@@ -465,6 +483,19 @@ fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow
         "Restore into a new or empty folder…",
     ));
     (run, target)
+}
+
+pub(crate) fn taken_label(snapshot: &Snapshot) -> String {
+    use chrono::{Datelike, Timelike};
+    let at = snapshot.taken;
+    format!(
+        "{} {} {} at {:02}:{:02}",
+        at.day(),
+        ui::format::month_name(at.month0() as usize),
+        at.year(),
+        at.hour(),
+        at.minute()
+    )
 }
 
 #[cfg(test)]
@@ -562,7 +593,7 @@ mod tests {
     /// the reason this device cannot run them.
     #[test]
     fn live_rows_bind_each_items_effects_and_say_why_they_are_unavailable() {
-        let catalog = Catalog::sample();
+        let catalog = Catalog::sample(ui::clock::local_now().naive_local());
         let rows = row_tree(&catalog, None);
         let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(
@@ -657,7 +688,7 @@ mod tests {
     /// its search result names.
     #[test]
     fn snapshots_beyond_the_page_resolve_by_id() {
-        let mut catalog = Catalog::sample();
+        let mut catalog = Catalog::sample(ui::clock::local_now().naive_local());
         let template = catalog.snapshots[0].clone();
         catalog.snapshots = (0..SNAPSHOT_PAGE + 5)
             .map(|n| {

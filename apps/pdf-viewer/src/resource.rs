@@ -112,7 +112,7 @@ impl Resource for PdfViewer {
                 entry(
                     format!("pdf.annotation:{}", anno.id),
                     format!("{} annotation", anno.kind.type_key()),
-                    format!("Page {} · {}", anno.page, anno.author),
+                    format!("Page {} annotated by {}", anno.page, anno.author),
                 )
             })
             .collect();
@@ -134,7 +134,7 @@ impl Resource for PdfViewer {
             entries.push(entry(
                 format!("pdf.signature:{}", signature.id),
                 format!("Signature by {}", signature.signer),
-                format!("Page {} · {}", signature.page, signature.date),
+                format!("Page {} signed on {}", signature.page, signature.date),
             ));
         }
         entries

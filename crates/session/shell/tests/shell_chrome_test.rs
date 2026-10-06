@@ -71,6 +71,28 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
 }
 
 #[test]
+fn super_space_opens_and_escape_closes_search() {
+    use shell::shell::overlay_host::ShellOverlayHost;
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .unwrap();
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        host,
+        (1280, 800),
+        ui::theme::Theme::dark(),
+    );
+    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
+    frame.set_modifiers(&["super".to_owned()]);
+    frame.key("Space");
+    assert!(frame.root::<ShellOverlayHost>().palette_visible());
+    frame.set_modifiers(&[]);
+    frame.key("Escape");
+    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
