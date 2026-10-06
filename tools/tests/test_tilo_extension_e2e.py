@@ -53,6 +53,7 @@ PACKAGES = {
         "usr/lib64/gstreamer-1.0/libgstopenh264.so": "plugin",
         "etc/openh264-plugin.conf": "never part of an extension",
     }, {}, None),
+    "openh264": ("2.6.0", {"usr/lib64/libopenh264.so.8": "codec runtime"}, {}, None),
     "mesa-va-drivers-freeworld": ("25.2.4", {
         "usr/lib64/mesa-freeworld/libgallium-25.2.4.so": "freeworld gallium",
     }, {
@@ -174,7 +175,7 @@ class EndToEnd(unittest.TestCase):
 
     def publish(self, *, key=None, tamper=None):
         fingerprint = ext.base_packages_sha256(BASE_PACKAGES)
-        parts = {"tilo-codecs": ["libavcodec-freeworld", "gstreamer1-plugin-openh264"],
+        parts = {"tilo-codecs": ["libavcodec-freeworld", "gstreamer1-plugin-openh264", "openh264"],
                  "tilo-codecs-mesa": ["mesa-va-drivers-freeworld"]}
         manifest = {
             "type": ext.MANIFEST_TYPE, "schema": 1, "id": "media-codecs", "revision": 20261003120000,

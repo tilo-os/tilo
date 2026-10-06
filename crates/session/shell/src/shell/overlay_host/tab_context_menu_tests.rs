@@ -1010,6 +1010,8 @@ fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
     let mut h = harness(2);
     let provider = crate::shell::search::providers::actions::ActionsProvider::new();
     let rows = provider.query(SearchContext {
+        query_scope: None,
+        include_programmatic: false,
         needle: "tab.menu",
         wanted: &[crate::shell::search::ResourceKind::Action],
         chrome: &h.chrome.borrow(),
@@ -1192,6 +1194,8 @@ fn tab_drag_cancel_action_clears_the_gesture_and_refuses_locked_requests() {
     );
     let provider = crate::shell::search::providers::actions::ActionsProvider::new();
     let rows = provider.query(SearchContext {
+        query_scope: None,
+        include_programmatic: false,
         needle: "cancel tab drag",
         wanted: &[crate::shell::search::ResourceKind::Action],
         chrome: &h.chrome.borrow(),

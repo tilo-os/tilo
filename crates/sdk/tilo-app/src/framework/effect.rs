@@ -35,6 +35,7 @@ use tilo_actions::{
 use tilo_resource::{ActionRef, Effect, Invoke, Resource};
 use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
 use ui_core::portal::{ContentsOutcome, PickRequest, PickedContents, PortalOutcome, SaveOutcome};
 
 use super::dispatch::Dispatcher;
@@ -125,6 +126,7 @@ enum JobEvent {
         total: Option<u64>,
     },
     Finished(Box<dyn Any + Send>),
+    Failed(ActionFailure),
 }
 
 /// A running job's channel back to the app: report progress, notice
@@ -134,6 +136,7 @@ pub struct Progress {
     events: Sender<JobEvent>,
     cancelled: Arc<AtomicBool>,
     wake: WakeHandle,
+    custody: Option<ResourceEffectScope>,
 }
 
 impl Progress {
@@ -154,9 +157,45 @@ impl Progress {
 
     /// Whether the caller cancelled the job (an effect declared
     /// `cancellable`). A worker checks between units of work and stops; its
-    /// result is discarded.
+    /// result is discarded. For caller-scoped work this also performs a fresh,
+    /// potentially blocking authority check. Do not call while holding an owner
+    /// store guard that the authority check may need.
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.with_effect(|| Ok(())).is_err()
+    }
+
+    /// Recheck the original caller immediately before a unit of external work.
+    /// Blocking workers should use this between units as well as checking
+    /// cancellation. It grants no access to the canonical document.
+    /// The authority check may block; release owner store guards before calling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the job was cancelled, the original caller's authority
+    /// lapsed, or the unit of work returned an error.
+    pub fn with_effect<T>(&self, effect: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err("the effect was cancelled".into());
+        }
+        let admitted = || {
+            // Authority checks may block while cancellation arrives. Recheck at
+            // the actual work boundary, not only before acquiring authority.
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err("the effect was cancelled".into());
+            }
+            effect()
+        };
+        match &self.custody {
+            Some(custody) => custody.with_effect(admitted),
+            None => admitted(),
+        }
+    }
+
+    fn fail(&self, error: String) {
+        self.cancelled.store(true, Ordering::Release);
+        if self.events.send(JobEvent::Failed(failure(error))).is_ok() {
+            self.wake.wake();
+        }
     }
 
     fn finish(&self, value: Box<dyn Any + Send>) {
@@ -216,6 +255,7 @@ struct Started<R: Resource, H> {
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
     source: Option<Source>,
+    custody: Option<ResourceInvocationScope>,
 }
 
 impl<R: Resource, H> Started<R, H> {
@@ -258,6 +298,8 @@ pub struct EffectCx<R: Resource, H = ()> {
     document: Option<Rc<RefCell<tilo_resource::Doc>>>,
     /// The lent document's heads, taken when it was lent.
     heads: Vec<ui_core::automerge::ChangeHash>,
+    custody: Option<ResourceInvocationScope>,
+    worker_custody: Option<ResourceEffectScope>,
 }
 
 /// The resource as it was at a past version a view asked for: its
@@ -277,7 +319,21 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             started: None,
             document: None,
             heads: Vec::new(),
+            custody: None,
+            worker_custody: None,
         }
+    }
+
+    fn with_custody(mut self, custody: Option<ResourceInvocationScope>) -> Result<Self, String> {
+        self.worker_custody = custody
+            .as_ref()
+            .map(ResourceInvocationScope::effect_scope)
+            .transpose()?;
+        if let Some(scope) = &custody {
+            self.env.dispatch = self.env.dispatch.for_custody(scope.clone());
+        }
+        self.custody = custody;
+        Ok(self)
     }
 
     /// The resource's document as it is now, to read what a view answers
@@ -358,6 +414,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             events,
             cancelled: Arc::clone(&cancelled),
             wake: self.env.wake.clone(),
+            custody: self.worker_custody.clone(),
         };
         if let Some(previous) = self.started.replace(Started {
             events: receiver,
@@ -365,6 +422,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             cancelled: Arc::clone(&cancelled),
             task: None,
             source: None,
+            custody: self.custody.clone(),
         }) {
             tracing::warn!("an effect started a second job; the first one is stopped");
             previous.stop();
@@ -396,8 +454,19 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         let (progress, _) = self.track(Some(Self::then(then)));
         let future = work(progress.clone());
         let task = ui_core::rt::app().spawn(async move {
-            let value = future.await;
-            progress.finish(Box::new(value));
+            let mut future = std::pin::pin!(future);
+            let value = std::future::poll_fn(|cx| {
+                match progress.with_effect(|| Ok(future.as_mut().poll(cx))) {
+                    Ok(std::task::Poll::Ready(value)) => std::task::Poll::Ready(Ok(value)),
+                    Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+                    Err(error) => std::task::Poll::Ready(Err(error)),
+                }
+            })
+            .await;
+            match value {
+                Ok(value) => progress.finish(Box::new(value)),
+                Err(error) => progress.fail(error),
+            }
         });
         if let Some(started) = self.started.as_mut() {
             started.task = Some(task);
@@ -418,8 +487,10 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     {
         let (progress, _) = self.track(Some(Self::then(then)));
         let task = ui_core::rt::app().spawn_blocking(move || {
-            let value = work(progress.clone());
-            progress.finish(Box::new(value));
+            match progress.with_effect(|| Ok(work(progress.clone()))) {
+                Ok(value) => progress.finish(Box::new(value)),
+                Err(error) => progress.fail(error),
+            }
         });
         if let Some(started) = self.started.as_mut() {
             started.task = Some(task);
@@ -833,6 +904,7 @@ struct Job<R: Resource, H> {
     task: Option<ui_core::rt::JoinHandle<()>>,
     source: Option<Source>,
     sequence: u64,
+    custody: Option<ResourceInvocationScope>,
 }
 
 impl<R: Resource, H> From<Started<R, H>> for Job<R, H> {
@@ -844,6 +916,7 @@ impl<R: Resource, H> From<Started<R, H>> for Job<R, H> {
             task: started.task,
             source: started.source,
             sequence: 0,
+            custody: started.custody,
         }
     }
 }
@@ -882,6 +955,14 @@ impl<R: Resource, H, K> Default for Running<R, H, K> {
     }
 }
 
+impl<R: Resource, H, K> Drop for Running<R, H, K> {
+    fn drop(&mut self) {
+        for (_, job) in self.running.drain() {
+            job.stop();
+        }
+    }
+}
+
 impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
     fn insert(&mut self, key: K, started: Started<R, H>) {
         if let Some(previous) = self.running.insert(key, started.into()) {
@@ -911,6 +992,15 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
         env: &EffectEnv<R>,
         invocation: Option<InvocationId>,
     ) -> Option<Polled> {
+        if let Some(error) = self
+            .running
+            .get(key)
+            .and_then(|job| job.custody.as_ref())
+            .and_then(|custody| custody.check().err())
+        {
+            self.cancel(key);
+            return Some(Polled::Finished(Some(Err(failure(error)))));
+        }
         let job = self.running.get_mut(key)?;
         let answered = job.source.as_mut().and_then(|source| source());
         let event = match answered.map_or_else(
@@ -926,7 +1016,19 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
                 )))));
             }
         };
+        if let Some(error) = job
+            .custody
+            .as_ref()
+            .and_then(|custody| custody.check().err())
+        {
+            self.cancel(key);
+            return Some(Polled::Finished(Some(Err(failure(error)))));
+        }
         let value = match event {
+            JobEvent::Failed(error) => {
+                self.cancel(key);
+                return Some(Polled::Finished(Some(Err(error))));
+            }
             JobEvent::Progress {
                 phase,
                 completed,
@@ -950,10 +1052,19 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
             };
             return Some(Polled::Finished(Some(answered)));
         };
-        let mut cx = EffectCx::new(env.clone(), invocation);
+        let mut cx = match EffectCx::new(env.clone(), invocation).with_custody(job.custody.clone())
+        {
+            Ok(cx) => cx,
+            Err(error) => return Some(Polled::Finished(Some(Err(failure(error))))),
+        };
         let answer = {
             let _acting = ActingFor::enter(invocation);
-            then(host, value, &mut cx)
+            match &job.custody {
+                Some(custody) => custody
+                    .with_effect(|| then(host, value, &mut cx))
+                    .and_then(|answer| custody.check().map(|()| answer)),
+                None => then(host, value, &mut cx),
+            }
         };
         Some(match (answer, cx.started.take()) {
             (Ok(Effected::Pending), Some(next)) => {
@@ -1053,14 +1164,11 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         doc: Option<&tilo_resource::Doc>,
         handle: impl FnOnce(&mut H, E, &mut EffectCx<R, H>) -> EffectAnswer,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        // An invocation in a caller's custody stays with handlers that
-        // carry it.
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let (request, custody) = op.with_custody();
         if request.type_id != E::OPERATION {
             return Ok(None);
         }
+        op.check()?;
         let effect = E::from_payload(request.payload)?;
         let id = effect.id();
         let declaration = E::declarations().into_iter().find(|decl| decl.id == id);
@@ -1070,7 +1178,8 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             return Err(format!("`{id}` was invoked as another kind of operation"));
         }
         let job = declaration.is_some_and(|decl| decl.is_job());
-        let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation));
+        let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation))
+            .with_custody(custody.cloned())?;
         // Keep an immutable snapshot for this effect invocation, including any
         // pending edits. The effect may also read a historical version; neither
         // read borrows the author's document mutably.
@@ -1080,11 +1189,25 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         });
         let answer = {
             let _acting = ActingFor::enter(Some(request.invocation));
-            handle(host, effect, &mut cx)
+            match custody {
+                Some(custody) => custody
+                    .with_effect(|| handle(host, effect, &mut cx))
+                    .and_then(|answer| custody.check().map(|()| answer)),
+                None => handle(host, effect, &mut cx),
+            }
         };
         cx.document = None;
         let started = cx.started.take();
-        match (answer?, started, job) {
+        let answer = match answer {
+            Ok(answer) => answer,
+            Err(error) => {
+                if let Some(started) = started {
+                    started.stop();
+                }
+                return Err(error);
+            }
+        };
+        match (answer, started, job) {
             (Effected::Done(output), started, false) => {
                 if let Some(started) = started {
                     started.stop();
@@ -1502,9 +1625,7 @@ impl<R: Resource> Effects<R> {
         let mut inner = self.inner.borrow_mut();
         Self::prune(&mut inner);
         for entry in &mut inner.handlers {
-            if op
-                .unscoped()
-                .is_some_and(|request| request.type_id == entry.operation)
+            if op.with_custody().0.type_id == entry.operation
                 && let Some(started) = entry.handler.start(op)?
             {
                 return Ok(Some(started));
@@ -1686,6 +1807,65 @@ mod tests {
             runner.poll(invocation, false, &mut ()).is_none(),
             "a cancelled job's result is dropped"
         );
+    }
+
+    #[test]
+    fn a_failed_handler_cancels_the_job_it_already_started() {
+        let mut runner = runner();
+        let invocation = InvocationId::new();
+        let payload = payload(&Work::Count);
+        let op = ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            Work::OPERATION,
+            &payload,
+        );
+        let mut progress = None;
+        let result = runner.start(&op, &mut (), None, |(), _, cx| {
+            let reply = cx.reply();
+            progress = Some(reply.progress().clone());
+            Err("handler refused after starting work".into())
+        });
+        assert!(result.is_err());
+        assert!(progress.unwrap().is_cancelled());
+        assert!(runner.poll(invocation, false, &mut ()).is_none());
+    }
+
+    #[test]
+    fn dropping_the_handler_cancels_its_retained_jobs() {
+        let mut runner = runner();
+        let payload = payload(&Work::Count);
+        let op = ResourceOperation::local(
+            InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            Work::OPERATION,
+            &payload,
+        );
+        let mut progress = None;
+        assert!(matches!(
+            runner
+                .start(&op, &mut (), None, |(), _, cx| {
+                    let reply = cx.reply();
+                    progress = Some(reply.progress().clone());
+                    Ok(Effected::Pending)
+                })
+                .unwrap(),
+            Some(ResourceOperationStart::Accepted)
+        ));
+        let progress = progress.unwrap();
+        assert!(!progress.is_cancelled());
+        drop(runner);
+        assert!(progress.is_cancelled());
+        let mut work_ran = false;
+        assert!(
+            progress
+                .with_effect(|| {
+                    work_ran = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!work_ran, "retired work must not enter its effect callback");
     }
 
     /// A handler reads the document it answers about, now and at a past

@@ -441,3 +441,73 @@ fn _suppress_unused() {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use shell::shell::state::WorkspaceExt as _;
+
+#[test]
+fn latched_permission_choice_cannot_answer_a_new_request_from_the_same_app() {
+    let (chrome, _) = chrome_with_pending_grant(
+        "so.tilo.terminal",
+        Capability::HostShell { scope: GRANT_ONCE },
+    );
+    let mut host = host_with_chrome(chrome.clone());
+    host.tick_permission_prompt_for_tests();
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    {
+        let mut state = chrome.borrow_mut();
+        state.pending_grants.pop_front();
+        state.pending_grants.push_back(PendingPrompt::with_reply(
+            "so.tilo.terminal".into(),
+            Capability::HostShell { scope: GRANT_ONCE },
+            tx,
+        ));
+    }
+    let prompt = host
+        .permission_prompt_mut_for_tests()
+        .expect("old prompt latched");
+    prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+    let center = prompt.allow_rect().center();
+    dispatch(prompt, &cursor_at(center));
+    dispatch(prompt, &left_press());
+    assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
+    host.tick_permission_prompt_for_tests();
+    assert!(
+        rx.try_recv().is_err(),
+        "old click cannot release the new waiting request"
+    );
+    assert_eq!(chrome.borrow().pending_grants.len(), 1);
+    assert!(
+        host.permission_prompt_mut_for_tests().is_some(),
+        "replacement is presented for a fresh decision"
+    );
+}
+
+#[test]
+fn permanent_permission_rechecks_owner_after_widget_latching() {
+    let (chrome, _) = chrome_with_pending_grant(
+        "so.tilo.terminal",
+        Capability::HostShell { scope: GRANT_ONCE },
+    );
+    chrome.borrow_mut().test_only_owner_override = Some(true);
+    let mut host = host_with_chrome(chrome.clone());
+    host.tick_permission_prompt_for_tests();
+    let prompt = host
+        .permission_prompt_mut_for_tests()
+        .expect("owner prompt");
+    prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+    let center = prompt.always_rect().center();
+    dispatch(prompt, &cursor_at(center));
+    dispatch(prompt, &left_press());
+    assert_eq!(prompt.pending_choice, Some(PromptChoice::Always));
+    chrome.borrow_mut().test_only_owner_override = Some(false);
+    host.tick_permission_prompt_for_tests();
+    assert_eq!(
+        chrome.borrow().pending_grants.len(),
+        1,
+        "owner loss must not consume permanent consent"
+    );
+    assert!(
+        !host
+            .permission_prompt_mut_for_tests()
+            .expect("pending prompt")
+            .is_owner
+    );
+}

@@ -130,6 +130,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
                 app: app.clone(),
                 broker_peer_id: None,
                 descriptor: ActionDescriptor {
+                    semantic_identity: None,
                     address: ActionAddress::new(
                         format!("record.{app}.{}", route.record),
                         surface::OPEN_ACTION,
@@ -156,6 +157,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
             app: app.clone(),
             broker_peer_id: None,
             descriptor: ActionDescriptor {
+                semantic_identity: None,
                 address: ActionAddress::new(format!("app.{app}"), surface::OPEN_ACTION),
                 resource_kind: surface::APPLICATION_KIND.to_owned(),
                 resource_label: app.clone(),

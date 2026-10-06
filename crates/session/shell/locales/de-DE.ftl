@@ -1783,7 +1783,7 @@ onboarding-codecs-enables-hardware = Hardwarebeschleunigtes Video auf AMD- und I
 onboarding-codecs-enables-playback = Wiedergabe von H.264 und HEVC in Videos, die du öffnest.
 onboarding-codecs-enables-encoding = Kodierung in H.264 und HEVC für Bildschirmfreigabe, Aufnahmen und Anrufe.
 onboarding-codecs-source-title = Woher sie kommen
-onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen.
+onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen. OpenH264 Video Codec provided by Cisco Systems, Inc. Die vollständige Cisco-Binärlizenz steht unter /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt und https://www.openh264.org/BINARY_LICENSE.txt.
 onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
 onboarding-codecs-progress = Fortschritt: { $percent } %
 onboarding-codecs-starting = Wird gestartet …
@@ -2393,6 +2393,13 @@ a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
 lock-screen-unlock = Sitzung entsperren
+
+search-provider-permission-prompts = Berechtigungsanfragen
+permission-request-expired = Diese Berechtigungsanfrage ist nicht mehr offen
+permission-request-owner-required = Nur der aktuelle Eigentümer kann über Berechtigungen entscheiden
+permission-request-permanent-owner-required = Eine dauerhafte Berechtigung kann nur der aktuelle Eigentümer erteilen
+permission-request-confirm = Entscheidung über die Berechtigung bestätigen
+
 shortcut-name-dictation-toggle = Diktat starten oder beenden
 shortcut-name-dictation-finish = Diktat beenden
 shortcut-name-dictation-cancel = Diktat abbrechen
