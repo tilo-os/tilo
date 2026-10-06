@@ -2560,7 +2560,7 @@ impl ChatApp {
             self.request_relayout();
             return;
         }
-        if self.rect.inflate(28.0, 28.0).contains(pointer) {
+        if !ui::floating_surface::FloatingPlacement::is_beyond_detach_boundary(pointer, self.rect) {
             return;
         }
 

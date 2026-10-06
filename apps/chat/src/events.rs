@@ -2074,6 +2074,21 @@ mod tests {
     };
     use tilo_automerge::ApplyIncoming;
 
+    fn assert_no_agent_composer_controls(app: &ChatApp) {
+        assert!(app.hits.iter().all(|(_, hit)| {
+            !matches!(
+                hit,
+                Hit::AgentIntent(_) | Hit::FocusMain | Hit::ComposerEmoji(_) | Hit::Send
+            )
+        }));
+        let accessible = ui::Widget::accessibility(app).expect("Chat accessibility tree");
+        assert!(accessible.children.iter().all(|node| {
+            node.role != ui::a11y::Role::TextInput
+                && node.name.as_deref() != Some("Send message")
+                && node.name.as_deref() != Some("Emoji")
+        }));
+    }
+
     #[derive(Default)]
     struct TaskControlHost {
         requests: Mutex<Vec<InvokeRequest>>,
@@ -3395,21 +3410,22 @@ mod tests {
             &ui::theme::Theme::dark(),
             &ui::presence::PresenceCtx::empty(),
         );
+        type_str(
+            &mut app
+                .agent_surfaces
+                .get_mut(&channel)
+                .expect("the detached conversation")
+                .view,
+            &mut doc,
+            " must not be appended",
+        );
         let surface = &app.agent_surfaces[&channel];
         assert_eq!(
             surface.view.composer_main.private_plain().as_deref(),
             Some("Private draft after removal")
         );
         assert_eq!(surface.view.composer_main.selection(), (4, 12));
-        assert!(
-            surface
-                .view
-                .hits
-                .iter()
-                .all(|(_, hit)| { !matches!(hit, Hit::AgentIntent(_) | Hit::Send) }),
-            "membership withdrawal must remove every Message, Queue, Steer and send target: {:?}",
-            surface.view.hits
-        );
+        assert_no_agent_composer_controls(&surface.view);
 
         app.agent_surfaces
             .get_mut(&channel)
@@ -3430,11 +3446,7 @@ mod tests {
         assert_eq!(app.composer_main.value(), "Private draft after removal");
         assert_eq!(app.composer_main.selection(), (4, 12));
         render_frame(&mut app, 1200.0, 800.0);
-        assert!(
-            app.hits
-                .iter()
-                .all(|(_, hit)| { !matches!(hit, Hit::AgentIntent(_) | Hit::Send) })
-        );
+        assert_no_agent_composer_controls(&app);
         let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
         assert!(accessible.children.iter().any(|node| {
             node.role == ui::a11y::Role::StaticText

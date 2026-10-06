@@ -914,6 +914,14 @@ pub struct FloatingPlacement {
 }
 
 impl FloatingPlacement {
+    /// Whether an attached surface has crossed the shared detach boundary.
+    ///
+    /// Hosts can use this before constructing a retained surface so the
+    /// pre-creation gesture follows the same threshold as [`Self::update_drag`].
+    pub fn is_beyond_detach_boundary(pointer: Point, app: Rect) -> bool {
+        !app.inflate(28.0, 28.0).contains(pointer)
+    }
+
     pub fn attached(preferred_size: Size) -> Self {
         Self {
             attachment: Attachment::App { offset: Vec2::ZERO },
@@ -1304,7 +1312,7 @@ impl FloatingPlacement {
             Attachment::App { .. } => app,
         };
         match self.attachment {
-            Attachment::App { .. } if !app.inflate(28.0, 28.0).contains(pointer) => {
+            Attachment::App { .. } if Self::is_beyond_detach_boundary(pointer, app) => {
                 self.attachment = Attachment::Desktop { rect: moved };
                 self.handoff_rect = Some(moved);
                 self.handoff_progress_override = None;
@@ -1524,6 +1532,15 @@ mod tests {
             let before = p.rect(app, desk);
             p.begin_drag(pointer, app, desk);
             let outside = Point::new(940.0, 150.0);
+            assert!(!FloatingPlacement::is_beyond_detach_boundary(
+                Point::new(app.x1 + 27.0, app.y0),
+                app
+            ));
+            assert!(FloatingPlacement::is_beyond_detach_boundary(
+                Point::new(app.x1 + 28.0, app.y0),
+                app
+            ));
+            assert!(FloatingPlacement::is_beyond_detach_boundary(outside, app));
             assert_eq!(p.update_drag(outside, app, desk), Handoff::Detached);
             assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
             assert_eq!(

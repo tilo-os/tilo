@@ -2464,9 +2464,15 @@ impl ChatApp {
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);
             return;
         }
+        let interactive = can_write
+            && self
+                .direct_agent
+                .as_ref()
+                .is_none_or(|_| self.direct_agent_is_available());
+        self.composer_main.set_read_only(!interactive);
         // While an inline message edit is in progress the caret lives in the
         // editor, not the composer.
-        let focused = can_write
+        let focused = interactive
             && self.is_focused()
             && matches!(self.focus, crate::app::Focus::Main)
             && self.editing.is_none();
@@ -2528,7 +2534,7 @@ impl ChatApp {
                 send_enabled,
                 focused,
                 self.direct_agent.is_none(),
-                can_write,
+                interactive,
             ),
             Hit::FocusMain,
             hits,
@@ -2836,6 +2842,9 @@ impl ChatApp {
         }
 
         let mut tx = rect.x0 + f64::from(sp.s3);
+        if !interactive {
+            return self.read_only_input_band(tr, theme, rect, draft);
+        }
         if attach {
             let plus = square(Point::new(rect.x0 + inset + btn / 2.0, cy), btn);
             let face = ButtonFace::icon_only(plus, Icon::Paperclip, "Attach a file")
@@ -2915,6 +2924,27 @@ impl ChatApp {
             tx,
             rect.y0 + inset,
             emoji.x0 - f64::from(sp.s1),
+            rect.y1 - inset,
+        );
+        let wrap_w = full.width().max(f64::from(sp.s8)) as f32;
+        let probe = if draft.is_empty() { "Ag" } else { draft };
+        let content_h = f64::from(tr.measure_style(probe, Some(wrap_w), &self.chrome.body).1);
+        centered_band(full, content_h, f64::from(sp.s1))
+    }
+
+    fn read_only_input_band(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        draft: &str,
+    ) -> Rect {
+        let sp = &theme.tokens.spacing;
+        let inset = f64::from(sp.s1);
+        let full = Rect::new(
+            rect.x0 + f64::from(sp.s3),
+            rect.y0 + inset,
+            rect.x1 - f64::from(sp.s3),
             rect.y1 - inset,
         );
         let wrap_w = full.width().max(f64::from(sp.s8)) as f32;
