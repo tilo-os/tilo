@@ -361,6 +361,7 @@ mod tests {
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
             let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
             let home_focus = app.harness().focus_order();
+            assert!(home_focus.len() > 2, "Home source controls are focusable");
             assert!(
                 app.harness().targets().contains_key("music-open-file"),
                 "Home exposes its file picker"
@@ -378,8 +379,8 @@ mod tests {
             );
             assert_eq!(
                 app.harness().focus_order().len(),
-                home_focus.len(),
-                "the shared page Back control replaces the Home picker in focus order"
+                2,
+                "Search and Back remain after the Home picker and source controls leave focus order"
             );
             assert!(
                 app.harness().a11y_node_named("Back").is_some(),
@@ -1084,6 +1085,7 @@ mod tests {
             assert_eq!(doc.get_heads(), before);
             assert!(app.lib.tracks.is_empty());
             let profile = crate::storage::DeviceProfile {
+                spotify_catalogue: false,
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
             };
@@ -1102,6 +1104,7 @@ mod tests {
             wav(&path);
             let file = crate::local_file::LocalFile::open(path.to_str().unwrap(), None).unwrap();
             let profile = crate::storage::DeviceProfile {
+                spotify_catalogue: false,
                 playback: crate::model::Playback {
                     current: Some(file.track.id.clone()),
                     queue: vec![file.track.id.clone()],
@@ -1281,5 +1284,141 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+}
+
+impl MusicApp {
+    pub(super) fn make_source_buttons() -> Vec<ui::widget::Button> {
+        use crate::actions::MusicEffect;
+        use ui::tilo_resource::Effect as _;
+        [
+            (MusicEffect::Sources, "music-sources"),
+            (MusicEffect::SpotifyQueue, "music-spotify-queue-refresh"),
+            (
+                MusicEffect::NewSpotifyPlaylist,
+                "music-spotify-create-playlist",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(effect, key)| {
+            let resource = tilo_actions::Resource::new("music.library", "music.library", "Library")
+                .with_action(effect.bound());
+            tilo_actions::ActionBinding::unit_for(&resource, effect.id())
+                .ok()
+                .map(|binding| ui::widget::Button::new(key, key).on_action(binding))
+        })
+        .collect()
+    }
+}
+
+#[cfg(test)]
+mod spotify_tests {
+    use super::*;
+    use ui::widget::Widget as _;
+
+    #[test]
+    fn spotify_search_projection_uses_provider_ids_and_retains_youtube_ids() {
+        let hit = crate::backend::TrackHit {
+            video_id: "spotify:track:1234567890123456789012".into(),
+            title: "Song".into(),
+            artist: "Artist".into(),
+            artist_id: Some("spotify:artist:abcdefghijklmnopqrstuv".into()),
+            album: Some("Album".into()),
+            album_id: Some("spotify:album:ABCDEFGHIJKLMNOPQRSTUV".into()),
+            duration_s: 120,
+            cover_url: String::new(),
+        };
+        let mut app = MusicApp::without_profile();
+        app.disconnect();
+        app.ingest_search_results(
+            "Song",
+            crate::backend::SearchBundle {
+                tracks: vec![hit.clone()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            app.live_results.as_ref().unwrap().1.as_slice(),
+            std::slice::from_ref(&hit.video_id)
+        );
+        assert!(app.lib.track(&hit.video_id).is_some());
+        assert_eq!(
+            super::super::live_track_id("existing-video"),
+            "yt:existing-video"
+        );
+        app.ingest_search_results(
+            "Song",
+            crate::backend::SearchBundle {
+                tracks: vec![hit.clone()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.live_results.as_ref().unwrap().1, [hit.video_id]);
+    }
+
+    #[test]
+    fn home_has_one_source_picker_with_semantic_actions() {
+        use crate::actions::MusicEffect;
+        use ui::tilo_resource::Effect as _;
+        for effect in [
+            MusicEffect::ConnectSpotify,
+            MusicEffect::BrowseSpotify,
+            MusicEffect::BrowseYouTube,
+            MusicEffect::DisconnectSpotify,
+        ] {
+            assert_eq!(effect.bound().kind, tilo_actions::OperationKind::Effect);
+        }
+        for (width, base_theme) in [360.0, 1000.0].into_iter().flat_map(|width| {
+            [
+                ui::theme::Theme::dark(),
+                ui::theme::Theme::light(),
+                ui::theme::Theme::high_contrast(),
+            ]
+            .map(|theme| (width, theme))
+        }) {
+            for scale in [1.0, 2.0] {
+                let mut app = MusicApp::without_profile();
+                app.disconnect();
+                assert!(app.device_row("music.source:catalogue").is_some());
+                assert!(
+                    app.device_rows()
+                        .iter()
+                        .any(|row| row.id() == "music.source:catalogue")
+                );
+                app.rect = vello::kurbo::Rect::new(0.0, 0.0, width, 1000.0);
+                let theme = base_theme.clone().with_text_scale(scale);
+                let mut tree = taffy::TaffyTree::new();
+                app.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+                let mut text = ui::text_render::TextRenderer::new();
+                text.set_text_scale(scale);
+                app.render_frame(
+                    &mut vello::Scene::new(),
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                );
+                let visible: Vec<_> = app
+                    .children()
+                    .into_iter()
+                    .filter(|button| button.test_id() == Some("music-sources"))
+                    .collect();
+                assert_eq!(visible.len(), 1, "one compact source picker on Home");
+                let rect = visible[0].get_rect();
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                assert!(rect.x0 >= 0.0 && rect.x1 <= width);
+                assert!(
+                    app.children().into_iter().all(|button| !matches!(
+                        button.test_id(),
+                        Some(
+                            "music-connect-spotify"
+                                | "music-spotify-playback"
+                                | "music-disconnect-spotify"
+                                | "music-spotify-queue-refresh"
+                        )
+                    )),
+                    "Home does not expose backend operations as rows of buttons"
+                );
+            }
+        }
     }
 }

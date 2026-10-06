@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "fixture": {
+    "source": "d8718c2ab06ec0fc60ef81708d4bfc52816f631c",
+    "disk_sha256": "a558d13585d41674dc7f08fca384be6683826fbab770d2071b29311f8a6e85aa",
+    "accel": "tcg",
+    "memory_mb": 4096,
+    "cpus": 4,
+    "graphics": "virtio-2d/software",
+    "resolution": "1280x720",
+    "ssh_port": 22481,
+    "started_host_monotonic_ns": 85053852383440
+  },
+  "manifest": {
+    "schema": "https://tilo.sh/dev/disk/v1",
+    "tag": "main-d8718c2-ext4-ci",
+    "arch": "x86_64",
+    "sourceRevision": "d8718c2ab06ec0fc60ef81708d4bfc52816f631c",
+    "diskToolingRevision": "08f4f492f84d5b3c5be05e93378a385421b8468b",
+    "image": "registry.tilo.so/tilo/tilo-vm:main-d8718c2-ext4-ci",
+    "childImage": "registry.tilo.so/tilo/tilo-vm:main-d8718c2-ext4-ci-x86_64",
+    "imageDigest": "sha256:1e40f97b1ca3e92a16d374abcd1fe7e486a15c2ead4fced8e7f0dac88a0e04eb",
+    "baseImage": "registry.tilo.so/tilo/tilo-ci",
+    "baseTrust": "integration",
+    "baseDigest": "sha256:e32bbca0dac842abb4ea5cd2ba425c58e6b8a00a1f7057a60b8dbd096dc90b12",
+    "directBoot": [],
+    "disks": [
+      {
+        "arch": "x86_64",
+        "format": "qcow2",
+        "file": "tilo-vm-main-d8718c2-ext4-ci-x86_64.qcow2",
+        "url": "https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/main-d8718c2-ext4-ci/tilo-vm-main-d8718c2-ext4-ci-x86_64.qcow2",
+        "sha256": "a558d13585d41674dc7f08fca384be6683826fbab770d2071b29311f8a6e85aa",
+        "size": 6045630464,
+        "virtualSize": 68719476736,
+        "imageDigest": "sha256:1e40f97b1ca3e92a16d374abcd1fe7e486a15c2ead4fced8e7f0dac88a0e04eb",
+        "baseDigest": "sha256:e32bbca0dac842abb4ea5cd2ba425c58e6b8a00a1f7057a60b8dbd096dc90b12"
+      }
+    ]
+  },
+  "scope": "Published development disk from Oct 2, not current main or a production installed image. TCG/software rendering, not KVM or physical hardware.",
+  "boot_id": "dc1e42f9-7523-42a4-aed5-9e499010a9d4",
+  "systemd_boot_time": {
+    "returncode": 0,
+    "stdout": "Startup finished in 10.797s (kernel) + 11.007s (initrd) + 32.468s (userspace) = 54.273s \ngraphical.target reached after 30.534s in userspace.\n",
+    "stderr": ""
+  },
+  "critical_chain": {
+    "returncode": 0,
+    "stdout": "The time when unit became active or started is printed after the \"@\" character.\nThe time the unit took to start is printed after the \"+\" character.\n\ngraphical.target @30.534s\n\u2514\u2500upower.service @26.581s +3.874s\n  \u2514\u2500basic.target @26.127s\n    \u2514\u2500dbus-broker.service @25.906s +215ms\n      \u2514\u2500dbus.socket @25.662s +2ms\n        \u2514\u2500sysinit.target @25.627s\n          \u2514\u2500systemd-update-done.service @25.553s +70ms\n            \u2514\u2500ldconfig.service @14.773s +10.766s\n              \u2514\u2500systemd-tmpfiles-setup.service @13.220s +1.512s\n                \u2514\u2500local-fs.target @13.110s\n                  \u2514\u2500run-user-974.mount @30.624s\n                    \u2514\u2500swap.target @12.433s\n                      \u2514\u2500dev-zram0.swap @12.318s +101ms\n                        \u2514\u2500systemd-zram-setup@zram0.service @12.140s +149ms\n                          \u2514\u2500dev-zram0.device\n",
+    "stderr": ""
+  },
+  "boot_units": {
+    "returncode": 0,
+    "stdout": "ActiveEnterTimestampMonotonic=51784998\nNRestarts=0\n\nActiveEnterTimestampMonotonic=52338963\n",
+    "stderr": ""
+  },
+  "filesystem_usage": {
+    "returncode": 0,
+    "stdout": "Filesystem                                                                                                                                 Type       1B-blocks        Used   Available Use% Mounted on\ncomposefs:39160c1e93186ff2a9f4f7694b8865cee816ab7ea337de8bf158343e3f84bd7d87188276cd87f78b97f5819d0d1b66a4dc0731ffddd639ac136ab1cf30c179ba overlay     40001536    40001536           0 100% /\n/dev/vda2                                                                                                                                  ext4     65203232768 14650843136 50535612416  23% /sysroot\ndevtmpfs                                                                                                                                   devtmpfs  1933864960           0  1933864960   0% /dev\ntmpfs                                                                                                                                      tmpfs     2015858688      110592  2015748096   1% /dev/shm\nefivarfs                                                                                                                                   efivarfs      262044       10492      246432   5% /sys/firmware/efi/efivars\ntmpfs                                                                                                                                      tmpfs      806346752     1077248   805269504   1% /run\nnone                                                                                                                                       tmpfs        1048576           0     1048576   0% /run/credentials/systemd-journald.service\ntmpfs                                                                                                                                      tmpfs     2015858688        4096  2015854592   1% /tmp\n/dev/vda1                                                                                                                                  vfat      2143272960   114683904  2028589056   6% /boot\ntmpfs                                                                                                                                      tmpfs      403169280       24576   403144704   1% /run/user/974\nnone                                                                                                                                       tmpfs        1048576           0     1048576   0% /run/credentials/serial-getty@ttyS0.service\ntmpfs                                                                                                                                      tmpfs      403169280       20480   403148800   1% /run/user/1000\n",
+    "stderr": ""
+  },
+  "partial_usr_size": {
+    "returncode": 1,
+    "stdout": "12698312704\t/usr\n",
+    "stderr": "du: cannot read directory '/usr/lib/containers/storage/overlay-images': Permission denied\ndu: cannot read directory '/usr/lib/containers/storage/overlay-layers': Permission denied\ndu: cannot read directory '/usr/share/empty.sshd': Permission denied\n"
+  },
+  "root_only_bootc_status": {
+    "returncode": 1,
+    "stdout": "",
+    "stderr": "error: Status: Preparing for write: Querying root privilege: This command must be executed as the root user\n"
+  },
+  "desktop_idle": {
+    "observer": "one SSH connection and stdlib Python collector; observer included",
+    "phase": "after passcode-only sign-in, before first-use provisioning; no native app launched",
+    "samples": [
+      {
+        "guest_monotonic_seconds": 532.123751353,
+        "cpu_ticks": [
+          19311,
+          1032,
+          10278,
+          177846,
+          349,
+          1236,
+          485,
+          0,
+          0,
+          0
+        ],
+        "mem_total_kib": 3937224,
+        "mem_available_kib": 3023188,
+        "swap_total_kib": 1968124,
+        "swap_free_kib": 1968124
+      },
+      {
+        "guest_monotonic_seconds": 537.129284244,
+        "cpu_ticks": [
+          19314,
+          1032,
+          10283,
+          179842,
+          349,
+          1238,
+          487,
+          0,
+          0,
+          0
+        ],
+        "mem_total_kib": 3937224,
+        "mem_available_kib": 3029868,
+        "swap_total_kib": 1968124,
+        "swap_free_kib": 1968124
+      },
+      {
+        "guest_monotonic_seconds": 542.132598624,
+        "cpu_ticks": [
+          19316,
+          1032,
+          10287,
+          181839,
+          349,
+          1239,
+          488,
+          0,
+          0,
+          0
+        ],
+        "mem_total_kib": 3937224,
+        "mem_available_kib": 3031632,
+        "swap_total_kib": 1968124,
+        "swap_free_kib": 1968124
+      },
+      {
+        "guest_monotonic_seconds": 547.135890622,
+        "cpu_ticks": [
+          19332,
+          1032,
+          10305,
+          183809,
+          349,
+          1241,
+          489,
+          0,
+          0,
+          0
+        ],
+        "mem_total_kib": 3937224,
+        "mem_available_kib": 3033880,
+        "swap_total_kib": 1968124,
+        "swap_free_kib": 1968124
+      },
+      {
+        "guest_monotonic_seconds": 552.139136207,
+        "cpu_ticks": [
+          19345,
+          1032,
+          10317,
+          185789,
+          349,
+          1243,
+          491,
+          0,
+          0,
+          0
+        ],
+        "mem_total_kib": 3937224,
+        "mem_available_kib": 3035992,
+        "swap_total_kib": 1968124,
+        "swap_free_kib": 1968124
+      },
+      {
+        "guest_monotonic_seconds": 557.141709368,
+        "cpu_ticks": [
+          19347,
+          1032,
+          10322,
+          187784,
+          350,
+          1245,
+          492,
+          0,
+          0,
+          0
+        ],
+        "mem_total_kib": 3937224,
+        "mem_available_kib": 3033752,
+        "swap_total_kib": 1968124,
+        "swap_free_kib": 1968124
+      },
+      {
+        "guest_monotonic_seconds": 562.144929657,
+        "cpu_ticks": [
+          19350,
+          1032,
+          10326,
+          189780,
+          350,
+          1246,
+          493,
+          0,
+          0,
+          0
+        ],
+        "mem_total_kib": 3937224,
+        "mem_available_kib": 3032760,
+        "swap_total_kib": 1968124,
+        "swap_free_kib": 1968124
+      }
+    ],
+    "selected_process_rss": {
+      "tilo-session": {
+        "pid": 2152,
+        "rss_kib": 3892,
+        "elapsed_seconds": 77
+      },
+      "tilo-flight-rec": {
+        "pid": 2205,
+        "rss_kib": 11680,
+        "elapsed_seconds": 76
+      },
+      "shell": {
+        "pid": 2208,
+        "rss_kib": 374056,
+        "elapsed_seconds": 76
+      },
+      "fs": {
+        "pid": 2211,
+        "rss_kib": 13316,
+        "elapsed_seconds": 76
+      },
+      "localsearch-3": {
+        "pid": 2529,
+        "rss_kib": 24612,
+        "elapsed_seconds": 70
+      }
+    }
+  },
+  "invalidated_measurements": [
+    "Pilot host-to-ready observation includes delay between boot and wait; excluded.",
+    "Greeter idle sample overlapped sign-in; excluded."
+  ],
+  "unmeasured": [
+    "current-main OS startup",
+    "complete production installed image size",
+    "native app startup",
+    "input-to-present latency",
+    "frame cadence",
+    "physical hardware performance"
+  ]
+}

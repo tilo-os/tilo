@@ -112,6 +112,11 @@ const SCENARIOS: &[&str] = &[
     "album-page",
     "error",
     "membership-open",
+    "spotify-home",
+    "spotify-devices",
+    "spotify-error",
+    "spotify-queue",
+    "spotify-create",
 ];
 
 /// Framework app: the music widget is the surface over [`Music`].
@@ -139,7 +144,17 @@ impl ResourceApp for MusicShell {
 
     /// Every scenario but `empty` shows the sample library.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Music>> {
-        if matches!(name, Some("empty")) {
+        if matches!(
+            name,
+            Some(
+                "empty"
+                    | "spotify-home"
+                    | "spotify-devices"
+                    | "spotify-error"
+                    | "spotify-queue"
+                    | "spotify-create"
+            )
+        ) {
             return Vec::new();
         }
         crate::seed::sample_actions()
@@ -280,6 +295,11 @@ mod tests {
         assert!(surface.contains("music.player:player"), "{surface}");
         assert!(surface.contains("toggle-shuffle"));
         assert!(surface.contains("open-file"));
+        assert!(surface.contains("music.source:catalogue"));
+        assert!(surface.contains("connect-spotify"));
+        assert!(surface.contains("disconnect-spotify"));
+        assert!(surface.contains("browse-spotify"));
+        assert!(surface.contains("browse-you-tube"));
 
         let album = crate::actions::album_resource_id("al_glasslight");
         app.effect_on(

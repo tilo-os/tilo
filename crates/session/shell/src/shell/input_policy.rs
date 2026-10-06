@@ -63,6 +63,9 @@ pub fn foreign_tile_at(
     host: &ShellOverlayHost,
     point: (f64, f64),
 ) -> Option<TileHit> {
+    if host.dictation_pointer_at(point) {
+        return None;
+    }
     let p = KurboPoint::new(point.0, point.1);
     find_foreign_tile(tree, host, |hit| hit.rect.contains(p))
 }

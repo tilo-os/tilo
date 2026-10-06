@@ -456,3 +456,10 @@ block-editor-replace = Ersetzen
 
 block-editor-replace-all = Alle ersetzen
 block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
+
+dictation-record-once = Einmal aufnehmen
+dictation-finish = Fertig
+dictation-cancel = Abbrechen
+
+dictation-copy-transcript = Transkript kopieren
+dictation-discard-transcript = Transkript verwerfen

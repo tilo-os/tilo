@@ -573,6 +573,7 @@ files-place-recent = Recent
 files-empty-recent = Files you open or create appear here
 files-recent-reveal = Open containing folder
 files-recent-forget = Remove from Recent
+files-recent-action-unavailable = This recent item is no longer available. Open Recent and choose a current item.
 files-recent-not-a-folder = Recent is not a folder; open one to add files
 
 ## Cloud accounts
@@ -583,3 +584,12 @@ files-account-service-at-host = { $service } at { $host }
 files-account-folder = Folder: { $path }
 files-account-check-again = Check again
 files-account-check-again-detail = Reads the account's state again and opens its folder once it is available.
+files-action-send-airdrop = Send to a verified AirDrop lab receiver…
+files-airdrop-unavailable = Verified AirDrop lab transfer is unavailable on this host.
+files-airdrop-endpoint-invalid = Enter the receiver's literal IP address and a TLS port from 1 to 65535.
+files-airdrop-source-unavailable = This file is no longer available.
+files-airdrop-file-only = Choose one regular file for the AirDrop lab transfer.
+files-airdrop-verifying = Waiting for receiver verification and permission to send this file.
+files-airdrop-address = Receiver's literal IP address
+files-airdrop-port = Receiver's TLS port
+files-airdrop-action-detail = Verify a manually selected lab receiver on the compositor's sheet before sending this file once.
