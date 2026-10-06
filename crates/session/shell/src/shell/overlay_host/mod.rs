@@ -3109,6 +3109,15 @@ impl ShellOverlayHost {
         scene_damage_rect(Rect::new(x0, primary.scene.y0, x1, primary.scene.y1))
     }
 
+    /// Keyboard overview navigation lands in the requested state before the
+    /// next input or animation-demand sample. Pointer transitions still use
+    /// `latch_overview_transition`; this reuses the reduced-motion settle path
+    /// without changing the user's motion preference.
+    fn settle_keyboard_overview(&mut self) {
+        let open = self.overlay_flags().overview;
+        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, true);
+    }
+
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
     /// second slide implementation. Reduced motion still runs the frames:
@@ -11753,7 +11762,7 @@ impl ShellOverlayHost {
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
                 drop(st);
-                self.latch_overview_transition();
+                self.settle_keyboard_overview();
             }
             *handled = true;
             return true;
@@ -12233,6 +12242,7 @@ impl ShellOverlayHost {
                 };
                 let tab = window.address.tab;
                 self.activate_overview_window(tab);
+                self.settle_keyboard_overview();
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
@@ -12319,6 +12329,8 @@ impl ShellOverlayHost {
                 }
                 st.overlays.overview = false;
                 st.bump();
+                drop(st);
+                self.settle_keyboard_overview();
             }
         } else {
             let step: isize = if matches!(logical_key, Key::Named(NamedKey::ArrowDown)) {
@@ -12649,7 +12661,7 @@ impl ShellOverlayHost {
             st.overlays.overview = false;
             st.bump();
             drop(st);
-            self.latch_overview_transition();
+            self.settle_keyboard_overview();
             *handled = true;
             return true;
         }
