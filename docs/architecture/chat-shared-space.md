@@ -408,7 +408,7 @@ has run in this continuation.
 Run the compiled desktop against the isolated governed fixture:
 
 ```sh
-rcargo --on-builder run --locked -p tilo-agent-participant --example mounted-resource -- target/tilo-app/web/calculator/bundle
+$CARGO run --locked -p tilo-agent-participant --example mounted-resource -- target/tilo-app/web/calculator/bundle
 ```
 
 The example uses a native Chat replica and production native publisher, an owner
