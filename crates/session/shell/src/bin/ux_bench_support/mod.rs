@@ -178,7 +178,7 @@ fn capture(
     driver.relayout();
     let screenshot = out.join(format!("{sequence:04}.png"));
     let inspection = out.join(format!("{sequence:04}.inspection.json"));
-    driver.render_window_png(&screenshot);
+    driver.render_png(&screenshot);
     if !screenshot.is_file() {
         return Err("renderer did not produce screenshot".into());
     }

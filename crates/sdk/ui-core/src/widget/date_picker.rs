@@ -12,8 +12,8 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
-use chrono::{Datelike, Local, NaiveDate};
-use std::collections::HashMap;
+use chrono::{Datelike, NaiveDate};
+use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -21,10 +21,9 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
@@ -54,6 +53,13 @@ pub struct DatePicker {
     /// Whether the picker holds keyboard focus. Drives a focus ring around
     /// the whole calendar so the control reads as focused.
     is_focused: bool,
+    /// The sidebar presentation: no frame, as wide as its column, as tall
+    /// as that width needs.
+    navigator: bool,
+    /// Days that hold something (an event, a note): a dot under the number.
+    marked: HashSet<NaiveDate>,
+    /// The day the host calls today; `None` reads the toolkit clock.
+    today: Option<NaiveDate>,
 }
 
 impl DatePicker {
@@ -70,7 +76,59 @@ impl DatePicker {
             next_button_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             is_focused: false,
+            navigator: false,
+            marked: HashSet::new(),
+            today: None,
         }
+    }
+
+    /// The sidebar presentation of a calendar app: a month that navigates
+    /// the main view. It stands on its region without a frame, takes its
+    /// column's width and is as tall as that width needs.
+    #[must_use]
+    pub fn navigator(mut self) -> Self {
+        self.navigator = true;
+        self
+    }
+
+    /// Mark `dates` (days with events) with a dot under the number.
+    #[must_use]
+    pub fn marked(mut self, dates: impl IntoIterator<Item = NaiveDate>) -> Self {
+        self.set_marked(dates);
+        self
+    }
+
+    /// The day the today ring marks, from the host's own notion of today
+    /// (its time zone, a staged capture). Without it the picker reads
+    /// `ui::clock::today()`.
+    #[must_use]
+    pub fn with_today(mut self, today: NaiveDate) -> Self {
+        self.today = Some(today);
+        self
+    }
+
+    /// Replace the host's today; see [`Self::with_today`].
+    pub fn set_today(&mut self, today: NaiveDate) {
+        self.today = Some(today);
+    }
+
+    /// Replace the marked days; see [`Self::marked`].
+    pub fn set_marked(&mut self, dates: impl IntoIterator<Item = NaiveDate>) {
+        self.marked = dates.into_iter().collect();
+    }
+
+    /// The height the picker needs `width` wide: the header, the weekday
+    /// row and six rows of cells as tall as they are wide (capped).
+    #[must_use]
+    pub fn intrinsic_height(&self, width: f64) -> f64 {
+        let cell = if self.navigator {
+            // The smallest cell a narrow sidebar gets is six spacing steps.
+            (width / grid_f64(GRID_COLS))
+                .clamp(f64::from(crate::tokens::Spacing::BASE.s6), CELL_SIZE)
+        } else {
+            CELL_SIZE
+        };
+        (HEADER_HEIGHT + WEEKDAY_HEIGHT + cell * grid_f64(GRID_ROWS)).ceil()
     }
 
     /// Create a date picker bound to typed process-local state.
@@ -315,7 +373,23 @@ impl Widget for DatePicker {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let width = CELL_SIZE * grid_f64(GRID_COLS);
-        let height = HEADER_HEIGHT + WEEKDAY_HEIGHT + CELL_SIZE * grid_f64(GRID_ROWS);
+        if self.navigator {
+            // As wide as its column; `measure` answers the height.
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                max_size: Size {
+                    width: Dimension::length(px(width)),
+                    height: Dimension::auto(),
+                },
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
+        let height = self.intrinsic_height(width);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(px(width)),
@@ -327,6 +401,28 @@ impl Widget for DatePicker {
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        _text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let full = CELL_SIZE * grid_f64(GRID_COLS);
+        let width = known.width.map_or_else(
+            || match available.width {
+                taffy::AvailableSpace::Definite(room) => f64::from(room).min(full),
+                _ => full,
+            },
+            f64::from,
+        );
+        Size {
+            width: px(width),
+            height: known
+                .height
+                .unwrap_or_else(|| px(self.intrinsic_height(width))),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -349,7 +445,15 @@ impl Widget for DatePicker {
     ) {
         let tokens = &theme.tokens;
 
-        let radius = f64::from(tokens.radii.md);
+        if self.navigator {
+            // A navigator stands on its region: no face, no edge; focus is
+            // the ring round the selected day's cell.
+            self.draw_header(scene, transform, text_renderer, theme);
+            self.draw_weekday_labels(scene, transform, text_renderer, theme);
+            self.draw_day_grid(scene, transform, text_renderer, theme);
+            return;
+        }
+        let radius = f64::from(tokens.radii.control);
         let fill = tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -543,7 +647,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let text_color = tokens.colors.text_primary;
 
         let (y, m) = self.month_view;
@@ -551,43 +655,36 @@ impl DatePicker {
         let header_label = format!("{month_name} {y}");
         // Every line in the picker is centred on its *measured* height; the
         // font size alone sat the 12 px labels 1.5 px low in each band.
-        let (label_w, label_h) = text_renderer.measure(&header_label, text_size, None);
+        let (label_w, label_h) = text_renderer.measure_style(&header_label, None, &text_style);
         let label_x = self.rect.center().x - f64::from(label_w) / 2.0;
         let label_y = centered_text_top(self.rect.y0, HEADER_HEIGHT, f64::from(label_h));
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &header_label,
-            text_size,
             text_color,
             transform.pre_translate(Vec2::new(label_x, label_y)),
             None,
+            &text_style,
         );
 
-        // Drawn as text glyphs so we don't need a vector path.
-        let (lw, lh) = text_renderer.measure("\u{2039}", text_size, None);
-        let (rw, rh) = text_renderer.measure("\u{203A}", text_size, None);
-        text_renderer.draw_text(
-            scene,
-            "\u{2039}",
-            text_size,
-            text_color,
-            transform.pre_translate(Vec2::new(
-                self.prev_button_rect.center().x - f64::from(lw) / 2.0,
-                centered_text_top(self.prev_button_rect.y0, HEADER_HEIGHT, f64::from(lh)),
-            )),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "\u{203A}",
-            text_size,
-            text_color,
-            transform.pre_translate(Vec2::new(
-                self.next_button_rect.center().x - f64::from(rw) / 2.0,
-                centered_text_top(self.next_button_rect.y0, HEADER_HEIGHT, f64::from(rh)),
-            )),
-            None,
-        );
+        // Month steps are chevrons from the one icon set, centred on the
+        // header band.
+        let edge = f64::from(tokens.metrics.icon_sm);
+        for (button, icon) in [
+            (self.prev_button_rect, crate::icons::Icon::ChevronLeft),
+            (self.next_button_rect, crate::icons::Icon::ChevronRight),
+        ] {
+            let centre =
+                vello::kurbo::Point::new(button.center().x, self.rect.y0 + HEADER_HEIGHT / 2.0);
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                Rect::from_center_size(centre, (edge, edge)),
+                icon,
+                text_color,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
     }
 
     /// The Mo/Tu/We/… row above the day grid. Split out of `draw` to keep
@@ -600,22 +697,22 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let dim_color = tokens.colors.text_dim;
 
         let cell_w = self.rect.width() / grid_f64(GRID_COLS);
         let weekday_band_y0 = self.rect.y0 + HEADER_HEIGHT;
         for (col, label) in WEEKDAY_LABELS.iter().enumerate() {
-            let (lw, lh) = text_renderer.measure(label, text_size, None);
+            let (lw, lh) = text_renderer.measure_style(label, None, &text_style);
             let weekday_y = centered_text_top(weekday_band_y0, WEEKDAY_HEIGHT, f64::from(lh));
             let cx = self.rect.x0 + grid_f64(col) * cell_w + cell_w / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                text_size,
                 dim_color,
                 transform.pre_translate(Vec2::new(cx - f64::from(lw) / 2.0, weekday_y)),
                 None,
+                &text_style,
             );
         }
     }
@@ -630,11 +727,11 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
-        let today = Local::now().date_naive();
+        let today = self.today.unwrap_or_else(crate::clock::today);
         let (vy, vm) = self.month_view;
 
         for (date, cell_rect) in &self.day_rects {
@@ -642,64 +739,71 @@ impl DatePicker {
             let is_selected = *date == self.selected;
             let is_today = *date == today && is_in_view_month;
 
+            // A day is a disc: the selection fill, the today ring and the
+            // focus ring share one circle inside the cell.
+            let disc = day_disc(*cell_rect);
             if is_selected {
-                let pad = cell_rect.height().min(cell_rect.width()) * 0.1;
-                let inner = Rect::new(
-                    cell_rect.x0 + pad,
-                    cell_rect.y0 + pad,
-                    cell_rect.x1 - pad,
-                    cell_rect.y1 - pad,
-                );
-                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[ACCENT_PRIMARY_IDX],
+                    tokens.colors.intent.inverted,
                     None,
-                    &shape,
+                    &disc,
                 );
             }
 
             // On top of the cell fill, below the text, so it's visible even
             // when selected.
             if is_today {
-                let pad = cell_rect.height().min(cell_rect.width()) * 0.1;
-                let inner = Rect::new(
-                    cell_rect.x0 + pad,
-                    cell_rect.y0 + pad,
-                    cell_rect.x1 - pad,
-                    cell_rect.y1 - pad,
-                );
-                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.sm));
+                let ring = vello::kurbo::Circle::new(disc.center, disc.radius - 0.5);
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
                     tokens.colors.border_focus,
                     None,
-                    &shape,
+                    &ring,
                 );
             }
 
             let day_str = date.day().to_string();
             let color = if is_selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                tokens.colors.intent.on_inverted
             } else if is_in_view_month {
                 text_color
             } else {
                 dim_color
             };
-            let (tw, th) = text_renderer.measure(&day_str, text_size, None);
+            let (tw, th) = text_renderer.measure_style(&day_str, None, &text_style);
             let tx = cell_rect.center().x - f64::from(tw) / 2.0;
             let ty = centered_text_top(cell_rect.y0, cell_rect.height(), f64::from(th));
-            text_renderer.draw_text(
+            // A marked day carries a dot under its number, in its ink.
+            if self.marked.contains(date) {
+                let r = (cell_rect.height().min(cell_rect.width()) * 0.06).max(1.5);
+                let dot = vello::kurbo::Circle::new(
+                    Point::new(
+                        cell_rect.center().x,
+                        (ty + f64::from(th) + r + 1.0).min(cell_rect.y1 - r - 1.0),
+                    ),
+                    r,
+                );
+                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &dot);
+            }
+            if self.navigator && self.is_focused && is_selected {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    tokens.colors.border_focus,
+                    None,
+                    &vello::kurbo::Circle::new(disc.center, disc.radius + 1.0),
+                );
+            }
+            text_renderer.draw_style(
                 scene,
                 &day_str,
-                text_size,
                 color,
                 transform.pre_translate(Vec2::new(tx, ty)),
                 None,
+                &text_style,
             );
         }
     }
@@ -721,6 +825,13 @@ fn month_name_en(m: u32) -> &'static str {
         12 => "December",
         _ => "",
     }
+}
+
+/// The disc a day stands on: centred in its cell, a tenth of the cell in
+/// from its shorter side.
+fn day_disc(cell: Rect) -> vello::kurbo::Circle {
+    let side = cell.height().min(cell.width());
+    vello::kurbo::Circle::new(cell.center(), side * 0.4)
 }
 
 #[cfg(test)]
@@ -863,8 +974,9 @@ mod tests {
                 &theme,
                 &PresenceCtx::default(),
             );
-            let size = theme.tokens.typography.scale.sm;
-            // Draw order: header label, ‹, ›, seven weekday labels, then day cells.
+            let style = theme.text(TextRole::Caption);
+            // Draw order: header label, seven weekday labels, then day cells;
+            // the month steps are icons, not glyph runs.
             let header_band = (rect.y0, HEADER_HEIGHT);
             let weekday_band = (rect.y0 + HEADER_HEIGHT, WEEKDAY_HEIGHT);
             let first_cell = picker
@@ -873,7 +985,6 @@ mod tests {
                 .map(|(_, r)| *r)
                 .expect("day cells");
             let expectations: Vec<(&str, (f64, f64))> = std::iter::once(("May 2026", header_band))
-                .chain([("\u{2039}", header_band), ("\u{203A}", header_band)])
                 .chain(WEEKDAY_LABELS.iter().map(|label| (*label, weekday_band)))
                 .chain(std::iter::once((
                     "27",
@@ -885,7 +996,7 @@ mod tests {
                     &scene,
                     index,
                     text,
-                    size,
+                    &style,
                     band_y0,
                     band_h,
                     &mut tr,
@@ -1027,5 +1138,22 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
+    }
+    #[test]
+    fn a_navigator_fills_its_column_and_marks_busy_days() {
+        let day = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+        let picker = DatePicker::new(day)
+            .navigator()
+            .marked([day, day.succ_opt().unwrap()]);
+        assert_eq!(picker.marked.len(), 2);
+        let narrow = picker.intrinsic_height(168.0);
+        let wide = picker.intrinsic_height(224.0);
+        assert!(narrow < wide, "cells follow the column's width");
+        let app = crate::headless::Driver::new(
+            crate::State::new(),
+            Box::new(crate::column![picker.with_accessible_name("Month")]),
+            (200, 600),
+        );
+        let _ = app.targets();
     }
 }

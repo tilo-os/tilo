@@ -170,15 +170,15 @@ pub(crate) fn answer(
 }
 
 const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
-    ("Subtle · 4500 K", 4_500),
-    ("Warm · 3700 K", 3_700),
-    ("Very warm · 2800 K", 2_800),
+    ("Subtle, 4500 K", 4_500),
+    ("Warm, 3700 K", 3_700),
+    ("Very warm, 2800 K", 2_800),
 ];
 
 fn temperature_ftl(english: &str) -> &'static str {
     match english {
-        "Subtle · 4500 K" => "display-night-light-temp-subtle",
-        "Very warm · 2800 K" => "display-night-light-temp-very-warm",
+        "Subtle, 4500 K" => "display-night-light-temp-subtle",
+        "Very warm, 2800 K" => "display-night-light-temp-very-warm",
         _ => "display-night-light-temp-warm",
     }
 }
@@ -191,7 +191,7 @@ fn temperature_label(kelvin: u32) -> String {
     let english = NIGHT_LIGHT_TEMPERATURES
         .iter()
         .min_by_key(|(_, value)| value.abs_diff(kelvin))
-        .map_or("Warm · 3700 K", |(label, _)| *label);
+        .map_or("Warm, 3700 K", |(label, _)| *label);
     temperature_shown(english)
 }
 
@@ -486,7 +486,7 @@ fn is_virtual_connector(conn: &str) -> bool {
 
 /// Present one compositor descriptor without leaking a persistence collision
 /// into the UI. A unique connector remains the familiar `HDMI-A-1`; two
-/// cards with that label become e.g. `HDMI-A-1 · pci:0000:01:00.0` so every
+/// cards with that label become e.g. `HDMI-A-1 on pci:0000:01:00.0` so every
 /// control, mirror target and saved key refers to exactly one display.
 fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
     let monitor_name = descriptor
@@ -497,12 +497,12 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
     let base = match (builtin, monitor_name) {
         (true, _) => "Built-in display".to_string(),
         // The port stays visible: two identical monitors differ only there.
-        (false, Some(name)) => format!("{name} · {}", descriptor.label()),
+        (false, Some(name)) => format!("{name} on {}", descriptor.label()),
         (false, None) => descriptor.label().to_string(),
     };
     descriptor
         .card_qualifier()
-        .map_or_else(|| base.clone(), |card| format!("{base} · {card}"))
+        .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
 }
 
 /// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
@@ -1304,7 +1304,7 @@ impl DisplayModel {
                                 .color_profile_labels
                                 .iter()
                                 .find_map(|(id, label)| {
-                                    (*profile == format!("{label} · {id}") || profile == id)
+                                    (*profile == format!("{label} ({id})") || profile == id)
                                         .then(|| id.clone())
                                 })
                                 .ok_or_else(|| format!("`{profile}` is not a colour profile"))?,
@@ -1598,16 +1598,13 @@ impl DisplayModel {
             caption(&crate::i18n::t("display-arrangement-hint")),
             setting_row(
                 &crate::i18n::t("display-identify-row"),
-                Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            "settings.display.identify",
-                            &crate::i18n::t("display-identify"),
-                        )
-                        .content_sized(),
-                        DisplayEffect::IdentifyDisplays,
+                Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        "settings.display.identify",
+                        &crate::i18n::t("display-identify"),
                     ),
-                ),
+                    DisplayEffect::IdentifyDisplays,
+                )),
             ),
         ];
         // One honest line about the idle ports rather than a row each.
@@ -2017,7 +2014,7 @@ impl DisplayModel {
                 output
                     .color_profile_labels
                     .get(id)
-                    .map(|label| format!("{label} · {id}"))
+                    .map(|label| format!("{label} ({id})"))
             }));
             let placeholder = config
                 .color_profile
@@ -2026,7 +2023,7 @@ impl DisplayModel {
                     output
                         .color_profile_labels
                         .get(id)
-                        .map(|label| format!("{label} · {id}"))
+                        .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
             out_rows.push(choice_row(
@@ -2067,14 +2064,14 @@ impl DisplayModel {
                         setting_row(
                             &t("display-keep-ok"),
                             Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.keep", &keep).content_sized(),
+                                Button::new("settings.display.keep", &keep),
                                 DisplayEffect::KeepDisplayChanges,
                             )),
                         ),
                         setting_row(
                             &t("display-keep-wrong"),
                             Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.revert", &revert).content_sized(),
+                                Button::new("settings.display.revert", &revert),
                                 DisplayEffect::RevertDisplayChanges,
                             )),
                         ),
@@ -2103,7 +2100,7 @@ impl DisplayModel {
                     content.push(setting_row(
                         &t("display-retry"),
                         Box::new(self.cx.bind_invocation(
-                            Button::new("settings.display.apply", &try_again).content_sized(),
+                            Button::new("settings.display.apply", &try_again),
                             DisplayEffect::ApplyDisplayChanges,
                         )),
                     ));
@@ -2119,7 +2116,7 @@ impl DisplayModel {
                         setting_row(
                             &t("display-apply-row"),
                             Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.apply", &apply).content_sized(),
+                                Button::new("settings.display.apply", &apply),
                                 DisplayEffect::ApplyDisplayChanges,
                             )),
                         ),
@@ -2647,7 +2644,10 @@ mod tests {
                 color_profiles: vec![],
                 monitor: None,
             };
-            assert_eq!(snapshot_label(&first, false), "HDMI-A-1 · pci:0000:01:00.0");
+            assert_eq!(
+                snapshot_label(&first, false),
+                "HDMI-A-1 on pci:0000:01:00.0"
+            );
             let named = OutputDescriptor {
                 monitor: Some(MonitorIdentity {
                     make: "Dell".into(),
@@ -2658,12 +2658,12 @@ mod tests {
             };
             assert_eq!(
                 snapshot_label(&named, false),
-                "Dell U2720Q · HDMI-A-1 · pci:0000:01:00.0",
+                "Dell U2720Q on HDMI-A-1 on pci:0000:01:00.0",
                 "a monitor is named by its EDID and still told apart by port"
             );
             assert_eq!(
                 snapshot_label(&second, false),
-                "HDMI-A-1 · pci:0000:03:00.0"
+                "HDMI-A-1 on pci:0000:03:00.0"
             );
 
             let display = DisplayOutput {
@@ -2686,12 +2686,12 @@ mod tests {
             let second = "pci:0000:03:00.0/HDMI-A-1";
             let mut pane = model(vec![
                 DisplayOutput {
-                    label: "HDMI-A-1 · pci:0000:01:00.0".into(),
+                    label: "HDMI-A-1 on pci:0000:01:00.0".into(),
                     connector: first.into(),
                     ..classify_connector("card0-HDMI-A-1", "connected")
                 },
                 DisplayOutput {
-                    label: "HDMI-A-1 · pci:0000:03:00.0".into(),
+                    label: "HDMI-A-1 on pci:0000:03:00.0".into(),
                     connector: second.into(),
                     ..classify_connector("card1-HDMI-A-1", "connected")
                 },
@@ -2742,8 +2742,8 @@ mod tests {
         };
         let (mut pane, rec) = recording(vec![
             display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
-            display_with_modes("DP-2", "Dell U2720Q · DP-2", false, Vec::new()),
-            display_with_modes("DP-3", "LG 27GL850 · DP-3", false, Vec::new()),
+            display_with_modes("DP-2", "Dell U2720Q on DP-2", false, Vec::new()),
+            display_with_modes("DP-3", "LG 27GL850 on DP-3", false, Vec::new()),
         ]);
         pane.output_brightness =
             output_brightness_from(&pane.outputs, &[level("eDP-1", 0.5), level("DP-2", 0.3)]);

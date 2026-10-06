@@ -158,12 +158,12 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
 fn quick_settings_bounds_cover_shadows_and_hints_yield_to_modal_surfaces() {
     fn settled_quick_settings_bounds_cover_a_high_elevation_panel_shadow() {
         let mut theme = Theme::dark();
-        theme.tokens.elevation.e4.blur = 96.0;
-        theme.tokens.elevation.e4.offset_y = 24.0;
+        theme.tokens.elevation.floating.blur = 96.0;
+        theme.tokens.elevation.floating.offset_y = 24.0;
         let rect = Rect::new(100.0, 200.0, 500.0, 700.0);
         let bounds = quick_settings_settled_bounds(rect, &theme, Affine::IDENTITY);
-        let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.e4.blur) * 3.0
-            + f64::from(theme.tokens.elevation.e4.offset_y)
+        let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.floating.blur) * 3.0
+            + f64::from(theme.tokens.elevation.floating.offset_y)
             + 0.5;
         assert!(bounds.x0 <= rect.x0 - panel_reach);
         assert!(bounds.y0 <= rect.y0 - panel_reach);

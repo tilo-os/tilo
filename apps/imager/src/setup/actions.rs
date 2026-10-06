@@ -627,12 +627,12 @@ fn folder_row(folder: &FolderProjection, mode_choices: &[&'static str], edits: b
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "{} · {}",
-            folder.mode,
+            "{}, {}",
+            mode_phrase(folder.mode),
             if folder.overridden {
-                "override"
+                "chosen for this folder"
             } else {
-                "common"
+                "the common choice"
             }
         )),
         badge: Some(format!("Folder {}", folder.index + 1)),
@@ -802,16 +802,25 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "experience {} · common {} · {} folders · {} active · help {} · imports {}",
-            state
-                .selection
-                .experience
-                .unwrap_or("no experience selected"),
-            state.selection.common_mode,
-            state.selection.folder_count,
-            state.selection.active_folder_count,
-            open_closed(state.selection.help_open),
-            open_closed(state.selection.imports_open),
+            "{}, {} by default, {}{}. With help {} and imports {}.",
+            experience_phrase(state.selection.experience),
+            mode_phrase(state.selection.common_mode).to_lowercase(),
+            folders_phrase(state.selection.folder_count),
+            if state.selection.folder_count == 0 {
+                String::new()
+            } else {
+                format!(", {} to bring over", state.selection.active_folder_count)
+            },
+            if state.selection.help_open {
+                "open"
+            } else {
+                "closed"
+            },
+            if state.selection.imports_open {
+                "open"
+            } else {
+                "closed"
+            },
         )),
         badge: Some("Selection".into()),
         preview: None,
@@ -838,7 +847,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "ready {} · current page {}",
+            "Review ready: {}. Current page: {}.",
             yes_no(state.review.ready),
             state.page
         )),
@@ -852,7 +861,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "Desktop {} · Full OS {} · Connected {} · Next {} · Back {} · Folder policies {} · Folder edits {} · Help {} · Imports {}",
+            "Available experiences: desktop {0}, full OS {1}. Connected: {2}. Navigation: next {3}, back {4}. Folder permissions: policies {5}, edits {6}. Help: {7}. Imports: {8}.",
             yes_no(state.availability.desktop),
             yes_no(state.availability.full_os),
             yes_no(state.availability.connected),
@@ -869,20 +878,15 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     LiveRow::new(SETUP_ROW_ID, "imager.setup", "Guided Tilo setup")
         .presentation(ResourcePresentation {
             detail: Some(format!(
-                "{} · {} · {} · {} folder(s) · review {} · Desktop {} · Full OS {} · Connected {} · Next {} · Back {}",
-                state.page,
-                state
-                    .selection
-                    .experience
-                    .unwrap_or("no experience selected"),
-                state.selection.common_mode,
-                state.selection.folder_count,
-                yes_no(state.review.ready),
-                yes_no(state.availability.desktop),
-                yes_no(state.availability.full_os),
-                yes_no(state.availability.connected),
-                yes_no(state.availability.next),
-                yes_no(state.availability.back),
+                "{} page, {}, {}",
+                match state.page {
+                    "experience" => "Experience",
+                    "folders" => "Folders",
+                    "review" => "Review",
+                    _ => "Setup",
+                },
+                experience_phrase(state.selection.experience),
+                folders_phrase(state.selection.folder_count),
             )),
             badge: Some(
                 match state.page {
@@ -902,12 +906,35 @@ pub fn row(state: &SetupProjection) -> LiveRow {
         .row(internal_row(&state.internal))
 }
 
-const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+/// A folder mode as people read it.
+fn mode_phrase(mode: &str) -> &'static str {
+    match mode {
+        "connected" => "Connected",
+        "later" => "Decide later",
+        _ => "Copy",
+    }
 }
 
-const fn open_closed(value: bool) -> &'static str {
-    if value { "open" } else { "closed" }
+/// The chosen experience as people read it.
+fn experience_phrase(experience: Option<&str>) -> &'static str {
+    match experience {
+        Some("desktop") => "Tilo Desktop",
+        Some(_) => "Full Tilo",
+        None => "no experience chosen yet",
+    }
+}
+
+/// "1 folder", "3 folders", "no folders".
+fn folders_phrase(count: usize) -> String {
+    match count {
+        0 => "no folders".into(),
+        1 => "1 folder".into(),
+        count => format!("{count} folders"),
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "Yes" } else { "No" }
 }
 
 #[cfg(test)]

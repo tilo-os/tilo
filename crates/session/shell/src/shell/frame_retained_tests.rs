@@ -254,8 +254,8 @@ fn sparse_refusal_details(previous: Option<&ProducedSections>, frame: &FrameBuil
 #[test]
 fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense() {
     let (mut frame, _clock) = settled_builder();
-    frame.theme.tokens.elevation.e4.blur = 120.0;
-    frame.theme.tokens.elevation.e4.offset_y = 40.0;
+    frame.theme.tokens.elevation.floating.blur = 120.0;
+    frame.theme.tokens.elevation.floating.offset_y = 40.0;
 
     // Preserve an independently rendered dense equivalence proof for the settled, enlarged-shadow
     // desktop before using it as the retained base.
@@ -297,8 +297,8 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
         .and_then(|sections| sections.quick_settings_bounds)
         .expect("settled Quick Settings publishes its shadow-inclusive bounds");
     let panel = frame.host.quick_settings_rect_for_tests();
-    let shadow_reach = ui::surface::std_dev_for(frame.theme.tokens.elevation.e4.blur) * 3.0
-        + f64::from(frame.theme.tokens.elevation.e4.offset_y)
+    let shadow_reach = ui::surface::std_dev_for(frame.theme.tokens.elevation.floating.blur) * 3.0
+        + f64::from(frame.theme.tokens.elevation.floating.offset_y)
         + 0.5;
     assert!(
         quick_settings_bounds.x0 <= panel.x0 - shadow_reach
@@ -631,7 +631,7 @@ fn rect_scene() -> Scene {
     let mut scene = Scene::new();
     // Use the product accent token so the fixture remains within the same
     // palette contract as the scenes whose retained composition it probes.
-    let fixture_color = Theme::dark().tokens.colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+    let fixture_color = Theme::dark().tokens.colors.intent.inverted;
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,

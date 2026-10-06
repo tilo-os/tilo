@@ -24,11 +24,10 @@ use crate::paint::{PaintCtx, with_alpha};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::{
-    centered_text_top, renderer_type_size, text_band, type_line_height,
-};
+use crate::widget::data_table::{centered_text_top, text_band, type_line_height};
 
 /// Alpha (0–255) of the translucent area fill under a series line. Matches
 /// the concept's `bg-<color>/18` area treatment.
@@ -599,7 +598,7 @@ impl Chart {
         let header_h = if style.header {
             text_band(
                 HEADER_H,
-                type_line_height(tokens.typography.scale.sm),
+                type_line_height(&tokens.typography, TextRole::Caption),
                 f64::from(tokens.spacing.s1),
             )
         } else {
@@ -608,24 +607,52 @@ impl Chart {
         if rect.width() <= 0.0 || rect.height() <= header_h {
             return;
         }
-        let plot = Rect::new(rect.x0, rect.y0 + header_h, rect.x1, rect.y1);
-        let legend_size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
+        let legend_style = tokens.typography.style(TextRole::Caption);
+        // The axis labels sit in a gutter at the plot's trailing edge, each
+        // centred on its gridline, never over a series. The plot keeps half
+        // a label line clear above its top rule (and a step under the
+        // legend) and below its bottom rule, so the labels stay whole.
+        let label_w = [labels.axis_hi, labels.axis_lo]
+            .into_iter()
+            .filter(|label| !label.is_empty())
+            .map(|label| f64::from(text_renderer.measure_style(label, None, &legend_style).0))
+            .fold(0.0, f64::max);
+        let has_axis = label_w > 0.0;
+        let gutter = if has_axis {
+            label_w + f64::from(tokens.spacing.s2)
+        } else {
+            0.0
+        };
+        let half_line = if has_axis {
+            f64::from(text_renderer.measure_style("0", None, &legend_style).1) / 2.0
+        } else {
+            0.0
+        };
+        let legend_gap = if style.header {
+            f64::from(tokens.spacing.s2)
+        } else {
+            0.0
+        };
+        let plot = Rect::new(
+            rect.x0,
+            rect.y0 + header_h + legend_gap + half_line,
+            (rect.x1 - gutter).max(rect.x0 + 1.0),
+            (rect.y1 - half_line).max(rect.y0 + header_h + legend_gap + half_line + 1.0),
+        );
 
         if style.header {
             // Title, legend labels and legend dots share the header band's
             // centre line, each placed by its measured line box.
-            let title_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+            let title_style = tokens.typography.style(TextRole::Caption);
             if !labels.title.is_empty() {
-                let (_, title_h) = text_renderer.measure_weighted(
+                let (_, title_h) = text_renderer.measure_style(
                     labels.title,
-                    title_size,
                     None,
-                    style.title_weight,
+                    &title_style.clone().with_weight(style.title_weight),
                 );
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     labels.title,
-                    title_size,
                     tokens.colors.text_primary,
                     translated(
                         transform,
@@ -633,7 +660,7 @@ impl Chart {
                         centered_text_top(rect.y0, header_h, title_h),
                     ),
                     None,
-                    style.title_weight,
+                    &title_style.clone().with_weight(style.title_weight),
                 );
             }
 
@@ -645,15 +672,15 @@ impl Chart {
                 if s.legend.is_empty() {
                     continue;
                 }
-                let (tw, th) = text_renderer.measure(&s.legend, legend_size, None);
+                let (tw, th) = text_renderer.measure_style(&s.legend, None, &legend_style);
                 lx -= f64::from(tw);
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &s.legend,
-                    legend_size,
                     tokens.colors.text_dim,
                     translated(transform, lx, centered_text_top(rect.y0, header_h, th)),
                     None,
+                    &legend_style,
                 );
                 lx -= dot_gap;
                 let dot = Circle::new(Point::new(lx, rect.y0 + header_h / 2.0), 3.0);
@@ -679,28 +706,20 @@ impl Chart {
             );
         }
 
-        // Axis ticks (right-aligned just inside the plot).
-        if !labels.axis_hi.is_empty() {
-            let (tw, _) = text_renderer.measure(labels.axis_hi, legend_size, None);
-            text_renderer.draw_text(
+        // Axis ticks: in the gutter, right-aligned, centred on the top and
+        // bottom gridlines.
+        for (label, y) in [(labels.axis_hi, plot.y0), (labels.axis_lo, plot.y1)] {
+            if label.is_empty() {
+                continue;
+            }
+            let (tw, th) = text_renderer.measure_style(label, None, &legend_style);
+            text_renderer.draw_style(
                 scene,
-                labels.axis_hi,
-                legend_size,
+                label,
                 tokens.colors.text_dim,
-                translated(transform, plot.x1 - f64::from(tw), plot.y0 - 1.0),
+                translated(transform, rect.x1 - f64::from(tw), y - f64::from(th) / 2.0),
                 None,
-            );
-        }
-        if !labels.axis_lo.is_empty() {
-            // Bottom-aligned inside the plot by its measured line box.
-            let (tw, th) = text_renderer.measure(labels.axis_lo, legend_size, None);
-            text_renderer.draw_text(
-                scene,
-                labels.axis_lo,
-                legend_size,
-                tokens.colors.text_dim,
-                translated(transform, plot.x1 - f64::from(tw), plot.y1 - f64::from(th)),
-                None,
+                &legend_style,
             );
         }
 
@@ -1087,7 +1106,7 @@ mod tests {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let data = vec![1.0_f32, 3.0, 2.0, 5.0, 4.0];
-            let series = vec![Series::new(data, theme.accent_primary)];
+            let series = vec![Series::new(data, theme.tokens.colors.intent.inverted)];
 
             let mut plain = Scene::new();
             Chart::draw_at(
@@ -1135,7 +1154,10 @@ mod tests {
             let grid_tags = count_color_tags(&grid_only);
             assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
 
-            let series = vec![Series::new(vec![1.0, 2.0, 3.0], theme.accent_primary)];
+            let series = vec![Series::new(
+                vec![1.0, 2.0, 3.0],
+                theme.tokens.colors.intent.inverted,
+            )];
             let mut with_line = Scene::new();
             Chart::draw_at(
                 &mut PaintCtx::new(&mut with_line, Affine::IDENTITY, &mut tr, &theme),
@@ -1162,7 +1184,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 64.0, 20.0),
                 &[5.0],
                 5.0,
-                theme.accent_primary,
+                theme.tokens.colors.intent.inverted,
             );
             assert_eq!(count_color_tags(&one), 0, "single point draws nothing");
 
@@ -1173,7 +1195,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 64.0, 20.0),
                 &[5.0, 3.0, 7.0],
                 7.0,
-                theme.accent_primary,
+                theme.tokens.colors.intent.inverted,
             );
             assert!(count_color_tags(&many) >= 2, "area + line both paint");
         }

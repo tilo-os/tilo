@@ -113,13 +113,11 @@ pub fn picker(
     // The sheet's colour names each swatch's ring; the painter draws it.
     let paper = 0x00f4_efe3; // document colour: the sample sheet's paper
     let mut samples: Vec<(String, Artwork)> = Vec::new();
-    ColorSwatchPicker::with_palette(vec![paper; presets.len()], 4)
-        .with_accessible_labels(labels)
+    super::inspector::swatches(&vec![paper; presets.len()], labels, 4)
         .with_cell(CELL.0)
         .with_cell_height(CELL.1)
-        .bare()
         .selecting(presets.iter().position(|preset| *preset == chosen))
-        .with_painter(move |scene, transform, rect: Rect, index, _theme, text| {
+        .with_painter(move |scene, transform, rect: Rect, index, theme, text| {
             let ink = colour();
             if samples.len() != presets.len()
                 || samples
@@ -134,7 +132,7 @@ pub fn picker(
             let Some((_, art)) = samples.get(index) else {
                 return;
             };
-            let frame = RoundedRect::from_rect(rect, 6.0);
+            let frame = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.item));
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &frame);
             let scale = (rect.width() / SAMPLE.0).min(rect.height() / SAMPLE.1);
             let offset = rect.center()

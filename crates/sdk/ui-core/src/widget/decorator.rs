@@ -403,6 +403,10 @@ pub trait Decorator {
         self.inner_mut().set_focus(focused);
     }
 
+    fn set_invalid(&mut self, invalid: bool) {
+        self.inner_mut().set_invalid(invalid);
+    }
+
     fn is_focused(&self) -> bool {
         self.inner().is_focused()
     }
@@ -1005,6 +1009,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn set_focus(&mut self, focused: bool) {
         Decorator::set_focus(self, focused);
+    }
+
+    fn set_invalid(&mut self, invalid: bool) {
+        Decorator::set_invalid(self, invalid);
     }
 
     fn is_focused(&self) -> bool {

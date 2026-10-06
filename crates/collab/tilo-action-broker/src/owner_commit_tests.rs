@@ -1093,9 +1093,42 @@ mod owner_commit_tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "actual checked Writer did not publish actions: connection={:?}, surfaces={}",
+                "actual checked Writer did not publish actions: connection={:?}, coverage={:?}, resources={:?}, surfaces={:?}",
                 app.collaboration_state(),
-                broker.published_action_surfaces().len()
+                app.control_action_coverage(),
+                {
+                    fn addresses(
+                        resources: &[tilo_actions::Resource],
+                    ) -> Vec<(String, Vec<String>)> {
+                        let mut rows = Vec::new();
+                        for resource in resources {
+                            rows.push((
+                                resource.id.as_str().to_owned(),
+                                resource
+                                    .actions
+                                    .iter()
+                                    .map(|action| action.id.clone())
+                                    .collect(),
+                            ));
+                            rows.extend(addresses(&resource.children));
+                        }
+                        rows
+                    }
+                    addresses(&app.collect_resources())
+                },
+                broker
+                    .published_action_surfaces()
+                    .iter()
+                    .map(|surface| (
+                        surface.app_id.clone(),
+                        surface.route.clone(),
+                        surface
+                            .actions
+                            .iter()
+                            .map(|action| (action.resource.clone(), action.action.clone()))
+                            .collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>()
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         };

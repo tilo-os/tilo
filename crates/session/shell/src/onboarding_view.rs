@@ -5,7 +5,7 @@
 //! an application could imitate.
 //!
 //! The decisions all live in [`crate::onboarding::Onboarding`]; this
-//! file is only the composition, built from shared `ui` widgets (`Card`,
+//! file is only the composition, built from shared `ui` widgets (`Section`,
 //! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
 //! system theme, focus order and accessibility like the rest of the desktop.
 //!
@@ -32,8 +32,8 @@ use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, Card, Checkbox, ChoiceCard, Column, FilePicker, FilePickerMode, IconWidget,
-    ProgressBar, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget,
+    Banner, Button, ButtonRole, Checkbox, Column, FilePicker, FilePickerMode, IconWidget, ListRow,
+    ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -591,12 +591,6 @@ impl PressedActions {
         let pressed = self.clone();
         Button::new(id, label).on_click(move || pressed.press(action))
     }
-
-    /// A choice card whose activation takes `action`.
-    fn card(&self, card: ChoiceCard, action: &'static str) -> ChoiceCard {
-        let pressed = self.clone();
-        card.on_click(move || pressed.press(action))
-    }
 }
 
 #[allow(
@@ -675,6 +669,9 @@ pub struct OnboardingView {
     /// Review renderer only: draw the nearby screen as if pairing were
     /// running, without starting the privileged helper.
     nearby_active_for_snapshot: bool,
+    /// The keys of the choice rows activated since the last sync. A row
+    /// reports its activation here; sync turns each into the same model key
+    /// a button would have set.
     nearby_status_path: Option<PathBuf>,
     codec_setup: Option<CodecSetup>,
     /// Whether this run offers the media codecs step: the pack is available
@@ -1639,7 +1636,7 @@ impl OnboardingView {
             // pages retain the viewport stop for Page/Home/End navigation.
             scroll = scroll.without_sequential_focus();
         }
-        let mut scroll = scroll.with_content_gutter(spacing.s3);
+        let mut scroll = scroll;
         if !backup_in_scroll {
             // This is first-run guidance, not an incidental list. Keep the
             // thumb visible whenever content overflows so compact and large
@@ -1716,13 +1713,12 @@ impl OnboardingView {
                 },
                 KEY_BACKUP_BROWSE,
             )
-            .fit_content(40.0)
-            .with_style(if self.backup_was_verified {
+            .role(if self.backup_was_verified {
                 // Continue remains the clear completion action after a verified
                 // backup; making another copy is an optional follow-up task.
-                ui::widget::ButtonStyle::Neutral
+                ui::widget::ButtonRole::Secondary
             } else {
-                ui::widget::ButtonStyle::Primary
+                ui::widget::ButtonRole::Primary
             });
         Box::new(
             Column::new()
@@ -1772,62 +1768,54 @@ impl OnboardingView {
         self.nearby.is_some() || self.nearby_active_for_snapshot
     }
 
-    /// The ways forward from a choice screen, one card per flow.
-    fn choice_cards(&self) -> Option<Vec<ChoiceCard>> {
+    /// The ways forward from a choice screen, one row per flow.
+    fn choices(&self) -> Option<[Choice; 2]> {
         match self.flow.screen() {
-            Screen::Intro => Some(vec![
-                self.pressed.card(
-                    ChoiceCard::new(
-                        "onboarding.existing.card",
-                        ui::icons::Icon::User,
-                        t("onboarding-choice-existing"),
-                        t("onboarding-choice-existing-detail"),
-                    ),
-                    KEY_EXISTING,
-                ),
-                self.pressed.card(
-                    ChoiceCard::new(
-                        "onboarding.begin.card",
-                        ui::icons::Icon::Plus,
-                        t("onboarding-choice-create"),
-                        t("onboarding-choice-create-detail"),
-                    ),
-                    KEY_BEGIN,
-                ),
+            Screen::Intro => Some([
+                Choice {
+                    id: "onboarding.existing.card",
+                    icon: ui::icons::Icon::User,
+                    title: "onboarding-choice-existing",
+                    detail: "onboarding-choice-existing-detail",
+                    key: KEY_EXISTING,
+                },
+                Choice {
+                    id: "onboarding.begin.card",
+                    icon: ui::icons::Icon::Plus,
+                    title: "onboarding-choice-create",
+                    detail: "onboarding-choice-create-detail",
+                    key: KEY_BEGIN,
+                },
             ]),
-            Screen::Existing => Some(vec![
-                self.pressed.card(
-                    ChoiceCard::new(
-                        "onboarding.existing.nearby.card",
-                        ui::icons::Icon::Monitor,
-                        t("onboarding-choice-nearby"),
-                        t("onboarding-choice-nearby-detail"),
-                    ),
-                    KEY_CHOOSE_NEARBY,
-                ),
-                self.pressed.card(
-                    ChoiceCard::new(
-                        "onboarding.existing.restore.card",
-                        ui::icons::Icon::Archive,
-                        t("onboarding-choice-restore"),
-                        t("onboarding-choice-restore-detail"),
-                    ),
-                    KEY_CHOOSE_RESTORE,
-                ),
+            Screen::Existing => Some([
+                Choice {
+                    id: "onboarding.existing.nearby.card",
+                    icon: ui::icons::Icon::Monitor,
+                    title: "onboarding-choice-nearby",
+                    detail: "onboarding-choice-nearby-detail",
+                    key: KEY_CHOOSE_NEARBY,
+                },
+                Choice {
+                    id: "onboarding.existing.restore.card",
+                    icon: ui::icons::Icon::Archive,
+                    title: "onboarding-choice-restore",
+                    detail: "onboarding-choice-restore-detail",
+                    key: KEY_CHOOSE_RESTORE,
+                },
             ]),
             _ => None,
         }
     }
 
-    /// The pinned footer of a choice screen: its cards stay in view at every
+    /// The pinned footer of a choice screen: its rows stay in view at every
     /// size, like the action row of the other screens. Intro has nothing to
     /// go back to; the use-existing choice keeps its Back (or keyring retry)
-    /// row below the cards.
+    /// row below the rows.
     fn choice_footer_height(&self, theme: &Theme) -> Option<f32> {
-        let cards = self.choice_cards()?;
+        let choices = self.choices()?;
+        let count = f32::from(u8::try_from(choices.len()).unwrap_or(u8::MAX));
+        let stack = count * choice_row_height(theme);
         let spacing = &theme.tokens.spacing;
-        let count = f32::from(u8::try_from(cards.len()).unwrap_or(u8::MAX));
-        let stack = count * ChoiceCard::height_for(theme) + (count - 1.0).max(0.0) * spacing.s3;
         Some(if self.flow.screen() == Screen::Intro {
             stack + spacing.s4
         } else {
@@ -1835,16 +1823,26 @@ impl OnboardingView {
         })
     }
 
-    fn choice_footer(&self, theme: &Theme, cards: Vec<ChoiceCard>) -> Box<dyn Widget> {
+    fn choice_footer(&self, theme: &Theme, choices: [Choice; 2]) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut stack = Column::new()
+        let rows = choices
+            .into_iter()
+            .map(|choice| {
+                let pressed = self.pressed.clone();
+                Box::new(
+                    ListRow::new(choice.id, t(choice.title))
+                        .icon(choice.icon)
+                        .secondary(t(choice.detail))
+                        .disclosure()
+                        .on_activate(move || pressed.press(choice.key)),
+                ) as Box<dyn Widget>
+            })
+            .collect();
+        let stack = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_horizontal_padding(spacing.s3, spacing.s3)
-            .with_gap(spacing.s3);
-        for card in cards {
-            stack = stack.push(Box::new(card));
-        }
+            .push(Box::new(Section::new(rows)));
         if self.flow.screen() == Screen::Intro {
             return Box::new(
                 Column::new()
@@ -1852,7 +1850,7 @@ impl OnboardingView {
                     .with_intrinsic_height()
                     .with_gap(0.0)
                     .push(Box::new(stack))
-                    // The intro's cards have no action row below them; keep
+                    // The intro's rows have no action row below them; keep
                     // the action row's visible inset from the panel edge.
                     .push(Box::new(Spacer::fixed(spacing.s4))),
             );
@@ -1868,8 +1866,8 @@ impl OnboardingView {
     }
 
     fn identity_footer(&self, theme: &Theme) -> Box<dyn Widget> {
-        if let Some(cards) = self.choice_cards() {
-            return self.choice_footer(theme, cards);
+        if let Some(choices) = self.choices() {
+            return self.choice_footer(theme, choices);
         }
         let acknowledgement = match self.flow.screen() {
             Screen::NoRecovery => Some(
@@ -1921,22 +1919,17 @@ impl OnboardingView {
                         &t("onboarding-connect-retry-keyring"),
                         KEY_CONNECT_RETRY,
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::Refresh),
             )]),
             Screen::Existing => footer_actions(vec![back_button(&self.pressed)]),
             Screen::Nearby => {
                 let mut actions = vec![back_button(&self.pressed)];
                 if self.nearby_active() {
-                    actions.push(Box::new(
-                        self.pressed
-                            .button(
-                                "onboarding.connect.cancel.button",
-                                &t("onboarding-cancel"),
-                                KEY_CONNECT_CANCEL,
-                            )
-                            .fit_content(40.0),
-                    ));
+                    actions.push(Box::new(self.pressed.button(
+                        "onboarding.connect.cancel.button",
+                        &t("onboarding-cancel"),
+                        KEY_CONNECT_CANCEL,
+                    )));
                 } else {
                     actions.push(Box::new(
                         self.pressed
@@ -1945,9 +1938,8 @@ impl OnboardingView {
                                 &t("onboarding-nearby-try-again"),
                                 KEY_CONNECT_NEARBY,
                             )
-                            .fit_content(40.0)
                             .with_icon(ui::icons::Icon::Refresh)
-                            .with_style(ui::widget::ButtonStyle::Primary),
+                            .role(ui::widget::ButtonRole::Primary),
                     ));
                 }
                 footer_actions(actions)
@@ -1961,9 +1953,8 @@ impl OnboardingView {
                             &t("onboarding-restore-backup"),
                             KEY_IMPORT,
                         )
-                        .fit_content(40.0)
                         .with_icon(ui::icons::Icon::ArrowRight)
-                        .with_style(ui::widget::ButtonStyle::Primary)
+                        .role(ui::widget::ButtonRole::Primary)
                         .with_enabled(self.connect_source_selected),
                 ),
             ]),
@@ -1976,24 +1967,19 @@ impl OnboardingView {
                             &t("onboarding-create-local-identity"),
                             KEY_CREATE,
                         )
-                        .fit_content(40.0)
                         .with_icon(ui::icons::Icon::Shield)
-                        .with_style(ui::widget::ButtonStyle::Primary)
+                        .role(ui::widget::ButtonRole::Primary)
                         .with_enabled(self.flow.can_create()),
                 ),
             ]),
             Screen::Done if self.identity_ready_page && self.codec_page => self.codec_actions(),
             Screen::Done if self.identity_ready_page => self.finish_action(),
             Screen::Done if self.portable_backup_only => footer_actions(vec![
-                Box::new(
-                    self.pressed
-                        .button(
-                            "onboarding.backup.cancel.button",
-                            &t("onboarding-cancel"),
-                            KEY_FINISH,
-                        )
-                        .fit_content(40.0),
-                ),
+                Box::new(self.pressed.button(
+                    "onboarding.backup.cancel.button",
+                    &t("onboarding-cancel"),
+                    KEY_FINISH,
+                )),
                 Box::new(
                     self.pressed
                         .button(
@@ -2001,8 +1987,7 @@ impl OnboardingView {
                             &t("onboarding-done"),
                             KEY_BACKUP_CONTINUE,
                         )
-                        .fit_content(40.0)
-                        .with_style(ui::widget::ButtonStyle::Primary)
+                        .role(ui::widget::ButtonRole::Primary)
                         .with_enabled(self.backup_was_verified),
                 ),
             ]),
@@ -2014,20 +1999,15 @@ impl OnboardingView {
                             &t("onboarding-continue"),
                             KEY_BACKUP_CONTINUE,
                         )
-                        .fit_content(40.0)
-                        .with_style(ui::widget::ButtonStyle::Primary),
+                        .role(ui::widget::ButtonRole::Primary),
                 )])
             }
             Screen::Done if self.backup_was_verified => footer_actions(vec![
-                Box::new(
-                    self.pressed
-                        .button(
-                            "onboarding.backup.another.button",
-                            &t("onboarding-backup-save-another"),
-                            KEY_BACKUP_ANOTHER,
-                        )
-                        .fit_content(40.0),
-                ),
+                Box::new(self.pressed.button(
+                    "onboarding.backup.another.button",
+                    &t("onboarding-backup-save-another"),
+                    KEY_BACKUP_ANOTHER,
+                )),
                 Box::new(
                     self.pressed
                         .button(
@@ -2035,8 +2015,7 @@ impl OnboardingView {
                             &t("onboarding-continue"),
                             KEY_BACKUP_CONTINUE,
                         )
-                        .fit_content(40.0)
-                        .with_style(ui::widget::ButtonStyle::Primary),
+                        .role(ui::widget::ButtonRole::Primary),
                 ),
             ]),
             Screen::Done => footer_actions(vec![Box::new(
@@ -2046,8 +2025,7 @@ impl OnboardingView {
                         &t("onboarding-backup-continue-without"),
                         KEY_BACKUP_CONTINUE,
                     )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Neutral)
+                    .role(ui::widget::ButtonRole::Secondary)
                     .with_enabled(self.backup_skip_acknowledged),
             )]),
         }
@@ -2125,7 +2103,6 @@ impl OnboardingView {
                 .push(Box::new(
                     Scrollable::new_vertical()
                         .with_max_height(scroll_height)
-                        .with_content_gutter(theme.tokens.spacing.s3)
                         // Tour pages intentionally teach several concepts;
                         // expose overflow persistently instead of making a
                         // first-time user wait for a transient wheel hint.
@@ -2187,9 +2164,9 @@ impl OnboardingView {
                         .push(Box::new(
                             Text::new(&number.to_string())
                                 .with_role(ui::tokens::typography::TextRole::Label)
-                                .with_weight(ui::text_render::TextWeight::Semibold)
-                                .with_numeric_style(ui::text_render::NumericStyle::TabularLining)
-                                .with_color(theme.accent_primary),
+                                .strong()
+                                .numeric()
+                                .with_color(theme.text_dim),
                         ))
                         .push(Box::new(
                             Column::new()
@@ -2221,13 +2198,13 @@ impl OnboardingView {
                             .push(Box::new(
                                 Text::new(&t(keys))
                                     .with_role(ui::tokens::typography::TextRole::Label)
-                                    .with_color(theme.accent_primary),
+                                    .with_color(theme.text_primary),
                             ))
                             .push(paragraph(&t(copy), theme)),
                     ),
                     None => paragraph(&t(copy), theme),
                 };
-                body = body.push(Box::new(Card::titled(t(card_title), content)));
+                body = body.push(Box::new(Section::titled(t(card_title), vec![content])));
             }
         }
         Box::new(body)
@@ -2241,29 +2218,20 @@ impl OnboardingView {
             (t("onboarding-continue"), KEY_TOUR_NEXT)
         };
         footer_actions(vec![
-            Box::new(
-                self.pressed
-                    .button(
-                        "onboarding.tour.skip.button",
-                        &t("onboarding-tour-skip"),
-                        KEY_TOUR_SKIP,
-                    )
-                    .fit_content(40.0),
-            ),
-            Box::new(
-                self.pressed
-                    .button(
-                        "onboarding.tour.back.button",
-                        &t("onboarding-back"),
-                        KEY_TOUR_BACK,
-                    )
-                    .fit_content(40.0),
-            ),
+            Box::new(self.pressed.button(
+                "onboarding.tour.skip.button",
+                &t("onboarding-tour-skip"),
+                KEY_TOUR_SKIP,
+            )),
+            Box::new(self.pressed.button(
+                "onboarding.tour.back.button",
+                &t("onboarding-back"),
+                KEY_TOUR_BACK,
+            )),
             Box::new(
                 self.pressed
                     .button("onboarding.tour.next.button", &primary_label, primary_key)
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    .role(ui::widget::ButtonRole::Primary),
             ),
         ])
     }
@@ -2363,7 +2331,7 @@ impl OnboardingView {
                     Text::new(&grouped_code(code))
                         .with_id("onboarding.nearby.code")
                         .with_role(ui::tokens::typography::TextRole::Display)
-                        .with_numeric_style(ui::text_render::NumericStyle::TabularLining),
+                        .numeric(),
                 ));
         }
         if let Some(message) = &self.nearby_status {
@@ -2380,7 +2348,7 @@ impl OnboardingView {
                     Row::new()
                         .no_wrap()
                         .with_gap(theme.tokens.spacing.s2)
-                        .push(Box::new(Spinner::with_size(20.0)))
+                        .push(Box::new(Spinner::with_size(theme.tokens.metrics.icon_md)))
                         .push(Box::new(text)),
                 ))
             } else {
@@ -2388,7 +2356,7 @@ impl OnboardingView {
             };
         }
         Box::new(
-            body.push(Box::new(Card::new(Box::new(steps))))
+            body.push(Box::new(Section::new(vec![Box::new(steps)])))
                 .push(Box::new(status)),
         )
     }
@@ -2400,15 +2368,13 @@ impl OnboardingView {
         let path = TextInput::from_state(&self.connect_path)
             .with_id("onboarding.connect.path.field")
             .with_accessible_name(t("onboarding-connect-file"))
-            .with_placeholder(&t("onboarding-connect-file-placeholder"))
-            .with_font_size(theme.tokens.typography.scale.base);
+            .with_placeholder(&t("onboarding-connect-file-placeholder"));
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
             &t("onboarding-connect-passphrase"),
             &t("onboarding-connect-passphrase-placeholder"),
-        )
-        .with_font_size(theme.tokens.typography.scale.base);
+        );
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -2437,7 +2403,6 @@ impl OnboardingView {
                             &t("onboarding-connect-browse"),
                             KEY_CONNECT_BROWSE,
                         )
-                        .fit_content(40.0)
                         .with_icon(ui::icons::Icon::FolderOpen),
                 )),
             ));
@@ -2584,17 +2549,17 @@ impl OnboardingView {
                 theme,
             ))
             .push(paragraph(&body, theme))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-done-next-title"),
-                paragraph(&t("onboarding-done-next-body"), theme),
+                vec![paragraph(&t("onboarding-done-next-body"), theme)],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 if self.backup_was_verified {
                     t("onboarding-done-backup-verified")
                 } else {
                     t("onboarding-done-backup-recommended")
                 },
-                paragraph_with_id(
+                vec![paragraph_with_id(
                     &if self.backup_was_verified {
                         t("onboarding-done-backup-verified-body")
                     } else {
@@ -2602,13 +2567,13 @@ impl OnboardingView {
                     },
                     theme,
                     "onboarding.done.backup-guidance",
-                ),
+                )],
             )));
 
         if self.context == OnboardingContext::FullSystem {
-            page = page.push(Box::new(Card::titled(
+            page = page.push(Box::new(Section::titled(
                 t("onboarding-done-system-care-title"),
-                paragraph(&t("onboarding-done-system-care-body"), theme),
+                vec![paragraph(&t("onboarding-done-system-care-body"), theme)],
             )));
         }
         Box::new(page)
@@ -2660,13 +2625,17 @@ impl OnboardingView {
                 theme,
                 "onboarding.codecs.body",
             ))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-enables-title"),
-                enables,
+                vec![enables],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-source-title"),
-                paragraph_with_id(&codecs_source(), theme, "onboarding.codecs.source"),
+                vec![paragraph_with_id(
+                    &codecs_source(),
+                    theme,
+                    "onboarding.codecs.source",
+                )],
             )));
         Box::new(page)
     }
@@ -2676,11 +2645,11 @@ impl OnboardingView {
             self.codec_page_buttons()
                 .into_iter()
                 .map(|(id, label, key, primary)| {
-                    let button = self.pressed.button(id, &label, key).fit_content(40.0);
+                    let button = self.pressed.button(id, &label, key);
                     let button = if primary {
                         button
                             .with_icon(ui::icons::Icon::ArrowRight)
-                            .with_style(ui::widget::ButtonStyle::Primary)
+                            .role(ButtonRole::Primary)
                     } else {
                         button
                     };
@@ -2696,14 +2665,11 @@ impl OnboardingView {
         // Continuing to the desktop is the primary hand-off. The optional
         // tour remains explicit rather than making “Skip” the first desktop
         // action a new user has to decipher.
-        let tour = self
-            .pressed
-            .button(
-                "onboarding.tour.start.button",
-                &t("onboarding-tour-take"),
-                KEY_TOUR_START,
-            )
-            .fit_content(40.0);
+        let tour = self.pressed.button(
+            "onboarding.tour.start.button",
+            &t("onboarding-tour-take"),
+            KEY_TOUR_START,
+        );
         let enter = self
             .pressed
             .button(
@@ -2711,15 +2677,15 @@ impl OnboardingView {
                 &t("onboarding-finish"),
                 KEY_FINISH,
             )
-            .fit_content(40.0)
             .with_icon(ui::icons::Icon::ArrowRight)
-            .with_style(ui::widget::ButtonStyle::Primary);
+            .role(ui::widget::ButtonRole::Primary);
         footer_actions(vec![Box::new(tour), Box::new(enter)])
     }
 }
 
+/// The title at the top of an onboarding page.
 fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::Display))
+    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::LargeTitle))
 }
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded
@@ -2767,7 +2733,7 @@ fn fact_list(
                 .no_wrap()
                 .align_start()
                 .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(IconWidget::new(icon, 20.0).accent()))
+                .push(Box::new(IconWidget::new(icon).dim()))
                 .push(Box::new(
                     Text::new(&text).with_role(ui::tokens::typography::TextRole::Body),
                 )),
@@ -2776,7 +2742,7 @@ fn fact_list(
     Box::new(list)
 }
 
-/// One step of a real sequence: its number in a quiet accent, then the
+/// One step of a real sequence: its number in quiet ink, then the
 /// instruction.
 fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
     Box::new(
@@ -2787,9 +2753,9 @@ fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
             .push(Box::new(
                 Text::new(&number.to_string())
                     .with_role(ui::tokens::typography::TextRole::Body)
-                    .with_weight(ui::text_render::TextWeight::Semibold)
-                    .with_numeric_style(ui::text_render::NumericStyle::TabularLining)
-                    .with_color(theme.accent_primary),
+                    .strong()
+                    .numeric()
+                    .with_color(theme.text_dim),
             ))
             .push(Box::new(
                 Text::new(text).with_role(ui::tokens::typography::TextRole::Body),
@@ -2817,7 +2783,6 @@ fn back_button(pressed: &PressedActions) -> Box<dyn Widget> {
     Box::new(
         pressed
             .button("onboarding.back.button", &t("onboarding-back"), KEY_BACK)
-            .fit_content(40.0)
             .with_icon(ui::icons::Icon::ArrowLeft),
     )
 }
@@ -2924,14 +2889,20 @@ impl OnboardingView {
             // competes with the tour's own keyboard focus.
             return;
         }
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
         if theme.name.eq_ignore_ascii_case("high contrast") {
             return;
         }
 
         // Quiet, theme-derived depth: two broad accent blooms make the
         // trusted setup surface distinct without becoming illustration.
-        let bloom = colors.accent[5].with_alpha_factor(0.10);
+        let bloom = colors.text_primary.with_alpha_factor(0.10);
         let radius = self.rect.width().max(self.rect.height()) * 0.34;
         scene.fill(
             Fill::NonZero,
@@ -2943,7 +2914,7 @@ impl OnboardingView {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[3].with_alpha_factor(0.07),
+            colors.intent.you.with_alpha_factor(0.07),
             None,
             &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
         );
@@ -3956,6 +3927,28 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
     Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
+fn choice_row_height(theme: &Theme) -> f32 {
+    let spacing = &theme.tokens.spacing;
+    let text = theme
+        .text(ui::tokens::typography::TextRole::Body)
+        .line_height_px()
+        + theme
+            .text(ui::tokens::typography::TextRole::Caption)
+            .line_height_px();
+    (text + 2.0 * spacing.s2)
+        .max(theme.tokens.metrics.min_pointer_target + spacing.s2)
+        .ceil()
+}
+
+struct Choice {
+    id: &'static str,
+    icon: ui::icons::Icon,
+    title: &'static str,
+    detail: &'static str,
+    /// The model key the row sets, read by sync like a button's.
+    key: &'static str,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4835,7 +4828,6 @@ mod tests {
                 assert!(navigation.contains("Command+K"));
                 assert!(navigation.contains("Option+Space"));
             } else {
-                assert!(navigation.contains("Super+K"));
                 assert!(navigation.contains("Super+Space"));
             }
             assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
@@ -6188,7 +6180,7 @@ mod tests {
                         .unwrap_or_else(|| panic!("choice screen exposes {id}"));
                     assert!(focusable, "{id} must be a keyboard focus stop");
                     assert!(
-                        rect.height() >= 64.0
+                        rect.height() >= f64::from(theme.tokens.metrics.min_pointer_target)
                             && rect.x0 >= panel.x0 + 8.0
                             && rect.x1 <= panel.x1 - 8.0
                             && rect.y0 >= scroll.y1
@@ -6197,12 +6189,15 @@ mod tests {
                         theme.name,
                     );
                     if let Some(previous) = previous {
-                        assert!(rect.y0 >= previous.y1 + 8.0, "cards need a gap");
-                        assert!((rect.x0 - previous.x0).abs() < 0.5, "cards share an edge");
+                        assert!(
+                            (rect.y0 - previous.y1).abs() < 0.5,
+                            "the choices are one list, edge to edge"
+                        );
+                        assert!((rect.x0 - previous.x0).abs() < 0.5, "rows share an edge");
                     }
                     previous = Some(rect);
-                    let node = accessibility_for_id(&view, id).expect("card semantics");
-                    assert_eq!(node.role, ui::a11y::Role::Button);
+                    let node = accessibility_for_id(&view, id).expect("row semantics");
+                    assert_eq!(node.role, ui::a11y::Role::ListItem);
                     assert!(
                         node.value.as_deref().is_some_and(|value| !value.is_empty()),
                         "{id} announces its description"
@@ -6414,7 +6409,8 @@ mod tests {
                 })
                 .expect("continue without backup button");
             assert!(
-                button.width() >= 44.0 && button.height() >= 40.0,
+                button.width() >= 44.0
+                    && button.height() >= f64::from(theme.tokens.metrics.min_pointer_target),
                 "backup continuation needs a practical pointer target: {button:?}"
             );
 
