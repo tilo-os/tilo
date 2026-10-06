@@ -8,13 +8,13 @@ use tilo_action_broker::peer_actions::CertificateAuthority;
 use tilo_actions::InvocationUpdate;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
-struct NativeFixture {
-    home: tilo_test_env::TestHome,
-    owner: tilo_joined_room::NativeWorkspaceOwner,
-    broker: collab_broker::BrokerHandle,
-    certificate: tilo_user_identity::DeviceCert,
-    room: crate::shell::state::RoomId,
-    path: std::path::PathBuf,
+pub(super) struct NativeFixture {
+    pub(super) home: tilo_test_env::TestHome,
+    pub(super) owner: tilo_joined_room::NativeWorkspaceOwner,
+    pub(super) broker: collab_broker::BrokerHandle,
+    pub(super) certificate: tilo_user_identity::DeviceCert,
+    pub(super) room: crate::shell::state::RoomId,
+    pub(super) path: std::path::PathBuf,
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn desktop_action_session_retains_the_selected_certified_person_and_original_cus
     drop(fixture);
 }
 
-fn fixture() -> NativeFixture {
+pub(super) fn fixture() -> NativeFixture {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let system = home.config().join("test-system");
     home.env()
@@ -506,7 +506,7 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
     drop(home);
 }
 
-fn await_membership_source(
+pub(super) fn await_membership_source(
     actions: &tilo_action_broker::collab_broker::AppActionBroker,
     room: crate::shell::state::RoomId,
 ) {

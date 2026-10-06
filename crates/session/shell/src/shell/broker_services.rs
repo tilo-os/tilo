@@ -11,6 +11,9 @@ mod committed_document;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
 mod native_effect_tests;
+#[cfg(test)]
+#[path = "broker_services/native_message_tests.rs"]
+mod native_message_tests;
 mod nearby_transfer;
 mod resource_views;
 pub use nearby_transfer::NativeNearbyTransfer;

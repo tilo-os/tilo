@@ -231,6 +231,52 @@ fn validated_sources(
     Ok(sources)
 }
 
+/// Read-only retry preflight on a private candidate, never publication or input
+/// minting. The actual later admission must perform all checks again.
+pub(crate) fn verify_uncommitted_candidate(
+    view: &NativeCommittedView,
+    request: &OwnerCommitRequest,
+    sources: &[MessageSource],
+    now: SystemTime,
+) -> Result<(), String> {
+    let CommitOperation::Document {
+        app,
+        record,
+        envelope,
+    } = &request.operation
+    else {
+        return Err("Agent Message retry requires its exact document envelope".into());
+    };
+    if app != "so.tilo.chat"
+        || !record.is_empty()
+        || envelope.author.as_bytes() != &view.device().device_public_key
+        || view
+            .peer()
+            .lookup_exact_local_document(app, record, envelope, now)
+            .map_err(|error| error.to_string())?
+            .is_some()
+    {
+        return Err("Agent Message retry lacks new canonical publication custody".into());
+    }
+    for source in sources {
+        if view.peer().document("so.tilo.chat", "").is_some()
+            && !matching_rows(&document(view)?, source)?.is_empty()
+        {
+            return Err("Agent Message retry request row already exists".into());
+        }
+    }
+    let outgoing = publication::prepare(request)?;
+    publication::reserve(view, &outgoing)?;
+    let mut candidate = view.clone();
+    candidate
+        .peer
+        .admit_new_local_document(app, record, *envelope.clone(), now)?;
+    for source in sources {
+        verify_row(&candidate, source, now)?;
+    }
+    Ok(())
+}
+
 impl NativeWorkspaceOwner {
     /// Publish canonical Chat requests and their private addressed-input facts
     /// together. Attestations are inert signed data minted only by the private

@@ -2,7 +2,9 @@
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 
-pub use crate::collab_broker_capnp::workspace_messages::AgentMessagePublisherInstallation;
+pub use crate::collab_broker_capnp::workspace_messages::{
+    AgentMessagePublisherInstallation, NativeMessageHostAttestations, NativeMessagePublication,
+};
 
 /// Private native installation door. Applications never receive this service
 /// or a constructor for its broker-owned installation request.
@@ -18,7 +20,35 @@ pub trait WorkspaceMessages: Send + Sync {
         &self,
         request: &AgentMessagePublisherInstallation,
     ) -> Result<tilo_joined_room::AgentMessagePublisherLease, String>;
+
+    /// The private broker supplies immutable original custody. An inert host
+    /// signature never leaves this endpoint; only final atomic owner admission
+    /// produces a usable durable receipt.
+    fn commit_message(
+        &self,
+        _request: Arc<NativeMessagePublication>,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        Box::pin(async { Err("native Message publication unavailable".into()) })
+    }
+
+    /// Read-only observation for the exact retained original. No signing proof
+    /// or new execution capability is returned to an application.
+    fn reconcile_message(
+        &self,
+        _request: Arc<NativeMessagePublication>,
+    ) -> NativeMessageReconcileFuture {
+        Box::pin(async { Err("native Message reconciliation unavailable".into()) })
+    }
 }
+
+pub type NativeMessageReconcileFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<tilo_joined_room::AgentMessageCommitObservation, String>,
+            > + Send
+            + 'static,
+    >,
+>;
 
 /// The normal desktop opening deadline, shared with placement retirement.
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);

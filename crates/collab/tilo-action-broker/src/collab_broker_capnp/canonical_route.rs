@@ -120,6 +120,10 @@ impl CapnpBrokerState {
         route: &CrdtRoute,
         registration: uuid::Uuid,
     ) -> Result<(), String> {
+        self.message_sources
+            .lock()
+            .map_err(|_| "Message source registry unavailable")?
+            .retire(Some(peer));
         let worker = self
             .host_workers
             .lock()

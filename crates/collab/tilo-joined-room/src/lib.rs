@@ -16,6 +16,7 @@ mod agent_message_commit;
 mod agent_message_execution;
 mod agent_message_history;
 mod agent_message_publisher;
+mod agent_message_reconciliation;
 mod agent_session;
 mod agent_session_history;
 mod application_record;
@@ -50,6 +51,9 @@ pub use agent_message_execution::{
 };
 pub use agent_message_publisher::{
     AgentMessagePublisherData, AgentMessagePublisherLease, AgentMessagePublisherRegistration,
+};
+pub use agent_message_reconciliation::{
+    AgentMessageCommitObservation, AgentMessageRetryEligibility,
 };
 pub use agent_session::{AgentSessionBinding, AgentSessionReservation};
 pub use application_record::{ApplicationInitialization, ApplicationRecord};

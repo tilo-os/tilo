@@ -30,8 +30,54 @@ pub(super) struct OriginalInvocationData {
     caller: InvocationCaller,
     time: crate::peer_actions::PolicyTime,
     execution: Option<tilo_actions::remote::ExecutionLease>,
+    semantic: Option<tilo_actions::ResourceSemanticIdentity>,
 }
 impl OriginalInvocationData {
+    pub(super) fn is_addressed_message(&self) -> bool {
+        self.route.app_id == "so.tilo.chat"
+            && self.route.record_id.is_empty()
+            && self.request.address.action == "message"
+            && self.spec.kind == tilo_actions::OperationKind::Document
+            && self
+                .semantic
+                .as_ref()
+                .is_some_and(|identity| identity.kind == "chat.agent")
+    }
+
+    pub(super) fn message_facts(
+        &self,
+        state: &CapnpBrokerState,
+        envelope: &super::InvocationEnvelope,
+    ) -> Result<super::workspace_messages::OriginalMessageFacts, String> {
+        if !self.is_addressed_message() {
+            return Err("original invocation is not canonical addressed Message".into());
+        }
+        let caller = self.owner_person_certificate(state, &self.route.cluster_id, envelope)?;
+        let semantic = self
+            .semantic
+            .as_ref()
+            .ok_or("original Message semantic target unavailable")?;
+        Ok(super::workspace_messages::OriginalMessageFacts {
+            agent: semantic.key.clone(),
+            request: self.request.clone(),
+            caller,
+            operation: tilo_joined_room::AgentMessageOperationData {
+                app: self.route.app_id.clone(),
+                resource: self.request.address.resource.clone(),
+                action: self.request.address.action.clone(),
+                contract: self.spec.contract.clone(),
+                foreign_restriction: matches!(
+                    &self.caller,
+                    InvocationCaller::Certified {
+                        foreign_restriction: true,
+                        ..
+                    }
+                ),
+            },
+            spec: self.spec.clone(),
+        })
+    }
+
     fn current_person_certificate(
         &self,
         state: &CapnpBrokerState,
@@ -241,6 +287,7 @@ impl OriginalInvocationData {
             caller: caller?,
             time: time?,
             execution,
+            semantic: offered.semantic_identity.clone(),
         }))
     }
 }

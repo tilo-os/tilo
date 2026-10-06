@@ -236,7 +236,8 @@ pub fn view_operation_permitted(
 
 /// Inert declaration retained by the actual host at original admission. This
 /// is not authority, and is never decoded from a caller's wire request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublishedInvocationSpec {
     pub kind: tilo_actions::OperationKind,
     pub contract: tilo_actions::ActionContract,

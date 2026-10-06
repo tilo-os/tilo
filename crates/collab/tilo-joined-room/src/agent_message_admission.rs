@@ -26,7 +26,7 @@ pub struct AgentMessageOperationData {
 }
 
 /// Descriptive data, not a delivery capability or proof of a live process.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageAdmissionData {
     pub invocation: uuid::Uuid,
@@ -46,7 +46,7 @@ pub struct AgentMessageAdmissionData {
 }
 
 /// Untrusted data until checked against current native owner authority.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageAdmissionAttestation {
     pub data: AgentMessageAdmissionData,
@@ -124,6 +124,17 @@ impl AgentMessageAdmissionAttestation {
             .permissions(self.attestor.device_public_key, now)?;
         view.peer()
             .permissions(self.data.caller.device_public_key, now)?;
+        let source = self.verify_historical_source(request)?;
+        revalidate_operation(view, &self.data.caller, &self.data.operation, now)?;
+        Ok(source)
+    }
+
+    /// Authenticate immutable correlation only. This grants no live admission
+    /// and is usable only with an owner-retained matching receipt and Read.
+    pub(crate) fn verify_historical_source(
+        &self,
+        request: &OwnerCommitRequest,
+    ) -> Result<MessageSource, String> {
         if self.data.document != request.binding()? {
             return Err("Agent Message admission attests a different document mutation".into());
         }
@@ -133,7 +144,6 @@ impl AgentMessageAdmissionAttestation {
             .map_err(|_| "invalid Agent Message attestation signature")?;
         key.verify_strict(&self.signing_bytes()?, &signature)
             .map_err(|_| "Agent Message attestation signature mismatch")?;
-        revalidate_operation(view, &self.data.caller, &self.data.operation, now)?;
         self.source()
     }
 

@@ -1,4 +1,4 @@
-const EXPECTED_SCHEMA_FNV1A: u64 = 0x4ee3_3c62_453b_a462;
+const EXPECTED_SCHEMA_FNV1A: u64 = 0xe5d5_4773_f8e6_f626;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const SCHEMA: &str = "schema/collab.capnp";

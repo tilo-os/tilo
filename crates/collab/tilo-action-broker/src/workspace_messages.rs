@@ -1,5 +1,21 @@
 //! Native addressed Message publisher custody. The host signs only requests
 //! created from actual admitted private-worker directory/stream registrations.
+#[path = "workspace_messages/publication.rs"]
+mod publication;
+#[path = "workspace_messages/source.rs"]
+mod source;
+#[path = "workspace_messages/upload.rs"]
+mod upload;
+pub use publication::{NativeMessageHostAttestations, NativeMessagePublication};
+pub(super) use source::MessageSources;
+
+pub(super) struct OriginalMessageFacts {
+    pub(super) agent: String,
+    pub(super) request: ui::invocation_scope::PublishedInvocationRequest,
+    pub(super) caller: tilo_user_identity::DeviceCert,
+    pub(super) operation: tilo_joined_room::AgentMessageOperationData,
+    pub(super) spec: ui::invocation_scope::PublishedInvocationSpec,
+}
 
 /// Broker-created installation facts, not a caller-supplied authority stamp.
 /// There is deliberately no public constructor or deserializer.
@@ -50,6 +66,20 @@ struct StreamCustody {
 }
 
 impl MessagePublisherStream {
+    pub(super) fn lease(&self) -> Result<tilo_joined_room::AgentMessagePublisherLease, String> {
+        let custody = self
+            .custody
+            .lock()
+            .map_err(|_| "Message stream unavailable")?;
+        if custody.retired {
+            return Err("Message publisher stream retired".into());
+        }
+        custody
+            .lease
+            .clone()
+            .ok_or_else(|| "Message publisher owner custody unavailable".into())
+    }
+
     pub(super) fn new() -> Self {
         Self {
             identity: uuid::Uuid::new_v4(),

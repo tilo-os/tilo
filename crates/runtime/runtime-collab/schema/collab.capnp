@@ -43,7 +43,9 @@ interface ChannelHandle {
   # Submit a single signed op. `op` is a collab-types SignedOp
   # (postcard-encoded). The broker validates, fan-outs to other
   # subscribers, and persists.
-  send @0 (op :Data) -> ();
+  # Optional references are broker-minted uploads for exact native addressed
+  # contributions. Empty preserves ordinary signed-document synchronization.
+  send @0 (op :Data, contributionRefs :List(Data)) -> ();
 
   # Open a subscription. Returned `Stream` capability yields signed
   # ops one per `read` call, each annotated with the broker's view
@@ -397,6 +399,21 @@ interface ChannelHandle {
   # it hands back. The app is the certified route's.
   liveActivity @55 () -> (activity :LiveActivity);
 
+  # Native addressed contributions use the existing complete signed-document
+  # door, not incomplete native document frames. The opaque source token came
+  # from this actual stable invocation stream; no caller/room/Agent authority
+  # can be asserted here. Upload and aggregate budgets are checked before
+  # allocating, and a reference binds the actual signed-op bytes at send@0.
+  openDocumentContribution @57 (sourceToken :Data, totalBytes :UInt64)
+      -> (writer :DocumentContributionWriter, reference :Data);
+
+}
+
+# One bounded, contiguous upload. An unfinished writer's disposal releases
+# its reservation. Completed custody remains private until exact publication
+# settles, expires, or its original worker/directory/stream retires.
+interface DocumentContributionWriter {
+  write @0 (offset :UInt64, chunk :Data) -> ();
 }
 
 # Optional result on @35, minted from the same captured directory and worker.
@@ -610,9 +627,11 @@ interface InvocationStream {
   # decided this invocation may happen.
   # invocationUuid is the complete 16-byte logical identity. id remains the
   # local completion/cancellation handle.
-  read @0 () -> (id :UInt64, resource :Text, action :Text,
+  # Explicit additive opt-in: old clients do not retain native source custody.
+  read @0 (nativeDocumentSource :Bool) -> (id :UInt64, resource :Text, action :Text,
                  argument :Text, hasArgument :Bool, actor :Text,
-                 contextJson :Text, invocationUuid :Data);
+                 contextJson :Text, invocationUuid :Data,
+                 sourceToken :Data, sourceSpecJson :Text);
 }
 
 # Agent-only task work sent by the broker after live-session admission.

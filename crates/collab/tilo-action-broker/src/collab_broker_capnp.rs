@@ -2856,6 +2856,7 @@ pub struct CapnpBrokerState {
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
+    message_sources: Mutex<workspace_messages::MessageSources>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
@@ -3078,6 +3079,9 @@ impl CapnpBrokerState {
             };
         }
         self.execution_activity.close();
+        if let Ok(mut sources) = self.message_sources.lock() {
+            sources.retire(None);
+        }
         if let Ok(directories) = self.canonical_directories.lock() {
             directories.retire_message_publishers();
         }
@@ -3751,6 +3755,7 @@ impl CapnpBrokerState {
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
+                message_sources: Mutex::new(workspace_messages::MessageSources::default()),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
                 shortcut_runs: crate::automation::ShortcutRuns::default(),
                 app_action_access: RwLock::new(
@@ -5812,6 +5817,9 @@ impl CapnpBrokerState {
     }
 
     fn remove_connection(&self, peer_id: u64) {
+        if let Ok(mut sources) = self.message_sources.lock() {
+            sources.retire(Some(peer_id));
+        }
         if let Ok(mut directories) = self.canonical_directories.lock() {
             directories.remove(peer_id);
         }
@@ -7995,6 +8003,39 @@ impl channel_handle::Server for CapnpChannelHandle {
         Promise::ok(())
     }
 
+    fn open_document_contribution(
+        self: Rc<Self>,
+        params: channel_handle::OpenDocumentContributionParams,
+        mut results: channel_handle::OpenDocumentContributionResults,
+    ) -> Promise<(), capnp::Error> {
+        let result = (|| {
+            self.state
+                .revalidate_admission(&self.route(), &self.verified_identity)?;
+            let request = params.get()?;
+            let token = request
+                .get_source_token()?
+                .try_into()
+                .map_err(|_| capnp::Error::failed("invalid Message source token".into()))?;
+            let total = usize::try_from(request.get_total_bytes())
+                .map_err(|_| capnp::Error::failed("invalid Message upload size".into()))?;
+            let reference = self
+                .state
+                .reserve_native_contribution(self.peer_id, &self.route(), token, total)
+                .map_err(capnp::Error::failed)?;
+            let writer: runtime_collab::collab_capnp::document_contribution_writer::Client =
+                capnp_rpc::new_client(NativeContributionWriter {
+                    state: Arc::downgrade(&self.state),
+                    peer: self.peer_id,
+                    route: self.route(),
+                    reference,
+                });
+            results.get().set_writer(writer);
+            results.get().set_reference(&reference);
+            Ok(())
+        })();
+        Promise::from(result)
+    }
+
     fn send(
         self: Rc<Self>,
         params: channel_handle::SendParams,
@@ -8006,7 +8047,31 @@ impl channel_handle::Server for CapnpChannelHandle {
         let verified_identity = self.verified_identity.clone();
         let record_kind = self.record_kind.clone();
         Promise::from_future(async move {
-            let op_bytes = params.get()?.get_op()?.to_vec();
+            let request = params.get()?;
+            let refs = request.get_contribution_refs()?;
+            if refs.len()
+                > u32::try_from(runtime_collab::document_contribution::MAX_REFERENCES)
+                    .map_err(|_| capnp::Error::failed("invalid Message reference limit".into()))?
+            {
+                return Err(capnp::Error::failed("too many Message references".into()));
+            }
+            let references = refs
+                .iter()
+                .map(|reference| {
+                    reference?
+                        .try_into()
+                        .map_err(|_| capnp::Error::failed("invalid Message reference".into()))
+                })
+                .collect::<Result<Vec<[u8; 32]>, capnp::Error>>()?;
+            if !references.is_empty()
+                && request.get_op()?.len()
+                    > runtime_collab::document_contribution::MAX_SIGNED_OP_BYTES
+            {
+                return Err(capnp::Error::failed(
+                    "native Message signed op exceeds capacity".into(),
+                ));
+            }
+            let op_bytes = request.get_op()?.to_vec();
             let envelope: SignedOp = postcard::from_bytes(&op_bytes).map_err(|e| {
                 capnp::Error::failed(format!(
                     "capnp send: op is not a postcard-encoded SignedOp: {e}"
@@ -8026,19 +8091,37 @@ impl channel_handle::Server for CapnpChannelHandle {
             if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
             {
                 state.revalidate_admission(&route, &verified_identity)?;
-                state
-                    .commit_owner_request(
-                        tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            room: route.cluster_id.clone(),
-                            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                                app: route.app_id.clone(),
-                                record: route.record_id.clone(),
-                                envelope: Box::new(envelope.clone()),
+                if references.is_empty() {
+                    state
+                        .commit_owner_request(
+                            tilo_peer_state::owner_commit::OwnerCommitRequest {
+                                room: route.cluster_id.clone(),
+                                operation:
+                                    tilo_peer_state::owner_commit::CommitOperation::Document {
+                                        app: route.app_id.clone(),
+                                        record: route.record_id.clone(),
+                                        envelope: Box::new(envelope.clone()),
+                                    },
                             },
-                        },
-                        record_kind,
-                    )
-                    .await?;
+                            record_kind,
+                        )
+                        .await?;
+                } else {
+                    let publication = state
+                        .prepare_native_message_publication(
+                            peer_id,
+                            &route,
+                            &op_bytes,
+                            &envelope,
+                            &references,
+                        )
+                        .map_err(capnp::Error::failed)?;
+                    state.commit_native_message_publication(publication).await?;
+                }
+            } else if !references.is_empty() {
+                return Err(capnp::Error::failed(
+                    "native Message owner is unavailable".into(),
+                ));
             }
             let current_identity = state.revalidate_admission(&route, &verified_identity)?;
             let authorized =
@@ -8660,6 +8743,13 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
+        if let Ok(mut sources) = self.state.message_sources.lock() {
+            sources.retire(Some(self.peer_id));
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "Message source registry unavailable".into(),
+            ));
+        }
         if let Ok(mut directories) = self.state.canonical_directories.lock() {
             directories.stream_replaced(self.peer_id, stable);
         } else {
@@ -8707,6 +8797,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             );
         let delivered = invocation_delivery_notice(&self.state.services, app, room);
         let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
+            message_source: self
+                .state
+                .services
+                .workspace_messages
+                .as_ref()
+                .filter(|service| service.requires_room(&self.route().cluster_id))
+                .map(|_| (Arc::downgrade(&self.state), self.peer_id)),
             message_publisher: provisional.transfer(),
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -10880,6 +10977,7 @@ fn invocation_delivery_notice(
 }
 
 struct InvocationStreamServer {
+    message_source: Option<(std::sync::Weak<CapnpBrokerState>, u64)>,
     message_publisher: Option<Arc<workspace_messages::MessagePublisherStream>>,
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
@@ -10887,10 +10985,61 @@ struct InvocationStreamServer {
     delivered: Option<Box<dyn Fn()>>,
 }
 
+struct NativeContributionWriter {
+    state: std::sync::Weak<CapnpBrokerState>,
+    peer: u64,
+    route: CrdtRoute,
+    reference: [u8; 32],
+}
+
+impl Drop for NativeContributionWriter {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.upgrade() {
+            state.discard_incomplete_native_contribution(self.reference);
+        }
+    }
+}
+
+impl runtime_collab::collab_capnp::document_contribution_writer::Server
+    for NativeContributionWriter
+{
+    fn write(
+        self: Rc<Self>,
+        params: runtime_collab::collab_capnp::document_contribution_writer::WriteParams,
+        _results: runtime_collab::collab_capnp::document_contribution_writer::WriteResults,
+    ) -> Promise<(), capnp::Error> {
+        let result = (|| {
+            let state = self
+                .state
+                .upgrade()
+                .ok_or_else(|| capnp::Error::disconnected("Message host closed".into()))?;
+            let request = params.get()?;
+            let offset = usize::try_from(request.get_offset())
+                .map_err(|_| capnp::Error::failed("invalid Message chunk offset".into()))?;
+            state
+                .append_native_contribution(
+                    self.peer,
+                    &self.route,
+                    self.reference,
+                    offset,
+                    request.get_chunk()?,
+                )
+                .map_err(capnp::Error::failed)
+        })();
+        Promise::from(result)
+    }
+}
+
 impl Drop for InvocationStreamServer {
     fn drop(&mut self) {
         if let Some(publisher) = self.message_publisher.as_ref() {
             publisher.retire();
+            if let Some((state, peer)) = self.message_source.as_ref()
+                && let Some(state) = state.upgrade()
+                && let Ok(mut sources) = state.message_sources.lock()
+            {
+                sources.retire_stream(*peer, publisher);
+            }
         }
     }
 }
@@ -10950,9 +11099,13 @@ impl action_catalogue_stream::Server for ActionCatalogueStreamServer {
 impl invocation_stream::Server for InvocationStreamServer {
     fn read(
         self: Rc<Self>,
-        _params: invocation_stream::ReadParams,
+        params: invocation_stream::ReadParams,
         mut results: invocation_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
+        let native_source = match params.get() {
+            Ok(params) => params.get_native_document_source(),
+            Err(error) => return Promise::err(error),
+        };
         let rx = self.rx.clone();
         Promise::from_future(async move {
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
@@ -10981,6 +11134,21 @@ impl invocation_stream::Server for InvocationStreamServer {
                 .map_err(|error| capnp::Error::failed(error.to_string()))?
                 .unwrap_or_default();
             result.set_context_json(&context);
+            if native_source
+                && let Some((state, peer)) = self.message_source.as_ref()
+                && let Some(publisher) = self.message_publisher.as_ref()
+            {
+                let state = state
+                    .upgrade()
+                    .ok_or_else(|| capnp::Error::disconnected("Message host closed".into()))?;
+                if let Some((token, spec)) = state
+                    .native_message_source(*peer, &invocation, publisher)
+                    .map_err(capnp::Error::failed)?
+                {
+                    result.set_source_token(&token);
+                    result.set_source_spec_json(&spec);
+                }
+            }
             Ok(())
         })
     }
@@ -13470,6 +13638,8 @@ pub mod tests {
     include!("canonical_route_tests.rs");
     #[cfg(test)]
     include!("workspace_message_publisher_tests.rs");
+    #[cfg(test)]
+    include!("workspace_message_source_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
@@ -16691,6 +16861,7 @@ pub mod tests {
                         )));
                         let stream: invocation_stream::Client =
                             capnp_rpc::new_client(InvocationStreamServer {
+                                message_source: None,
                                 message_publisher: None,
                                 host_guard: None,
                                 rx: rx.clone(),
@@ -16833,6 +17004,7 @@ pub mod tests {
                     )));
                     let stream: invocation_stream::Client =
                         capnp_rpc::new_client(InvocationStreamServer {
+                            message_source: None,
                             message_publisher: None,
                             host_guard: None,
                             rx: rx.clone(),
@@ -17191,6 +17363,7 @@ pub mod tests {
                     let (tx, rx) = mpsc::unbounded_channel();
                     let stream: invocation_stream::Client =
                         capnp_rpc::new_client(InvocationStreamServer {
+                            message_source: None,
                             message_publisher: None,
                             host_guard: None,
                             rx: Rc::new(AsyncMutex::new(rx)),

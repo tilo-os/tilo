@@ -68,6 +68,7 @@ pub mod collab_capnp {
 mod agent_messages;
 pub mod committed_document;
 pub use agent_messages::AgentMessageInput;
+pub mod document_contribution;
 #[cfg(feature = "client")]
 pub mod live_activity;
 pub mod native_media;
@@ -2755,6 +2756,9 @@ pub struct Invocation {
     /// invocation originated from a leased workspace task. Empty for ordinary
     /// invocations so legacy application callers remain context-neutral.
     pub context_json: String,
+    /// Optional exact native source custody. Its bytes are not an authority
+    /// assertion: only the originating broker can resolve this opaque token.
+    pub document_source: Option<document_contribution::DocumentContributionSource>,
 }
 
 /// Client-pulled stream of invocations addressed to this application.
@@ -2794,7 +2798,22 @@ impl InvocationStream {
     /// drops during the call, or the reply carries a string field that
     /// isn't valid UTF-8.
     pub async fn read(&self) -> Result<Invocation, NotAvailable> {
-        let req = self.inner.read_request();
+        self.read_native_source(false).await
+    }
+
+    /// Opt into the native exact-source protocol only when the caller retains
+    /// and settles it through the supplemental document producer. Ordinary
+    /// clients use `read` and consume no native source registry capacity.
+    ///
+    /// # Errors
+    /// Propagates transport, native source custody, or malformed reply refusal.
+    pub async fn read_with_document_source(&self) -> Result<Invocation, NotAvailable> {
+        self.read_native_source(true).await
+    }
+
+    async fn read_native_source(&self, native_source: bool) -> Result<Invocation, NotAvailable> {
+        let mut req = self.inner.read_request();
+        req.get().set_native_document_source(native_source);
         let reply = req.send().promise.await?;
         let r = reply.get()?;
         let text = |t: capnp::text::Reader<'_>, what: &str| {
@@ -2806,6 +2825,10 @@ impl InvocationStream {
         let action = text(r.get_action()?, "invocation action")?;
         let actor = text(r.get_actor()?, "invocation actor")?;
         let context_json = text(r.get_context_json()?, "invocation context")?;
+        let document_source = document_contribution::DocumentContributionSource::decode(
+            r.get_source_token()?,
+            r.get_source_spec_json()?,
+        )?;
         let argument = if r.get_has_argument() {
             Some(text(r.get_argument()?, "invocation argument")?)
         } else {
@@ -2821,6 +2844,7 @@ impl InvocationStream {
             argument,
             actor,
             context_json,
+            document_source,
         })
     }
 }
