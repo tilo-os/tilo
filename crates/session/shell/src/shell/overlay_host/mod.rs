@@ -559,7 +559,11 @@ impl AccessibleAgentMarker {
     }
 
     fn is_fresh(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.published_at) <= ACCESSIBLE_AGENT_MARKER_AGE
+        self.expiry().is_some_and(|expiry| now < expiry)
+    }
+
+    fn expiry(&self) -> Option<Instant> {
+        self.published_at.checked_add(ACCESSIBLE_AGENT_MARKER_AGE)
     }
 }
 
@@ -7828,6 +7832,9 @@ impl ShellOverlayHost {
         connection: u64,
         markers: Vec<AccessibleAgentMarker>,
     ) {
+        // Clear expired focus before replacing geometry: a publication with
+        // the same target must not resurrect focus from an expired node.
+        self.prune_expired_accessible_agent_markers(Instant::now());
         self.accessible_agent_markers
             .retain(|marker| marker.connection != connection);
         self.accessible_agent_markers.extend(
@@ -7836,6 +7843,18 @@ impl ShellOverlayHost {
                 .filter(|marker| marker.connection == connection)
                 .take(16),
         );
+        self.clear_missing_accessible_agent_marker_focus();
+    }
+
+    fn prune_expired_accessible_agent_markers(&mut self, now: Instant) -> bool {
+        let previous = self.accessible_agent_markers.len();
+        self.accessible_agent_markers
+            .retain(|marker| marker.is_fresh(now));
+        self.clear_missing_accessible_agent_marker_focus();
+        previous != self.accessible_agent_markers.len()
+    }
+
+    fn clear_missing_accessible_agent_marker_focus(&mut self) {
         if self
             .accessible_agent_marker_focus
             .as_ref()
@@ -17637,6 +17656,7 @@ impl Widget for ShellOverlayHost {
                     marker.room.clone(),
                 ))
         });
+        self.clear_missing_accessible_agent_marker_focus();
         let marker_dirty = marker_count != self.accessible_agent_markers.len();
         let agent_quick_dirty = self.agent_quick_composer.update(doc, path);
         if self.agent_quick_composer.take_conversation_request()
@@ -19800,6 +19820,7 @@ impl Widget for ShellOverlayHost {
     ) -> bool {
         if target.starts_with(ACCESSIBLE_AGENT_MARKER_TARGET) {
             let now = Instant::now();
+            self.prune_expired_accessible_agent_markers(now);
             let Some(index) = self
                 .accessible_agent_markers
                 .iter()
@@ -20164,11 +20185,18 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 10] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
         [
+            (
+                "agent-marker-expiry",
+                self.accessible_agent_markers
+                    .iter()
+                    .filter_map(AccessibleAgentMarker::expiry)
+                    .min(),
+            ),
             (
                 "onboarding",
                 self.onboarding

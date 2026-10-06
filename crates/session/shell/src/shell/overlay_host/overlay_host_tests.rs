@@ -454,6 +454,119 @@ fn one_agent_marker_opens_the_room_bound_quick_composer_at_its_exact_anchor() {
     );
 }
 
+fn accessible_marker_fixture(published_at: Instant) -> AccessibleAgentMarker {
+    use tilo_actions::{
+        ActionResource, InteractionAction, InteractionActor, InteractionActorKind,
+        InteractionAnchor, InteractionPhase, InvocationId, SemanticInteraction,
+    };
+    let actor = ui::UserId("agent:scribe".into());
+    let invocation = InvocationId::new();
+    AccessibleAgentMarker {
+        connection: 7,
+        surface: 11,
+        app_id: "so.tilo.notes".into(),
+        room: "marker-room".into(),
+        target: ui::floating_surface::AgentConversationNavigationTarget {
+            agent: "scribe".into(),
+            actor: actor.clone(),
+            invocation,
+            interaction: SemanticInteraction {
+                version: tilo_actions::INTERACTION_VERSION,
+                invocation,
+                sequence: 1,
+                actor: InteractionActor {
+                    id: actor.0,
+                    kind: InteractionActorKind::Agent,
+                },
+                phase: InteractionPhase::Applying,
+                action: InteractionAction {
+                    id: "edit".into(),
+                    label: "Edit".into(),
+                    app: None,
+                },
+                resource: ActionResource {
+                    id: "note:draft".into(),
+                    kind: "note".into(),
+                    label: "Draft".into(),
+                },
+                anchor: InteractionAnchor::Resource,
+                group: None,
+            },
+            locus: [80.0, 80.0, 240.0, 140.0],
+        },
+        marker: Rect::new(80.0, 80.0, 104.0, 104.0),
+        locus: Rect::new(80.0, 80.0, 240.0, 140.0),
+        label: "Scribe".into(),
+        description: "Editing draft".into(),
+        published_at,
+    }
+}
+
+#[test]
+fn accessible_agent_marker_expiry_wakes_idle_host_and_clears_focus_on_update() {
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+    let now = Instant::now();
+    let marker = accessible_marker_fixture(now);
+    let deadline = marker.expiry().expect("bounded marker expiry");
+    assert!(marker.is_fresh(now));
+    assert!(!marker.is_fresh(deadline), "expiry has no one-tick grace");
+    host.publish_accessible_agent_markers(7, vec![marker]);
+    assert_eq!(
+        host.wake_deadline_sources(now)
+            .into_iter()
+            .find(|(name, _)| *name == "agent-marker-expiry")
+            .expect("idle semantic wake source")
+            .1,
+        Some(deadline),
+    );
+    let target = host.accessible_agent_markers[0].action_target();
+    assert!(host.perform_semantic_action(
+        &target,
+        &ui::a11y::Action::Focus,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    host.accessible_agent_markers[0].published_at = now
+        .checked_sub(ACCESSIBLE_AGENT_MARKER_AGE)
+        .expect("fixture clock supports expired publication");
+    host.update(&AutoCommit::new(), &automerge::ROOT);
+    assert!(host.accessible_agent_markers.is_empty());
+    assert!(host.accessible_agent_marker_focus.is_none());
+    assert!(host.next_wake_deadline().is_none());
+}
+
+#[test]
+fn accessible_agent_marker_expiry_cannot_resurrect_focus_or_activate_stale_node() {
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+    let mut marker = accessible_marker_fixture(Instant::now());
+    let target = marker.action_target();
+    host.publish_accessible_agent_markers(7, vec![marker.clone()]);
+    let mut document = AutoCommit::new();
+    assert!(host.perform_semantic_action(
+        &target,
+        &ui::a11y::Action::Focus,
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+    ));
+    host.accessible_agent_markers[0].published_at = Instant::now()
+        .checked_sub(ACCESSIBLE_AGENT_MARKER_AGE)
+        .expect("fixture clock supports expired publication");
+    marker.published_at = Instant::now();
+    host.publish_accessible_agent_markers(7, vec![marker]);
+    assert!(host.accessible_agent_marker_focus.is_none());
+    host.accessible_agent_markers[0].published_at = Instant::now()
+        .checked_sub(ACCESSIBLE_AGENT_MARKER_AGE)
+        .expect("fixture clock supports expired publication");
+    assert!(host.perform_semantic_action(
+        &target,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+    ));
+    assert!(host.take_accessible_agent_marker_activation().is_none());
+    assert!(host.accessible_agent_markers.is_empty());
+}
+
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
     fn people_overlay_publishes_live_roster_and_focusable_status_controls() {
