@@ -296,9 +296,26 @@ fn poll_retained_work(
         session.pending_work = None;
     }
     let would_downgrade = matches!(
-        receipts.get(&key).map(|receipt| &receipt.kind),
-        Some(ComposerReceiptKind::DirectionApplied { .. })
-    ) && matches!(&kind, ComposerReceiptKind::DirectionSaved { .. });
+        (receipts.get(&key), &kind),
+        (
+            Some(ComposerReceipt {
+                submitted_revision,
+                kind: ComposerReceiptKind::DirectionApplied {
+                    task_id: applied_task,
+                    run_epoch: applied_run,
+                    revision: applied_revision,
+                },
+            }),
+            ComposerReceiptKind::DirectionSaved {
+                task_id: saved_task,
+                run_epoch: saved_run,
+                revision: saved_revision,
+            },
+        ) if *submitted_revision == pending.draft_revision
+            && applied_task == saved_task
+            && applied_run == saved_run
+            && applied_revision == saved_revision
+    );
     if !would_downgrade {
         receipts.insert(
             key,
@@ -1872,6 +1889,47 @@ mod tests {
         assert_eq!(
             composer.status.get(),
             "Earlier direction applied to task task-a, run 7, revision 5"
+        );
+    }
+
+    #[test]
+    fn applied_receipt_from_another_run_cannot_hide_the_new_saved_receipt() {
+        let (mut composer, _) = task_composer_with_applied(4);
+        composer.shown_intent = ComposerIntent::Steer;
+        composer.set_draft("Use the new run wording");
+        composer.submit();
+        let submitted_revision = composer
+            .pending_work
+            .expect("new direction submission")
+            .draft_revision;
+        composer.save_draft();
+        composer.park_pending_session();
+        let key = ("room-a".into(), "scribe".into(), ComposerIntent::Steer);
+        composer.receipts.insert(
+            key.clone(),
+            ComposerReceipt {
+                submitted_revision,
+                kind: ComposerReceiptKind::DirectionApplied {
+                    task_id: "retired-task".into(),
+                    run_epoch: 2,
+                    revision: 5,
+                },
+            },
+        );
+
+        composer.poll_retained_sessions();
+
+        assert_eq!(
+            composer.receipts.get(&key),
+            Some(&ComposerReceipt {
+                submitted_revision,
+                kind: ComposerReceiptKind::DirectionSaved {
+                    task_id: "task-a".into(),
+                    run_epoch: 7,
+                    revision: 5,
+                },
+            }),
+            "only the exact original receipt may suppress its Saved predecessor"
         );
     }
 
