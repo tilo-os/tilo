@@ -12,7 +12,7 @@ use vello::peniko::Color;
 /// - `color` — hue **and strength**. Alpha is honoured, not decorative:
 ///   dropping it is how the quick-settings panel once rendered a
 ///   43%-black token as a 100%-black smear.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
     pub offset_y: f32,
     pub blur: f32,
@@ -43,7 +43,7 @@ pub const LIGHT_SHADOW_SCALE: f32 = 0.45;
 /// cast a shadow.** Window tiles, bars, cards and selected controls have
 /// none — a tile is separated by the ground and its window edge, a
 /// selection is a lift ([`crate::tokens::Intents::selection`]).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Elevation {
     /// The one shadow a floating thing casts — a menu, popover, the
     /// palette, a sheet, quick settings, a toast, a tooltip, a dragged
